@@ -175,8 +175,7 @@
               <div class="card mb-3">
                 <div class="card-header font-weight-bold">{{ section.title }}</div>
                 <div class="card-body">
-                  <div id="workbook-section-{{ section.slug }}" class="json-container border rounded bg-light p-3"></div>
-                  {{ section.data|json_script:section.script_id }}
+                  {% include "rolodex/includes/workbook_value.html" with node=section.tree %}
                 </div>
               </div>
             {% endfor %}
@@ -498,30 +497,6 @@
       });
     })(jQuery);
 
-    function initialiseWorkbookPreview() {
-      if (!window.jQuery || typeof jQuery.fn.JSONView !== 'function') {
-        return;
-      }
-
-      const containers = document.querySelectorAll('[id^="workbook-section-"]');
-      containers.forEach(function(container) {
-        if (!container || !container.id) {
-          return;
-        }
-        const slug = container.id.replace('workbook-section-', '');
-        const dataElement = document.getElementById('workbook-section-data-' + slug);
-        if (!dataElement) {
-          return;
-        }
-        try {
-          const data = JSON.parse(dataElement.textContent);
-          jQuery(container).JSONView(data);
-        } catch (err) {
-          console.error('Unable to render workbook preview for', slug, err);
-        }
-      });
-    }
-
     function initialiseCalendar() {
       const calendarEl = document.getElementById('project-calendar');
       if (calendarEl && typeof FullCalendar !== 'undefined') {
@@ -610,7 +585,6 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
-      initialiseWorkbookPreview();
       initialiseCalendar();
       handleMultipleTextInputs();
       toggleSegmentationDetails();

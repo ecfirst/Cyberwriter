@@ -1061,3 +1061,6 @@ class ProjectWorkbookUploadViewTests(TestCase):
 
         sections = response.context["workbook_sections"]
         self.assertTrue(any(section["key"] == "client" for section in sections))
+        client_section = next(section for section in sections if section["key"] == "client")
+        self.assertIn("tree", client_section)
+        self.assertEqual(client_section["tree"]["type"], "dict")

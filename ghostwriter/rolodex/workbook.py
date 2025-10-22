@@ -100,6 +100,50 @@ def _humanize_section_name(raw_key: str) -> str:
     return text.title()
 
 
+def _format_leaf_value(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, (int, float)):
+        return value
+    return str(value)
+
+
+def _normalise_workbook_value(value: Any) -> Dict[str, Any]:
+    """Return a structure suitable for recursive rendering in templates."""
+
+    if isinstance(value, dict):
+        items: List[Dict[str, Any]] = []
+        for key, item in value.items():
+            items.append(
+                {
+                    "label": _humanize_section_name(str(key)),
+                    "raw_key": str(key),
+                    "value": _normalise_workbook_value(item),
+                }
+            )
+        return {"type": "dict", "items": items}
+
+    if isinstance(value, list):
+        items = []
+        for index, item in enumerate(value, 1):
+            formatted = _normalise_workbook_value(item)
+            label: Optional[str] = None
+            if isinstance(item, dict):
+                for candidate_key in ("name", "domain", "title", "short_name", "url"):
+                    candidate = item.get(candidate_key)
+                    if candidate:
+                        label = str(candidate)
+                        break
+            if not label and formatted.get("type") != "value":
+                label = f"Item {index}"
+            items.append({"label": label, "index": index, "value": formatted})
+        return {"type": "list", "items": items}
+
+    return {"type": "value", "display": _format_leaf_value(value)}
+
+
 def build_workbook_sections(workbook_data: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Return workbook content grouped by top-level keys for easier presentation."""
 
@@ -117,6 +161,7 @@ def build_workbook_sections(workbook_data: Optional[Dict[str, Any]]) -> List[Dic
                 "slug": slug,
                 "script_id": f"workbook-section-data-{slug}",
                 "data": value,
+                "tree": _normalise_workbook_value(value),
             }
         )
 

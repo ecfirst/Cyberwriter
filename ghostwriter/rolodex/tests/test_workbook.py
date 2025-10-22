@@ -24,6 +24,10 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertEqual(sections[0]["slug"], "workbook-client")
         self.assertEqual(sections[0]["script_id"], "workbook-section-data-workbook-client")
         self.assertEqual(sections[0]["data"], {"name": "Example"})
+        self.assertEqual(sections[0]["tree"]["type"], "dict")
+        self.assertEqual(sections[0]["tree"]["items"][0]["label"], "Name")
+        self.assertEqual(sections[0]["tree"]["items"][0]["value"]["type"], "value")
+        self.assertEqual(sections[0]["tree"]["items"][0]["value"]["display"], "Example")
 
     def test_non_mapping_returns_empty_sections(self):
         self.assertEqual(build_workbook_sections(None), [])
