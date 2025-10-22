@@ -156,12 +156,13 @@
               </form>
             </div>
           </div>
+          {% if not workbook_sections %}
+            <div class="alert alert-info offset-2 col-8 mt-4">
+              Workbook uploaded successfully. No preview data is available for this workbook yet.
+            </div>
+          {% endif %}
         {% else %}
           <div class="alert alert-warning offset-2 col-8 mt-4">No workbook has been uploaded yet.</div>
-        {% elif project.workbook_file %}
-          <div class="alert alert-info offset-2 col-8 mt-4">
-            Workbook uploaded successfully. No preview data is available for this workbook yet.
-          </div>
         {% endif %}
 
         {% if workbook_sections %}
