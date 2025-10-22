@@ -1613,10 +1613,16 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["data_file_form"] = ProjectDataFileForm()
         ctx["data_questions"] = questions
         ctx["required_data_files"] = required_files
-        ctx["data_responses_form"] = ProjectDataResponsesForm(
+        data_responses_form = ProjectDataResponsesForm(
             question_definitions=questions,
             initial=object.data_responses or {},
         )
+        ctx["data_responses_form"] = data_responses_form
+        ctx["data_responses_fields"] = {
+            definition["key"]: data_responses_form[definition["key"]]
+            for definition in questions
+            if definition["key"] in data_responses_form.fields
+        }
         ctx["data_files"] = object.data_files.all()
         return ctx
 

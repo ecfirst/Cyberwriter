@@ -247,12 +247,14 @@
                     <p class="font-weight-bold mt-3">{{ subgroup.grouper }}</p>
                   {% endif %}
                   {% for question in subgroup.list %}
-                    {% with field=data_responses_form[question.key] %}
-                      <div class="form-group" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}>
-                        {% if field.label %}{{ field.label_tag }}{% endif %}
-                        {{ field }}
-                        {% if field.help_text %}<small class="form-text text-muted">{{ field.help_text }}</small>{% endif %}
-                      </div>
+                    {% with field=data_responses_fields|get_item:question.key %}
+                      {% if field %}
+                        <div class="form-group" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}>
+                          {% if field.label %}{{ field.label_tag }}{% endif %}
+                          {{ field }}
+                          {% if field.help_text %}<small class="form-text text-muted">{{ field.help_text }}</small>{% endif %}
+                        </div>
+                      {% endif %}
                     {% endwith %}
                   {% endfor %}
                 {% endfor %}
