@@ -1,0 +1,18 @@
+{% load static %}
+<div class="multiple-text-input" data-multiple-text-input="{{ widget.name }}">
+  <div class="multiple-text-input__rows">
+    {% for value in widget.value_list %}
+      <div class="input-group mb-2 multiple-text-input__row">
+        <input type="text" name="{{ widget.name }}" value="{{ value }}" {{ widget.flat_attrs|safe }}>
+        <div class="input-group-append">
+          <button type="button" class="btn btn-outline-danger multiple-text-input__remove" {% if forloop.first and forloop.last %}style="display: none;"{% endif %}>
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+  <button type="button" class="btn btn-outline-secondary btn-sm multiple-text-input__add">
+    <i class="fas fa-plus"></i> Add another
+  </button>
+</div>

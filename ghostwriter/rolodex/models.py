@@ -1,6 +1,7 @@
 """This contains all the database models used by the Rolodex application."""
 
 # Standard Libraries
+import os
 from datetime import time, timedelta
 
 # Django Imports
@@ -198,6 +199,23 @@ class Project(models.Model):
         blank=True,
         help_text="Provide additional information about the project and planning",
     )
+    workbook_file = models.FileField(
+        "Workbook",
+        upload_to="project_workbooks/",
+        blank=True,
+        null=True,
+        help_text="Upload the JSON workbook that will be used to drive reporting questions",
+    )
+    workbook_data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Parsed workbook data used to dynamically generate reporting questions",
+    )
+    data_responses = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Responses collected from the dynamic reporting data form",
+    )
     slack_channel = models.CharField(
         "Project Slack Channel",
         max_length=255,
@@ -302,6 +320,40 @@ class Project(models.Model):
 
     def user_can_delete(self, user) -> bool:
         return self.user_can_view(user)
+
+
+class ProjectDataFile(models.Model):
+    """Stores additional data files uploaded to support report generation."""
+
+    project = models.ForeignKey(
+        Project,
+        related_name="data_files",
+        on_delete=models.CASCADE,
+    )
+    file = models.FileField(
+        "Supporting Data File",
+        upload_to="project_data/",
+        max_length=255,
+    )
+    description = models.CharField(
+        "Description",
+        max_length=255,
+        blank=True,
+        default="",
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-uploaded_at"]
+        verbose_name = "Project data file"
+        verbose_name_plural = "Project data files"
+
+    def __str__(self):
+        return f"{self.project} - {self.filename}"
+
+    @property
+    def filename(self):
+        return os.path.basename(self.file.name)
 
 
 class ProjectRole(models.Model):

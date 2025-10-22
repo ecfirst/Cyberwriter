@@ -58,6 +58,11 @@ from ghostwriter.rolodex.forms_project import (
     ProjectTargetFormSet,
     WhiteCardFormSet,
 )
+from ghostwriter.rolodex.forms_workbook import (
+    ProjectDataFileForm,
+    ProjectDataResponsesForm,
+    ProjectWorkbookForm,
+)
 from ghostwriter.rolodex.models import (
     Client,
     ClientContact,
@@ -67,6 +72,7 @@ from ghostwriter.rolodex.models import (
     ObjectivePriority,
     ObjectiveStatus,
     Project,
+    ProjectDataFile,
     ProjectAssignment,
     ProjectContact,
     ProjectInvite,
@@ -76,6 +82,7 @@ from ghostwriter.rolodex.models import (
     ProjectSubTask,
     ProjectTarget,
 )
+from ghostwriter.rolodex.workbook import build_data_configuration
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
 # Using __name__ resolves to ghostwriter.rolodex.views
@@ -1602,7 +1609,159 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["export_templates"] = ReportTemplate.objects.filter(
             Q(doc_type__doc_type__iexact="project_docx") | Q(doc_type__doc_type__iexact="pptx")
         ).filter(Q(client=object.client) | Q(client__isnull=True))
+        questions, required_files = build_data_configuration(object.workbook_data)
+        ctx["workbook_form"] = ProjectWorkbookForm()
+        ctx["data_file_form"] = ProjectDataFileForm()
+        ctx["data_questions"] = questions
+        ctx["required_data_files"] = required_files
+        ctx["data_responses_form"] = ProjectDataResponsesForm(
+            question_definitions=questions,
+            initial=object.data_responses or {},
+        )
+        ctx["data_files"] = object.data_files.all()
         return ctx
+
+
+class ProjectWorkbookUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Handle workbook uploads and removals for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self):
+        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#workbook"
+
+    def post(self, request, *args, **kwargs):
+        project = self.get_object()
+
+        if request.POST.get("clear_workbook"):
+            if project.workbook_file:
+                project.workbook_file.delete(save=False)
+            project.workbook_file = None
+            project.workbook_data = {}
+            project.data_responses = {}
+            project.save(update_fields=["workbook_file", "workbook_data", "data_responses"])
+            messages.success(request, "Workbook removed for this project.")
+            return redirect(self.get_success_url())
+
+        form = ProjectWorkbookForm(request.POST, request.FILES)
+        if form.is_valid():
+            workbook_file = form.cleaned_data["workbook_file"]
+            parsed = form.cleaned_data.get("parsed_workbook", {})
+            if project.workbook_file:
+                project.workbook_file.delete(save=False)
+            project.workbook_file.save(workbook_file.name, workbook_file, save=False)
+            project.workbook_data = parsed
+            project.data_responses = {}
+            project.save(update_fields=["workbook_file", "workbook_data", "data_responses"])
+            messages.success(request, "Workbook uploaded successfully.")
+        else:
+            error_message = form.errors.as_text()
+            if error_message:
+                messages.error(request, error_message)
+            else:
+                messages.error(
+                    request,
+                    "Unable to upload workbook. Please ensure you selected a valid JSON file.",
+                )
+        return redirect(self.get_success_url())
+
+
+class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Upload supporting data files for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self):
+        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#data"
+
+    def post(self, request, *args, **kwargs):
+        project = self.get_object()
+        form = ProjectDataFileForm(request.POST, request.FILES)
+        if form.is_valid():
+            data_file = form.save(commit=False)
+            data_file.project = project
+            data_file.save()
+            messages.success(request, "Supporting data file uploaded.")
+        else:
+            error_message = form.errors.as_text()
+            if error_message:
+                messages.error(request, error_message)
+            else:
+                messages.error(request, "Unable to upload data file. Please review the form for errors.")
+        return redirect(self.get_success_url())
+
+
+class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Delete a supporting data file from a project."""
+
+    model = ProjectDataFile
+
+    def test_func(self):
+        return self.get_object().project.user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self):
+        return (
+            reverse("rolodex:project_detail", kwargs={"pk": self.get_object().project.pk})
+            + "#data"
+        )
+
+    def post(self, request, *args, **kwargs):
+        data_file = self.get_object()
+        if data_file.file:
+            data_file.file.delete(save=False)
+        data_file.delete()
+        messages.success(request, "Supporting data file deleted.")
+        return redirect(self.get_success_url())
+
+
+class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Persist responses to dynamically generated reporting questions."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self):
+        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#data"
+
+    def post(self, request, *args, **kwargs):
+        project = self.get_object()
+        questions, _ = build_data_configuration(project.workbook_data)
+        form = ProjectDataResponsesForm(request.POST, question_definitions=questions)
+        if form.is_valid():
+            project.data_responses = form.cleaned_data
+            project.save(update_fields=["data_responses"])
+            messages.success(request, "Project data responses saved.")
+        else:
+            error_message = form.errors.as_text()
+            if error_message:
+                messages.error(request, error_message)
+            else:
+                messages.error(request, "Unable to save responses. Please review the form and try again.")
+        return redirect(self.get_success_url())
 
 
 class ProjectCreate(RoleBasedAccessControlMixin, CreateView):
