@@ -3664,3 +3664,38 @@ input[type="color"]:focus,
   /* Applied by table-columns.js to hide columns */
   display: none;
 }
+
+/* ---------------------------------------------------
+    PROJECT DATA QUESTION LAYOUT
+----------------------------------------------------- */
+
+.dynamic-questions-section {
+  margin-bottom: 2rem;
+}
+
+.dynamic-question-card .card-header {
+  font-weight: 600;
+  background-color: rgba(0, 0, 0, 0.03);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.dynamic-questions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.25rem;
+  margin-top: 0.75rem;
+}
+
+.dynamic-question-item label {
+  font-weight: 500;
+}
+
+.dynamic-question-item ul {
+  padding-left: 0;
+  margin-bottom: 0;
+  list-style: none;
+}
+
+.dynamic-question-item ul li + li {
+  margin-top: 0.35rem;
+}

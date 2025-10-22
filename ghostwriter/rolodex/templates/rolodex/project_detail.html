@@ -232,84 +232,40 @@
           </div>
         {% endif %}
 
-        <div class="offset-2 col-8">
-          <h5>Upload Additional Files</h5>
-          <form method="post" action="{% url 'rolodex:project_data_file_upload' project.id %}"
-                enctype="multipart/form-data" class="mb-4">
-            {% csrf_token %}
-            <div class="form-group">
-              <label for="id_file">{{ data_file_form.file.label }}</label>
-              {{ data_file_form.file }}
-              {% if data_file_form.file.help_text %}<small class="form-text text-muted">{{ data_file_form.file.help_text }}</small>{% endif %}
-            </div>
-            <div class="form-group">
-              <label for="id_description">{{ data_file_form.description.label }}</label>
-              {{ data_file_form.description }}
-              {% if data_file_form.description.help_text %}<small class="form-text text-muted">{{ data_file_form.description.help_text }}</small>{% endif %}
-            </div>
-            <button type="submit" class="btn btn-primary">Upload File</button>
-          </form>
-
-          {% if data_files %}
-            <h6>Uploaded Files</h6>
-            <table class="table table-sm table-striped">
-              <thead>
-              <tr>
-                <th class="text-left">File</th>
-                <th class="text-left">Description</th>
-                <th class="text-left">Uploaded</th>
-                <th class="text-center">Options</th>
-              </tr>
-              </thead>
-              <tbody>
-              {% for data_file in data_files %}
-                <tr>
-                  <td class="align-middle text-left"><a href="{{ data_file.file.url }}" download>{{ data_file.filename }}</a></td>
-                  <td class="align-middle text-left">{% if data_file.description %}{{ data_file.description|bleach }}{% else %}<span class="text-muted">No description</span>{% endif %}</td>
-                  <td class="align-middle text-left">{{ data_file.uploaded_at|date:"DATETIME_FORMAT" }}</td>
-                  <td class="align-middle text-center">
-                    <form method="post" action="{% url 'rolodex:project_data_file_delete' data_file.id %}">
-                      {% csrf_token %}
-                      <button type="submit" class="btn btn-outline-danger btn-sm">Delete</button>
-                    </form>
-                  </td>
-                </tr>
-              {% endfor %}
-              </tbody>
-            </table>
-          {% else %}
-            <div class="alert alert-light">No supporting files have been uploaded yet.</div>
-          {% endif %}
-        </div>
-
-        <div class="offset-2 col-8 mt-4">
+        <div class="offset-2 col-8 mt-4 dynamic-questions-section">
           <h5>Dynamic Reporting Questions</h5>
           <form method="post" action="{% url 'rolodex:project_data_responses' project.id %}">
             {% csrf_token %}
             {% regroup data_questions by section as question_sections %}
             {% for section in question_sections %}
-              <div class="mb-3">
-                <h6 class="text-uppercase text-muted">{{ section.grouper }}</h6>
-                {% regroup section.list by subheading as subgroup_list %}
-                {% for subgroup in subgroup_list %}
-                  {% if subgroup.grouper %}
-                    <p class="font-weight-bold mt-3">{{ subgroup.grouper }}</p>
-                  {% endif %}
-                  {% for question in subgroup.list %}
-                    {% with field=data_responses_fields|get_item:question.key %}
-                      {% if field %}
-                        <div class="form-group" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}>
-                          {% if field.label %}{{ field.label_tag }}{% endif %}
-                          {{ field }}
-                          {% if field.help_text %}<small class="form-text text-muted">{{ field.help_text }}</small>{% endif %}
-                        </div>
-                      {% endif %}
-                    {% endwith %}
+              <div class="card mb-4 dynamic-question-card">
+                <div class="card-header text-uppercase text-muted">{{ section.grouper }}</div>
+                <div class="card-body">
+                  {% regroup section.list by subheading as subgroup_list %}
+                  {% for subgroup in subgroup_list %}
+                    {% if subgroup.grouper %}
+                      <h6 class="font-weight-bold{% if not forloop.first %} mt-3{% endif %}">{{ subgroup.grouper }}</h6>
+                    {% endif %}
+                    <div class="dynamic-questions-grid">
+                      {% for question in subgroup.list %}
+                        {% with field=data_responses_fields|get_item:question.key %}
+                          {% if field %}
+                            <div class="form-group dynamic-question-item" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}>
+                              {% if field.label %}{{ field.label_tag }}{% endif %}
+                              {{ field }}
+                              {% if field.help_text %}<small class="form-text text-muted">{{ field.help_text }}</small>{% endif %}
+                            </div>
+                          {% endif %}
+                        {% endwith %}
+                      {% endfor %}
+                    </div>
                   {% endfor %}
-                {% endfor %}
+                </div>
               </div>
             {% endfor %}
-            <button type="submit" class="btn btn-primary">Save Responses</button>
+            <div class="text-right">
+              <button type="submit" class="btn btn-primary">Save Responses</button>
+            </div>
           </form>
         </div>
       </div>
