@@ -4,6 +4,7 @@
 import datetime
 import json
 import logging
+from collections import defaultdict, OrderedDict
 
 # Django Imports
 from django import forms
@@ -47,6 +48,7 @@ from ghostwriter.rolodex.forms_client import (
 )
 from ghostwriter.rolodex.forms_project import (
     DeconflictionForm,
+    ProjectArtifactUploadForm,
     ProjectAssignmentFormSet,
     ProjectComponentForm,
     ProjectContactFormSet,
@@ -56,6 +58,7 @@ from ghostwriter.rolodex.forms_project import (
     ProjectObjectiveFormSet,
     ProjectScopeFormSet,
     ProjectTargetFormSet,
+    ProjectWorkbookUploadForm,
     WhiteCardFormSet,
 )
 from ghostwriter.rolodex.models import (
@@ -75,7 +78,10 @@ from ghostwriter.rolodex.models import (
     ProjectScope,
     ProjectSubTask,
     ProjectTarget,
+    ProjectReportArtifact,
+    ProjectReportData,
 )
+from ghostwriter.rolodex.report_data import build_project_report_schema, collect_responses
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
 # Using __name__ resolves to ghostwriter.rolodex.views
@@ -1602,7 +1608,185 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["export_templates"] = ReportTemplate.objects.filter(
             Q(doc_type__doc_type__iexact="project_docx") | Q(doc_type__doc_type__iexact="pptx")
         ).filter(Q(client=object.client) | Q(client__isnull=True))
+
+        report_data, _ = ProjectReportData.objects.get_or_create(project=object)
+        workbook_json = report_data.workbook_json()
+        schema = build_project_report_schema(workbook_json)
+
+        artifact_map = defaultdict(list)
+        for artifact in object.report_artifacts.all():
+            artifact_map[artifact.category].append(artifact)
+
+        required_files = []
+        for requirement in schema.get("required_files", []):
+            entry = requirement.copy()
+            entry["artifacts"] = artifact_map.get(entry["slug"], [])
+            required_files.append(entry)
+
+        responses = report_data.responses or {}
+        grouped_questions = OrderedDict()
+        for question in schema.get("questions", []):
+            value = responses.get(question["key"])
+            if question.get("type") == "risk_matrix":
+                question["value"] = value or {}
+                for row in question.get("rows", []):
+                    row["selected"] = question["value"].get(row["key"]) if isinstance(question["value"], dict) else None
+            else:
+                question["value"] = value
+
+            if question.get("type") == "boolean_with_followup":
+                followup_key = question.get("followup", {}).get("key")
+                question["followup_value"] = responses.get(followup_key, [])
+
+            group_label = question.get("group") or "General"
+            grouped_questions.setdefault(group_label, []).append(question)
+
+        ctx["report_data_record"] = report_data
+        ctx["report_workbook_json"] = workbook_json
+        ctx["report_required_files"] = required_files
+        ctx["report_question_groups"] = grouped_questions
+        ctx["report_questions_available"] = bool(schema.get("questions"))
+        ctx["report_artifacts_additional"] = artifact_map.get("additional", [])
         return ctx
+
+
+class ProjectWorkbookUploadView(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Upload or replace a project's reporting workbook."""
+
+    model = Project
+    form_class = ProjectWorkbookUploadForm
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify this project.")
+        return redirect("home:dashboard")
+
+    def post(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        form = self.form_class(request.POST, request.FILES)
+        redirect_url = f"{reverse('rolodex:project_detail', kwargs={'pk': self.object.pk})}#workbook"
+
+        if form.is_valid():
+            report_data, _ = ProjectReportData.objects.get_or_create(project=self.object)
+            new_file = form.cleaned_data["workbook"]
+            if report_data.workbook:
+                report_data.workbook.delete(save=False)
+            report_data.workbook = new_file
+            report_data.responses = {}
+            report_data.save()
+            messages.success(request, "Workbook uploaded successfully.")
+        else:
+            for error_list in form.errors.values():
+                for error in error_list:
+                    messages.error(request, error)
+
+        return redirect(redirect_url)
+
+
+class ProjectReportDataUpdateView(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Persist answers to dynamic reporting questions for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify this project.")
+        return redirect("home:dashboard")
+
+    def post(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        redirect_url = f"{reverse('rolodex:project_detail', kwargs={'pk': self.object.pk})}#data"
+        report_data, _ = ProjectReportData.objects.get_or_create(project=self.object)
+
+        if not report_data.workbook:
+            messages.error(request, "Upload a workbook before saving reporting data.")
+            return redirect(redirect_url)
+
+        schema = build_project_report_schema(report_data.workbook_json())
+        responses, errors = collect_responses(schema, request.POST)
+
+        if errors:
+            for error in errors:
+                messages.error(request, error)
+            return redirect(redirect_url)
+
+        report_data.responses = responses
+        report_data.save()
+        messages.success(request, "Reporting data saved.")
+        return redirect(redirect_url)
+
+
+class ProjectArtifactUploadView(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Handle uploads of supplemental reporting artifacts."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify this project.")
+        return redirect("home:dashboard")
+
+    def post(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        redirect_url = f"{reverse('rolodex:project_detail', kwargs={'pk': self.object.pk})}#data"
+        require_label = request.POST.get("category") == "additional"
+        form = ProjectArtifactUploadForm(request.POST, request.FILES, require_label=require_label)
+
+        if form.is_valid():
+            category = form.cleaned_data["category"]
+            label = form.cleaned_data["label"] or form.cleaned_data["file"].name
+            upload = form.cleaned_data["file"]
+
+            if category != "additional":
+                for existing in ProjectReportArtifact.objects.filter(project=self.object, category=category):
+                    existing.file.delete(save=False)
+                    existing.delete()
+
+            artifact = ProjectReportArtifact.objects.create(
+                project=self.object,
+                category=category,
+                label=label,
+                file=upload,
+            )
+            messages.success(request, f"Uploaded {artifact.label}.")
+        else:
+            for error_list in form.errors.values():
+                for error in error_list:
+                    messages.error(request, error)
+
+        return redirect(redirect_url)
+
+
+class ProjectArtifactDeleteView(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Delete a supplemental reporting artifact."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify this project.")
+        return redirect("home:dashboard")
+
+    def post(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        redirect_url = f"{reverse('rolodex:project_detail', kwargs={'pk': self.object.pk})}#data"
+        artifact = get_object_or_404(
+            ProjectReportArtifact,
+            pk=kwargs.get("artifact_id"),
+            project=self.object,
+        )
+        artifact.file.delete(save=False)
+        artifact.delete()
+        messages.success(request, "File removed.")
+        return redirect(redirect_url)
 
 
 class ProjectCreate(RoleBasedAccessControlMixin, CreateView):

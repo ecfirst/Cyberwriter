@@ -149,74 +149,6 @@
           </li>
         </ul>
 
-        <!-- Rolodex Section -->
-        <ul class="list-unstyled components">
-          <p class="sideheader icon icon tasks-icon">Pre-engagement</p>
-
-          <!-- Menu Section -->
-          <li>
-            <a href="#clientSubmenu" data-toggle="collapse" aria-expanded="false"
-               class="dropdown-toggle sidebar-dropdown-toggle" data-target="#clientSubmenu">
-              Clients
-              <div class="expand_caret caret"></div>
-            </a>
-            <ul class="collapse list-unstyled text-left" id="clientSubmenu">
-              {% comment %} Search for Clients {% endcomment %}
-              <form class="px-6 py-2" action="{% url 'rolodex:clients' %}" method="GET">
-                <input type="search" autocomplete="off" class="form-control" id="client-search" name="name"
-                       placeholder="Search Clients..." autofocus="autofocus">
-              </form>
-              {% comment %} Clients Submenu Items {% endcomment %}
-              <li><a class="icon list-icon" href="{% url 'rolodex:clients' %}">Client Library</a></li>
-              {% if request.user|is_privileged %}
-                <li><a class="icon plus-icon" href="{% url 'rolodex:client_create' %}">Add New Client</a></li>
-              {% endif %}
-            </ul>
-          </li>
-          <li>
-            <a href="#findingsSubmenu" data-toggle="collapse" aria-expanded="false"
-               class="dropdown-toggle sidebar-dropdown-toggle">Findings</a>
-            <ul class="collapse list-unstyled text-left" id="findingsSubmenu">
-              {% comment %} Search for Findings {% endcomment %}
-              <form class="px-6 py-2" action="{% url 'reporting:findings' %}" method="GET">
-                <input type="search" autocomplete="off" class="form-control" id="finding-search" name="title"
-                       placeholder="Search Findings..." autofocus="autofocus">
-              </form>
-              {% comment %} Findings Submenu Items {% endcomment %}
-              <li><a class="icon list-icon" href="{% url 'reporting:findings' %}">Finding Library</a></li>
-              {% if request.user|can_create_finding %}
-                <li>
-                  <form action="{% url 'reporting:finding_create' %}" method="POST" style="display:contents">
-                    {% csrf_token %}
-                    <button class="icon plus-icon">Add New Finding</button>
-                  </form>
-                </li>
-              {% endif %}
-            </ul>
-          </li>
-          <li>
-            <a href="#observationsSubmenu" data-toggle="collapse" aria-expanded="false"
-               class="dropdown-toggle sidebar-dropdown-toggle">Observations</a>
-            <ul class="collapse list-unstyled text-left" id="observationsSubmenu">
-              {% comment %} Search for observations {% endcomment %}
-              <form class="px-6 py-2" action="{% url 'reporting:observations' %}" method="GET">
-                <input type="search" autocomplete="off" class="form-control" id="observation-search" name="title"
-                       placeholder="Search Observations..." autofocus="autofocus">
-              </form>
-              {% comment %} observations Submenu Items {% endcomment %}
-              <li><a class="icon list-icon" href="{% url 'reporting:observations' %}">Observation Library</a></li>
-              {% if request.user|can_create_observation %}
-                <li>
-                  <form action="{% url 'reporting:observation_create' %}" method="POST" style="display:contents">
-                    {% csrf_token %}
-                    <button class="icon plus-icon">Add New Observation</button>
-                  </form>
-                </li>
-              {% endif %}
-            </ul>
-          </li>
-        </ul>
-
         <!-- Operations Section -->
         <ul class="list-unstyled components">
           <p class="sideheader icon execution-icon">Execution</p>
@@ -234,15 +166,6 @@
                 <li><a class="icon plus-icon" href="{% url 'rolodex:project_create_no_client' %}">Add New Project</a>
                 </li>
               {% endif %}
-            </ul>
-          </li>
-          <li>
-            <a href="#oplogSubmenu" data-toggle="collapse" aria-expanded="false"
-               class="dropdown-toggle sidebar-dropdown-toggle">Operation Logs</a>
-            <ul class="collapse list-unstyled text-left" id="oplogSubmenu">
-              <li><a class="icon list-icon" href="{% url 'oplog:index' %}">Oplog Library</a></li>
-              <li><a class="icon plus-icon" href="{% url 'oplog:oplog_create_no_project' %}">Add New Oplog</a></li>
-              <li><a class="icon import-icon" href="{% url 'oplog:oplog_import' %}">Import Oplog Entries</a></li>
             </ul>
           </li>
         </ul>
@@ -271,42 +194,6 @@
             </ul>
           </li>
           <li><a href="{% url 'reporting:archived_reports' %}">Archived Reports</a></li>
-        </ul>
-
-        <!-- Shepherd Section -->
-        <ul class="list-unstyled components">
-          <p class="sideheader icon maintain-icon">Maintain</p>
-
-          <!-- Menu Section -->
-          <li>
-            <a href="#serverSubmenu" data-toggle="collapse" aria-expanded="false"
-               class="dropdown-toggle sidebar-dropdown-toggle">Servers</a>
-            <ul class="collapse list-unstyled text-left" id="serverSubmenu">
-              {% comment %} Search for All Servers {% endcomment %}
-              <form class="px-6 py-2" action="{% url 'shepherd:infrastructure_search' %}" method="GET">
-                <input type="search" autocomplete="off" class="form-control" id="server-search" name="query"
-                       placeholder="Search Servers..." autofocus="autofocus">
-              </form>
-              {% comment %} Server Submenu Items {% endcomment %}
-              <li><a class="icon list-icon" href="{% url 'shepherd:servers' %}">Server Library</a></li>
-              <li><a class="icon plus-icon" href="{% url 'shepherd:server_create' %}">Add New Server</a></li>
-            </ul>
-          </li>
-          <li>
-            <a href="#shepSubmenu" data-toggle="collapse" aria-expanded="false"
-               class="dropdown-toggle sidebar-dropdown-toggle">Domains</a>
-            <ul class="collapse list-unstyled text-left" id="shepSubmenu">
-              {% comment %} Search for Domains {% endcomment %}
-              <form class="px-6 py-2" action="{% url 'shepherd:domains' %}" method="GET">
-                <input type="search" autocomplete="off" class="form-control" id="domain-search" name="domain"
-                       placeholder="Search Domains..." autofocus="autofocus">
-              </form>
-              {% comment %} Domains Submenu Items {% endcomment %}
-              <li><a class="icon list-icon" href="{% url 'shepherd:domains' %}">Domain Library</a></li>
-              <li><a class="icon plus-icon" href="{% url 'shepherd:domain_create' %}">Add New Domain</a></li>
-            </ul>
-          </li>
-          <li><a href="{% url 'shepherd:update' %}">Update Controls</a></li>
         </ul>
 
         <!-- Admin Section -->

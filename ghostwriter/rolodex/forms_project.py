@@ -1,6 +1,7 @@
 """This contains all project-related forms used by the Rolodex application."""
 
 # Standard Libraries
+import json
 from collections import namedtuple
 
 # Django Imports
@@ -1634,3 +1635,55 @@ class ProjectComponentForm(forms.ModelForm):
                 ),
             ),
         )
+
+
+class ProjectWorkbookUploadForm(forms.Form):
+    """Simple form for uploading a project workbook."""
+
+    workbook = forms.FileField(
+        label="Workbook (JSON)",
+        help_text="Upload the JSON workbook that fuels reporting.",
+    )
+
+    def clean_workbook(self):
+        workbook = self.cleaned_data.get("workbook")
+        if not workbook:
+            return workbook
+
+        try:
+            content = workbook.read().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise forms.ValidationError("Workbook must be valid UTF-8 encoded JSON.") from exc
+
+        try:
+            json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise forms.ValidationError("Workbook must contain valid JSON.") from exc
+        finally:
+            workbook.seek(0)
+
+        return workbook
+
+
+class ProjectArtifactUploadForm(forms.Form):
+    """Handle supplemental data uploads for a project."""
+
+    category = forms.CharField(widget=forms.HiddenInput())
+    label = forms.CharField(
+        label="Label",
+        required=False,
+        help_text="Name shown alongside the uploaded file.",
+    )
+    file = forms.FileField(label="Data File")
+
+    def __init__(self, *args, require_label: bool = False, **kwargs):
+        self.require_label = require_label
+        super().__init__(*args, **kwargs)
+        if self.require_label:
+            self.fields["label"].required = True
+
+    def clean_label(self):
+        label = (self.cleaned_data.get("label") or "").strip()
+        if self.require_label and not label:
+            raise forms.ValidationError("Provide a label for the uploaded file.")
+        return label

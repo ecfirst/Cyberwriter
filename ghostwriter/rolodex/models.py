@@ -1,6 +1,7 @@
 """This contains all the database models used by the Rolodex application."""
 
 # Standard Libraries
+import json
 from datetime import time, timedelta
 
 # Django Imports
@@ -756,6 +757,98 @@ class ProjectTarget(models.Model):
 
     def __str__(self):
         return f"{self.hostname} ({self.ip_address})"
+
+
+class ProjectReportData(models.Model):
+    """Stores workbook and questionnaire data associated with a :model:`rolodex.Project`."""
+
+    project = models.OneToOneField(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="report_data",
+    )
+    workbook = models.FileField(
+        "Workbook",
+        upload_to="reporting/workbooks/",
+        blank=True,
+        null=True,
+        help_text="Upload the JSON workbook that powers reporting",
+    )
+    workbook_uploaded_at = models.DateTimeField(
+        "Workbook Updated",
+        auto_now=True,
+        help_text="Timestamp of the most recent workbook upload",
+    )
+    responses = models.JSONField(
+        "Report Responses",
+        default=dict,
+        blank=True,
+        help_text="Stored answers for dynamic reporting questions",
+    )
+
+    class Meta:
+        verbose_name = "Project report data"
+        verbose_name_plural = "Project report data"
+
+    def __str__(self):
+        return f"Report data for {self.project}"
+
+    def workbook_json(self):
+        """Return the workbook contents as a dictionary."""
+
+        if not self.workbook:
+            return {}
+
+        try:
+            self.workbook.open("r")
+            try:
+                data = json.load(self.workbook)
+            finally:
+                self.workbook.seek(0)
+        except (ValueError, OSError):
+            data = {}
+        finally:
+            try:
+                self.workbook.close()
+            except Exception:  # pragma: no cover - defensive cleanup
+                pass
+
+        return data if isinstance(data, dict) else {}
+
+
+class ProjectReportArtifact(models.Model):
+    """Stores supplementary files associated with :model:`rolodex.Project` reporting."""
+
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="report_artifacts",
+    )
+    category = models.CharField(
+        "Artifact Category",
+        max_length=255,
+        help_text="Identifier used to determine how the artifact is used",
+    )
+    label = models.CharField(
+        "Artifact Label",
+        max_length=255,
+        help_text="Human-readable label for this artifact",
+    )
+    file = models.FileField(
+        "Artifact File",
+        upload_to="reporting/artifacts/",
+        help_text="Upload a supplemental file used during reporting",
+    )
+    uploaded_at = models.DateTimeField("Uploaded", auto_now_add=True)
+    updated_at = models.DateTimeField("Updated", auto_now=True)
+
+    class Meta:
+        ordering = ["project", "category", "uploaded_at"]
+        verbose_name = "Project report artifact"
+        verbose_name_plural = "Project report artifacts"
+
+    def __str__(self):
+        return f"{self.project}: {self.label}"
 
 
 class ClientInvite(models.Model):

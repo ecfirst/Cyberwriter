@@ -181,6 +181,14 @@ urlpatterns += [
 # URLs for :model:`Project` Class Based Views
 urlpatterns += [
     path("projects/<int:pk>", views.ProjectDetailView.as_view(), name="project_detail"),
+    path("projects/<int:pk>/workbook", views.ProjectWorkbookUploadView.as_view(), name="project_workbook_upload"),
+    path("projects/<int:pk>/report-data", views.ProjectReportDataUpdateView.as_view(), name="project_report_data_update"),
+    path("projects/<int:pk>/artifacts", views.ProjectArtifactUploadView.as_view(), name="project_artifact_upload"),
+    path(
+        "projects/<int:pk>/artifacts/<int:artifact_id>/delete",
+        views.ProjectArtifactDeleteView.as_view(),
+        name="project_artifact_delete",
+    ),
     path(
         "projects/create",
         views.ProjectCreate.as_view(),
