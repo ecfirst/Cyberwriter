@@ -106,7 +106,8 @@ def _format_leaf_value(value: Any) -> Any:
     if isinstance(value, bool):
         return "Yes" if value else "No"
     if isinstance(value, (int, float)):
-        return value
+        # Cast numbers to strings so template sanitization handles them uniformly.
+        return str(value)
     return str(value)
 
 

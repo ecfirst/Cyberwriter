@@ -12,7 +12,7 @@ class WorkbookHelpersTests(SimpleTestCase):
 
     def test_build_workbook_sections_returns_structured_output(self):
         workbook_data = {
-            "client": {"name": "Example"},
+            "client": {"name": "Example", "total": 3},
             "report_card": {"overall": "A"},
         }
 
@@ -27,7 +27,10 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertEqual(sections[0]["tree"]["type"], "dict")
         self.assertEqual(sections[0]["tree"]["items"][0]["label"], "Name")
         self.assertEqual(sections[0]["tree"]["items"][0]["value"]["type"], "value")
-        self.assertEqual(sections[0]["tree"]["items"][0]["value"]["display"], "Example")
+        items = sections[0]["tree"]["items"]
+        self.assertEqual(items[0]["value"]["display"], "Example")
+        self.assertEqual(items[1]["label"], "Total")
+        self.assertEqual(items[1]["value"]["display"], "3")
 
     def test_non_mapping_returns_empty_sections(self):
         self.assertEqual(build_workbook_sections(None), [])
