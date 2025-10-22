@@ -1613,7 +1613,6 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["workbook_sections"] = build_workbook_sections(object.workbook_data)
         ctx["data_file_form"] = ProjectDataFileForm()
         ctx["data_questions"] = questions
-        ctx["required_data_files"] = required_files
         data_responses_form = ProjectDataResponsesForm(
             question_definitions=questions,
             initial=object.data_responses or {},
@@ -1624,7 +1623,18 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             for definition in questions
             if definition["key"] in data_responses_form.fields
         }
-        ctx["data_files"] = object.data_files.all()
+        data_files = object.data_files.all()
+        ctx["data_files"] = data_files
+        required_file_lookup = {
+            data_file.requirement_slug: data_file
+            for data_file in data_files
+            if data_file.requirement_slug
+        }
+        for requirement in required_files:
+            slug = requirement.get("slug")
+            if slug:
+                requirement["existing"] = required_file_lookup.get(slug)
+        ctx["required_data_files"] = required_files
         return ctx
 
 
@@ -1702,6 +1712,24 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
         if form.is_valid():
             data_file = form.save(commit=False)
             data_file.project = project
+            requirement_slug = request.POST.get("requirement_slug", "").strip()
+            requirement_label = request.POST.get("requirement_label", "").strip()
+            requirement_context = request.POST.get("requirement_context", "").strip()
+            if requirement_slug:
+                # Replace any previously uploaded file for this requirement so the latest upload is used.
+                existing_files = list(project.data_files.filter(requirement_slug=requirement_slug))
+                for existing in existing_files:
+                    if existing.file:
+                        existing.file.delete(save=False)
+                    existing.delete()
+                data_file.requirement_slug = requirement_slug
+                data_file.requirement_label = requirement_label
+                data_file.requirement_context = requirement_context
+                if not data_file.description:
+                    description_parts = [requirement_label]
+                    if requirement_context:
+                        description_parts.append(f"for {requirement_context}")
+                    data_file.description = " ".join(part for part in description_parts if part).strip()
             data_file.save()
             messages.success(request, "Supporting data file uploaded.")
         else:

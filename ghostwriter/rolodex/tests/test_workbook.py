@@ -4,7 +4,7 @@
 from django.test import SimpleTestCase
 
 # Ghostwriter Libraries
-from ghostwriter.rolodex.workbook import build_workbook_sections
+from ghostwriter.rolodex.workbook import build_data_configuration, build_workbook_sections
 
 
 class WorkbookHelpersTests(SimpleTestCase):
@@ -35,3 +35,26 @@ class WorkbookHelpersTests(SimpleTestCase):
     def test_non_mapping_returns_empty_sections(self):
         self.assertEqual(build_workbook_sections(None), [])
         self.assertEqual(build_workbook_sections([]), [])
+
+    def test_sections_follow_display_order(self):
+        workbook_data = {
+            "wireless": {},
+            "client": {},
+            "general": {},
+        }
+
+        sections = build_workbook_sections(workbook_data)
+
+        ordered_keys = [section["key"] for section in sections]
+        self.assertEqual(ordered_keys[:3], ["client", "general", "wireless"])
+
+    def test_required_files_include_slug(self):
+        workbook_data = {
+            "dns": {"records": [{"domain": "example.com"}]},
+        }
+
+        _, required_files = build_data_configuration(workbook_data)
+
+        self.assertTrue(required_files)
+        self.assertIn("slug", required_files[0])
+        self.assertEqual(required_files[0]["slug"], "required_dns-report-csv_example-com")

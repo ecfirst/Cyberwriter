@@ -36,6 +36,7 @@ from ghostwriter.rolodex.forms_project import (
     ProjectTargetFormSet,
     WhiteCardFormSet,
 )
+from ghostwriter.rolodex.models import ProjectDataFile
 from ghostwriter.rolodex.templatetags import determine_primary
 
 logging.disable(logging.CRITICAL)
@@ -1064,3 +1065,23 @@ class ProjectWorkbookUploadViewTests(TestCase):
         client_section = next(section for section in sections if section["key"] == "client")
         self.assertIn("tree", client_section)
         self.assertEqual(client_section["tree"]["type"], "dict")
+
+    def test_required_file_entries_include_existing_uploads(self):
+        workbook_payload = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data"])
+
+        uploaded = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("dns_report.csv", b"domain,value\nexample.com,1\n", content_type="text/csv"),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.addCleanup(lambda: uploaded.delete())
+
+        response = self.client_auth.get(self.detail_url)
+
+        requirements = response.context["required_data_files"]
+        matching = next(item for item in requirements if item["slug"] == uploaded.requirement_slug)
+        self.assertEqual(matching.get("existing"), uploaded)

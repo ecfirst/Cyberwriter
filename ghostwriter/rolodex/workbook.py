@@ -10,6 +10,30 @@ from django.utils.text import slugify
 # Ghostwriter Libraries
 from ghostwriter.rolodex.forms_workbook import MultiValueField
 
+SECTION_DISPLAY_ORDER = [
+    "client",
+    "general",
+    "report_card",
+    "external_internal_grades",
+    "osint",
+    "dns",
+    "external_nexpose",
+    "web",
+    "firewall",
+    "ad",
+    "password",
+    "internal_nexpose",
+    "iot-iomt_nexpose",
+    "endpoint",
+    "snmp",
+    "sql",
+    "wireless",
+    "cloud_config",
+    "system_config",
+]
+
+SECTION_ORDER_INDEX = {key: index for index, key in enumerate(SECTION_DISPLAY_ORDER)}
+
 RISK_CHOICES = (
     ("high", "High"),
     ("medium", "Medium"),
@@ -152,7 +176,7 @@ def build_workbook_sections(workbook_data: Optional[Dict[str, Any]]) -> List[Dic
         return []
 
     sections: List[Dict[str, Any]] = []
-    for key, value in workbook_data.items():
+    for position, (key, value) in enumerate(workbook_data.items()):
         slug = _slugify_identifier("workbook", key)
         slug = slug or "workbook-section"
         sections.append(
@@ -163,8 +187,16 @@ def build_workbook_sections(workbook_data: Optional[Dict[str, Any]]) -> List[Dic
                 "script_id": f"workbook-section-data-{slug}",
                 "data": value,
                 "tree": _normalise_workbook_value(value),
+                "_position": position,
             }
         )
+
+    sections.sort(
+        key=lambda section: (
+            SECTION_ORDER_INDEX.get(section["key"], len(SECTION_DISPLAY_ORDER)),
+            section.pop("_position"),
+        )
+    )
 
     return sections
 
@@ -181,7 +213,10 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
         key = (label, context)
         if key not in required_file_index:
             required_file_index.add(key)
-            entry = {"label": label}
+            slug = _slugify_identifier("required", label, context)
+            if not slug:
+                slug = f"required-{len(required_file_index)}"
+            entry = {"label": label, "slug": slug}
             if context:
                 entry["context"] = context
             required_files.append(entry)

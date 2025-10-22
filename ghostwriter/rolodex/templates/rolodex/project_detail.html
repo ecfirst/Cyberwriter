@@ -187,15 +187,48 @@
         <h4>Supporting Data</h4>
         <hr/>
         {% if required_data_files %}
-          <div class="alert alert-info offset-2 col-8">
-            <p class="mb-2">Based on the workbook, ensure the following artefacts are available:</p>
-            <ul class="mb-0">
-              {% for requirement in required_data_files %}
-                <li>
-                  {{ requirement.label }}{% if requirement.context %} for <strong>{{ requirement.context }}</strong>{% endif %}
-                </li>
-              {% endfor %}
-            </ul>
+          <div class="offset-2 col-8 mb-4">
+            <h5>Required Artefacts</h5>
+            {% for requirement in required_data_files %}
+              <div class="card mb-3">
+                <div class="card-body">
+                  <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center">
+                    <div class="mb-3 mb-md-0">
+                      <h6 class="mb-1">
+                        {{ requirement.label }}
+                        {% if requirement.context %}
+                          <small class="text-muted">for {{ requirement.context }}</small>
+                        {% endif %}
+                      </h6>
+                      {% if requirement.existing %}
+                        <p class="mb-1">
+                          <strong>Current file:</strong>
+                          <a href="{{ requirement.existing.file.url }}" download>{{ requirement.existing.filename }}</a>
+                        </p>
+                        <form method="post" class="d-inline" action="{% url 'rolodex:project_data_file_delete' requirement.existing.id %}">
+                          {% csrf_token %}
+                          <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                        </form>
+                      {% else %}
+                        <p class="mb-1 text-muted">No file uploaded yet.</p>
+                      {% endif %}
+                    </div>
+                    <form method="post" action="{% url 'rolodex:project_data_file_upload' project.id %}" enctype="multipart/form-data" class="w-100 w-md-auto">
+                      {% csrf_token %}
+                      <input type="hidden" name="requirement_slug" value="{{ requirement.slug }}"/>
+                      <input type="hidden" name="requirement_label" value="{{ requirement.label }}"/>
+                      <input type="hidden" name="requirement_context" value="{{ requirement.context|default:'' }}"/>
+                      <input type="hidden" name="description" value=""/>
+                      <div class="form-group mb-2">
+                        <label class="sr-only" for="id_required_file_{{ requirement.slug }}">{{ requirement.label }}{% if requirement.context %} for {{ requirement.context }}{% endif %}</label>
+                        <input type="file" name="file" class="form-control-file" id="id_required_file_{{ requirement.slug }}" required>
+                      </div>
+                      <button type="submit" class="btn btn-primary btn-sm">Upload</button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
           </div>
         {% endif %}
 

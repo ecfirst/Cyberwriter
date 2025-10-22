@@ -341,6 +341,24 @@ class ProjectDataFile(models.Model):
         blank=True,
         default="",
     )
+    requirement_slug = models.CharField(
+        "Requirement Key",
+        max_length=255,
+        blank=True,
+        default="",
+    )
+    requirement_label = models.CharField(
+        "Requirement Label",
+        max_length=255,
+        blank=True,
+        default="",
+    )
+    requirement_context = models.CharField(
+        "Requirement Context",
+        max_length=255,
+        blank=True,
+        default="",
+    )
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
