@@ -132,14 +132,15 @@
           Upload the JSON workbook that powers the reporting workflow. Uploading a new workbook will replace the existing file
           and refresh the dynamic questions on the Data tab.
         </p>
-        <form class="offset-2 col-8" method="post" action="{% url 'rolodex:project_workbook' project.id %}"
+        <form id="project-workbook-form" class="offset-2 col-8" method="post"
+              action="{% url 'rolodex:project_workbook' project.id %}"
               enctype="multipart/form-data">
           {% csrf_token %}
           <div class="form-group">
             <label for="id_workbook_file">{{ workbook_form.workbook_file.label }}</label>
             {{ workbook_form.workbook_file }}
           </div>
-          <button type="submit" class="btn btn-primary">Upload Workbook</button>
+          <button type="submit" class="btn btn-primary" data-default-text="Upload Workbook">Upload Workbook</button>
         </form>
 
         {% if project.workbook_file %}
@@ -459,6 +460,41 @@
           cssNone: 'none'
         });
         $('.tablesorter').trigger('update');
+
+        const workbookForm = document.getElementById('project-workbook-form');
+        const workbookInput = document.getElementById('id_workbook_file');
+        if (workbookForm && workbookInput) {
+          const uploadButton = workbookForm.querySelector('button[type="submit"]');
+
+          const setUploadingState = function() {
+            if (!workbookForm || workbookForm.dataset.submitting === '1') {
+              return;
+            }
+            workbookForm.dataset.submitting = '1';
+            workbookForm.classList.add('is-uploading');
+            if (uploadButton) {
+              const defaultText = uploadButton.getAttribute('data-default-text') || uploadButton.textContent.trim();
+              uploadButton.setAttribute('data-default-text', defaultText);
+              uploadButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Uploading...';
+              uploadButton.disabled = true;
+            }
+          };
+
+          workbookForm.addEventListener('submit', function() {
+            setUploadingState();
+          });
+
+          workbookInput.addEventListener('change', function() {
+            if (workbookInput.files && workbookInput.files.length) {
+              setUploadingState();
+              if (typeof workbookForm.requestSubmit === 'function') {
+                workbookForm.requestSubmit();
+              } else {
+                workbookForm.submit();
+              }
+            }
+          });
+        }
       });
     })(jQuery);
 

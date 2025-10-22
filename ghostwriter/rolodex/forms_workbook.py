@@ -81,7 +81,12 @@ class ProjectWorkbookForm(forms.Form):
 
     workbook_file = forms.FileField(
         label=_("Workbook JSON"),
-        widget=forms.FileInput(attrs={"class": "form-control-file"}),
+        widget=forms.FileInput(
+            attrs={
+                "class": "form-control-file",
+                "accept": "application/json,.json",
+            }
+        ),
     )
 
     def clean_workbook_file(self):  # type: ignore[override]
