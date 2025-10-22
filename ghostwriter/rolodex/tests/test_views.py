@@ -1,9 +1,13 @@
 # Standard Libraries
+import json
 import logging
+import shutil
+import tempfile
 from datetime import date, timedelta
 
 # Django Imports
-from django.test import Client, TestCase
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils.encoding import force_str
 
@@ -14,6 +18,7 @@ from ghostwriter.factories import (
     ClientFactory,
     ClientInviteFactory,
     ClientNoteFactory,
+    MgrFactory,
     ObjectiveStatusFactory,
     ProjectFactory,
     ProjectInviteFactory,
@@ -969,3 +974,69 @@ class ClientInviteDeleteTests(TestCase):
         self.assertJSONEqual(force_str(response.content), data)
 
         self.assertEqual(len(self.ClientInvite.objects.all()), 0)
+
+
+class ProjectWorkbookUploadViewTests(TestCase):
+    """Tests for uploading CyberWriter workbook JSON files."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._media_root = tempfile.mkdtemp()
+        cls._override = override_settings(MEDIA_ROOT=cls._media_root)
+        cls._override.enable()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._override.disable()
+        shutil.rmtree(cls._media_root, ignore_errors=True)
+        super().tearDownClass()
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = MgrFactory(password=PASSWORD)
+
+    def setUp(self):
+        self.client_auth = Client()
+        self.assertTrue(self.client_auth.login(username=self.user.username, password=PASSWORD))
+        self.project = ProjectFactory()
+        self.upload_url = reverse("rolodex:project_workbook", kwargs={"pk": self.project.pk})
+        self.detail_url = reverse("rolodex:project_detail", kwargs={"pk": self.project.pk})
+
+    def test_upload_saves_file_and_parsed_data(self):
+        workbook_payload = {
+            "client": {"name": "Example Client"},
+            "osint": {"total_squat": 1},
+        }
+        upload = SimpleUploadedFile(
+            "workbook.json",
+            json.dumps(workbook_payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        response = self.client_auth.post(self.upload_url, {"workbook_file": upload})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#workbook")
+
+        self.project.refresh_from_db()
+        self.addCleanup(lambda: self.project.workbook_file.delete(save=False))
+        self.assertIn("client", self.project.workbook_data)
+        self.assertEqual(self.project.workbook_data["client"]["name"], "Example Client")
+        self.assertTrue(self.project.workbook_file.name.endswith("workbook.json"))
+
+    def test_invalid_json_is_rejected(self):
+        upload = SimpleUploadedFile(
+            "workbook.json",
+            b"{not: 'json' }",
+            content_type="application/json",
+        )
+
+        response = self.client_auth.post(self.upload_url, {"workbook_file": upload})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#workbook")
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.workbook_data, {})
+        self.assertFalse(self.project.workbook_file)

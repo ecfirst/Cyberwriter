@@ -93,6 +93,36 @@ def _get_nested(data: Dict[str, Any], path: Iterable[str], default: Any = None) 
     return result if result is not None else default
 
 
+def _humanize_section_name(raw_key: str) -> str:
+    text = (raw_key or "").replace("_", " ").replace("-", " ").strip()
+    if not text:
+        return "Section"
+    return text.title()
+
+
+def build_workbook_sections(workbook_data: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return workbook content grouped by top-level keys for easier presentation."""
+
+    if not isinstance(workbook_data, dict):
+        return []
+
+    sections: List[Dict[str, Any]] = []
+    for key, value in workbook_data.items():
+        slug = _slugify_identifier("workbook", key)
+        slug = slug or "workbook-section"
+        sections.append(
+            {
+                "key": key,
+                "title": _humanize_section_name(str(key)),
+                "slug": slug,
+                "script_id": f"workbook-section-data-{slug}",
+                "data": value,
+            }
+        )
+
+    return sections
+
+
 def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
     """Return dynamic questions and file requirements derived from workbook data."""
 

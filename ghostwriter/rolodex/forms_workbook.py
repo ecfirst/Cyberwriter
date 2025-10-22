@@ -103,6 +103,10 @@ class ProjectWorkbookForm(forms.Form):
         except json.JSONDecodeError as exc:
             workbook_file.seek(0)
             raise forms.ValidationError(_("The uploaded workbook is not valid JSON.")) from exc
+
+        if not isinstance(parsed, dict):
+            workbook_file.seek(0)
+            raise forms.ValidationError(_("The workbook JSON must contain an object at the top level."))
         workbook_file.seek(0)
         self.cleaned_data["parsed_workbook"] = parsed
         return workbook_file

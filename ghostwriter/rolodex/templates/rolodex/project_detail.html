@@ -158,12 +158,27 @@
           </div>
         {% else %}
           <div class="alert alert-warning offset-2 col-8 mt-4">No workbook has been uploaded yet.</div>
+        {% elif project.workbook_file %}
+          <div class="alert alert-info offset-2 col-8 mt-4">
+            Workbook uploaded successfully. No preview data is available for this workbook yet.
+          </div>
         {% endif %}
 
-        {% if project.workbook_data %}
-          <h5 class="offset-2 col-8 mt-4">Workbook Preview</h5>
-          <div id="workbook-json" class="json-container border rounded bg-light offset-2 col-8 p-3"></div>
-          {{ project.workbook_data|json_script:"project-workbook-data" }}
+        {% if workbook_sections %}
+          <div class="offset-2 col-8 mt-4">
+            <h5>Workbook Data</h5>
+          </div>
+          <div class="offset-2 col-8">
+            {% for section in workbook_sections %}
+              <div class="card mb-3">
+                <div class="card-header font-weight-bold">{{ section.title }}</div>
+                <div class="card-body">
+                  <div id="workbook-section-{{ section.slug }}" class="json-container border rounded bg-light p-3"></div>
+                  {{ section.data|json_script:section.script_id }}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
         {% endif %}
       </div>
 
@@ -447,16 +462,27 @@
     })(jQuery);
 
     function initialiseWorkbookPreview() {
-      const dataElement = document.getElementById('project-workbook-data');
-      const container = document.getElementById('workbook-json');
-      if (dataElement && container && window.jQuery && typeof jQuery(container).JSONView === 'function') {
+      if (!window.jQuery || typeof jQuery.fn.JSONView !== 'function') {
+        return;
+      }
+
+      const containers = document.querySelectorAll('[id^="workbook-section-"]');
+      containers.forEach(function(container) {
+        if (!container || !container.id) {
+          return;
+        }
+        const slug = container.id.replace('workbook-section-', '');
+        const dataElement = document.getElementById('workbook-section-data-' + slug);
+        if (!dataElement) {
+          return;
+        }
         try {
           const data = JSON.parse(dataElement.textContent);
           jQuery(container).JSONView(data);
         } catch (err) {
-          console.error('Unable to render workbook preview', err);
+          console.error('Unable to render workbook preview for', slug, err);
         }
-      }
+      });
     }
 
     function initialiseCalendar() {

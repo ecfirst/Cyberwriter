@@ -81,7 +81,7 @@ from ghostwriter.rolodex.models import (
     ProjectSubTask,
     ProjectTarget,
 )
-from ghostwriter.rolodex.workbook import build_data_configuration
+from ghostwriter.rolodex.workbook import build_data_configuration, build_workbook_sections
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
 # Using __name__ resolves to ghostwriter.rolodex.views
@@ -1610,6 +1610,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ).filter(Q(client=object.client) | Q(client__isnull=True))
         questions, required_files = build_data_configuration(object.workbook_data)
         ctx["workbook_form"] = ProjectWorkbookForm()
+        ctx["workbook_sections"] = build_workbook_sections(object.workbook_data)
         ctx["data_file_form"] = ProjectDataFileForm()
         ctx["data_questions"] = questions
         ctx["required_data_files"] = required_files
