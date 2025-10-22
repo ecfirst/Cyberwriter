@@ -9,7 +9,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
 
-  <title>{% block title %}Ghostwriter{% endblock %}</title>
+  <title>{% block title %}CyberWriter{% endblock %}</title>
 
   <!-- Load Static Files -->
   <link rel="shortcut icon" href="{% static 'favicon.ico' %}"/>
@@ -45,7 +45,7 @@
   <!-- TinyMCE -->
   <script src="{% static 'js/tinymce/tinymce.min.js' %}"></script>
 
-  <!-- Ghostwriter JS & CSS -->
+  <!-- CyberWriter JS & CSS -->
   <script src="{% static 'js/project.js' %}"></script>
   <link rel="stylesheet" href="{% static 'css/styles.css' %}"/>
 
@@ -76,7 +76,7 @@
       <!-- Sidebar Top Section -->
       <div class="sidebar-header col d-flex align-items-center justify-content-center">
         <a href="{% url 'home:dashboard' %}">
-          <img src="{% static 'images/inverted_header_alt.png' %}" alt="Ghostwriter">
+          <img src="{% static 'images/inverted_header_alt.png' %}" alt="CyberWriter">
         </a>
         <div class="sidebar-header-tab">
           <div class="square">
@@ -165,6 +165,17 @@
               {% endif %}
             </ul>
           </li>
+          <li>
+            <a href="#clientSubmenu" data-toggle="collapse" aria-expanded="false"
+               class="dropdown-toggle sidebar-dropdown-toggle">Clients</a>
+            <ul class="collapse list-unstyled text-left" id="clientSubmenu">
+              <li><a class="icon list-icon" href="{% url 'rolodex:clients' %}">Clients Library</a></li>
+              {% if request.user|is_privileged %}
+                <li><a class="icon plus-icon" href="{% url 'rolodex:client_create' %}">Add New Client</a>
+                </li>
+              {% endif %}
+            </ul>
+          </li>
         </ul>
 
         <!-- Reporting Section -->
@@ -247,8 +258,8 @@
             <a href="#docsSubmenu" data-toggle="collapse" aria-expanded="false"
                class="dropdown-toggle sidebar-dropdown-toggle">Documentation</a>
             <ul class="collapse list-unstyled text-left" id="docsSubmenu">
-              <li><a class="icon docs-icon" href="https://ghostwriter.wiki">Ghostwriter Wiki</a></li>
-              <li><a class="icon github-icon" href="https://github.com/GhostManager/Ghostwriter">Ghostwriter on
+              <li><a class="icon docs-icon" href="https://ghostwriter.wiki">CyberWriter Wiki</a></li>
+              <li><a class="icon github-icon" href="https://github.com/GhostManager/Ghostwriter">CyberWriter on
                 GitHub</a></li>
             </ul>
           </li>
@@ -262,8 +273,8 @@
             <a href="{% url 'account_login' %}" class="btn btn-primary col-9 icon login-icon">Login</a>
           {% endif %}
 
-          <a href="https://www.specterops.io"><img class="col-8" src="{% static 'images/domain.png' %}"
-                                                   alt="SpecterOps"></a>
+          <a href="https://www.ecfirst.com"><img class="col-8" src="{% static 'images/domain.png' %}"
+                                                   alt="ecfirst"></a>
         </div>
       </div>
 

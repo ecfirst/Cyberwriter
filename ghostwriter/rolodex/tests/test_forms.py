@@ -499,8 +499,6 @@ class ProjectFormTests(TestCase):
         project_type_id=None,
         client_id=None,
         codename=None,
-        update_checkouts=None,
-        slack_channel=None,
         note=None,
         timezone=None,
         **kwargs,
@@ -512,8 +510,6 @@ class ProjectFormTests(TestCase):
                 "project_type": project_type_id,
                 "client": client_id,
                 "codename": codename,
-                "update_checkouts": update_checkouts,
-                "slack_channel": slack_channel,
                 "note": note,
                 "timezone": timezone,
             },
@@ -534,15 +530,6 @@ class ProjectFormTests(TestCase):
         errors = form.errors["end_date"].as_data()
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0].code, "invalid_date")
-
-    def test_invalid_slack_channel(self):
-        project = self.project_dict.copy()
-        project["slack_channel"] = "NoHash"
-
-        form = self.form_data(**project)
-        errors = form.errors["slack_channel"].as_data()
-        self.assertEqual(len(errors), 1)
-        self.assertEqual(errors[0].code, "invalid_channel")
 
     def test_tags(self):
         project = self.project_dict.copy()

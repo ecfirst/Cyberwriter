@@ -60,7 +60,7 @@ def update_project(sender, instance, **kwargs):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"Ghostwriter will send important notifications here for *{instance}*",
+                        "text": f"CyberWriter will send important notifications here for *{instance}*",
                     },
                 },
             ]
@@ -89,7 +89,7 @@ def update_project(sender, instance, **kwargs):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"You're seeing this message because the channel for notifications related to *{instance}* changed. Ghostwriter will now send notifications here.",
+                        "text": f"You're seeing this message because the channel for notifications related to *{instance}* changed. CyberWriter will now send notifications here.",
                     },
                 },
             ]
@@ -138,8 +138,11 @@ def update_project(sender, instance, **kwargs):
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
-                            "text": f"Ghostwriter will now adjust any infrastructure checkouts by {abs(start_date_delta)} days for \
-the start date and {abs(end_date_delta)} days for the end date.",
+                            "text": (
+                                "CyberWriter will now adjust any infrastructure checkouts "
+                                f"by {abs(start_date_delta)} days for the start date and "
+                                f"{abs(end_date_delta)} days for the end date."
+                            ),
                         },
                     },
                 ]

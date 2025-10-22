@@ -51,7 +51,6 @@ from ghostwriter.rolodex.forms_project import (
     ProjectComponentForm,
     ProjectContactFormSet,
     ProjectForm,
-    ProjectInviteFormSet,
     ProjectNoteForm,
     ProjectObjectiveFormSet,
     ProjectScopeFormSet,
@@ -1775,8 +1774,6 @@ class ProjectCreate(RoleBasedAccessControlMixin, CreateView):
         Instance of :model:`rolodex.Client` associated with this project
     ``assignments``
         Instance of the `ProjectAssignmentFormSet()` formset
-    ``invites``
-        Instance of the `ProjectInviteFormSet()` formset
     ``cancel_link``
         Link for the form's Cancel button to return to projects list page
 
@@ -1823,23 +1820,19 @@ class ProjectCreate(RoleBasedAccessControlMixin, CreateView):
         else:
             ctx["cancel_link"] = reverse("rolodex:projects")
         ctx["assignments"] = self.assignments
-        ctx["invites"] = self.invites
         return ctx
 
     def get(self, request, *args, **kwargs):
         self.object = None
         self.assignments = ProjectAssignmentFormSet(prefix="assign")
         self.assignments.extra = 1
-        self.invites = ProjectInviteFormSet(prefix="invite")
-        self.invites.extra = 1
         return super().get(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
         self.object = None
         form = self.get_form()
         self.assignments = ProjectAssignmentFormSet(request.POST, prefix="assign")
-        self.invites = ProjectInviteFormSet(request.POST, prefix="invite")
-        if form.is_valid() and self.assignments.is_valid() and self.invites.is_valid():
+        if form.is_valid() and self.assignments.is_valid():
             return self.form_valid(form)
         return self.form_invalid(form)
 
@@ -1856,14 +1849,10 @@ class ProjectCreate(RoleBasedAccessControlMixin, CreateView):
                     for i in self.assignments.save(commit=False):
                         i.project = obj
                         i.save()
-                    for i in self.invites.save(commit=False):
-                        i.project = obj
-                        i.save()
                     self.assignments.save_m2m()
-                    self.invites.save_m2m()
                     form.save_m2m()
                 except IntegrityError:  # pragma: no cover
-                    form.add_error(None, "You cannot have duplicate assignments or invites for a project.")
+                    form.add_error(None, "You cannot have duplicate assignments for a project.")
                     return self.form_invalid(form)
                 return HttpResponseRedirect(self.get_success_url())
         except Exception as exception:  # pragma: no cover
@@ -1897,8 +1886,6 @@ class ProjectUpdate(RoleBasedAccessControlMixin, UpdateView):
         Instance of :model:`rolodex.Project` being updated
     ``assignments``
         Instance of the `ProjectAssignmentFormSet()` formset
-    ``invites``
-        Instance of the `ProjectInviteFormSet()` formset
     ``cancel_link``
         Link for the form's Cancel button to return to project's detail page
 
@@ -1923,7 +1910,6 @@ class ProjectUpdate(RoleBasedAccessControlMixin, UpdateView):
         ctx["object"] = self.get_object()
         ctx["cancel_link"] = reverse("rolodex:project_detail", kwargs={"pk": self.object.pk})
         ctx["assignments"] = self.assignments
-        ctx["invites"] = self.invites
         return ctx
 
     def get_success_url(self):
@@ -1935,17 +1921,13 @@ class ProjectUpdate(RoleBasedAccessControlMixin, UpdateView):
         self.assignments = ProjectAssignmentFormSet(prefix="assign", instance=self.object)
         if self.object.projectassignment_set.all().count() < 1:
             self.assignments.extra = 1
-        self.invites = ProjectInviteFormSet(prefix="invite", instance=self.object)
-        if self.object.projectinvite_set.all().count() < 1:
-            self.invites.extra = 1
         return super().get(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
         self.object = self.get_object()
         form = self.get_form()
         self.assignments = ProjectAssignmentFormSet(request.POST, prefix="assign", instance=self.object)
-        self.invites = ProjectInviteFormSet(request.POST, prefix="invite", instance=self.object)
-        if form.is_valid() and self.assignments.is_valid() and self.invites.is_valid():
+        if form.is_valid() and self.assignments.is_valid():
             return self.form_valid(form)
         return self.form_invalid(form)
 
@@ -1957,10 +1939,9 @@ class ProjectUpdate(RoleBasedAccessControlMixin, UpdateView):
                 obj.save()
                 try:
                     self.assignments.save()
-                    self.invites.save()
                     form.save_m2m()
                 except IntegrityError:  # pragma: no cover
-                    form.add_error(None, "You cannot have duplicate assignments or invites for a project.")
+                    form.add_error(None, "You cannot have duplicate assignments for a project.")
                     return self.form_invalid(form)
                 return HttpResponseRedirect(self.get_success_url())
         except Exception:
