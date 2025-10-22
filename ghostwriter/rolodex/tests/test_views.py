@@ -1040,3 +1040,24 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.project.refresh_from_db()
         self.assertEqual(self.project.workbook_data, {})
         self.assertFalse(self.project.workbook_file)
+
+    def test_detail_view_displays_uploaded_workbook_sections(self):
+        workbook_payload = {
+            "client": {"name": "Example Client"},
+            "osint": {"total_squat": 1},
+        }
+        upload = SimpleUploadedFile(
+            "workbook.json",
+            json.dumps(workbook_payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        self.client_auth.post(self.upload_url, {"workbook_file": upload})
+
+        self.project.refresh_from_db()
+        self.addCleanup(lambda: self.project.workbook_file.delete(save=False))
+
+        response = self.client_auth.get(self.detail_url)
+
+        sections = response.context["workbook_sections"]
+        self.assertTrue(any(section["key"] == "client" for section in sections))

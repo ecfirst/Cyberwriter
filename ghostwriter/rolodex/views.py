@@ -1660,12 +1660,14 @@ class ProjectWorkbookUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
         if form.is_valid():
             workbook_file = form.cleaned_data["workbook_file"]
             parsed = form.cleaned_data.get("parsed_workbook", {})
+            if hasattr(workbook_file, "seek"):
+                workbook_file.seek(0)
             if project.workbook_file:
                 project.workbook_file.delete(save=False)
-            project.workbook_file.save(workbook_file.name, workbook_file, save=False)
+            project.workbook_file = workbook_file
             project.workbook_data = parsed
             project.data_responses = {}
-            project.save(update_fields=["workbook_file", "workbook_data", "data_responses"])
+            project.save()
             messages.success(request, "Workbook uploaded successfully.")
         else:
             error_message = form.errors.as_text()
