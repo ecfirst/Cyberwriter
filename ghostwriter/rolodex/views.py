@@ -1731,6 +1731,7 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                         description_parts.append(f"for {requirement_context}")
                     data_file.description = " ".join(part for part in description_parts if part).strip()
             data_file.save()
+            project.rebuild_data_artifacts()
             messages.success(request, "Supporting data file uploaded.")
         else:
             error_message = form.errors.as_text()
@@ -1763,7 +1764,9 @@ class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View
         data_file = self.get_object()
         if data_file.file:
             data_file.file.delete(save=False)
+        project = data_file.project
         data_file.delete()
+        project.rebuild_data_artifacts()
         messages.success(request, "Supporting data file deleted.")
         return redirect(self.get_success_url())
 

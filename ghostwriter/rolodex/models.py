@@ -109,6 +109,15 @@ class Client(models.Model):
     def user_can_delete(self, user) -> bool:
         return self.user_can_view(user)
 
+    def rebuild_data_artifacts(self) -> None:
+        """Rebuild supporting data artifacts derived from uploaded files."""
+
+        from ghostwriter.rolodex.data_parsers import build_project_artifacts
+
+        artifacts = build_project_artifacts(self)
+        self.data_artifacts = artifacts
+        self.save(update_fields=["data_artifacts"])
+
 
 class ClientContact(models.Model):
     """Stores an individual point of contact, related to :model:`rolodex.Client`."""
@@ -210,6 +219,11 @@ class Project(models.Model):
         default=dict,
         blank=True,
         help_text="Parsed workbook data used to dynamically generate reporting questions",
+    )
+    data_artifacts = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Parsed supporting data derived from uploaded artifacts",
     )
     data_responses = models.JSONField(
         default=dict,
@@ -368,6 +382,12 @@ class ProjectDataFile(models.Model):
 
     def __str__(self):
         return f"{self.project} - {self.filename}"
+
+    def rebuild_project_artifacts(self) -> None:
+        """Rebuild parsed artifacts for the related project."""
+
+        project = self.project
+        project.rebuild_data_artifacts()
 
     @property
     def filename(self):

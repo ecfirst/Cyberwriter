@@ -1085,3 +1085,79 @@ class ProjectWorkbookUploadViewTests(TestCase):
         requirements = response.context["required_data_files"]
         matching = next(item for item in requirements if item["slug"] == uploaded.requirement_slug)
         self.assertEqual(matching.get("existing"), uploaded)
+
+    def test_dns_report_upload_updates_project_artifacts(self):
+        self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
+        csv_content = "Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\nFAIL,The domain does not have an SPF record\n"
+        upload = SimpleUploadedFile(
+            "dns_report.csv",
+            csv_content.encode("utf-8"),
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "file": upload,
+                "requirement_slug": "required_dns-report-csv_example-com",
+                "requirement_label": "dns_report.csv",
+                "requirement_context": "example.com",
+                "description": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#data")
+
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+        artifacts = self.project.data_artifacts
+        self.assertIn("dns_issues", artifacts)
+        issues = artifacts["dns_issues"]
+        self.assertEqual(len(issues), 1)
+        entry = issues[0]
+        self.assertEqual(entry["domain"], "example.com")
+        self.assertEqual(len(entry["issues"]), 2)
+        first_issue = entry["issues"][0]
+        self.assertEqual(
+            first_issue,
+            {
+                "issue": "One or more SOA fields are outside recommended ranges",
+                "finding": "configuring DNS records according to best practice",
+                "recommendation": "update SOA fields to follow best practice",
+            },
+        )
+
+    def test_data_file_deletion_refreshes_project_artifacts(self):
+        self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.project.rebuild_data_artifacts()
+
+        delete_url = reverse("rolodex:project_data_file_delete", kwargs={"pk": upload.pk})
+        response = self.client_auth.post(delete_url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#data")
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.data_artifacts, {})
