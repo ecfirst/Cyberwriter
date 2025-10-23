@@ -1,0 +1,36 @@
+{% load bleach_tags %}
+{% if node.type == 'dict' %}
+  {% if node.items %}
+    <dl class="row workbook-dict">
+      {% for item in node.items %}
+        <dt class="col-md-4 col-12 font-weight-bold">{{ item.label }}</dt>
+        <dd class="col-md-8 col-12 mb-2">
+          {% include "rolodex/includes/workbook_value.html" with node=item.value only %}
+        </dd>
+      {% endfor %}
+    </dl>
+  {% else %}
+    <span class="text-muted">No data available.</span>
+  {% endif %}
+{% elif node.type == 'list' %}
+  {% if node.items %}
+    <ol class="pl-3 workbook-list">
+      {% for item in node.items %}
+        <li class="mb-2">
+          {% if item.label %}
+            <strong class="d-block">{{ item.label }}</strong>
+          {% endif %}
+          {% include "rolodex/includes/workbook_value.html" with node=item.value only %}
+        </li>
+      {% endfor %}
+    </ol>
+  {% else %}
+    <span class="text-muted">No entries.</span>
+  {% endif %}
+{% else %}
+  {% if node.display is not None and node.display != "" %}
+    {{ node.display|bleach }}
+  {% else %}
+    <span class="text-muted">—</span>
+  {% endif %}
+{% endif %}

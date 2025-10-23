@@ -205,12 +205,12 @@ class SlackConfiguration(SingletonModel):
     )
     slack_channel = models.CharField(
         max_length=255,
-        default="#ghostwriter",
+        default="#cyberwriter",
         help_text="Default channel for Slack notifications",
     )
     slack_username = models.CharField(
         max_length=255,
-        default="Ghostwriter",
+        default="CyberWriter",
         help_text="Display name for the Slack bot",
     )
     slack_alert_target = models.CharField(
@@ -234,12 +234,12 @@ class SlackConfiguration(SingletonModel):
 class CompanyInformation(SingletonModel):
     company_name = models.CharField(
         max_length=255,
-        default="SpecterOps",
+        default="ecfirst",
         help_text="Company name handle to reference in reports",
     )
     company_short_name = models.CharField(
         max_length=255,
-        default="SO",
+        default="ECF",
         help_text="Abbreviated company name to reference in reports",
     )
     company_address = models.TextField(
@@ -250,13 +250,13 @@ class CompanyInformation(SingletonModel):
     company_twitter = models.CharField(
         "Twitter Handle",
         max_length=255,
-        default="@specterops",
+        default="@ecfirst",
         help_text="Twitter handle to reference in reports",
         blank=True,
     )
     company_email = models.CharField(
         max_length=255,
-        default="info@specterops.io",
+        default="info@ecfirst.com",
         help_text="Email address to reference in reports",
         blank=True,
     )
@@ -277,7 +277,7 @@ class CloudServicesConfiguration(SingletonModel):
         "Ignore Tags",
         max_length=255,
         default="gw_ignore",
-        help_text="Ghostwriter will ignore cloud assets with one of these tags (comma-separated list)",
+        help_text="CyberWriter will ignore cloud assets with one of these tags (comma-separated list)",
     )
     notification_delay = models.IntegerField(
         "Notification Delay",
@@ -332,8 +332,8 @@ class GeneralConfiguration(SingletonModel):
     )
     hostname = models.CharField(
         max_length=255,
-        default="ghostwriter.local",
-        help_text="Hostname or IP address for Ghostwriter (used for links in notifications)",
+        default="cyberwriter.local",
+        help_text="Hostname or IP address for CyberWriter (used for links in notifications)",
     )
 
     def __str__(self):

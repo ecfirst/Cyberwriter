@@ -61,7 +61,7 @@
 
     <div class="tab-content">
       {% comment %} Status Tab {% endcomment %}
-      <div id="status" class="tab-pane">
+      <div id="status" class="tab-pane in active">
         <h4>Report Status</h4>
         <hr/>
 
@@ -197,148 +197,6 @@
         </table>
       </div>
 
-      {% comment %} Findings Tab {% endcomment %}
-      <div id="findings" class="tab-pane in active">
-        <h4>Current Findings</h4>
-        <hr>
-
-        <p>Provide a search term and hit Enter to view search results or click an autocomplete option.</p>
-
-        <!-- Search Section -->
-        <form action="{% url 'reporting:findings' %}" method="GET">
-          <div class="search form-row">
-            <div class="input-group offset-md-4 col-md-4">
-              <div class="input-group-prepend">
-                <span class="input-group-text fa fa-search" id="report-findings-search"></span>
-              </div>
-              <input id="id_finding_search" autocomplete="off" type="text" class="form-control" name="finding"
-                     placeholder="Search Findings..." aria-label="findings" aria-describedby="report-findings-search">
-            </div>
-            <input type="submit" style="display: none"/>
-          </div>
-        </form>
-
-        <p class="mt-3">Add a finding by adding a blank template below, by searching the library and then
-          clicking the <span class="p-1 add-icon"></span> button in the results, or
-          by clicking an autocomplete result above.</p>
-
-        <p class="mt-3">Drag and drop findings within a severity category to change its ordering. Edit
-          a finding to change its severity.</p>
-
-        <button class="btn btn-primary icon add-icon col-3"
-          onclick="attachBlankFinding()"
-          data-toggle="tooltip"
-          data-placement="top"
-          title="Add a blank finding template to the bottom of the report"
-        >
-          Add a Blank Finding
-        </button>
-
-        <!-- Finding Table Section -->
-        <div id="findingsTable">
-          {% include "snippets/report_findings_table.html" with report=report csrf_token=csrf_token %}
-        </div>
-      </div>
-
-      {% comment %} Observations Tab {% endcomment %}
-      <div id="observations" class="tab-pane">
-        <h4>Current Observations</h4>
-        <hr>
-
-        <p>Provide a search term and hit Enter to view search results or click an autocomplete option.</p>
-
-        <!-- Search Section -->
-        <form action="{% url 'reporting:observations' %}" method="GET">
-          <div class="search form-row">
-            <div class="input-group offset-md-4 col-md-4">
-              <div class="input-group-prepend">
-                <span class="input-group-text fa fa-search" id="report-observations-search"></span>
-              </div>
-              <input id="id_observation_search" autocomplete="off" type="text" class="form-control" name="observation"
-                     placeholder="Search Observations..." aria-label="observations"
-                     aria-describedby="report-observations-search">
-            </div>
-            <input type="submit" style="display: none"/>
-          </div>
-        </form>
-
-        <p class="mt-3">Add an observation by adding a blank template below, by searching the library and then
-          clicking the <span class="p-1 add-icon"></span> button in the results, or
-          by clicking an autocomplete result above.</p>
-
-          <button class="btn btn-primary icon add-icon col-3"
-                  onclick="attachBlankObservation()"
-                  data-toggle="tooltip"
-                  data-placement="top"
-                  title="Add a blank observation template to the bottom of the report"
-          >
-            Add a Blank Observation
-          </button>
-
-        <div id="observationsTable">
-          {% include "snippets/report_observations_table.html" with report=report csrf_token=csrf_token %}
-        </div>
-      </div>
-
-      {% comment %} Report Evidence Tab {% endcomment %}
-      <div id="evidence" class="tab-pane">
-        <h4>Report Evidence</h4>
-        <hr>
-
-        <p>Upload evidence here to make it accessible to all findings and report sections.</p>
-
-        <p class="mt-3"><a class="icon add-icon btn btn-primary col-3"
-                           href="{% url 'reporting:upload_evidence' 'report' report.id %}" data-toggle="tooltip"
-                           data-placement="top" title="Upload evidence, attaching to a report">Upload Evidence</a></p>
-
-        {% if report.evidence_set.all %}
-          <table id="evidences-table" class="table table-sm table-hover tablesorter">
-            <thead>
-            <tr>
-              <th class="align-middle text-left">Name</th>
-              <th class="align-middle text-left">Filename</th>
-              <th class="align-middle sorter-false">Options</th>
-            </tr>
-            </thead>
-            <tbody>
-            {% for evidence_file in report.evidence_set.all %}
-              <tr data-id="{{ evidence_file.id }}">
-                <td
-                  class="pl-3 text-left align-middle text-left icon {% if evidence_file|get_file_type == "image" %}avatar-upload-icon{% else %}code-icon{% endif %}">
-                  <a href="{% url 'reporting:evidence_detail' evidence_file.id %}" class="clickable">
-                    {{ evidence_file.friendly_name }}
-                  </a>
-                </td>
-                <td class="align-middle text-left">
-                  <em>{{ evidence_file.filename|truncate_filename:50 }}</em>
-                </td>
-
-                <td class="align-middle">
-                  <div class="d-flex justify-content-center">
-                    <span
-                      class="icon preview-icon clickable-link"
-                      title="View additional information"
-                      onclick="openModal('#evidence_detail_{{ evidence_file.id }}')"
-                    ></span>
-                    <a class="icon download-icon" href="javascript:void(0)"
-                       onclick="downloadEvidence({{ evidence_file.id }}, '{{ evidence_file.filename }}')" title="Download this evidence file"></a>
-                    <a href="{% url 'reporting:evidence_update' evidence_file.id %}"
-                       title="Edit this evidence file"
-                       class="icon edit-icon"></a>
-                    <a href="{% url 'reporting:evidence_delete' evidence_file.id %}"
-                       title="Delete this evidence file"
-                       class="icon trash-icon"></a>
-                  </div>
-                </td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
-        {% else %}
-          <p class="mt-3">No evidence has been added to this report yet.</p>
-        {% endif %}
-      </div>
-
       {% if report_extra_fields_spec %}
         {% comment %} Extra Fields Tab {% endcomment %}
         <div id="extra-fields" class="tab-pane">
@@ -432,7 +290,7 @@
   <script>
     const $spinnerModal = $('#spinner-modal')
 
-    {% comment %} Set variables used in `report_findings_table.html` that is updated on changes {% endcomment %}
+    {% comment %} Set variables used in AJAX interactions on this page {% endcomment %}
     let report_id = '{{ report.id }}';
     let csrftoken = '{{ csrf_token }}';
 
@@ -574,8 +432,8 @@
       $jumpWordBtn.attr('href', templateBaseUrl + selectedWordTemplate);
       $jumpPptxBtn.attr('href', templateBaseUrl + selectedPowerPointTemplate);
 
-      // Display whatever tab was last selected or default – if null, default to the Findings tab
-      let defaultTab = (localStorage.getItem('reportDefaultTab') !== null ? localStorage.getItem('reportDefaultTab') : 'findings');
+      // Display whatever tab was last selected or default – if null, default to the Status tab
+      let defaultTab = (localStorage.getItem('reportDefaultTab') !== null ? localStorage.getItem('reportDefaultTab') : '#status');
       $('[href="' + defaultTab + '"]').tab('show');
 
       $('#report-template-swap-form').change(function () {
@@ -634,127 +492,6 @@
       });
     });
 
-    {%  comment %} Enable autocomplete for the findings and observations search {% endcomment %}
-    $(function () {
-      let availableFindingTitles = [
-        {% for entry in finding_autocomplete %}
-          {
-            value: '{{  entry.severity }} : {{ entry.title|escapejs }}{% if entry.tags.names %} ({{ entry.tags.names|get_tags_list|escapejs }}){% endif %}',
-            id: '{{ entry.id }}',
-            url: '{% url 'reporting:ajax_assign_finding' entry.id %}',
-            csrftoken: '{{ csrf_token }}'
-          },
-        {% endfor %}
-      ];
-      $("#id_finding_search").autocomplete({
-        source: availableFindingTitles,
-        minLength: 0,
-        open: function () {
-          $("ul.ui-menu").width($(this).innerWidth());
-        },
-        select: function (event, ui) {
-          let url = ui.item.url
-          let findingId = ui.item.id
-          let csrftoken = ui.item.csrftoken
-          // Prep AJAX request with CSRF token
-          $.ajaxSetup({
-            beforeSend: function (xhr, settings) {
-              if (!csrfSafeMethod(settings.type) && !this.crossDomain) {
-                xhr.setRequestHeader('X-CSRFToken', csrftoken);
-              }
-            }
-          });
-          // Send AJAX POST request
-          $.ajax({
-            url: url,
-            type: 'POST',
-            dataType: 'json',
-            data: {
-              'finding': findingId,
-              'report': report_id
-            },
-            success: function (data) {
-              if (data['result'] == 'success') {
-                $('#findingsTable').html(data['table_html']);
-                // Clear the input field after successful AJAX call
-                $("#id_finding_search").val('');
-              }
-              if (data['message']) {
-                displayToastTop({type: data['result'], string: data['message'], title: 'Finding Assigned'});
-              }
-            }
-          });
-        }
-      }).focus(function () {
-        $(this).autocomplete('search', $(this).val())
-      });
-    });
-
-    $(function () {
-      let availableObservationTitles = [
-        {% for entry in observation_autocomplete %}
-          {
-            value: '{{ entry.title|escapejs }}{% if entry.tags.names %} ({{ entry.tags.names|get_tags_list|escapejs }}){% endif %}',
-            id: '{{ entry.id }}',
-            url: '{% url 'reporting:ajax_assign_observation' entry.id %}',
-            csrftoken: '{{ csrf_token }}'
-          },
-        {% endfor %}
-      ];
-      $("#id_observation_search").autocomplete({
-        source: availableObservationTitles,
-        minLength: 0,
-        open: function () {
-          $("ul.ui-menu").width($(this).innerWidth());
-        },
-        select: function (event, ui) {
-          let url = ui.item.url
-          let observationId = ui.item.id
-          let csrftoken = ui.item.csrftoken
-          // Prep AJAX request with CSRF token
-          $.ajaxSetup({
-            beforeSend: function (xhr, settings) {
-              if (!csrfSafeMethod(settings.type) && !this.crossDomain) {
-                xhr.setRequestHeader('X-CSRFToken', csrftoken);
-              }
-            }
-          });
-          // Send AJAX POST request
-          $.ajax({
-            url: url,
-            type: 'POST',
-            dataType: 'json',
-            data: {
-              'observation': observationId,
-              'report': report_id
-            },
-            success: function (data) {
-              if (data['result'] == 'success') {
-                $('#observationsTable').html(data['table_html']);
-                // Clear the input field after successful AJAX call
-                $("#id_observation_search").val('');
-              }
-              if (data['message']) {
-                displayToastTop({type: data['result'], string: data['message'], title: 'Observation Assigned'});
-              }
-            }
-          });
-        }
-      }).focus(function () {
-        $(this).autocomplete('search', $(this).val())
-      });
-    });
-
-    {% comment %} Enable table sorting for the evidence table {% endcomment %}
-    $(document).ready(function () {
-      $(".tablesorter").tablesorter({
-        cssAsc: ' down',
-        cssDesc: 'up',
-        cssNone: 'none',
-      });
-      $('.tablesorter').trigger('update');
-    });
-
     let evidenceFiles = [
       {
         text: '\{\{.caption\}\}',
@@ -771,94 +508,6 @@
     ];
 
 
-    function attachBlankObservation () {
-      let attachBlankObsUrl = '{% url 'reporting:assign_blank_observation' report.id %}'
-      // Prep AJAX request with CSRF token
-      $.ajaxSetup({
-        beforeSend: function (xhr, settings) {
-          if (!csrfSafeMethod(settings.type) && !this.crossDomain) {
-            xhr.setRequestHeader('X-CSRFToken', csrftoken);
-          }
-        }
-      });
-      // Send AJAX POST request
-      $.ajax({
-        url: attachBlankObsUrl,
-        type: 'POST',
-        dataType: 'json',
-        data: {},
-        success: function (data) {
-          if (data['result'] == 'success') {
-            $('#observationsTable').html(data['table_html']);
-          }
-          if (data['message']) {
-            displayToastTop({type: data['result'], string: data['message'], title: 'Observation Assigned'});
-          }
-        }
-      });
-    }
-
-    function attachBlankFinding () {
-      let attachBlankObsUrl = '{% url 'reporting:assign_blank_finding' report.id %}'
-      // Prep AJAX request with CSRF token
-      $.ajaxSetup({
-        beforeSend: function (xhr, settings) {
-          if (!csrfSafeMethod(settings.type) && !this.crossDomain) {
-            xhr.setRequestHeader('X-CSRFToken', csrftoken);
-          }
-        }
-      });
-      // Send AJAX POST request
-      $.ajax({
-        url: attachBlankObsUrl,
-        type: 'POST',
-        dataType: 'json',
-        data: {},
-        success: function (data) {
-          if (data['result'] == 'success') {
-            $('#findingsTable').html(data['table_html']);
-          }
-          if (data['message']) {
-            displayToastTop({type: data['result'], string: data['message'], title: 'Finding Assigned'});
-          }
-        }
-      });
-    }
-
-    function downloadEvidence(evidenceId, filename) {
-      fetch("{% url 'reporting:evidence_download' 0 %}".replace('0', evidenceId), {
-        method: 'GET',
-      })
-        .then(response => {
-          if (!response.ok) {
-            if (response.status === 404) {
-              displayToastTop({
-                type: 'error',
-                string: 'Evidence file not found. The file may have been deleted or moved.'
-              });
-            } else {
-              displayToastTop({type: 'error', string: 'Error downloading evidence file: ' + response.statusText});
-            }
-            throw new Error('Network response was not ok');
-          }
-          return response.blob();
-        })
-        .then(blob => {
-          const url = window.URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.style.display = 'none';
-          a.href = url;
-          a.download = filename;
-          document.body.appendChild(a);
-          a.click();
-          window.URL.revokeObjectURL(url);
-          document.body.removeChild(a);
-          displayToastTop({type: 'success', string: 'Download started...'});
-        })
-        .catch(error => {
-          console.error('Error:', error);
-        });
-    }
   </script>
 
   {% comment %} Include the reusable delete confirmation modal and related scripts {% endcomment %}
@@ -924,9 +573,4 @@
     </script>
   {% endif %}
 
-  {% comment %} Insert modals for additional evidence details {% endcomment %}
-  {% get_solo "commandcenter.ReportConfiguration" as report_config %}
-  {% for evidence in report.evidence_set.all %}
-    {% include "snippets/evidence_detail_modal.html" with evidence=evidence %}
-  {% endfor %}
 {% endblock %}

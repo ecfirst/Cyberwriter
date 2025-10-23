@@ -1,9 +1,13 @@
 # Standard Libraries
+import json
 import logging
+import shutil
+import tempfile
 from datetime import date, timedelta
 
 # Django Imports
-from django.test import Client, TestCase
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils.encoding import force_str
 
@@ -14,6 +18,7 @@ from ghostwriter.factories import (
     ClientFactory,
     ClientInviteFactory,
     ClientNoteFactory,
+    MgrFactory,
     ObjectiveStatusFactory,
     ProjectFactory,
     ProjectInviteFactory,
@@ -31,6 +36,7 @@ from ghostwriter.rolodex.forms_project import (
     ProjectTargetFormSet,
     WhiteCardFormSet,
 )
+from ghostwriter.rolodex.models import ProjectDataFile
 from ghostwriter.rolodex.templatetags import determine_primary
 
 logging.disable(logging.CRITICAL)
@@ -969,3 +975,278 @@ class ClientInviteDeleteTests(TestCase):
         self.assertJSONEqual(force_str(response.content), data)
 
         self.assertEqual(len(self.ClientInvite.objects.all()), 0)
+
+
+class ProjectWorkbookUploadViewTests(TestCase):
+    """Tests for uploading CyberWriter workbook JSON files."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._media_root = tempfile.mkdtemp()
+        cls._override = override_settings(MEDIA_ROOT=cls._media_root)
+        cls._override.enable()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._override.disable()
+        shutil.rmtree(cls._media_root, ignore_errors=True)
+        super().tearDownClass()
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = MgrFactory(password=PASSWORD)
+
+    def setUp(self):
+        self.client_auth = Client()
+        self.assertTrue(self.client_auth.login(username=self.user.username, password=PASSWORD))
+        self.project = ProjectFactory()
+        self.upload_url = reverse("rolodex:project_workbook", kwargs={"pk": self.project.pk})
+        self.detail_url = reverse("rolodex:project_detail", kwargs={"pk": self.project.pk})
+
+    def test_upload_saves_file_and_parsed_data(self):
+        workbook_payload = {
+            "client": {"name": "Example Client"},
+            "osint": {"total_squat": 1},
+        }
+        upload = SimpleUploadedFile(
+            "workbook.json",
+            json.dumps(workbook_payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        response = self.client_auth.post(self.upload_url, {"workbook_file": upload})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#workbook")
+
+        self.project.refresh_from_db()
+        self.addCleanup(lambda: self.project.workbook_file.delete(save=False))
+        self.assertIn("client", self.project.workbook_data)
+        self.assertEqual(self.project.workbook_data["client"]["name"], "Example Client")
+        self.assertTrue(self.project.workbook_file.name.endswith("workbook.json"))
+
+    def test_invalid_json_is_rejected(self):
+        upload = SimpleUploadedFile(
+            "workbook.json",
+            b"{not: 'json' }",
+            content_type="application/json",
+        )
+
+        response = self.client_auth.post(self.upload_url, {"workbook_file": upload})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#workbook")
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.workbook_data, {})
+        self.assertFalse(self.project.workbook_file)
+
+    def test_detail_view_displays_uploaded_workbook_sections(self):
+        workbook_payload = {
+            "client": {"name": "Example Client"},
+            "osint": {"total_squat": 1},
+        }
+        upload = SimpleUploadedFile(
+            "workbook.json",
+            json.dumps(workbook_payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        self.client_auth.post(self.upload_url, {"workbook_file": upload})
+
+        self.project.refresh_from_db()
+        self.addCleanup(lambda: self.project.workbook_file.delete(save=False))
+
+        response = self.client_auth.get(self.detail_url)
+
+        sections = response.context["workbook_sections"]
+        self.assertTrue(any(section["key"] == "client" for section in sections))
+        client_section = next(section for section in sections if section["key"] == "client")
+        self.assertIn("tree", client_section)
+        self.assertEqual(client_section["tree"]["type"], "dict")
+
+    def test_required_file_entries_include_existing_uploads(self):
+        workbook_payload = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data"])
+
+        uploaded = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("dns_report.csv", b"domain,value\nexample.com,1\n", content_type="text/csv"),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.addCleanup(lambda: uploaded.delete())
+
+        response = self.client_auth.get(self.detail_url)
+
+        requirements = response.context["required_data_files"]
+        matching = next(item for item in requirements if item["slug"] == uploaded.requirement_slug)
+        self.assertEqual(matching.get("existing"), uploaded)
+
+    def test_dns_required_entry_includes_fail_count(self):
+        workbook_payload = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\nFAIL,The domain does not have an SPF record\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.addCleanup(lambda: upload.delete())
+
+        self.project.rebuild_data_artifacts()
+
+        response = self.client_auth.get(self.detail_url)
+
+        requirements = response.context["required_data_files"]
+        matching = next(item for item in requirements if item["slug"] == upload.requirement_slug)
+        self.assertEqual(matching.get("parsed_fail_count"), 2)
+        self.assertEqual(getattr(matching.get("existing"), "parsed_fail_count", None), 2)
+
+    def test_dns_report_upload_updates_project_artifacts(self):
+        self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
+        csv_content = "Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\nFAIL,The domain does not have an SPF record\n"
+        upload = SimpleUploadedFile(
+            "dns_report.csv",
+            csv_content.encode("utf-8"),
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "file": upload,
+                "requirement_slug": "required_dns-report-csv_example-com",
+                "requirement_label": "dns_report.csv",
+                "requirement_context": "example.com",
+                "description": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#data")
+
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+        artifacts = self.project.data_artifacts
+        self.assertIn("dns_issues", artifacts)
+        issues = artifacts["dns_issues"]
+        self.assertEqual(len(issues), 1)
+        entry = issues[0]
+        self.assertEqual(entry["domain"], "example.com")
+        self.assertEqual(len(entry["issues"]), 2)
+        first_issue = entry["issues"][0]
+        self.assertEqual(
+            first_issue,
+            {
+                "issue": "One or more SOA fields are outside recommended ranges",
+                "finding": "configuring DNS records according to best practice",
+                "recommendation": "update SOA fields to follow best practice",
+            },
+        )
+
+    def test_burp_upload_updates_project_artifacts(self):
+        self.project.workbook_data = {"web": {"combined_unique": 1}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
+        csv_content = "\n".join(
+            [
+                "Host,Risk,Issue",
+                "portal.example.com,High,SQL Injection",
+                "portal.example.com,Medium,Cross-Site Scripting",
+                "portal.example.com,Medium,Cross-Site Scripting",
+                "intranet.example.com,Low,Directory Listing",
+                "intranet.example.com,Informational,Banner Disclosure",
+            ]
+        )
+        upload = SimpleUploadedFile(
+            "burp.csv",
+            csv_content.encode("utf-8"),
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "file": upload,
+                "requirement_slug": "required_burp-csv",
+                "requirement_label": "burp.csv",
+                "requirement_context": "",
+                "description": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#data")
+
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+
+        artifacts = self.project.data_artifacts
+        self.assertIn("web_issues", artifacts)
+        web_entries = artifacts["web_issues"]
+        self.assertEqual(len(web_entries), 2)
+
+        portal_entry = next(entry for entry in web_entries if entry["site"] == "portal.example.com")
+        portal_risks = {risk_entry["risk"]: risk_entry["issues"] for risk_entry in portal_entry["risks"]}
+        self.assertIn("High", portal_risks)
+        self.assertEqual(portal_risks["High"], ["SQL Injection"])
+        self.assertIn("Medium", portal_risks)
+        self.assertEqual(portal_risks["Medium"], ["Cross-Site Scripting"])
+
+        intranet_entry = next(entry for entry in web_entries if entry["site"] == "intranet.example.com")
+        intranet_risks = {risk_entry["risk"]: risk_entry["issues"] for risk_entry in intranet_entry["risks"]}
+        self.assertIn("Low", intranet_risks)
+        self.assertEqual(intranet_risks["Low"], ["Directory Listing"])
+        self.assertIn("Informational", intranet_risks)
+        self.assertEqual(intranet_risks["Informational"], ["Banner Disclosure"])
+
+    def test_data_file_deletion_refreshes_project_artifacts(self):
+        self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.project.rebuild_data_artifacts()
+
+        delete_url = reverse("rolodex:project_data_file_delete", kwargs={"pk": upload.pk})
+        response = self.client_auth.post(delete_url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#data")
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.data_artifacts, {})

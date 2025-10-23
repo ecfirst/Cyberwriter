@@ -4,6 +4,7 @@
 import datetime
 import json
 import logging
+from typing import Dict, Set
 
 # Django Imports
 from django import forms
@@ -51,12 +52,16 @@ from ghostwriter.rolodex.forms_project import (
     ProjectComponentForm,
     ProjectContactFormSet,
     ProjectForm,
-    ProjectInviteFormSet,
     ProjectNoteForm,
     ProjectObjectiveFormSet,
     ProjectScopeFormSet,
     ProjectTargetFormSet,
     WhiteCardFormSet,
+)
+from ghostwriter.rolodex.forms_workbook import (
+    ProjectDataFileForm,
+    ProjectDataResponsesForm,
+    ProjectWorkbookForm,
 )
 from ghostwriter.rolodex.models import (
     Client,
@@ -67,6 +72,7 @@ from ghostwriter.rolodex.models import (
     ObjectivePriority,
     ObjectiveStatus,
     Project,
+    ProjectDataFile,
     ProjectAssignment,
     ProjectContact,
     ProjectInvite,
@@ -76,6 +82,7 @@ from ghostwriter.rolodex.models import (
     ProjectSubTask,
     ProjectTarget,
 )
+from ghostwriter.rolodex.workbook import build_data_configuration, build_workbook_sections
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
 # Using __name__ resolves to ghostwriter.rolodex.views
@@ -1602,7 +1609,228 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["export_templates"] = ReportTemplate.objects.filter(
             Q(doc_type__doc_type__iexact="project_docx") | Q(doc_type__doc_type__iexact="pptx")
         ).filter(Q(client=object.client) | Q(client__isnull=True))
+        questions, required_files = build_data_configuration(object.workbook_data)
+        ctx["workbook_form"] = ProjectWorkbookForm()
+        ctx["workbook_sections"] = build_workbook_sections(object.workbook_data)
+        ctx["data_file_form"] = ProjectDataFileForm()
+        ctx["data_questions"] = questions
+        data_responses_form = ProjectDataResponsesForm(
+            question_definitions=questions,
+            initial=object.data_responses or {},
+        )
+        ctx["data_responses_form"] = data_responses_form
+        ctx["data_responses_fields"] = {
+            definition["key"]: data_responses_form[definition["key"]]
+            for definition in questions
+            if definition["key"] in data_responses_form.fields
+        }
+        data_files = object.data_files.all()
+        ctx["data_files"] = data_files
+        required_file_lookup = {
+            data_file.requirement_slug: data_file
+            for data_file in data_files
+            if data_file.requirement_slug
+        }
+        dns_issue_counts: Dict[str, int] = {}
+        artifacts = object.data_artifacts or {}
+        for dns_entry in artifacts.get("dns_issues", []) or []:
+            domain = (dns_entry.get("domain") or "").strip()
+            if domain:
+                dns_issue_counts[domain.lower()] = len(dns_entry.get("issues") or [])
+
+        for requirement in required_files:
+            slug = requirement.get("slug")
+            existing = required_file_lookup.get(slug) if slug else None
+            if slug:
+                requirement["existing"] = existing
+            label = (requirement.get("label") or "").strip().lower()
+            if existing and label == "dns_report.csv":
+                candidate_values = [
+                    existing.requirement_context,
+                    existing.description,
+                    existing.filename,
+                ]
+                fail_count = None
+                seen_candidates: Set[str] = set()
+                for candidate in candidate_values:
+                    key = (candidate or "").strip().lower()
+                    if not key or key in seen_candidates:
+                        continue
+                    seen_candidates.add(key)
+                    if key in dns_issue_counts:
+                        fail_count = dns_issue_counts[key]
+                        break
+                if fail_count is None:
+                    fail_count = 0
+                requirement["parsed_fail_count"] = fail_count
+                setattr(existing, "parsed_fail_count", fail_count)
+        ctx["required_data_files"] = required_files
         return ctx
+
+
+class ProjectWorkbookUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Handle workbook uploads and removals for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self):
+        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#workbook"
+
+    def post(self, request, *args, **kwargs):
+        project = self.get_object()
+
+        if request.POST.get("clear_workbook"):
+            if project.workbook_file:
+                project.workbook_file.delete(save=False)
+            project.workbook_file = None
+            project.workbook_data = {}
+            project.data_responses = {}
+            project.save(update_fields=["workbook_file", "workbook_data", "data_responses"])
+            messages.success(request, "Workbook removed for this project.")
+            return redirect(self.get_success_url())
+
+        form = ProjectWorkbookForm(request.POST, request.FILES)
+        if form.is_valid():
+            workbook_file = form.cleaned_data["workbook_file"]
+            parsed = form.cleaned_data.get("parsed_workbook", {})
+            if hasattr(workbook_file, "seek"):
+                workbook_file.seek(0)
+            if project.workbook_file:
+                project.workbook_file.delete(save=False)
+            project.workbook_file = workbook_file
+            project.workbook_data = parsed
+            project.data_responses = {}
+            project.save()
+            messages.success(request, "Workbook uploaded successfully.")
+        else:
+            error_message = form.errors.as_text()
+            if error_message:
+                messages.error(request, error_message)
+            else:
+                messages.error(
+                    request,
+                    "Unable to upload workbook. Please ensure you selected a valid JSON file.",
+                )
+        return redirect(self.get_success_url())
+
+
+class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Upload supporting data files for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self):
+        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#data"
+
+    def post(self, request, *args, **kwargs):
+        project = self.get_object()
+        form = ProjectDataFileForm(request.POST, request.FILES)
+        if form.is_valid():
+            data_file = form.save(commit=False)
+            data_file.project = project
+            requirement_slug = request.POST.get("requirement_slug", "").strip()
+            requirement_label = request.POST.get("requirement_label", "").strip()
+            requirement_context = request.POST.get("requirement_context", "").strip()
+            if requirement_slug:
+                # Replace any previously uploaded file for this requirement so the latest upload is used.
+                existing_files = list(project.data_files.filter(requirement_slug=requirement_slug))
+                for existing in existing_files:
+                    if existing.file:
+                        existing.file.delete(save=False)
+                    existing.delete()
+                data_file.requirement_slug = requirement_slug
+                data_file.requirement_label = requirement_label
+                data_file.requirement_context = requirement_context
+                if not data_file.description:
+                    description_parts = [requirement_label]
+                    if requirement_context:
+                        description_parts.append(f"for {requirement_context}")
+                    data_file.description = " ".join(part for part in description_parts if part).strip()
+            data_file.save()
+            project.rebuild_data_artifacts()
+            messages.success(request, "Supporting data file uploaded.")
+        else:
+            error_message = form.errors.as_text()
+            if error_message:
+                messages.error(request, error_message)
+            else:
+                messages.error(request, "Unable to upload data file. Please review the form for errors.")
+        return redirect(self.get_success_url())
+
+
+class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Delete a supporting data file from a project."""
+
+    model = ProjectDataFile
+
+    def test_func(self):
+        return self.get_object().project.user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self):
+        return (
+            reverse("rolodex:project_detail", kwargs={"pk": self.get_object().project.pk})
+            + "#data"
+        )
+
+    def post(self, request, *args, **kwargs):
+        data_file = self.get_object()
+        if data_file.file:
+            data_file.file.delete(save=False)
+        project = data_file.project
+        data_file.delete()
+        project.rebuild_data_artifacts()
+        messages.success(request, "Supporting data file deleted.")
+        return redirect(self.get_success_url())
+
+
+class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Persist responses to dynamically generated reporting questions."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self):
+        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#data"
+
+    def post(self, request, *args, **kwargs):
+        project = self.get_object()
+        questions, _ = build_data_configuration(project.workbook_data)
+        form = ProjectDataResponsesForm(request.POST, question_definitions=questions)
+        if form.is_valid():
+            project.data_responses = form.cleaned_data
+            project.save(update_fields=["data_responses"])
+            messages.success(request, "Project data responses saved.")
+        else:
+            error_message = form.errors.as_text()
+            if error_message:
+                messages.error(request, error_message)
+            else:
+                messages.error(request, "Unable to save responses. Please review the form and try again.")
+        return redirect(self.get_success_url())
 
 
 class ProjectCreate(RoleBasedAccessControlMixin, CreateView):
@@ -1616,8 +1844,6 @@ class ProjectCreate(RoleBasedAccessControlMixin, CreateView):
         Instance of :model:`rolodex.Client` associated with this project
     ``assignments``
         Instance of the `ProjectAssignmentFormSet()` formset
-    ``invites``
-        Instance of the `ProjectInviteFormSet()` formset
     ``cancel_link``
         Link for the form's Cancel button to return to projects list page
 
@@ -1664,23 +1890,19 @@ class ProjectCreate(RoleBasedAccessControlMixin, CreateView):
         else:
             ctx["cancel_link"] = reverse("rolodex:projects")
         ctx["assignments"] = self.assignments
-        ctx["invites"] = self.invites
         return ctx
 
     def get(self, request, *args, **kwargs):
         self.object = None
         self.assignments = ProjectAssignmentFormSet(prefix="assign")
         self.assignments.extra = 1
-        self.invites = ProjectInviteFormSet(prefix="invite")
-        self.invites.extra = 1
         return super().get(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
         self.object = None
         form = self.get_form()
         self.assignments = ProjectAssignmentFormSet(request.POST, prefix="assign")
-        self.invites = ProjectInviteFormSet(request.POST, prefix="invite")
-        if form.is_valid() and self.assignments.is_valid() and self.invites.is_valid():
+        if form.is_valid() and self.assignments.is_valid():
             return self.form_valid(form)
         return self.form_invalid(form)
 
@@ -1697,14 +1919,10 @@ class ProjectCreate(RoleBasedAccessControlMixin, CreateView):
                     for i in self.assignments.save(commit=False):
                         i.project = obj
                         i.save()
-                    for i in self.invites.save(commit=False):
-                        i.project = obj
-                        i.save()
                     self.assignments.save_m2m()
-                    self.invites.save_m2m()
                     form.save_m2m()
                 except IntegrityError:  # pragma: no cover
-                    form.add_error(None, "You cannot have duplicate assignments or invites for a project.")
+                    form.add_error(None, "You cannot have duplicate assignments for a project.")
                     return self.form_invalid(form)
                 return HttpResponseRedirect(self.get_success_url())
         except Exception as exception:  # pragma: no cover
@@ -1738,8 +1956,6 @@ class ProjectUpdate(RoleBasedAccessControlMixin, UpdateView):
         Instance of :model:`rolodex.Project` being updated
     ``assignments``
         Instance of the `ProjectAssignmentFormSet()` formset
-    ``invites``
-        Instance of the `ProjectInviteFormSet()` formset
     ``cancel_link``
         Link for the form's Cancel button to return to project's detail page
 
@@ -1764,7 +1980,6 @@ class ProjectUpdate(RoleBasedAccessControlMixin, UpdateView):
         ctx["object"] = self.get_object()
         ctx["cancel_link"] = reverse("rolodex:project_detail", kwargs={"pk": self.object.pk})
         ctx["assignments"] = self.assignments
-        ctx["invites"] = self.invites
         return ctx
 
     def get_success_url(self):
@@ -1776,17 +1991,13 @@ class ProjectUpdate(RoleBasedAccessControlMixin, UpdateView):
         self.assignments = ProjectAssignmentFormSet(prefix="assign", instance=self.object)
         if self.object.projectassignment_set.all().count() < 1:
             self.assignments.extra = 1
-        self.invites = ProjectInviteFormSet(prefix="invite", instance=self.object)
-        if self.object.projectinvite_set.all().count() < 1:
-            self.invites.extra = 1
         return super().get(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
         self.object = self.get_object()
         form = self.get_form()
         self.assignments = ProjectAssignmentFormSet(request.POST, prefix="assign", instance=self.object)
-        self.invites = ProjectInviteFormSet(request.POST, prefix="invite", instance=self.object)
-        if form.is_valid() and self.assignments.is_valid() and self.invites.is_valid():
+        if form.is_valid() and self.assignments.is_valid():
             return self.form_valid(form)
         return self.form_invalid(form)
 
@@ -1798,10 +2009,9 @@ class ProjectUpdate(RoleBasedAccessControlMixin, UpdateView):
                 obj.save()
                 try:
                     self.assignments.save()
-                    self.invites.save()
                     form.save_m2m()
                 except IntegrityError:  # pragma: no cover
-                    form.add_error(None, "You cannot have duplicate assignments or invites for a project.")
+                    form.add_error(None, "You cannot have duplicate assignments for a project.")
                     return self.form_invalid(form)
                 return HttpResponseRedirect(self.get_success_url())
         except Exception:

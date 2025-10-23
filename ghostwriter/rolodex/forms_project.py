@@ -710,7 +710,7 @@ class ProjectScopeForm(forms.ModelForm):
             self.fields[field].widget.attrs["autocomplete"] = "off"
         self.fields["name"].widget.attrs["placeholder"] = "Internal Scope"
         self.fields["scope"].widget.attrs["rows"] = 5
-        self.fields["scope"].widget.attrs["placeholder"] = "ghostwriter.local\nwww.ghostwriter.local\n192.168.100.15"
+        self.fields["scope"].widget.attrs["placeholder"] = "cyberwriter.local\nwww.cyberwriter.local\n192.168.100.15"
         self.fields["scope"].label = "Scope List"
         self.fields["description"].widget.attrs["rows"] = 5
         self.fields["description"].widget.attrs[
@@ -807,7 +807,7 @@ class ProjectTargetForm(forms.ModelForm):
         for field in self.fields:
             self.fields[field].widget.attrs["autocomplete"] = "off"
         self.fields["ip_address"].widget.attrs["placeholder"] = "172.67.179.71"
-        self.fields["hostname"].widget.attrs["placeholder"] = "ghostwriter.wiki"
+        self.fields["hostname"].widget.attrs["placeholder"] = "ecfirst.com"
         self.fields["note"].widget.attrs["rows"] = 5
         self.fields["note"].widget.attrs["placeholder"] = "This host is a web server related to objective ..."
         self.helper = FormHelper()
@@ -984,7 +984,7 @@ class ProjectContactForm(forms.ModelForm):
             self.fields[field].widget.attrs["autocomplete"] = "off"
         self.fields["name"].widget.attrs["placeholder"] = "Janine Melnitz"
         self.fields["name"].label = "Full Name"
-        self.fields["email"].widget.attrs["placeholder"] = "info@getghostwriter.io"
+        self.fields["email"].widget.attrs["placeholder"] = "info@ecfirst.com"
         self.fields["email"].label = "Email Address"
         self.fields["job_title"].widget.attrs["placeholder"] = "COO"
         self.fields["phone"].widget.attrs["placeholder"] = "(212) 897-1964"
@@ -1225,16 +1225,9 @@ class ProjectForm(forms.ModelForm):
     with an individual :model:`rolodex.Client`.
     """
 
-    update_checkouts = forms.BooleanField(
-        label="Update Domain & Server Checkouts",
-        help_text="Update domain and server checkout if the project dates change",
-        required=False,
-        initial=True,
-    )
-
     class Meta:
         model = Project
-        exclude = ("operator", "complete", "extra_fields")
+        exclude = ("operator", "complete", "extra_fields", "slack_channel")
         widgets = {
             "start_date": forms.DateInput(
                 format="%Y-%m-%d",
@@ -1256,7 +1249,6 @@ class ProjectForm(forms.ModelForm):
         self.fields["end_date"].widget.input_type = "date"
         self.fields["start_time"].widget.input_type = "time"
         self.fields["end_time"].widget.input_type = "time"
-        self.fields["slack_channel"].widget.attrs["placeholder"] = "#slack-channel"
         self.fields["note"].widget.attrs["placeholder"] = "This project is..."
         self.fields["timezone"].initial = general_config.default_timezone
         self.fields["tags"].widget.attrs["placeholder"] = "evasive, on-site, travel, ..."
@@ -1307,12 +1299,10 @@ class ProjectForm(forms.ModelForm):
                         css_class="form-row",
                     ),
                     Row(
-                        Column("project_type", css_class="form-group col-md-4 mb-0"),
-                        Column("slack_channel", css_class="form-group col-md-4 mb-0"),
-                        Column("tags", css_class="form-group col-md-4 mb-0"),
+                        Column("project_type", css_class="form-group col-md-6 mb-0"),
+                        Column("tags", css_class="form-group col-md-6 mb-0"),
                         css_class="form-row",
                     ),
-                    SwitchToggle("update_checkouts"),
                     "note",
                     link_css_class="project-icon",
                     css_id="project",
@@ -1327,17 +1317,6 @@ class ProjectForm(forms.ModelForm):
                     ),
                     link_css_class="assignment-icon",
                     css_id="assignments",
-                ),
-                CustomTab(
-                    "Invites",
-                    Formset("invites", object_context_name="Invite"),
-                    Button(
-                        "add-invite",
-                        "Add Invite",
-                        css_class="btn-block btn-secondary formset-add-invite mb-2 offset-4 col-4",
-                    ),
-                    link_css_class="tab-icon users-icon",
-                    css_id="invites",
                 ),
                 template="tab.html",
                 css_class="nav-justified",
@@ -1363,16 +1342,6 @@ class ProjectForm(forms.ModelForm):
                 code="invalid_date",
             )
         return end_date
-
-    def clean_slack_channel(self):
-        slack_channel = self.cleaned_data["slack_channel"]
-        if slack_channel:
-            if not slack_channel.startswith("#") and not slack_channel.startswith("@"):
-                raise ValidationError(
-                    _("Slack channels should start with # or @."),
-                    code="invalid_channel",
-                )
-        return slack_channel
 
 
 class ProjectNoteForm(forms.ModelForm):

@@ -1,6 +1,7 @@
 """This contains all the database models used by the Rolodex application."""
 
 # Standard Libraries
+import os
 from datetime import time, timedelta
 
 # Django Imports
@@ -108,7 +109,6 @@ class Client(models.Model):
     def user_can_delete(self, user) -> bool:
         return self.user_can_view(user)
 
-
 class ClientContact(models.Model):
     """Stores an individual point of contact, related to :model:`rolodex.Client`."""
 
@@ -197,6 +197,28 @@ class Project(models.Model):
         default="",
         blank=True,
         help_text="Provide additional information about the project and planning",
+    )
+    workbook_file = models.FileField(
+        "Workbook",
+        upload_to="project_workbooks/",
+        blank=True,
+        null=True,
+        help_text="Upload the JSON workbook that will be used to drive reporting questions",
+    )
+    workbook_data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Parsed workbook data used to dynamically generate reporting questions",
+    )
+    data_artifacts = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Parsed supporting data derived from uploaded artifacts",
+    )
+    data_responses = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Responses collected from the dynamic reporting data form",
     )
     slack_channel = models.CharField(
         "Project Slack Channel",
@@ -302,6 +324,73 @@ class Project(models.Model):
 
     def user_can_delete(self, user) -> bool:
         return self.user_can_view(user)
+
+    def rebuild_data_artifacts(self) -> None:
+        """Rebuild supporting data artifacts derived from uploaded files."""
+
+        from ghostwriter.rolodex.data_parsers import build_project_artifacts
+
+        artifacts = build_project_artifacts(self)
+        self.data_artifacts = artifacts
+        self.save(update_fields=["data_artifacts"])
+
+
+class ProjectDataFile(models.Model):
+    """Stores additional data files uploaded to support report generation."""
+
+    project = models.ForeignKey(
+        Project,
+        related_name="data_files",
+        on_delete=models.CASCADE,
+    )
+    file = models.FileField(
+        "Supporting Data File",
+        upload_to="project_data/",
+        max_length=255,
+    )
+    description = models.CharField(
+        "Description",
+        max_length=255,
+        blank=True,
+        default="",
+    )
+    requirement_slug = models.CharField(
+        "Requirement Key",
+        max_length=255,
+        blank=True,
+        default="",
+    )
+    requirement_label = models.CharField(
+        "Requirement Label",
+        max_length=255,
+        blank=True,
+        default="",
+    )
+    requirement_context = models.CharField(
+        "Requirement Context",
+        max_length=255,
+        blank=True,
+        default="",
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-uploaded_at"]
+        verbose_name = "Project data file"
+        verbose_name_plural = "Project data files"
+
+    def __str__(self):
+        return f"{self.project} - {self.filename}"
+
+    def rebuild_project_artifacts(self) -> None:
+        """Rebuild parsed artifacts for the related project."""
+
+        project = self.project
+        project.rebuild_data_artifacts()
+
+    @property
+    def filename(self):
+        return os.path.basename(self.file.name)
 
 
 class ProjectRole(models.Model):
