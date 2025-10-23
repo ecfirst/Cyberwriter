@@ -39,7 +39,7 @@ from ghostwriter.modules.shared import add_content_disposition_header
 from ghostwriter.reporting.archive import archive_report
 from ghostwriter.reporting.filters import ReportFilter, ReportTemplateFilter
 from ghostwriter.reporting.forms import ReportForm, ReportTemplateForm, SelectReportTemplateForm
-from ghostwriter.reporting.models import Archive, Finding, Observation, Report, ReportTemplate
+from ghostwriter.reporting.models import Archive, Finding, Report, ReportTemplate
 from ghostwriter.rolodex.models import Project
 
 logger = logging.getLogger(__name__)
@@ -158,11 +158,6 @@ class ReportDetailView(RoleBasedAccessControlMixin, DetailView):
 
     model = Report
 
-    def __init__(self):
-        super().__init__()
-        self.finding_autocomplete = []
-        self.observation_autocomplete = []
-
     def test_func(self):
         return self.get_object().user_can_view(self.request.user)
 
@@ -194,21 +189,6 @@ class ReportDetailView(RoleBasedAccessControlMixin, DetailView):
             )
         )
         ctx["form"] = form
-
-        # Build autocomplete list
-        findings = (
-            Finding.objects.select_related("severity", "finding_type")
-            .all()
-            .order_by("severity__weight", "-cvss_score", "finding_type", "title")
-        )
-        for finding in findings:
-            self.finding_autocomplete.append(finding)
-        ctx["finding_autocomplete"] = self.finding_autocomplete
-
-        observations = Observation.objects.all().order_by("title")
-        for obs in observations:
-            self.observation_autocomplete.append(obs)
-        ctx["observation_autocomplete"] = self.observation_autocomplete
 
         ctx["report_extra_fields_spec"] = ExtraFieldSpec.objects.filter(target_model=Report._meta.label)
 
