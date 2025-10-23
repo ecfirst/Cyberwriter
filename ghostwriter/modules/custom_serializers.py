@@ -9,6 +9,7 @@ import zoneinfo
 # Django Imports
 from django.conf import settings
 from django.utils import dateformat
+from django.utils.text import slugify
 
 # 3rd Party Libraries
 from bs4 import BeautifulSoup
@@ -48,6 +49,7 @@ from ghostwriter.rolodex.models import (
     ProjectTarget,
     WhiteCard,
 )
+from ghostwriter.rolodex.workbook import AD_DOMAIN_METRICS
 from ghostwriter.shepherd.models import (
     AuxServerAddress,
     Domain,
@@ -698,6 +700,213 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
     def get_end_year(self, obj):
         return obj.end_date.year
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        raw_responses = instance.data_responses or {}
+        workbook_data = instance.workbook_data or {}
+        data["data_responses"] = self._format_data_responses(raw_responses, workbook_data)
+        return data
+
+    @staticmethod
+    def _format_data_responses(raw_responses, workbook_data):
+        if not isinstance(raw_responses, dict):
+            return raw_responses or {}
+
+        legacy_prefixes = ("ad_", "password_", "endpoint_")
+        has_legacy_keys = any(
+            isinstance(key, str) and key.startswith(prefix)
+            for key in raw_responses
+            for prefix in legacy_prefixes
+        )
+        if any(isinstance(raw_responses.get(section), list) for section in ("ad", "password", "endpoint")) and not has_legacy_keys:
+            return raw_responses
+
+        result = {
+            key: value
+            for key, value in raw_responses.items()
+            if not key.startswith(("ad_", "password_", "endpoint_"))
+        }
+
+        ad_entries = ProjectSerializer._collect_ad_responses(raw_responses, workbook_data)
+        if ad_entries:
+            result["ad"] = ad_entries
+
+        password_entries = ProjectSerializer._collect_password_responses(raw_responses, workbook_data)
+        if password_entries:
+            result["password"] = password_entries
+
+        endpoint_entries = ProjectSerializer._collect_endpoint_responses(raw_responses, workbook_data)
+        if endpoint_entries:
+            result["endpoint"] = endpoint_entries
+
+        return result
+
+    @staticmethod
+    def _collect_ad_responses(raw_responses, workbook_data):
+        ad_data = (workbook_data or {}).get("ad", {})
+        domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
+        domain_entries = {}
+        domain_order = []
+
+        slug_map = {}
+        for record in domains:
+            if not isinstance(record, dict):
+                continue
+            domain_name = record.get("domain") or record.get("name")
+            if not domain_name:
+                continue
+            domain_text = str(domain_name)
+            slug = ProjectSerializer._build_slug("ad", domain_text)
+            if slug:
+                slug_map[slug] = domain_text
+                slug_map[slug.replace("-", "")] = domain_text
+            domain_entries[domain_text] = {"domain": domain_text}
+            domain_order.append(domain_text)
+
+        ad_metrics = [metric for metric, _ in AD_DOMAIN_METRICS]
+
+        def assign(domain_key, metric, value):
+            if value is None:
+                return
+            entry = domain_entries.setdefault(domain_key, {"domain": domain_key})
+            if domain_key not in domain_order:
+                domain_order.append(domain_key)
+            entry[metric] = value
+
+        for slug, domain_key in slug_map.items():
+            for metric in ad_metrics:
+                value = ProjectSerializer._consume_metric(raw_responses, slug, metric)
+                if value is not None:
+                    assign(domain_key, metric, value)
+
+        for key, value in raw_responses.items():
+            if not key.startswith("ad_"):
+                continue
+            for metric in ad_metrics:
+                suffix = f"_{metric}"
+                if key.endswith(suffix):
+                    domain_slug = key[len("ad_") : -len(suffix)]
+                    domain_key = slug_map.get(f"ad_{domain_slug}") or slug_map.get(f"ad_{domain_slug}".replace("-", ""))
+                    if not domain_key:
+                        domain_key = domain_slug.replace("-", ".")
+                    assign(domain_key, metric, value)
+                    break
+
+        ordered = [domain_entries[name] for name in domain_order if len(domain_entries[name]) > 1]
+        return ordered
+
+    @staticmethod
+    def _collect_password_responses(raw_responses, workbook_data):
+        password_data = (workbook_data or {}).get("password", {})
+        policies = password_data.get("policies", []) if isinstance(password_data, dict) else []
+        entries = {}
+        order = []
+        slug_map = {}
+
+        for policy in policies:
+            if not isinstance(policy, dict):
+                continue
+            domain_name = policy.get("domain_name") or policy.get("domain")
+            domain_name = str(domain_name) if domain_name else "Unnamed Domain"
+            slug = ProjectSerializer._build_slug("password", domain_name)
+            if slug:
+                slug_map[slug] = domain_name
+                slug_map[slug.replace("-", "")] = domain_name
+                value = ProjectSerializer._consume_metric(raw_responses, slug, "risk")
+                if value is not None:
+                    entry = entries.setdefault(domain_name, {"domain": domain_name})
+                    entry["risk"] = value
+                    if domain_name not in order:
+                        order.append(domain_name)
+
+        if not order:
+            for key, value in raw_responses.items():
+                if not key.startswith("password_") or not key.endswith("_risk"):
+                    continue
+                domain_slug = key[len("password_") : -len("_risk")]
+                slug_key = f"password_{domain_slug}"
+                domain_name = (
+                    slug_map.get(slug_key)
+                    or slug_map.get(slug_key.replace("-", ""))
+                    or domain_slug.replace("-", ".")
+                )
+                entry = entries.setdefault(domain_name, {"domain": domain_name})
+                entry["risk"] = value
+                if domain_name not in order:
+                    order.append(domain_name)
+
+        return [entries[name] for name in order if len(entries[name]) > 1]
+
+    @staticmethod
+    def _collect_endpoint_responses(raw_responses, workbook_data):
+        endpoint_data = (workbook_data or {}).get("endpoint", {})
+        domains = endpoint_data.get("domains", []) if isinstance(endpoint_data, dict) else []
+        entries = {}
+        order = []
+        endpoint_metrics = ("av_gap", "open_wifi")
+        slug_map = {}
+
+        for record in domains:
+            if not isinstance(record, dict):
+                continue
+            domain_name = record.get("domain") or record.get("name")
+            if not domain_name:
+                continue
+            domain_name = str(domain_name)
+            slug = ProjectSerializer._build_slug("endpoint", domain_name)
+            if slug:
+                slug_map[slug] = domain_name
+                slug_map[slug.replace("-", "")] = domain_name
+            for metric in endpoint_metrics:
+                value = ProjectSerializer._consume_metric(raw_responses, slug, metric)
+                if value is not None:
+                    entry = entries.setdefault(domain_name, {"domain": domain_name})
+                    entry[metric] = value
+                    if domain_name not in order:
+                        order.append(domain_name)
+
+        for key, value in raw_responses.items():
+            if not key.startswith("endpoint_"):
+                continue
+            for metric in endpoint_metrics:
+                suffix = f"_{metric}"
+                if key.endswith(suffix):
+                    domain_slug = key[len("endpoint_") : -len(suffix)]
+                    slug_key = f"endpoint_{domain_slug}"
+                    domain_name = (
+                        slug_map.get(slug_key)
+                        or slug_map.get(slug_key.replace("-", ""))
+                        or domain_slug.replace("-", ".")
+                    )
+                    entry = entries.setdefault(domain_name, {"domain": domain_name})
+                    entry[metric] = value
+                    if domain_name not in order:
+                        order.append(domain_name)
+                    break
+
+        return [entries[name] for name in order if len(entries[name]) > 1]
+
+    @staticmethod
+    def _build_slug(prefix, value):
+        if not value:
+            return ""
+        text = slugify(str(value))
+        if not text:
+            return ""
+        return f"{prefix}_{text}"
+
+    @staticmethod
+    def _consume_metric(raw_responses, slug, metric):
+        if not slug:
+            return None
+        candidates = [f"{slug}_{metric}"]
+        if "-" in slug:
+            candidates.append(f"{slug.replace('-', '')}_{metric}")
+        for candidate in candidates:
+            if candidate in raw_responses:
+                return raw_responses[candidate]
+        return None
 
 
 class ProjectInfrastructureSerializer(CustomModelSerializer):

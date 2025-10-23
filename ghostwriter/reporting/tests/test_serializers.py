@@ -13,7 +13,7 @@ from rest_framework.renderers import JSONRenderer
 
 # Ghostwriter Libraries
 from ghostwriter.factories import GenerateMockProject, OplogEntryFactory, OplogFactory
-from ghostwriter.modules.custom_serializers import ReportDataSerializer
+from ghostwriter.modules.custom_serializers import FullProjectSerializer, ReportDataSerializer
 
 logging.disable(logging.CRITICAL)
 
@@ -130,3 +130,121 @@ class ReportDataSerializerTests(TestCase):
             for entry in log["entries"]:
                 print(entry["tool"])
                 self.assertTrue(entry["tool"] is not None)
+
+
+class ProjectSerializerDataResponsesTests(TestCase):
+    """Ensure project data responses are reshaped for templating."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.client, cls.project, _ = GenerateMockProject()
+        cls.workbook_data = {
+            "ad": {
+                "domains": [
+                    {"domain": "corp.example.com"},
+                ]
+            },
+            "password": {
+                "policies": [
+                    {"domain_name": "corp.example.com"},
+                ]
+            },
+            "endpoint": {
+                "domains": [
+                    {"domain": "corp.example.com"},
+                    {"domain": "lab.example.com"},
+                ]
+            },
+        }
+
+        cls.legacy_responses = {
+            "cloud_config_risk": "low",
+            "wireless_psk_risk": "medium",
+            "system_config_risk": "medium",
+            "wireless_open_risk": "high",
+            "osint_squat_concern": "example.com",
+            "wireless_rogue_risk": "medium",
+            "wireless_hidden_risk": "low",
+            "wireless_segmentation_ssids": ["Guest"],
+            "wireless_segmentation_tested": True,
+            "wireless_psk_rotation_concern": "yes",
+            "password_corpexamplecom_risk": "medium",
+            "endpoint_labexamplecom_av_gap": "high",
+            "endpoint_corpexamplecom_av_gap": "medium",
+            "ad_corpexamplecom_domain_admins": "high",
+            "ad_corpexamplecom_old_passwords": "low",
+            "ad_corpexamplecom_generic_logins": "medium",
+            "endpoint_labexamplecom_open_wifi": "high",
+            "endpoint_corpexamplecom_open_wifi": "low",
+            "ad_corpexamplecom_generic_accounts": "high",
+            "ad_corpexamplecom_disabled_accounts": "high",
+            "ad_corpexamplecom_enterprise_admins": "medium",
+            "ad_corpexamplecom_expired_passwords": "low",
+            "ad_corpexamplecom_inactive_accounts": "medium",
+            "ad_corpexamplecom_passwords_never_expire": "low",
+        }
+
+    def setUp(self):
+        self.project = self.__class__.project
+        self.project.refresh_from_db()
+
+    def test_legacy_responses_are_restructured(self):
+        self.project.workbook_data = self.workbook_data
+        self.project.data_responses = self.legacy_responses
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        project_data = serializer.data["project"]
+        responses = project_data["data_responses"]
+
+        self.assertEqual(responses["cloud_config_risk"], "low")
+        self.assertEqual(responses["wireless_segmentation_ssids"], ["Guest"])
+
+        ad_entries = responses["ad"]
+        self.assertIsInstance(ad_entries, list)
+        self.assertEqual(len(ad_entries), 1)
+        self.assertEqual(ad_entries[0]["domain"], "corp.example.com")
+        self.assertEqual(ad_entries[0]["domain_admins"], "high")
+        self.assertEqual(ad_entries[0]["inactive_accounts"], "medium")
+
+        password_entries = responses["password"]
+        self.assertEqual(password_entries, [{"domain": "corp.example.com", "risk": "medium"}])
+        self.assertNotIn(
+            "corpexamplecom", [entry["domain"] for entry in password_entries]
+        )
+
+        endpoint_entries = responses["endpoint"]
+        self.assertEqual(len(endpoint_entries), 2)
+        corp_endpoint = next(entry for entry in endpoint_entries if entry["domain"] == "corp.example.com")
+        lab_endpoint = next(entry for entry in endpoint_entries if entry["domain"] == "lab.example.com")
+        self.assertEqual(corp_endpoint["av_gap"], "medium")
+        self.assertEqual(corp_endpoint["open_wifi"], "low")
+        self.assertEqual(lab_endpoint["av_gap"], "high")
+        self.assertEqual(lab_endpoint["open_wifi"], "high")
+        self.assertNotIn(
+            "corpexamplecom", [entry["domain"] for entry in endpoint_entries]
+        )
+        self.assertNotIn(
+            "labexamplecom", [entry["domain"] for entry in endpoint_entries]
+        )
+
+        self.assertNotIn("password_corpexamplecom_risk", responses)
+        self.assertNotIn("endpoint_corpexamplecom_av_gap", responses)
+
+    def test_new_structure_is_preserved(self):
+        structured = {
+            "cloud_config_risk": "low",
+            "ad": [{"domain": "corp.example.com", "domain_admins": "medium"}],
+            "password": [{"domain": "corp.example.com", "risk": "low"}],
+            "endpoint": [
+                {"domain": "corp.example.com", "av_gap": "medium", "open_wifi": "low"},
+            ],
+        }
+
+        self.project.workbook_data = self.workbook_data
+        self.project.data_responses = structured
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+        self.assertEqual(responses, structured)
