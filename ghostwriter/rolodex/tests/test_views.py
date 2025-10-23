@@ -1086,6 +1086,33 @@ class ProjectWorkbookUploadViewTests(TestCase):
         matching = next(item for item in requirements if item["slug"] == uploaded.requirement_slug)
         self.assertEqual(matching.get("existing"), uploaded)
 
+    def test_dns_required_entry_includes_fail_count(self):
+        workbook_payload = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\nFAIL,The domain does not have an SPF record\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.addCleanup(lambda: upload.delete())
+
+        self.project.rebuild_data_artifacts()
+
+        response = self.client_auth.get(self.detail_url)
+
+        requirements = response.context["required_data_files"]
+        matching = next(item for item in requirements if item["slug"] == upload.requirement_slug)
+        self.assertEqual(matching.get("parsed_fail_count"), 2)
+        self.assertEqual(getattr(matching.get("existing"), "parsed_fail_count", None), 2)
+
     def test_dns_report_upload_updates_project_artifacts(self):
         self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
         self.project.save(update_fields=["workbook_data"])

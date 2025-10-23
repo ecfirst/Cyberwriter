@@ -205,6 +205,9 @@
                           <strong>Current file:</strong>
                           <a href="{{ requirement.existing.file.url }}" download>{{ requirement.existing.filename }}</a>
                         </p>
+                        {% if requirement.parsed_fail_count is not None %}
+                          <p class="mb-0 text-muted small">Failed checks detected: {{ requirement.parsed_fail_count }}</p>
+                        {% endif %}
                         <form method="post" class="d-inline" action="{% url 'rolodex:project_data_file_delete' requirement.existing.id %}">
                           {% csrf_token %}
                           <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
@@ -213,7 +216,7 @@
                         <p class="mb-1 text-muted">No file uploaded yet.</p>
                       {% endif %}
                     </div>
-                    <form method="post" action="{% url 'rolodex:project_data_file_upload' project.id %}" enctype="multipart/form-data" class="w-100 w-md-auto">
+                    <form method="post" action="{% url 'rolodex:project_data_file_upload' project.id %}" enctype="multipart/form-data" class="w-100 w-md-auto project-required-data-form">
                       {% csrf_token %}
                       <input type="hidden" name="requirement_slug" value="{{ requirement.slug }}"/>
                       <input type="hidden" name="requirement_label" value="{{ requirement.label }}"/>
@@ -221,9 +224,9 @@
                       <input type="hidden" name="description" value=""/>
                       <div class="form-group mb-2">
                         <label class="sr-only" for="id_required_file_{{ requirement.slug }}">{{ requirement.label }}{% if requirement.context %} for {{ requirement.context }}{% endif %}</label>
-                        <input type="file" name="file" class="form-control-file" id="id_required_file_{{ requirement.slug }}" required>
+                        <input type="file" name="file" class="form-control-file project-required-data-input" id="id_required_file_{{ requirement.slug }}" accept=".csv,text/csv" required>
                       </div>
-                      <button type="submit" class="btn btn-primary btn-sm">Upload</button>
+                      <button type="submit" class="btn btn-primary btn-sm" data-default-text="Upload">Upload</button>
                     </form>
                   </div>
                 </div>
@@ -483,6 +486,43 @@
             }
           });
         }
+
+        const dataForms = document.querySelectorAll('.project-required-data-form');
+        dataForms.forEach(function(form) {
+          const fileInput = form.querySelector('.project-required-data-input');
+          const submitButton = form.querySelector('button[type="submit"]');
+          if (!fileInput) {
+            return;
+          }
+
+          const setUploadingState = function() {
+            if (form.dataset.submitting === '1') {
+              return;
+            }
+            form.dataset.submitting = '1';
+            if (submitButton) {
+              const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
+              submitButton.setAttribute('data-default-text', defaultText);
+              submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Uploading...';
+              submitButton.disabled = true;
+            }
+          };
+
+          form.addEventListener('submit', function() {
+            setUploadingState();
+          });
+
+          fileInput.addEventListener('change', function() {
+            if (fileInput.files && fileInput.files.length) {
+              setUploadingState();
+              if (typeof form.requestSubmit === 'function') {
+                form.requestSubmit();
+              } else {
+                form.submit();
+              }
+            }
+          });
+        });
       });
     })(jQuery);
 

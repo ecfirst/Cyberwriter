@@ -4,6 +4,7 @@
 import datetime
 import json
 import logging
+from typing import Dict, Set
 
 # Django Imports
 from django import forms
@@ -1630,10 +1631,39 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             for data_file in data_files
             if data_file.requirement_slug
         }
+        dns_issue_counts: Dict[str, int] = {}
+        artifacts = object.data_artifacts or {}
+        for dns_entry in artifacts.get("dns_issues", []) or []:
+            domain = (dns_entry.get("domain") or "").strip()
+            if domain:
+                dns_issue_counts[domain.lower()] = len(dns_entry.get("issues") or [])
+
         for requirement in required_files:
             slug = requirement.get("slug")
+            existing = required_file_lookup.get(slug) if slug else None
             if slug:
-                requirement["existing"] = required_file_lookup.get(slug)
+                requirement["existing"] = existing
+            label = (requirement.get("label") or "").strip().lower()
+            if existing and label == "dns_report.csv":
+                candidate_values = [
+                    existing.requirement_context,
+                    existing.description,
+                    existing.filename,
+                ]
+                fail_count = None
+                seen_candidates: Set[str] = set()
+                for candidate in candidate_values:
+                    key = (candidate or "").strip().lower()
+                    if not key or key in seen_candidates:
+                        continue
+                    seen_candidates.add(key)
+                    if key in dns_issue_counts:
+                        fail_count = dns_issue_counts[key]
+                        break
+                if fail_count is None:
+                    fail_count = 0
+                requirement["parsed_fail_count"] = fail_count
+                setattr(existing, "parsed_fail_count", fail_count)
         ctx["required_data_files"] = required_files
         return ctx
 
