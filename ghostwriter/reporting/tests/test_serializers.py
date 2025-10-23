@@ -209,6 +209,9 @@ class ProjectSerializerDataResponsesTests(TestCase):
 
         password_entries = responses["password"]
         self.assertEqual(password_entries, [{"domain": "corp.example.com", "risk": "medium"}])
+        self.assertNotIn(
+            "corpexamplecom", [entry["domain"] for entry in password_entries]
+        )
 
         endpoint_entries = responses["endpoint"]
         self.assertEqual(len(endpoint_entries), 2)
@@ -218,6 +221,12 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(corp_endpoint["open_wifi"], "low")
         self.assertEqual(lab_endpoint["av_gap"], "high")
         self.assertEqual(lab_endpoint["open_wifi"], "high")
+        self.assertNotIn(
+            "corpexamplecom", [entry["domain"] for entry in endpoint_entries]
+        )
+        self.assertNotIn(
+            "labexamplecom", [entry["domain"] for entry in endpoint_entries]
+        )
 
         self.assertNotIn("password_corpexamplecom_risk", responses)
         self.assertNotIn("endpoint_corpexamplecom_av_gap", responses)

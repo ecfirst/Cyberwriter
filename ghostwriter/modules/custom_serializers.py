@@ -802,6 +802,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         policies = password_data.get("policies", []) if isinstance(password_data, dict) else []
         entries = {}
         order = []
+        slug_map = {}
 
         for policy in policies:
             if not isinstance(policy, dict):
@@ -810,6 +811,8 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             domain_name = str(domain_name) if domain_name else "Unnamed Domain"
             slug = ProjectSerializer._build_slug("password", domain_name)
             if slug:
+                slug_map[slug] = domain_name
+                slug_map[slug.replace("-", "")] = domain_name
                 value = ProjectSerializer._consume_metric(raw_responses, slug, "risk")
                 if value is not None:
                     entry = entries.setdefault(domain_name, {"domain": domain_name})
@@ -822,7 +825,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 if not key.startswith("password_") or not key.endswith("_risk"):
                     continue
                 domain_slug = key[len("password_") : -len("_risk")]
-                domain_name = domain_slug.replace("-", ".")
+                slug_key = f"password_{domain_slug}"
+                domain_name = (
+                    slug_map.get(slug_key)
+                    or slug_map.get(slug_key.replace("-", ""))
+                    or domain_slug.replace("-", ".")
+                )
                 entry = entries.setdefault(domain_name, {"domain": domain_name})
                 entry["risk"] = value
                 if domain_name not in order:
@@ -837,6 +845,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         entries = {}
         order = []
         endpoint_metrics = ("av_gap", "open_wifi")
+        slug_map = {}
 
         for record in domains:
             if not isinstance(record, dict):
@@ -846,6 +855,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 continue
             domain_name = str(domain_name)
             slug = ProjectSerializer._build_slug("endpoint", domain_name)
+            if slug:
+                slug_map[slug] = domain_name
+                slug_map[slug.replace("-", "")] = domain_name
             for metric in endpoint_metrics:
                 value = ProjectSerializer._consume_metric(raw_responses, slug, metric)
                 if value is not None:
@@ -861,7 +873,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 suffix = f"_{metric}"
                 if key.endswith(suffix):
                     domain_slug = key[len("endpoint_") : -len(suffix)]
-                    domain_name = domain_slug.replace("-", ".")
+                    slug_key = f"endpoint_{domain_slug}"
+                    domain_name = (
+                        slug_map.get(slug_key)
+                        or slug_map.get(slug_key.replace("-", ""))
+                        or domain_slug.replace("-", ".")
+                    )
                     entry = entries.setdefault(domain_name, {"domain": domain_name})
                     entry[metric] = value
                     if domain_name not in order:
