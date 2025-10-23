@@ -25,6 +25,67 @@ LINTER_CONTEXT = {
         "start_time": "09:00:00",
         "end_time": "17:00:00",
         "tags": ["tag1", "tag2", "tag3"],
+        "workbook_data": {
+            "client": {
+                "primary_contact": "Hank Hooper",
+                "primary_contact_email": "dad@kabletown.family",
+            },
+            "dns": {
+                "records": [
+                    {
+                        "domain": "example.com",
+                        "nameservers": ["ns1.example.com", "ns2.example.com"],
+                    }
+                ]
+            },
+            "web": {
+                "applications": [
+                    {
+                        "name": "Ghostwriter Portal",
+                        "url": "https://portal.example.com",
+                        "risk": "medium",
+                    }
+                ]
+            },
+        },
+        "data_responses": {
+            "executive_summary": "Client is preparing for an acquisition in Q3.",
+            "critical_contacts": ["hank.hooper@example.com", "jack.donaghy@example.com"],
+            "wireless_segmentation_ssids": ["Guest", "Corp", "Production"],
+            "has_internal_lab": "yes",
+        },
+        "data_artifacts": {
+            "dns_issues": [
+                {
+                    "domain": "example.com",
+                    "issues": [
+                        {
+                            "issue": "The domain does not have an SPF record",
+                            "finding": "email delivery for the domain",
+                            "recommendation": "consider implementing a SPF record",
+                        }
+                    ],
+                }
+            ],
+            "web_issues": [
+                {
+                    "site": "https://portal.example.com",
+                    "risks": [
+                        {
+                            "risk": "High",
+                            "issues": [
+                                "Reflected Cross-Site Scripting",
+                                "Missing HTTP security headers",
+                            ],
+                        },
+                        {
+                            "risk": "Medium",
+                            "issues": ["Verbose error messages exposed"],
+                        },
+                    ],
+                }
+            ],
+        },
         "extra_fields": {},
     },
     "client": {
