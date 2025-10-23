@@ -266,7 +266,7 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
             widget=forms.TextInput(attrs={"class": "form-control"}),
         )
 
-    # Required DNS artefacts
+    # Required DNS artifacts
     dns_records = _get_nested(data, ("dns", "records"), []) or []
     if isinstance(dns_records, list):
         for record in dns_records:
@@ -274,7 +274,7 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
             if domain:
                 add_required("dns_report.csv", domain)
 
-    # Vulnerability artefacts
+    # Vulnerability artifacts
     nexpose_totals = [
         _as_int(_get_nested(data, ("external_nexpose", "total"), 0)),
         _as_int(_get_nested(data, ("internal_nexpose", "total"), 0)),

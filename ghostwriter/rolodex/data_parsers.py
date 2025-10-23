@@ -116,25 +116,97 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     return issues
 
 
+WEB_RISK_ORDER = {
+    "CRITICAL": 0,
+    "HIGH": 1,
+    "MEDIUM": 2,
+    "LOW": 3,
+    "INFO": 4,
+    "INFORMATION": 4,
+    "INFORMATIONAL": 4,
+}
+
+
+def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Dict[str, List[str]]]]:
+    """Parse a burp.csv export into issues grouped by site and risk."""
+
+    results: Dict[str, Dict[str, Dict[str, List[str]]]] = {}
+    for row in _decode_file(file_obj):
+        host = (row.get("Host") or row.get("host") or "").strip() or "Unknown Site"
+        risk_raw = (row.get("Risk") or row.get("risk") or "").strip()
+        risk_key = risk_raw.upper() or "UNSPECIFIED"
+        issue = (row.get("Issue") or row.get("issue") or "").strip()
+        if not issue:
+            continue
+
+        host_entry = results.setdefault(host, {})
+        risk_entry = host_entry.setdefault(
+            risk_key,
+            {"label": risk_raw or "Unspecified", "issues": []},
+        )
+
+        if issue not in risk_entry["issues"]:
+            risk_entry["issues"].append(issue)
+
+    return results
+
+
 def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     """Aggregate parsed artifacts for the provided project."""
 
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
+    web_results: Dict[str, Dict[str, Dict[str, List[str]]]] = {}
 
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
         if label == "dns_report.csv":
             domain = (data_file.requirement_context or data_file.description or data_file.filename).strip()
             domain = domain or "Unknown Domain"
-            parsed = parse_dns_report(data_file.file)
-            if parsed:
-                dns_results.setdefault(domain, []).extend(parsed)
+            parsed_dns = parse_dns_report(data_file.file)
+            if parsed_dns:
+                dns_results.setdefault(domain, []).extend(parsed_dns)
+        elif label == "burp.csv":
+            parsed_web = parse_web_report(data_file.file)
+            for site, risk_map in parsed_web.items():
+                combined_risks = web_results.setdefault(site, {})
+                for risk_key, risk_entry in risk_map.items():
+                    combined_entry = combined_risks.setdefault(
+                        risk_key,
+                        {"label": risk_entry["label"], "issues": []},
+                    )
+                    if not combined_entry["label"] and risk_entry["label"]:
+                        combined_entry["label"] = risk_entry["label"]
+                    for issue in risk_entry.get("issues", []):
+                        if issue not in combined_entry["issues"]:
+                            combined_entry["issues"].append(issue)
 
     if dns_results:
         artifacts["dns_issues"] = [
             {"domain": domain, "issues": issues}
             for domain, issues in dns_results.items()
         ]
+
+    if web_results:
+        web_entries: List[Dict[str, Any]] = []
+        for site, risk_map in web_results.items():
+            risks: List[Dict[str, Any]] = []
+            for risk_key, risk_entry in risk_map.items():
+                issues = risk_entry.get("issues") or []
+                if not issues:
+                    continue
+                label = str(risk_entry.get("label") or risk_key.title())
+                risks.append({"risk": label, "issues": issues})
+            if not risks:
+                continue
+            risks.sort(
+                key=lambda entry: (
+                    WEB_RISK_ORDER.get(str(entry["risk"]).upper(), 99),
+                    str(entry["risk"]),
+                )
+            )
+            web_entries.append({"site": site, "risks": risks})
+        if web_entries:
+            artifacts["web_issues"] = web_entries
 
     return artifacts

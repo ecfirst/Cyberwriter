@@ -1163,6 +1163,68 @@ class ProjectWorkbookUploadViewTests(TestCase):
             },
         )
 
+    def test_burp_upload_updates_project_artifacts(self):
+        self.project.workbook_data = {"web": {"combined_unique": 1}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
+        csv_content = "\n".join(
+            [
+                "Host,Risk,Issue",
+                "portal.example.com,High,SQL Injection",
+                "portal.example.com,Medium,Cross-Site Scripting",
+                "portal.example.com,Medium,Cross-Site Scripting",
+                "intranet.example.com,Low,Directory Listing",
+                "intranet.example.com,Informational,Banner Disclosure",
+            ]
+        )
+        upload = SimpleUploadedFile(
+            "burp.csv",
+            csv_content.encode("utf-8"),
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "file": upload,
+                "requirement_slug": "required_burp-csv",
+                "requirement_label": "burp.csv",
+                "requirement_context": "",
+                "description": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#data")
+
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+
+        artifacts = self.project.data_artifacts
+        self.assertIn("web_issues", artifacts)
+        web_entries = artifacts["web_issues"]
+        self.assertEqual(len(web_entries), 2)
+
+        portal_entry = next(entry for entry in web_entries if entry["site"] == "portal.example.com")
+        portal_risks = {risk_entry["risk"]: risk_entry["issues"] for risk_entry in portal_entry["risks"]}
+        self.assertIn("High", portal_risks)
+        self.assertEqual(portal_risks["High"], ["SQL Injection"])
+        self.assertIn("Medium", portal_risks)
+        self.assertEqual(portal_risks["Medium"], ["Cross-Site Scripting"])
+
+        intranet_entry = next(entry for entry in web_entries if entry["site"] == "intranet.example.com")
+        intranet_risks = {risk_entry["risk"]: risk_entry["issues"] for risk_entry in intranet_entry["risks"]}
+        self.assertIn("Low", intranet_risks)
+        self.assertEqual(intranet_risks["Low"], ["Directory Listing"])
+        self.assertIn("Informational", intranet_risks)
+        self.assertEqual(intranet_risks["Informational"], ["Banner Disclosure"])
+
     def test_data_file_deletion_refreshes_project_artifacts(self):
         self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
         self.project.save(update_fields=["workbook_data"])

@@ -118,7 +118,7 @@ class ProjectWorkbookForm(forms.Form):
 
 
 class ProjectDataFileForm(forms.ModelForm):
-    """Upload additional artefacts that support reporting."""
+    """Upload additional artifacts that support reporting."""
 
     class Meta:
         model = ProjectDataFile
@@ -128,7 +128,7 @@ class ProjectDataFileForm(forms.ModelForm):
             "description": _("Description"),
         }
         help_texts = {
-            "file": _("Upload CSV, JSON, or other artefacts referenced in the report."),
+            "file": _("Upload CSV, JSON, or other artifacts referenced in the report."),
             "description": _("Optional note to help identify this file."),
         }
         widgets = {
