@@ -109,16 +109,6 @@ class Client(models.Model):
     def user_can_delete(self, user) -> bool:
         return self.user_can_view(user)
 
-    def rebuild_data_artifacts(self) -> None:
-        """Rebuild supporting data artifacts derived from uploaded files."""
-
-        from ghostwriter.rolodex.data_parsers import build_project_artifacts
-
-        artifacts = build_project_artifacts(self)
-        self.data_artifacts = artifacts
-        self.save(update_fields=["data_artifacts"])
-
-
 class ClientContact(models.Model):
     """Stores an individual point of contact, related to :model:`rolodex.Client`."""
 
@@ -334,6 +324,15 @@ class Project(models.Model):
 
     def user_can_delete(self, user) -> bool:
         return self.user_can_view(user)
+
+    def rebuild_data_artifacts(self) -> None:
+        """Rebuild supporting data artifacts derived from uploaded files."""
+
+        from ghostwriter.rolodex.data_parsers import build_project_artifacts
+
+        artifacts = build_project_artifacts(self)
+        self.data_artifacts = artifacts
+        self.save(update_fields=["data_artifacts"])
 
 
 class ProjectDataFile(models.Model):
