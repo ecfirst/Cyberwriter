@@ -1160,6 +1160,7 @@ class ProjectWorkbookUploadViewTests(TestCase):
                 "issue": "One or more SOA fields are outside recommended ranges",
                 "finding": "configuring DNS records according to best practice",
                 "recommendation": "update SOA fields to follow best practice",
+                "impact": "Incorrect SOA settings can disrupt DNS propagation, caching, and zone transfers, leading to stale or inconsistent domain data.",
             },
         )
 
