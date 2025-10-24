@@ -1689,10 +1689,22 @@ class ProjectWorkbookUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
         if request.POST.get("clear_workbook"):
             if project.workbook_file:
                 project.workbook_file.delete(save=False)
+            for data_file in list(project.data_files.all()):
+                if data_file.file:
+                    data_file.file.delete(save=False)
+                data_file.delete()
             project.workbook_file = None
             project.workbook_data = {}
             project.data_responses = {}
-            project.save(update_fields=["workbook_file", "workbook_data", "data_responses"])
+            project.data_artifacts = {}
+            project.save(
+                update_fields=[
+                    "workbook_file",
+                    "workbook_data",
+                    "data_responses",
+                    "data_artifacts",
+                ]
+            )
             messages.success(request, "Workbook removed for this project.")
             return redirect(self.get_success_url())
 

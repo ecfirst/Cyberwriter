@@ -67,6 +67,33 @@ DNS_FINDING_MAP: Dict[str, str] = {
     "The SPF record contains the overly permissive modifier '+all'": "email delivery for the domain",
 }
 
+DNS_IMPACT_MAP: Dict[str, str] = {
+    "One or more SOA fields are outside recommended ranges": "Incorrect SOA settings can disrupt DNS propagation, caching, and zone transfers, leading to stale or inconsistent domain data.",
+    "Less than 2 nameservers exist": "Having fewer than two nameservers creates a single point of failure, increasing risk of domain outage if the sole server becomes unreachable.",
+    "More than 8 nameservers exist": "Excessive nameservers increase administrative complexity and the likelihood of inconsistent configurations or stale records.",
+    "Some nameservers have duplicate addresses": "Duplicate nameserver IPs reduce redundancy and can lead to query failures during DNS resolution.",
+    "Some nameservers did not respond": "Non-responsive nameservers degrade DNS availability and can cause intermittent domain resolution failures.",
+    "Some nameservers respond recursive queries": "Allowing recursion on authoritative servers exposes them to cache poisoning and amplification attacks.",
+    "Some nameservers do not respond to TCP queries": "Failure to handle TCP queries can break large DNS responses (e.g., DNSSEC), reducing reliability and availability.",
+    "Some nameservers return version numbers": "Exposing version information allows attackers to identify and exploit known vulnerabilities in the DNS software.",
+    "Some nameservers provide a differing list of nameservers": "Inconsistent NS records cause DNS resolution instability and may enable spoofing or cache corruption.",
+    "Some nameserver addresses are private": "Private IP addresses make external resolution impossible and indicate misconfigured or non-routable infrastructure.",
+    "Some nameservers do not provide a SOA record for the zone": "Missing SOA records prevent proper zone management and replication, causing inconsistencies between servers.",
+    "Some nameserver SOAs have differing serial numbers": "Mismatched SOA serials suggest replication issues that can result in outdated or inconsistent zone data.",
+    "No MX records exist within the zone": "Without MX records, the domain cannot receive email, potentially disrupting communication or business operations.",
+    "Only one MX record exists within the zone": "A single MX record creates a single point of failure for mail delivery, reducing availability and redundancy.",
+    "MX record resolves to a single IP address": "A single IP for mail delivery increases the likelihood of downtime or delivery failure if that host becomes unavailable.",
+    "Some addresses referenced by MX records do not have matching reverse DNS entries": "Missing PTR records can cause mail rejection by spam filters and lower sender reputation.",
+    "Some mailserver IP addresses are private": "Private IPs on mailservers prevent delivery from external networks and indicate improper public DNS configuration.",
+    "Some connections to Mailservers port 25 failed": "Unreachable mailservers degrade or halt inbound email delivery, impacting availability and communication.",
+    "Some mailservers appear to be open relays": "Open relays allow unauthorized third parties to send spam, risking blacklisting and abuse of the domain.",
+    "This domain does not have DNSSEC records": "Without DNSSEC, DNS responses can be forged, enabling cache poisoning and redirection attacks.",
+    "The DNSKEY does not appear to be valid for the domain": "Invalid DNSSEC keys undermine trust and cause validation failures for secure resolvers.",
+    "The domain does not have an SPF record": "Lack of SPF allows attackers to spoof emails from the domain, enabling phishing or spam campaigns.",
+    "The SPF value does not allow mail delivery from all mailservers in the domain": "An incomplete SPF record causes legitimate emails to be rejected or marked as spam.",
+    "The SPF record contains the overly permissive modifier '+all'": "The '+all' modifier allows any host to send mail for the domain, enabling spoofing and abuse.",
+}
+
 
 def _decode_file(file_obj: File) -> Iterable[Dict[str, str]]:
     """Return a DictReader for the provided file object."""
@@ -106,11 +133,13 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
             continue
         finding = DNS_FINDING_MAP.get(issue_text, "")
         recommendation = DNS_RECOMMENDATION_MAP.get(issue_text, "")
+        impact = DNS_IMPACT_MAP.get(issue_text, "")
         issues.append(
             {
                 "issue": issue_text,
                 "finding": finding,
                 "recommendation": recommendation,
+                "impact": impact,
             }
         )
     return issues
@@ -166,7 +195,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_dns = parse_dns_report(data_file.file)
             if parsed_dns:
                 dns_results.setdefault(domain, []).extend(parsed_dns)
-        elif label == "burp.csv":
+        elif label in {"burp.csv", "burp_csv.csv"}:
             parsed_web = parse_web_report(data_file.file)
             for site, risk_map in parsed_web.items():
                 combined_risks = web_results.setdefault(site, {})
