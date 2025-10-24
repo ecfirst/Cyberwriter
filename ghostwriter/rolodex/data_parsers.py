@@ -195,7 +195,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_dns = parse_dns_report(data_file.file)
             if parsed_dns:
                 dns_results.setdefault(domain, []).extend(parsed_dns)
-        elif label == "burp.csv":
+        elif label in {"burp.csv", "burp_csv.csv"}:
             parsed_web = parse_web_report(data_file.file)
             for site, risk_map in parsed_web.items():
                 combined_risks = web_results.setdefault(site, {})

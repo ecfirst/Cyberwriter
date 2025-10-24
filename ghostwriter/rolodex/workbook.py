@@ -274,6 +274,10 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
             if domain:
                 add_required("dns_report.csv", domain)
 
+    if _as_int(_get_nested(data, ("web", "combined_unique"), 0)) > 0:
+        add_required("burp_csv.csv")
+        add_required("burp-cap.csv")
+
     # Vulnerability artifacts
     nexpose_totals = [
         _as_int(_get_nested(data, ("external_nexpose", "total"), 0)),
@@ -282,10 +286,6 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
     ]
     if any(total > 0 for total in nexpose_totals):
         add_required("nexpose_cap.csv")
-
-    if _as_int(_get_nested(data, ("web", "combined_unique"), 0)) > 0:
-        add_required("burp.csv")
-        add_required("burp-cap.csv")
 
     firewall_source = _get_nested(data, ("fierwall",), None)
     if not isinstance(firewall_source, dict):

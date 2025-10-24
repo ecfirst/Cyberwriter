@@ -1042,6 +1042,46 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertEqual(self.project.workbook_data, {})
         self.assertFalse(self.project.workbook_file)
 
+    def test_clearing_workbook_removes_uploaded_artifacts(self):
+        workbook_payload = {"dns": {"records": [{"domain": "example.com"}]}}
+        workbook_file = SimpleUploadedFile("workbook.json", json.dumps(workbook_payload).encode("utf-8"))
+        self.project.workbook_file = workbook_file
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {"sample": "value"}
+        self.project.save(update_fields=["workbook_file", "workbook_data", "data_responses"])
+
+        dns_upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+        self.assertTrue(self.project.data_files.exists())
+        self.assertIn("dns_issues", self.project.data_artifacts)
+
+        response = self.client_auth.post(self.upload_url, {"clear_workbook": "1"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#workbook")
+
+        self.project.refresh_from_db()
+        self.assertFalse(self.project.workbook_file)
+        self.assertEqual(self.project.workbook_data, {})
+        self.assertEqual(self.project.data_responses, {})
+        self.assertEqual(self.project.data_artifacts, {})
+        self.assertFalse(self.project.data_files.exists())
+
+        # Uploaded files should be deleted by the view; ensure no leftover references remain
+        self.assertFalse(ProjectDataFile.objects.filter(pk=dns_upload.pk).exists())
+
     def test_detail_view_displays_uploaded_workbook_sections(self):
         workbook_payload = {
             "client": {"name": "Example Client"},
@@ -1085,6 +1125,26 @@ class ProjectWorkbookUploadViewTests(TestCase):
         requirements = response.context["required_data_files"]
         matching = next(item for item in requirements if item["slug"] == uploaded.requirement_slug)
         self.assertEqual(matching.get("existing"), uploaded)
+
+    def test_burp_requirement_follows_dns_entries(self):
+        workbook_payload = {
+            "dns": {"records": [{"domain": "example.com"}, {"domain": "test.example.com"}]},
+            "web": {"combined_unique": 5},
+            "external_nexpose": {"total": 10},
+        }
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data"])
+
+        response = self.client_auth.get(self.detail_url)
+
+        requirements = response.context["required_data_files"]
+        labels = [requirement.get("label") for requirement in requirements]
+
+        self.assertIn("burp_csv.csv", labels)
+        dns_indexes = [index for index, label in enumerate(labels) if label == "dns_report.csv"]
+        self.assertTrue(dns_indexes)
+        burp_index = labels.index("burp_csv.csv")
+        self.assertEqual(burp_index, max(dns_indexes) + 1)
 
     def test_dns_required_entry_includes_fail_count(self):
         workbook_payload = {"dns": {"records": [{"domain": "example.com"}]}}
@@ -1180,7 +1240,7 @@ class ProjectWorkbookUploadViewTests(TestCase):
             ]
         )
         upload = SimpleUploadedFile(
-            "burp.csv",
+            "burp_csv.csv",
             csv_content.encode("utf-8"),
             content_type="text/csv",
         )
@@ -1189,8 +1249,8 @@ class ProjectWorkbookUploadViewTests(TestCase):
             upload_url,
             {
                 "file": upload,
-                "requirement_slug": "required_burp-csv",
-                "requirement_label": "burp.csv",
+                "requirement_slug": "required_burp-csv-csv",
+                "requirement_label": "burp_csv.csv",
                 "requirement_context": "",
                 "description": "",
             },
