@@ -169,6 +169,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "system_config_risk": "medium",
             "wireless_open_risk": "high",
             "osint_squat_concern": "example.com",
+            "osint_bucket_risk": "High",
+            "osint_leaked_creds_risk": "Medium",
             "wireless_rogue_risk": "medium",
             "wireless_hidden_risk": "low",
             "wireless_segmentation_ssids": ["Guest"],
@@ -207,6 +209,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
 
         self.assertEqual(responses["cloud_config_risk"], "low")
         self.assertEqual(responses["wireless_segmentation_ssids"], ["Guest"])
+        self.assertEqual(responses["osint_bucket_risk"], "High")
+        self.assertEqual(responses["osint_leaked_creds_risk"], "Medium")
 
         ad_entries = responses["ad"]
         self.assertIsInstance(ad_entries, list)
@@ -250,6 +254,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
     def test_new_structure_is_preserved(self):
         structured = {
             "cloud_config_risk": "low",
+            "osint_bucket_risk": "High",
+            "osint_leaked_creds_risk": "Medium",
             "ad": [{"domain": "corp.example.com", "domain_admins": "medium"}],
             "password": [{"domain": "corp.example.com", "risk": "low"}],
             "endpoint": [

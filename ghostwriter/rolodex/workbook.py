@@ -257,13 +257,35 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
         )
 
     # Intelligence questions
-    if _as_int(_get_nested(data, ("osint", "total_squat"), 0)) > 0:
+    osint_data = _get_nested(data, ("osint",), {}) or {}
+
+    if _as_int(_get_nested(osint_data, ("total_squat",), 0)) > 0:
         add_question(
             key="osint_squat_concern",
             label="Of the squatting domains found, which is the most concerning (single domain or comma-separated list)",
             field_class=forms.CharField,
             section="Intelligence",
             widget=forms.TextInput(attrs={"class": "form-control"}),
+        )
+
+    osint_risk_choices = (("High", "High"), ("Medium", "Medium"), ("Low", "Low"))
+
+    if _as_int(_get_nested(osint_data, ("total_buckets",), 0)) > 0:
+        add_question(
+            key="osint_bucket_risk",
+            label="What is the risk you would assign to the exposed buckets found?",
+            field_class=forms.ChoiceField,
+            section="Intelligence",
+            choices=osint_risk_choices,
+        )
+
+    if _as_int(_get_nested(osint_data, ("total_leaks",), 0)) > 0:
+        add_question(
+            key="osint_leaked_creds_risk",
+            label="What is the risk you would assign to the leaked creds found?",
+            field_class=forms.ChoiceField,
+            section="Intelligence",
+            choices=osint_risk_choices,
         )
 
     # Required DNS artifacts

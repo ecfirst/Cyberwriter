@@ -91,3 +91,28 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertTrue(first_question["key"].endswith("_type"))
         last_question = firewall_questions[-1]
         self.assertEqual(last_question["subheading"], "Unnamed Entry")
+
+    def test_osint_risk_questions_added_when_counts_present(self):
+        workbook_data = {
+            "osint": {
+                "total_squat": 1,
+                "total_buckets": 2,
+                "total_leaks": 3,
+            }
+        }
+
+        questions, _ = build_data_configuration(workbook_data)
+
+        intelligence_questions = [q for q in questions if q["section"] == "Intelligence"]
+        keys = {question["key"] for question in intelligence_questions}
+
+        self.assertIn("osint_squat_concern", keys)
+        self.assertIn("osint_bucket_risk", keys)
+        self.assertIn("osint_leaked_creds_risk", keys)
+
+        bucket_question = next(q for q in intelligence_questions if q["key"] == "osint_bucket_risk")
+        self.assertEqual(bucket_question["label"], "What is the risk you would assign to the exposed buckets found?")
+        self.assertEqual(
+            bucket_question["field_kwargs"]["choices"],
+            (("High", "High"), ("Medium", "Medium"), ("Low", "Low")),
+        )
