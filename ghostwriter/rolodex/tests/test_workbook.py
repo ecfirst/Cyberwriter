@@ -58,3 +58,13 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertTrue(required_files)
         self.assertIn("slug", required_files[0])
         self.assertEqual(required_files[0]["slug"], "required_dns-report-csv_example-com")
+
+    def test_firewall_requirement_included_when_unique_values_present(self):
+        workbook_data = {
+            "firewall": {"unique": 2},
+        }
+
+        _, required_files = build_data_configuration(workbook_data)
+
+        labels = [entry["label"] for entry in required_files]
+        self.assertIn("firewall_csv.csv", labels)

@@ -12,6 +12,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.core.files.base import ContentFile
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.template.loader import render_to_string
@@ -61,6 +62,7 @@ from ghostwriter.rolodex.forms_project import (
 from ghostwriter.rolodex.forms_workbook import (
     ProjectDataFileForm,
     ProjectDataResponsesForm,
+    ProjectIPArtifactForm,
     ProjectWorkbookForm,
 )
 from ghostwriter.rolodex.models import (
@@ -82,6 +84,7 @@ from ghostwriter.rolodex.models import (
     ProjectSubTask,
     ProjectTarget,
 )
+from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
 from ghostwriter.rolodex.workbook import build_data_configuration, build_workbook_sections
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
@@ -1638,6 +1641,22 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             if domain:
                 dns_issue_counts[domain.lower()] = len(dns_entry.get("issues") or [])
 
+        ip_cards = []
+        for artifact_type in IP_ARTIFACT_ORDER:
+            definition = IP_ARTIFACT_DEFINITIONS[artifact_type]
+            existing = required_file_lookup.get(definition.slug)
+            card_entry = {
+                "type": artifact_type,
+                "label": definition.label,
+                "slug": definition.slug,
+                "artifact_key": definition.artifact_key,
+                "existing": existing,
+                "ip_count": len(artifacts.get(definition.artifact_key) or []),
+            }
+            ip_cards.append(card_entry)
+
+        supplemental_cards = []
+        inserted_ip_cards = False
         for requirement in required_files:
             slug = requirement.get("slug")
             existing = required_file_lookup.get(slug) if slug else None
@@ -1664,7 +1683,19 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                     fail_count = 0
                 requirement["parsed_fail_count"] = fail_count
                 setattr(existing, "parsed_fail_count", fail_count)
+            if label == "burp_csv.csv" and not inserted_ip_cards:
+                supplemental_cards.append({"card_type": "required", "data": requirement})
+                supplemental_cards.extend({"card_type": "ip", "data": card} for card in ip_cards)
+                inserted_ip_cards = True
+                continue
+            supplemental_cards.append({"card_type": "required", "data": requirement})
+
+        if not inserted_ip_cards:
+            supplemental_cards.extend({"card_type": "ip", "data": card} for card in ip_cards)
+
         ctx["required_data_files"] = required_files
+        ctx["supplemental_cards"] = supplemental_cards
+        ctx["ip_artifact_cards"] = ip_cards
         return ctx
 
 
@@ -1746,7 +1777,7 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
         return redirect("home:dashboard")
 
     def get_success_url(self):
-        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#data"
+        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#supplementals"
 
     def post(self, request, *args, **kwargs):
         project = self.get_object()
@@ -1784,6 +1815,56 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
         return redirect(self.get_success_url())
 
 
+class ProjectIPArtifactUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Upload supplemental IP address artifacts for a project."""
+
+    model = Project
+    form_class = ProjectIPArtifactForm
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self):
+        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#supplementals"
+
+    def post(self, request, *args, **kwargs):
+        project = self.get_object()
+        form = self.form_class(request.POST, request.FILES)
+        if form.is_valid():
+            ip_type = form.cleaned_data["ip_type"]
+            definition = IP_ARTIFACT_DEFINITIONS[ip_type]
+            ip_values = form.cleaned_data["parsed_ips"]
+            content = "\n".join(ip_values) + "\n"
+
+            existing_files = list(project.data_files.filter(requirement_slug=definition.slug))
+            for existing in existing_files:
+                if existing.file:
+                    existing.file.delete(save=False)
+                existing.delete()
+
+            data_file = ProjectDataFile(
+                project=project,
+                requirement_slug=definition.slug,
+                requirement_label=definition.label,
+                description=f"{definition.label} list",
+            )
+            data_file.file.save(definition.filename, ContentFile(content), save=False)
+            data_file.save()
+            project.rebuild_data_artifacts()
+            messages.success(request, f"{definition.label} saved for this project.")
+        else:
+            error_message = form.errors.as_text()
+            if error_message:
+                messages.error(request, error_message)
+            else:
+                messages.error(request, "Unable to process the submitted IP addresses. Please review the form for errors.")
+        return redirect(self.get_success_url())
+
+
 class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View):
     """Delete a supporting data file from a project."""
 
@@ -1799,7 +1880,7 @@ class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View
     def get_success_url(self):
         return (
             reverse("rolodex:project_detail", kwargs={"pk": self.get_object().project.pk})
-            + "#data"
+            + "#supplementals"
         )
 
     def post(self, request, *args, **kwargs):
