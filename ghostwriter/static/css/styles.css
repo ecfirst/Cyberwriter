@@ -489,6 +489,15 @@ input[type='file'] {
   width: 100%;
 }
 
+.project-ip-artifact-form .project-ip-file-input {
+  position: static;
+  left: auto;
+  top: auto;
+  bottom: auto;
+  width: 100%;
+  opacity: 1;
+}
+
 .csvdiv {
   position: absolute;
   left: 0;
