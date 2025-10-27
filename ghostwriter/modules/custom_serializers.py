@@ -719,7 +719,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             for key in raw_responses
             for prefix in legacy_prefixes
         )
-        if any(isinstance(raw_responses.get(section), list) for section in ("ad", "password", "endpoint")) and not has_legacy_keys:
+        endpoint_value = raw_responses.get("endpoint")
+        if (
+            not has_legacy_keys
+            and isinstance(endpoint_value, dict)
+            and "entries" in endpoint_value
+        ):
             return raw_responses
 
         result = {}
@@ -899,6 +904,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         order = []
         endpoint_metrics = ("av_gap", "open_wifi")
         slug_map = {}
+        domain_details = {}
 
         for record in domains:
             if not isinstance(record, dict):
@@ -907,6 +913,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             if not domain_name:
                 continue
             domain_name = str(domain_name)
+            domain_details[domain_name] = record
             slug = ProjectSerializer._build_slug("endpoint", domain_name)
             if slug:
                 slug_map[slug] = domain_name
@@ -918,6 +925,23 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     entry[metric] = value
                     if domain_name not in order:
                         order.append(domain_name)
+
+        existing_endpoint_entries = raw_responses.get("endpoint")
+        if isinstance(existing_endpoint_entries, list):
+            for item in existing_endpoint_entries:
+                if not isinstance(item, dict):
+                    continue
+                domain = item.get("domain") or item.get("name")
+                if not domain:
+                    continue
+                domain = str(domain)
+                entry = entries.setdefault(domain, {"domain": domain})
+                for metric in endpoint_metrics:
+                    value = item.get(metric)
+                    if value is not None:
+                        entry[metric] = value
+                if domain not in order:
+                    order.append(domain)
 
         for key, value in raw_responses.items():
             if not key.startswith("endpoint_"):
@@ -938,7 +962,40 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                         order.append(domain_name)
                     break
 
-        return [entries[name] for name in order if len(entries[name]) > 1]
+        ordered_entries = [entries[name] for name in order if len(entries[name]) > 1]
+        if not ordered_entries:
+            return {}
+
+        domains_str_parts = []
+        ood_count_parts = []
+        wifi_count_parts = []
+        ood_risk_parts = []
+        wifi_risk_parts = []
+
+        for entry in ordered_entries:
+            domain = entry.get("domain", "")
+            domains_str_parts.append(domain)
+            details = domain_details.get(domain, {})
+
+            systems_ood = details.get("systems_ood") if isinstance(details, dict) else None
+            ood_count_parts.append("0" if systems_ood in (None, "") else str(systems_ood))
+
+            open_wifi_count = details.get("open_wifi") if isinstance(details, dict) else None
+            wifi_count_parts.append("0" if open_wifi_count in (None, "") else str(open_wifi_count))
+
+            ood_risk_parts.append(str(entry.get("av_gap", "")) if entry.get("av_gap") is not None else "")
+            wifi_risk_parts.append(
+                str(entry.get("open_wifi", "")) if entry.get("open_wifi") is not None else ""
+            )
+
+        return {
+            "entries": ordered_entries,
+            "domains_str": "/".join(domains_str_parts),
+            "ood_count_str": "/".join(ood_count_parts),
+            "wifi_count_str": "/".join(wifi_count_parts),
+            "ood_risk_string": "/".join(ood_risk_parts),
+            "wifi_risk_string": "/".join(wifi_risk_parts),
+        }
 
     @staticmethod
     def _build_slug(prefix, value):

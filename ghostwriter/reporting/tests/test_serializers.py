@@ -151,8 +151,16 @@ class ProjectSerializerDataResponsesTests(TestCase):
             },
             "endpoint": {
                 "domains": [
-                    {"domain": "corp.example.com"},
-                    {"domain": "lab.example.com"},
+                    {
+                        "domain": "corp.example.com",
+                        "systems_ood": 25,
+                        "open_wifi": 5,
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "systems_ood": 43,
+                        "open_wifi": 12,
+                    },
                 ]
             },
             "firewall": {
@@ -225,7 +233,9 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "corpexamplecom", [entry["domain"] for entry in password_entries]
         )
 
-        endpoint_entries = responses["endpoint"]
+        endpoint_summary = responses["endpoint"]
+        self.assertIn("entries", endpoint_summary)
+        endpoint_entries = endpoint_summary["entries"]
         self.assertEqual(len(endpoint_entries), 2)
         corp_endpoint = next(entry for entry in endpoint_entries if entry["domain"] == "corp.example.com")
         lab_endpoint = next(entry for entry in endpoint_entries if entry["domain"] == "lab.example.com")
@@ -239,6 +249,11 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertNotIn(
             "labexamplecom", [entry["domain"] for entry in endpoint_entries]
         )
+        self.assertEqual(endpoint_summary["domains_str"], "corp.example.com/lab.example.com")
+        self.assertEqual(endpoint_summary["ood_count_str"], "25/43")
+        self.assertEqual(endpoint_summary["wifi_count_str"], "5/12")
+        self.assertEqual(endpoint_summary["ood_risk_string"], "medium/high")
+        self.assertEqual(endpoint_summary["wifi_risk_string"], "low/high")
 
         firewall_entries = responses["firewall"]
         self.assertEqual(len(firewall_entries), 2)
@@ -258,9 +273,16 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "osint_leaked_creds_risk": "Medium",
             "ad": [{"domain": "corp.example.com", "domain_admins": "medium"}],
             "password": [{"domain": "corp.example.com", "risk": "low"}],
-            "endpoint": [
-                {"domain": "corp.example.com", "av_gap": "medium", "open_wifi": "low"},
-            ],
+            "endpoint": {
+                "entries": [
+                    {"domain": "corp.example.com", "av_gap": "medium", "open_wifi": "low"},
+                ],
+                "domains_str": "corp.example.com",
+                "ood_count_str": "25",
+                "wifi_count_str": "5",
+                "ood_risk_string": "medium",
+                "wifi_risk_string": "low",
+            },
             "firewall": [
                 {"name": "Edge-FW01", "type": "Next-Gen"},
             ],

@@ -359,18 +359,25 @@ LINTER_CONTEXT = {
             "password": [
                 {"domain": "corp.example.com", "risk": "medium"}
             ],
-            "endpoint": [
-                {
-                    "domain": "corp.example.com",
-                    "open_wifi": "low",
-                    "av_gap": "medium",
-                },
-                {
-                    "domain": "lab.example.com",
-                    "open_wifi": "high",
-                    "av_gap": "high",
-                },
-            ],
+            "endpoint": {
+                "entries": [
+                    {
+                        "domain": "corp.example.com",
+                        "open_wifi": "low",
+                        "av_gap": "medium",
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "open_wifi": "high",
+                        "av_gap": "high",
+                    },
+                ],
+                "domains_str": "corp.example.com/lab.example.com",
+                "ood_count_str": "45/10",
+                "wifi_count_str": "3/1",
+                "ood_risk_string": "medium/high",
+                "wifi_risk_string": "low/high",
+            },
             "firewall": [
                 {"name": "Edge-FW01", "type": "Next-Gen"},
                 {"name": "Core-FW02", "type": "Appliance"},
