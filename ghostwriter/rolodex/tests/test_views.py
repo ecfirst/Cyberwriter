@@ -1136,6 +1136,8 @@ class ProjectWorkbookUploadViewTests(TestCase):
             "dns": {"records": [{"domain": "example.com"}, {"domain": "test.example.com"}]},
             "web": {"combined_unique": 5},
             "external_nexpose": {"total": 10},
+            "internal_nexpose": {"total": 1},
+            "iot_iomt_nexpose": {"total": 1},
         }
         self.project.workbook_data = workbook_payload
         self.project.save(update_fields=["workbook_data"])
@@ -1150,10 +1152,21 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertTrue(dns_indexes)
         burp_index = labels.index("burp_csv.csv")
         self.assertEqual(burp_index, max(dns_indexes) + 1)
+        self.assertEqual(
+            labels[burp_index + 1 : burp_index + 4],
+            [
+                "external_nexpose_csv.csv",
+                "internal_nexpose_csv.csv",
+                "iot_nexpose_csv.csv",
+            ],
+        )
 
-    def test_ip_cards_follow_burp_requirement_in_supplementals(self):
+    def test_ip_cards_follow_nexpose_cards_after_burp_in_supplementals(self):
         workbook_payload = {
             "web": {"combined_unique": 2},
+            "external_nexpose": {"total": 4},
+            "internal_nexpose": {"total": 2},
+            "iot_iomt_nexpose": {"total": 1},
         }
         self.project.workbook_data = workbook_payload
         self.project.save(update_fields=["workbook_data"])
@@ -1165,7 +1178,15 @@ class ProjectWorkbookUploadViewTests(TestCase):
 
         burp_index = labels.index("burp_csv.csv")
         self.assertEqual(
-            labels[burp_index + 1 : burp_index + 3],
+            labels[burp_index + 1 : burp_index + 4],
+            [
+                "external_nexpose_csv.csv",
+                "internal_nexpose_csv.csv",
+                "iot_nexpose_csv.csv",
+            ],
+        )
+        self.assertEqual(
+            labels[burp_index + 4 : burp_index + 6],
             [
                 IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_EXTERNAL].label,
                 IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_INTERNAL].label,

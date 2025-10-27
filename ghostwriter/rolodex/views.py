@@ -1655,8 +1655,32 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             }
             ip_cards.append(card_entry)
 
+        nexpose_requirement_labels = {
+            "external_nexpose_csv.csv",
+            "internal_nexpose_csv.csv",
+            "iot_nexpose_csv.csv",
+        }
+        reordered_requirements = []
+        nexpose_requirements = []
+        burp_insert_index = None
+        for requirement in required_files:
+            label = (requirement.get("label") or "").strip().lower()
+            if label in nexpose_requirement_labels:
+                nexpose_requirements.append(requirement)
+                continue
+            reordered_requirements.append(requirement)
+            if label == "burp_csv.csv":
+                burp_insert_index = len(reordered_requirements)
+        if nexpose_requirements:
+            if burp_insert_index is None:
+                reordered_requirements.extend(nexpose_requirements)
+            else:
+                reordered_requirements[burp_insert_index:burp_insert_index] = nexpose_requirements
+        required_files = reordered_requirements
+
         supplemental_cards = []
         inserted_ip_cards = False
+        pending_ip_cards_after_burp = False
         for requirement in required_files:
             slug = requirement.get("slug")
             existing = required_file_lookup.get(slug) if slug else None
@@ -1683,12 +1707,29 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                     fail_count = 0
                 requirement["parsed_fail_count"] = fail_count
                 setattr(existing, "parsed_fail_count", fail_count)
-            if label == "burp_csv.csv" and not inserted_ip_cards:
+            if label == "burp_csv.csv":
                 supplemental_cards.append({"card_type": "required", "data": requirement})
+                pending_ip_cards_after_burp = True
+                continue
+
+            if (
+                pending_ip_cards_after_burp
+                and not inserted_ip_cards
+                and label not in nexpose_requirement_labels
+            ):
                 supplemental_cards.extend({"card_type": "ip", "data": card} for card in ip_cards)
                 inserted_ip_cards = True
+                pending_ip_cards_after_burp = False
+
+            if label in nexpose_requirement_labels:
+                supplemental_cards.append({"card_type": "required", "data": requirement})
                 continue
             supplemental_cards.append({"card_type": "required", "data": requirement})
+
+        if pending_ip_cards_after_burp and not inserted_ip_cards:
+            supplemental_cards.extend({"card_type": "ip", "data": card} for card in ip_cards)
+            inserted_ip_cards = True
+            pending_ip_cards_after_burp = False
 
         if not inserted_ip_cards:
             supplemental_cards.extend({"card_type": "ip", "data": card} for card in ip_cards)
