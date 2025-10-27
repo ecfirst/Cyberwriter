@@ -342,20 +342,38 @@ LINTER_CONTEXT = {
             "osint_bucket_risk": "High",
             "osint_leaked_creds_risk": "Medium",
             "wireless_segmentation_tested": True,
-            "ad": [
-                {
-                    "domain": "corp.example.com",
-                    "domain_admins": "high",
-                    "old_passwords": "low",
-                    "generic_logins": "medium",
-                    "generic_accounts": "high",
-                    "disabled_accounts": "high",
-                    "enterprise_admins": "medium",
-                    "expired_passwords": "low",
-                    "inactive_accounts": "medium",
-                    "passwords_never_expire": "low",
-                }
-            ],
+            "ad": {
+                "entries": [
+                    {
+                        "domain": "corp.example.com",
+                        "domain_admins": "high",
+                        "old_passwords": "low",
+                        "generic_logins": "medium",
+                        "generic_accounts": "high",
+                        "disabled_accounts": "high",
+                        "enterprise_admins": "medium",
+                        "expired_passwords": "low",
+                        "inactive_accounts": "medium",
+                        "passwords_never_expire": "low",
+                    }
+                ],
+                "domains_str": "corp.example.com",
+                "enabled_count_str": "220",
+                "da_count_str": "5",
+                "ea_count_str": "2",
+                "ep_count_str": "12",
+                "ne_count_str": "8",
+                "ia_count_str": "15",
+                "ga_count_str": "6",
+                "gl_count_str": "3",
+                "da_risk_string": "High",
+                "ea_risk_string": "Medium",
+                "ep_risk_string": "Low",
+                "ne_risk_string": "Low",
+                "ia_risk_string": "Medium",
+                "ga_risk_string": "High",
+                "gl_risk_string": "Medium",
+            },
             "password": [
                 {"domain": "corp.example.com", "risk": "medium"}
             ],

@@ -719,13 +719,18 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             for key in raw_responses
             for prefix in legacy_prefixes
         )
-        endpoint_value = raw_responses.get("endpoint")
-        if (
-            not has_legacy_keys
-            and isinstance(endpoint_value, dict)
-            and "entries" in endpoint_value
-        ):
-            return raw_responses
+        def _is_preformatted_section(value):
+            return isinstance(value, dict) and "entries" in value
+
+        if not has_legacy_keys:
+            endpoint_value = raw_responses.get("endpoint")
+            ad_value = raw_responses.get("ad")
+            if _is_preformatted_section(endpoint_value) and (
+                ad_value is None or _is_preformatted_section(ad_value)
+            ):
+                return raw_responses
+            if _is_preformatted_section(ad_value) and endpoint_value is None:
+                return raw_responses
 
         result = {}
         for key, value in raw_responses.items():
@@ -806,6 +811,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
         domain_entries = {}
         domain_order = []
+        domain_details = {}
 
         slug_map = {}
         for record in domains:
@@ -819,6 +825,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             if slug:
                 slug_map[slug] = domain_text
                 slug_map[slug.replace("-", "")] = domain_text
+            domain_details[domain_text] = record
             domain_entries[domain_text] = {"domain": domain_text}
             domain_order.append(domain_text)
 
@@ -838,6 +845,30 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 if value is not None:
                     assign(domain_key, metric, value)
 
+        existing_ad_entries = raw_responses.get("ad")
+        existing_items = []
+        if isinstance(existing_ad_entries, list):
+            existing_items = existing_ad_entries
+        elif isinstance(existing_ad_entries, dict):
+            entries_value = existing_ad_entries.get("entries")
+            if isinstance(entries_value, list):
+                existing_items = entries_value
+
+        for item in existing_items:
+            if not isinstance(item, dict):
+                continue
+            domain = item.get("domain") or item.get("name")
+            if not domain:
+                continue
+            domain = str(domain)
+            entry = domain_entries.setdefault(domain, {"domain": domain})
+            if domain not in domain_order:
+                domain_order.append(domain)
+            for metric in ad_metrics:
+                value = item.get(metric)
+                if value is not None:
+                    entry[metric] = value
+
         for key, value in raw_responses.items():
             if not key.startswith("ad_"):
                 continue
@@ -852,7 +883,69 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     break
 
         ordered = [domain_entries[name] for name in domain_order if len(domain_entries[name]) > 1]
-        return ordered
+        if not ordered:
+            return {}
+
+        domains_str_parts = []
+        count_fields = {
+            "enabled_count_str": "enabled_accounts",
+            "da_count_str": "domain_admins",
+            "ea_count_str": "ent_admins",
+            "ep_count_str": "exp_passwords",
+            "ne_count_str": "passwords_never_exp",
+            "ia_count_str": "inactive_accounts",
+            "ga_count_str": "generic_accounts",
+            "gl_count_str": "generic_logins",
+        }
+        count_parts = {field: [] for field in count_fields}
+
+        risk_fields = {
+            "da_risk_string": "domain_admins",
+            "ea_risk_string": "enterprise_admins",
+            "ep_risk_string": "expired_passwords",
+            "ne_risk_string": "passwords_never_expire",
+            "ia_risk_string": "inactive_accounts",
+            "ga_risk_string": "generic_accounts",
+            "gl_risk_string": "generic_logins",
+        }
+        risk_parts = {field: [] for field in risk_fields}
+
+        def _format_count(value):
+            if value in (None, ""):
+                return "0"
+            return str(value)
+
+        def _format_risk_value(value):
+            if value is None:
+                return ""
+            text = str(value).strip()
+            return text.capitalize() if text else ""
+
+        for entry in ordered:
+            domain = entry.get("domain", "")
+            domains_str_parts.append(domain)
+            details = domain_details.get(domain, {})
+            if not isinstance(details, dict):
+                details = {}
+
+            for output_field, workbook_key in count_fields.items():
+                count_parts[output_field].append(_format_count(details.get(workbook_key)))
+
+            for output_field, metric in risk_fields.items():
+                risk_parts[output_field].append(_format_risk_value(entry.get(metric)))
+
+        summary = {
+            "entries": ordered,
+            "domains_str": "/".join(domains_str_parts),
+        }
+
+        for field, parts in count_parts.items():
+            summary[field] = "/".join(parts)
+
+        for field, parts in risk_parts.items():
+            summary[field] = "/".join(parts)
+
+        return summary
 
     @staticmethod
     def _collect_password_responses(raw_responses, workbook_data):

@@ -141,7 +141,28 @@ class ProjectSerializerDataResponsesTests(TestCase):
         cls.workbook_data = {
             "ad": {
                 "domains": [
-                    {"domain": "corp.example.com"},
+                    {
+                        "domain": "corp.example.com",
+                        "enabled_accounts": 220,
+                        "domain_admins": 5,
+                        "ent_admins": 2,
+                        "exp_passwords": 12,
+                        "passwords_never_exp": 8,
+                        "inactive_accounts": 15,
+                        "generic_accounts": 6,
+                        "generic_logins": 3,
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "enabled_accounts": 80,
+                        "domain_admins": 3,
+                        "ent_admins": 1,
+                        "exp_passwords": 5,
+                        "passwords_never_exp": 2,
+                        "inactive_accounts": 4,
+                        "generic_accounts": 1,
+                        "generic_logins": 2,
+                    },
                 ]
             },
             "password": {
@@ -198,6 +219,13 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "ad_corpexamplecom_expired_passwords": "low",
             "ad_corpexamplecom_inactive_accounts": "medium",
             "ad_corpexamplecom_passwords_never_expire": "low",
+            "ad_labexamplecom_domain_admins": "medium",
+            "ad_labexamplecom_enterprise_admins": "high",
+            "ad_labexamplecom_expired_passwords": "medium",
+            "ad_labexamplecom_passwords_never_expire": "high",
+            "ad_labexamplecom_inactive_accounts": "low",
+            "ad_labexamplecom_generic_accounts": "low",
+            "ad_labexamplecom_generic_logins": "medium",
             "firewall_edge-fw01_type": "Next-Gen",
             "firewall_core-fw02_type": "Appliance",
         }
@@ -220,12 +248,32 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(responses["osint_bucket_risk"], "High")
         self.assertEqual(responses["osint_leaked_creds_risk"], "Medium")
 
-        ad_entries = responses["ad"]
-        self.assertIsInstance(ad_entries, list)
-        self.assertEqual(len(ad_entries), 1)
-        self.assertEqual(ad_entries[0]["domain"], "corp.example.com")
-        self.assertEqual(ad_entries[0]["domain_admins"], "high")
-        self.assertEqual(ad_entries[0]["inactive_accounts"], "medium")
+        ad_summary = responses["ad"]
+        self.assertIn("entries", ad_summary)
+        ad_entries = ad_summary["entries"]
+        self.assertEqual(len(ad_entries), 2)
+        corp_ad = next(entry for entry in ad_entries if entry["domain"] == "corp.example.com")
+        lab_ad = next(entry for entry in ad_entries if entry["domain"] == "lab.example.com")
+        self.assertEqual(corp_ad["domain_admins"], "high")
+        self.assertEqual(corp_ad["inactive_accounts"], "medium")
+        self.assertEqual(lab_ad["domain_admins"], "medium")
+        self.assertEqual(lab_ad["enterprise_admins"], "high")
+        self.assertEqual(ad_summary["domains_str"], "corp.example.com/lab.example.com")
+        self.assertEqual(ad_summary["enabled_count_str"], "220/80")
+        self.assertEqual(ad_summary["da_count_str"], "5/3")
+        self.assertEqual(ad_summary["ea_count_str"], "2/1")
+        self.assertEqual(ad_summary["ep_count_str"], "12/5")
+        self.assertEqual(ad_summary["ne_count_str"], "8/2")
+        self.assertEqual(ad_summary["ia_count_str"], "15/4")
+        self.assertEqual(ad_summary["ga_count_str"], "6/1")
+        self.assertEqual(ad_summary["gl_count_str"], "3/2")
+        self.assertEqual(ad_summary["da_risk_string"], "High/Medium")
+        self.assertEqual(ad_summary["ea_risk_string"], "Medium/High")
+        self.assertEqual(ad_summary["ep_risk_string"], "Low/Medium")
+        self.assertEqual(ad_summary["ne_risk_string"], "Low/High")
+        self.assertEqual(ad_summary["ia_risk_string"], "Medium/Low")
+        self.assertEqual(ad_summary["ga_risk_string"], "High/Low")
+        self.assertEqual(ad_summary["gl_risk_string"], "Medium/Medium")
 
         password_entries = responses["password"]
         self.assertEqual(password_entries, [{"domain": "corp.example.com", "risk": "medium"}])
