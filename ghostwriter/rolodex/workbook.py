@@ -301,13 +301,22 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
         add_required("burp-cap.csv")
 
     # Vulnerability artifacts
-    nexpose_totals = [
-        _as_int(_get_nested(data, ("external_nexpose", "total"), 0)),
-        _as_int(_get_nested(data, ("internal_nexpose", "total"), 0)),
-        _as_int(_get_nested(data, ("iot-iomt_nexpose",), 0)),
-    ]
+    external_nexpose_total = _as_int(_get_nested(data, ("external_nexpose", "total"), 0))
+    internal_nexpose_total = _as_int(_get_nested(data, ("internal_nexpose", "total"), 0))
+    iot_nexpose_total = _as_int(_get_nested(data, ("iot_iomt_nexpose", "total"), 0))
+
+    nexpose_totals = [external_nexpose_total, internal_nexpose_total, iot_nexpose_total]
     if any(total > 0 for total in nexpose_totals):
         add_required("nexpose_cap.csv")
+
+    if external_nexpose_total > 0:
+        add_required("external_nexpose_csv.csv")
+
+    if internal_nexpose_total > 0:
+        add_required("internal_nexpose_csv.csv")
+
+    if iot_nexpose_total > 0:
+        add_required("iot_nexpose_csv.csv")
 
     firewall_source = _get_nested(data, ("fierwall",), None)
     if not isinstance(firewall_source, dict):

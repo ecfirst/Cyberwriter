@@ -5,6 +5,7 @@ from __future__ import annotations
 # Standard Libraries
 import csv
 import io
+from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from django.core.files.base import File
@@ -174,6 +175,39 @@ def _parse_firewall_score(raw_value: Any) -> Optional[float]:
         return None
 
 
+def _parse_severity_level(raw_value: Any) -> Optional[float]:
+    """Normalize a Nexpose severity level value to a floating point score."""
+
+    text = str(raw_value).strip() if raw_value is not None else ""
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        upper_text = text.upper()
+        if upper_text == "HIGH":
+            return 9.0
+        if upper_text == "MEDIUM":
+            return 6.0
+        if upper_text == "LOW":
+            return 2.0
+    return None
+
+
+def _categorize_severity(score: Optional[float]) -> Optional[str]:
+    """Return the severity bucket for the provided Nexpose score."""
+
+    if score is None:
+        return None
+    if score >= 8:
+        return "High"
+    if score >= 4:
+        return "Medium"
+    if score >= 0:
+        return "Low"
+    return None
+
+
 def parse_firewall_report(file_obj: File) -> List[Dict[str, Any]]:
     """Parse a firewall_csv.csv export into normalized issue entries."""
 
@@ -228,6 +262,58 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     return issues
 
 
+def parse_nexpose_vulnerability_report(file_obj: File) -> List[Dict[str, Any]]:
+    """Parse a Nexpose CSV export into grouped vulnerability summaries."""
+
+    grouped: Dict[str, Counter] = {
+        "High": Counter(),
+        "Medium": Counter(),
+        "Low": Counter(),
+    }
+
+    for row in _decode_file(file_obj):
+        severity_value = _parse_severity_level(
+            _get_case_insensitive(row, "Vulnerability Severity Level")
+        )
+        severity_bucket = _categorize_severity(severity_value)
+        if not severity_bucket:
+            continue
+
+        title = str(_get_case_insensitive(row, "Vulnerability Title") or "").strip()
+        impact = str(_get_case_insensitive(row, "Impact") or "").strip()
+        if not title and not impact:
+            continue
+
+        grouped[severity_bucket][(title, impact)] += 1
+
+    summaries: List[Dict[str, Any]] = []
+    for severity in ("High", "Medium", "Low"):
+        counter = grouped.get(severity)
+        if not counter:
+            continue
+        ordered = sorted(
+            counter.items(),
+            key=lambda item: (
+                -item[1],
+                (item[0][0] or "").lower(),
+                (item[0][1] or "").lower(),
+            ),
+        )
+        items: List[Dict[str, Any]] = []
+        for (title, impact), count in ordered[:5]:
+            items.append({"title": title, "impact": impact, "count": count})
+        if items:
+            summaries.append(
+                {
+                    "severity": severity,
+                    "total_unique": len(counter),
+                    "items": items,
+                }
+            )
+
+    return summaries
+
+
 WEB_RISK_ORDER = {
     "CRITICAL": 0,
     "HIGH": 1,
@@ -236,6 +322,26 @@ WEB_RISK_ORDER = {
     "INFO": 4,
     "INFORMATION": 4,
     "INFORMATIONAL": 4,
+}
+
+
+NEXPOSE_ARTIFACT_DEFINITIONS: Dict[str, Dict[str, str]] = {
+    "external_nexpose_csv.csv": {
+        "artifact_key": "external_nexpose_vulnerabilities",
+        "label": "External Nexpose Vulnerabilities",
+    },
+    "internal_nexpose_csv.csv": {
+        "artifact_key": "internal_nexpose_vulnerabilities",
+        "label": "Internal Nexpose Vulnerabilities",
+    },
+    "iot_nexpose_csv.csv": {
+        "artifact_key": "iot_nexpose_vulnerabilities",
+        "label": "IoT/IoMT Nexpose Vulnerabilities",
+    },
+}
+
+NEXPOSE_ARTIFACT_KEYS = {
+    definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
 }
 
 
@@ -274,6 +380,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     }
 
     firewall_results: List[Dict[str, Any]] = []
+    nexpose_results: Dict[str, Dict[str, Any]] = {}
 
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
@@ -301,6 +408,15 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
                 firewall_results.extend(parsed_firewall)
+        elif label in NEXPOSE_ARTIFACT_DEFINITIONS:
+            parsed_vulnerabilities = parse_nexpose_vulnerability_report(data_file.file)
+            if parsed_vulnerabilities:
+                definition = NEXPOSE_ARTIFACT_DEFINITIONS[label]
+                artifact_key = definition["artifact_key"]
+                nexpose_results[artifact_key] = {
+                    "label": definition["label"],
+                    "entries": parsed_vulnerabilities,
+                }
         else:
             requirement_slug = (data_file.requirement_slug or "").strip()
             if requirement_slug:
@@ -350,5 +466,13 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     if firewall_results:
         artifacts["firewall_findings"] = firewall_results
+
+    for artifact_key, details in nexpose_results.items():
+        entries = details.get("entries") or []
+        if entries:
+            artifacts[artifact_key] = {
+                "label": details.get("label", artifact_key.replace("_", " ").title()),
+                "entries": entries,
+            }
 
     return artifacts
