@@ -158,7 +158,7 @@ class ProjectIPArtifactForm(forms.Form):
         required=False,
         widget=forms.Textarea(
             attrs={
-                "class": "form-control",
+                "class": "form-control no-auto-tinymce",
                 "rows": 5,
                 "placeholder": _("One IP address per line"),
             }
@@ -169,7 +169,7 @@ class ProjectIPArtifactForm(forms.Form):
         required=False,
         widget=forms.ClearableFileInput(
             attrs={
-                "class": "form-control-file project-required-data-input",
+                "class": "form-control-file",
                 "accept": ".txt,text/plain",
             }
         ),
