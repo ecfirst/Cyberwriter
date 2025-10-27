@@ -68,3 +68,51 @@ class WorkbookHelpersTests(SimpleTestCase):
 
         labels = [entry["label"] for entry in required_files]
         self.assertIn("firewall_csv.csv", labels)
+
+    def test_firewall_device_questions_include_type_field(self):
+        workbook_data = {
+            "firewall": {
+                "devices": [
+                    {"name": "FW-1"},
+                    {"name": "Branch"},
+                    "Unnamed Entry",
+                ]
+            }
+        }
+
+        questions, _ = build_data_configuration(workbook_data)
+
+        firewall_questions = [q for q in questions if q["section"] == "Firewall"]
+        self.assertEqual(len(firewall_questions), 3)
+        first_question = firewall_questions[0]
+        self.assertEqual(first_question["label"], "Firewall Type")
+        self.assertEqual(first_question["subheading"], "FW-1")
+        self.assertTrue(first_question["key"].startswith("firewall_"))
+        self.assertTrue(first_question["key"].endswith("_type"))
+        last_question = firewall_questions[-1]
+        self.assertEqual(last_question["subheading"], "Unnamed Entry")
+
+    def test_osint_risk_questions_added_when_counts_present(self):
+        workbook_data = {
+            "osint": {
+                "total_squat": 1,
+                "total_buckets": 2,
+                "total_leaks": 3,
+            }
+        }
+
+        questions, _ = build_data_configuration(workbook_data)
+
+        intelligence_questions = [q for q in questions if q["section"] == "Intelligence"]
+        keys = {question["key"] for question in intelligence_questions}
+
+        self.assertIn("osint_squat_concern", keys)
+        self.assertIn("osint_bucket_risk", keys)
+        self.assertIn("osint_leaked_creds_risk", keys)
+
+        bucket_question = next(q for q in intelligence_questions if q["key"] == "osint_bucket_risk")
+        self.assertEqual(bucket_question["label"], "What is the risk you would assign to the exposed buckets found?")
+        self.assertEqual(
+            bucket_question["field_kwargs"]["choices"],
+            (("High", "High"), ("Medium", "Medium"), ("Low", "Low")),
+        )

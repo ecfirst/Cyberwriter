@@ -155,6 +155,12 @@ class ProjectSerializerDataResponsesTests(TestCase):
                     {"domain": "lab.example.com"},
                 ]
             },
+            "firewall": {
+                "devices": [
+                    {"name": "Edge-FW01"},
+                    {"name": "Core-FW02"},
+                ]
+            },
         }
 
         cls.legacy_responses = {
@@ -163,6 +169,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "system_config_risk": "medium",
             "wireless_open_risk": "high",
             "osint_squat_concern": "example.com",
+            "osint_bucket_risk": "High",
+            "osint_leaked_creds_risk": "Medium",
             "wireless_rogue_risk": "medium",
             "wireless_hidden_risk": "low",
             "wireless_segmentation_ssids": ["Guest"],
@@ -182,6 +190,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "ad_corpexamplecom_expired_passwords": "low",
             "ad_corpexamplecom_inactive_accounts": "medium",
             "ad_corpexamplecom_passwords_never_expire": "low",
+            "firewall_edge-fw01_type": "Next-Gen",
+            "firewall_core-fw02_type": "Appliance",
         }
 
     def setUp(self):
@@ -199,6 +209,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
 
         self.assertEqual(responses["cloud_config_risk"], "low")
         self.assertEqual(responses["wireless_segmentation_ssids"], ["Guest"])
+        self.assertEqual(responses["osint_bucket_risk"], "High")
+        self.assertEqual(responses["osint_leaked_creds_risk"], "Medium")
 
         ad_entries = responses["ad"]
         self.assertIsInstance(ad_entries, list)
@@ -228,16 +240,29 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "labexamplecom", [entry["domain"] for entry in endpoint_entries]
         )
 
+        firewall_entries = responses["firewall"]
+        self.assertEqual(len(firewall_entries), 2)
+        edge_firewall = next(entry for entry in firewall_entries if entry["name"] == "Edge-FW01")
+        core_firewall = next(entry for entry in firewall_entries if entry["name"] == "Core-FW02")
+        self.assertEqual(edge_firewall["type"], "Next-Gen")
+        self.assertEqual(core_firewall["type"], "Appliance")
+
         self.assertNotIn("password_corpexamplecom_risk", responses)
         self.assertNotIn("endpoint_corpexamplecom_av_gap", responses)
+        self.assertNotIn("firewall_edge-fw01_type", responses)
 
     def test_new_structure_is_preserved(self):
         structured = {
             "cloud_config_risk": "low",
+            "osint_bucket_risk": "High",
+            "osint_leaked_creds_risk": "Medium",
             "ad": [{"domain": "corp.example.com", "domain_admins": "medium"}],
             "password": [{"domain": "corp.example.com", "risk": "low"}],
             "endpoint": [
                 {"domain": "corp.example.com", "av_gap": "medium", "open_wifi": "low"},
+            ],
+            "firewall": [
+                {"name": "Edge-FW01", "type": "Next-Gen"},
             ],
         }
 

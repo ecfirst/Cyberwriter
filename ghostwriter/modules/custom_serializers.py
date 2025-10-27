@@ -722,11 +722,13 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if any(isinstance(raw_responses.get(section), list) for section in ("ad", "password", "endpoint")) and not has_legacy_keys:
             return raw_responses
 
-        result = {
-            key: value
-            for key, value in raw_responses.items()
-            if not key.startswith(("ad_", "password_", "endpoint_"))
-        }
+        result = {}
+        for key, value in raw_responses.items():
+            if key.startswith(("ad_", "password_", "endpoint_")):
+                continue
+            if key.startswith("firewall_") and key.endswith("_type"):
+                continue
+            result[key] = value
 
         ad_entries = ProjectSerializer._collect_ad_responses(raw_responses, workbook_data)
         if ad_entries:
@@ -740,7 +742,58 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if endpoint_entries:
             result["endpoint"] = endpoint_entries
 
+        firewall_entries = ProjectSerializer._collect_firewall_responses(raw_responses, workbook_data)
+        if firewall_entries:
+            result["firewall"] = firewall_entries
+
         return result
+
+    @staticmethod
+    def _collect_firewall_responses(raw_responses, workbook_data):
+        firewall_data = (workbook_data or {}).get("firewall", {})
+        devices = firewall_data.get("devices", []) if isinstance(firewall_data, dict) else []
+
+        slug_map = {}
+        if isinstance(devices, list):
+            for index, record in enumerate(devices, start=1):
+                if isinstance(record, dict):
+                    device_name = (
+                        record.get("name")
+                        or record.get("device")
+                        or record.get("hostname")
+                    )
+                else:
+                    device_name = record
+                display_name = str(device_name).strip() if device_name else ""
+                if not display_name:
+                    display_name = f"Device {index}"
+                base_slug = ProjectSerializer._build_slug("firewall", display_name)
+                candidates = [base_slug] if base_slug else []
+                fallback_slug = f"firewall_device_{index}"
+                candidates.append(fallback_slug)
+                for candidate in candidates:
+                    if not candidate:
+                        continue
+                    slug_map[candidate] = display_name
+                    slug_map[candidate.replace("-", "")] = display_name
+
+        entries = {}
+        order = []
+        for key, value in raw_responses.items():
+            if not key.startswith("firewall_") or not key.endswith("_type"):
+                continue
+            base_slug = key[: -len("_type")]
+            device_name = slug_map.get(base_slug) or slug_map.get(base_slug.replace("-", ""))
+            if not device_name:
+                slug_fragment = base_slug[len("firewall_") :]
+                fallback_name = slug_fragment.replace("_", " ").replace("-", " ").strip()
+                device_name = fallback_name.title() if fallback_name else "Firewall Device"
+            entry = entries.setdefault(device_name, {"name": device_name})
+            entry["type"] = value
+            if device_name not in order:
+                order.append(device_name)
+
+        return [entries[name] for name in order if len(entries[name]) > 1]
 
     @staticmethod
     def _collect_ad_responses(raw_responses, workbook_data):

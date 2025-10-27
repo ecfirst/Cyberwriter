@@ -339,6 +339,8 @@ LINTER_CONTEXT = {
             "wireless_hidden_risk": "low",
             "wireless_psk_rotation_concern": "yes",
             "osint_squat_concern": "example.com",
+            "osint_bucket_risk": "High",
+            "osint_leaked_creds_risk": "Medium",
             "wireless_segmentation_tested": True,
             "ad": [
                 {
@@ -368,6 +370,10 @@ LINTER_CONTEXT = {
                     "open_wifi": "high",
                     "av_gap": "high",
                 },
+            ],
+            "firewall": [
+                {"name": "Edge-FW01", "type": "Next-Gen"},
+                {"name": "Core-FW02", "type": "Appliance"},
             ],
         },
         "data_artifacts": {
