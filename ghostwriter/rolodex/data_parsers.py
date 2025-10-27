@@ -262,6 +262,86 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     return issues
 
 
+class _SeverityItemsAccessor:
+    """Provide dual behaviour for severity ``items`` access."""
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data: "_SeverityGroup") -> None:
+        self._data = data
+
+    def __call__(self, *args, **kwargs):  # pragma: no cover - compatibility shim
+        return dict.items(self._data, *args, **kwargs)
+
+    def __iter__(self):
+        return iter(dict.get(self._data, "items", []))
+
+    def __len__(self):  # pragma: no cover - defensive guard
+        return len(dict.get(self._data, "items", []))
+
+    def __bool__(self):
+        return bool(dict.get(self._data, "items", []))
+
+    def __repr__(self):  # pragma: no cover - used for debugging
+        return repr(dict.get(self._data, "items", []))
+
+
+class _SeverityGroup(dict):
+    """Dictionary subclass exposing list-like ``items`` attribute access."""
+
+    __slots__ = ()
+
+    def __getattribute__(self, name):
+        if name == "items":
+            return _SeverityItemsAccessor(self)
+        return dict.__getattribute__(self, name)
+
+
+def _coerce_severity_group(value: Any) -> _SeverityGroup:
+    """Normalize a severity mapping into a ``_SeverityGroup`` instance."""
+
+    if isinstance(value, _SeverityGroup):
+        return value
+    total_unique = 0
+    items: List[Dict[str, Any]] = []
+    if isinstance(value, dict):
+        raw_total = value.get("total_unique", 0)
+        try:
+            total_unique = int(raw_total)
+        except (TypeError, ValueError):  # pragma: no cover - defensive guard
+            total_unique = 0
+        raw_items = value.get("items", [])
+        if isinstance(raw_items, list):
+            items = list(raw_items)
+        elif raw_items:  # pragma: no cover - defensive guard
+            items = list(raw_items)
+    return _SeverityGroup(total_unique=total_unique, items=items)
+
+
+def normalize_nexpose_artifact_payload(payload: Any) -> Dict[str, Any]:
+    """Return a copy of ``payload`` with severity buckets wrapped for templates."""
+
+    if not isinstance(payload, dict):
+        return payload
+    normalized: Dict[str, Any] = dict(payload)
+    for severity_key in ("high", "med", "low"):
+        if severity_key in normalized:
+            normalized[severity_key] = _coerce_severity_group(normalized[severity_key])
+    return normalized
+
+
+def normalize_nexpose_artifacts_map(artifacts: Any) -> Any:
+    """Normalize Nexpose artifact entries within ``artifacts`` for template access."""
+
+    if not isinstance(artifacts, dict):
+        return artifacts
+    normalized: Dict[str, Any] = dict(artifacts)
+    for key, value in list(normalized.items()):
+        if isinstance(key, str) and key.endswith("_nexpose_vulnerabilities"):
+            normalized[key] = normalize_nexpose_artifact_payload(value)
+    return normalized
+
+
 def parse_nexpose_vulnerability_report(file_obj: File) -> Dict[str, Dict[str, Any]]:
     """Parse a Nexpose CSV export into grouped vulnerability summaries."""
 
@@ -307,10 +387,10 @@ def parse_nexpose_vulnerability_report(file_obj: File) -> Dict[str, Dict[str, An
         for (title, impact), count in ordered[:5]:
             items.append({"title": title, "impact": impact, "count": count})
 
-        summaries[severity_map[severity]] = {
-            "total_unique": len(counter),
-            "items": items,
-        }
+        summaries[severity_map[severity]] = _SeverityGroup(
+            total_unique=len(counter),
+            items=items,
+        )
 
     return summaries
 

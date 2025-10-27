@@ -1,5 +1,7 @@
 """This contains utilities and values used by template linting."""
 
+from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
+
 # Example JSON reporting data for loading into templates for rendering tests
 LINTER_CONTEXT = {
     "report_date": "Mar. 25, 2021",
@@ -1064,3 +1066,7 @@ LINTER_CONTEXT = {
     },
     "extra_fields": {},
 }
+
+LINTER_CONTEXT["project"]["data_artifacts"] = normalize_nexpose_artifacts_map(
+    LINTER_CONTEXT["project"].get("data_artifacts", {})
+)

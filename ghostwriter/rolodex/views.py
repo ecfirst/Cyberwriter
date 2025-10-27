@@ -85,6 +85,7 @@ from ghostwriter.rolodex.models import (
     ProjectTarget,
 )
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
+from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
 from ghostwriter.rolodex.workbook import build_data_configuration, build_workbook_sections
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
@@ -1635,7 +1636,8 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             if data_file.requirement_slug
         }
         dns_issue_counts: Dict[str, int] = {}
-        artifacts = object.data_artifacts or {}
+        artifacts = normalize_nexpose_artifacts_map(object.data_artifacts or {})
+        object.data_artifacts = artifacts
         for dns_entry in artifacts.get("dns_issues", []) or []:
             domain = (dns_entry.get("domain") or "").strip()
             if domain:

@@ -11,6 +11,7 @@ from django.test import TestCase
 
 # Ghostwriter Libraries
 from ghostwriter.factories import GenerateMockProject
+from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifact_payload
 from ghostwriter.rolodex.models import ProjectDataFile
 
 
@@ -94,6 +95,7 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(self.project.data_responses, {"custom": "value"})
 
         artifact = self.project.data_artifacts.get("external_nexpose_vulnerabilities")
+        artifact = normalize_nexpose_artifact_payload(artifact)
         self.assertIsNotNone(artifact)
         self.assertEqual(artifact["label"], "External Nexpose Vulnerabilities")
 
@@ -107,6 +109,7 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(high_items[1]["title"], "Alpha Exposure")
         self.assertEqual(high_items[1]["count"], 2)
         self.assertEqual(high_items[-1]["title"], "Epsilon Risk")
+        self.assertEqual(list(high_group.items), high_items)
 
         medium_group = artifact.get("med")
         self.assertIsInstance(medium_group, dict)
@@ -115,6 +118,7 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(len(medium_items), 2)
         self.assertEqual(medium_items[0]["title"], "Medium Alpha")
         self.assertEqual(medium_items[0]["count"], 4)
+        self.assertEqual(list(medium_group.items), medium_items)
 
         low_group = artifact.get("low")
         self.assertIsInstance(low_group, dict)
@@ -123,6 +127,7 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(len(low_items), 2)
         self.assertEqual(low_items[0]["title"], "Low Alpha")
         self.assertEqual(low_items[0]["count"], 3)
+        self.assertEqual(list(low_group.items), low_items)
 
         self.assertIn("external_nexpose_vulnerabilities", self.project.data_artifacts)
 
