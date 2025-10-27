@@ -141,18 +141,48 @@ class ProjectSerializerDataResponsesTests(TestCase):
         cls.workbook_data = {
             "ad": {
                 "domains": [
-                    {"domain": "corp.example.com"},
+                    {
+                        "domain": "corp.example.com",
+                        "enabled_accounts": 220,
+                        "domain_admins": 5,
+                        "ent_admins": 2,
+                        "exp_passwords": 12,
+                        "passwords_never_exp": 8,
+                        "inactive_accounts": 15,
+                        "generic_accounts": 6,
+                        "generic_logins": 3,
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "enabled_accounts": 80,
+                        "domain_admins": 3,
+                        "ent_admins": 1,
+                        "exp_passwords": 5,
+                        "passwords_never_exp": 2,
+                        "inactive_accounts": 4,
+                        "generic_accounts": 1,
+                        "generic_logins": 2,
+                    },
                 ]
             },
             "password": {
                 "policies": [
-                    {"domain_name": "corp.example.com"},
+                    {"domain_name": "corp.example.com", "passwords_cracked": 3589},
+                    {"domain_name": "lab.example.com", "passwords_cracked": 4875},
                 ]
             },
             "endpoint": {
                 "domains": [
-                    {"domain": "corp.example.com"},
-                    {"domain": "lab.example.com"},
+                    {
+                        "domain": "corp.example.com",
+                        "systems_ood": 25,
+                        "open_wifi": 5,
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "systems_ood": 43,
+                        "open_wifi": 12,
+                    },
                 ]
             },
             "firewall": {
@@ -177,6 +207,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "wireless_segmentation_tested": True,
             "wireless_psk_rotation_concern": "yes",
             "password_corpexamplecom_risk": "medium",
+            "password_labexamplecom_risk": "high",
             "endpoint_labexamplecom_av_gap": "high",
             "endpoint_corpexamplecom_av_gap": "medium",
             "ad_corpexamplecom_domain_admins": "high",
@@ -190,6 +221,13 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "ad_corpexamplecom_expired_passwords": "low",
             "ad_corpexamplecom_inactive_accounts": "medium",
             "ad_corpexamplecom_passwords_never_expire": "low",
+            "ad_labexamplecom_domain_admins": "medium",
+            "ad_labexamplecom_enterprise_admins": "high",
+            "ad_labexamplecom_expired_passwords": "medium",
+            "ad_labexamplecom_passwords_never_expire": "high",
+            "ad_labexamplecom_inactive_accounts": "low",
+            "ad_labexamplecom_generic_accounts": "low",
+            "ad_labexamplecom_generic_logins": "medium",
             "firewall_edge-fw01_type": "Next-Gen",
             "firewall_core-fw02_type": "Appliance",
         }
@@ -212,20 +250,52 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(responses["osint_bucket_risk"], "High")
         self.assertEqual(responses["osint_leaked_creds_risk"], "Medium")
 
-        ad_entries = responses["ad"]
-        self.assertIsInstance(ad_entries, list)
-        self.assertEqual(len(ad_entries), 1)
-        self.assertEqual(ad_entries[0]["domain"], "corp.example.com")
-        self.assertEqual(ad_entries[0]["domain_admins"], "high")
-        self.assertEqual(ad_entries[0]["inactive_accounts"], "medium")
+        ad_summary = responses["ad"]
+        self.assertIn("entries", ad_summary)
+        ad_entries = ad_summary["entries"]
+        self.assertEqual(len(ad_entries), 2)
+        corp_ad = next(entry for entry in ad_entries if entry["domain"] == "corp.example.com")
+        lab_ad = next(entry for entry in ad_entries if entry["domain"] == "lab.example.com")
+        self.assertEqual(corp_ad["domain_admins"], "high")
+        self.assertEqual(corp_ad["inactive_accounts"], "medium")
+        self.assertEqual(lab_ad["domain_admins"], "medium")
+        self.assertEqual(lab_ad["enterprise_admins"], "high")
+        self.assertEqual(ad_summary["domains_str"], "corp.example.com/lab.example.com")
+        self.assertEqual(ad_summary["enabled_count_str"], "220/80")
+        self.assertEqual(ad_summary["da_count_str"], "5/3")
+        self.assertEqual(ad_summary["ea_count_str"], "2/1")
+        self.assertEqual(ad_summary["ep_count_str"], "12/5")
+        self.assertEqual(ad_summary["ne_count_str"], "8/2")
+        self.assertEqual(ad_summary["ia_count_str"], "15/4")
+        self.assertEqual(ad_summary["ga_count_str"], "6/1")
+        self.assertEqual(ad_summary["gl_count_str"], "3/2")
+        self.assertEqual(ad_summary["da_risk_string"], "High/Medium")
+        self.assertEqual(ad_summary["ea_risk_string"], "Medium/High")
+        self.assertEqual(ad_summary["ep_risk_string"], "Low/Medium")
+        self.assertEqual(ad_summary["ne_risk_string"], "Low/High")
+        self.assertEqual(ad_summary["ia_risk_string"], "Medium/Low")
+        self.assertEqual(ad_summary["ga_risk_string"], "High/Low")
+        self.assertEqual(ad_summary["gl_risk_string"], "Medium/Medium")
 
-        password_entries = responses["password"]
-        self.assertEqual(password_entries, [{"domain": "corp.example.com", "risk": "medium"}])
-        self.assertNotIn(
-            "corpexamplecom", [entry["domain"] for entry in password_entries]
+        password_summary = responses["password"]
+        self.assertIn("entries", password_summary)
+        password_entries = password_summary["entries"]
+        self.assertEqual(len(password_entries), 2)
+        corp_password = next(
+            entry for entry in password_entries if entry["domain"] == "corp.example.com"
         )
+        lab_password = next(
+            entry for entry in password_entries if entry["domain"] == "lab.example.com"
+        )
+        self.assertEqual(corp_password["risk"], "medium")
+        self.assertEqual(lab_password["risk"], "high")
+        self.assertEqual(password_summary["domains_str"], "corp.example.com/lab.example.com")
+        self.assertEqual(password_summary["cracked_count_str"], "3589/4875")
+        self.assertEqual(password_summary["cracked_risk_string"], "Medium/High")
 
-        endpoint_entries = responses["endpoint"]
+        endpoint_summary = responses["endpoint"]
+        self.assertIn("entries", endpoint_summary)
+        endpoint_entries = endpoint_summary["entries"]
         self.assertEqual(len(endpoint_entries), 2)
         corp_endpoint = next(entry for entry in endpoint_entries if entry["domain"] == "corp.example.com")
         lab_endpoint = next(entry for entry in endpoint_entries if entry["domain"] == "lab.example.com")
@@ -239,6 +309,11 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertNotIn(
             "labexamplecom", [entry["domain"] for entry in endpoint_entries]
         )
+        self.assertEqual(endpoint_summary["domains_str"], "corp.example.com/lab.example.com")
+        self.assertEqual(endpoint_summary["ood_count_str"], "25/43")
+        self.assertEqual(endpoint_summary["wifi_count_str"], "5/12")
+        self.assertEqual(endpoint_summary["ood_risk_string"], "Medium/High")
+        self.assertEqual(endpoint_summary["wifi_risk_string"], "Low/High")
 
         firewall_entries = responses["firewall"]
         self.assertEqual(len(firewall_entries), 2)
@@ -257,10 +332,22 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "osint_bucket_risk": "High",
             "osint_leaked_creds_risk": "Medium",
             "ad": [{"domain": "corp.example.com", "domain_admins": "medium"}],
-            "password": [{"domain": "corp.example.com", "risk": "low"}],
-            "endpoint": [
-                {"domain": "corp.example.com", "av_gap": "medium", "open_wifi": "low"},
-            ],
+            "password": {
+                "entries": [{"domain": "corp.example.com", "risk": "low"}],
+                "domains_str": "corp.example.com",
+                "cracked_count_str": "100",
+                "cracked_risk_string": "Low",
+            },
+            "endpoint": {
+                "entries": [
+                    {"domain": "corp.example.com", "av_gap": "medium", "open_wifi": "low"},
+                ],
+                "domains_str": "corp.example.com",
+                "ood_count_str": "25",
+                "wifi_count_str": "5",
+                "ood_risk_string": "medium",
+                "wifi_risk_string": "low",
+            },
             "firewall": [
                 {"name": "Edge-FW01", "type": "Next-Gen"},
             ],

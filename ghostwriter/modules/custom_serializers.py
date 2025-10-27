@@ -719,8 +719,22 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             for key in raw_responses
             for prefix in legacy_prefixes
         )
-        if any(isinstance(raw_responses.get(section), list) for section in ("ad", "password", "endpoint")) and not has_legacy_keys:
-            return raw_responses
+        def _is_preformatted_section(value):
+            return isinstance(value, dict) and "entries" in value
+
+        if not has_legacy_keys:
+            preformatted_sections = []
+            for section_key in ("ad", "endpoint", "password"):
+                value = raw_responses.get(section_key)
+                if value is None:
+                    continue
+                if _is_preformatted_section(value):
+                    preformatted_sections.append(value)
+                else:
+                    preformatted_sections = None
+                    break
+            if preformatted_sections:
+                return raw_responses
 
         result = {}
         for key, value in raw_responses.items():
@@ -801,6 +815,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
         domain_entries = {}
         domain_order = []
+        domain_details = {}
 
         slug_map = {}
         for record in domains:
@@ -814,6 +829,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             if slug:
                 slug_map[slug] = domain_text
                 slug_map[slug.replace("-", "")] = domain_text
+            domain_details[domain_text] = record
             domain_entries[domain_text] = {"domain": domain_text}
             domain_order.append(domain_text)
 
@@ -833,6 +849,30 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 if value is not None:
                     assign(domain_key, metric, value)
 
+        existing_ad_entries = raw_responses.get("ad")
+        existing_items = []
+        if isinstance(existing_ad_entries, list):
+            existing_items = existing_ad_entries
+        elif isinstance(existing_ad_entries, dict):
+            entries_value = existing_ad_entries.get("entries")
+            if isinstance(entries_value, list):
+                existing_items = entries_value
+
+        for item in existing_items:
+            if not isinstance(item, dict):
+                continue
+            domain = item.get("domain") or item.get("name")
+            if not domain:
+                continue
+            domain = str(domain)
+            entry = domain_entries.setdefault(domain, {"domain": domain})
+            if domain not in domain_order:
+                domain_order.append(domain)
+            for metric in ad_metrics:
+                value = item.get(metric)
+                if value is not None:
+                    entry[metric] = value
+
         for key, value in raw_responses.items():
             if not key.startswith("ad_"):
                 continue
@@ -847,49 +887,199 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     break
 
         ordered = [domain_entries[name] for name in domain_order if len(domain_entries[name]) > 1]
-        return ordered
+        if not ordered:
+            return {}
+
+        domains_str_parts = []
+        count_fields = {
+            "enabled_count_str": "enabled_accounts",
+            "da_count_str": "domain_admins",
+            "ea_count_str": "ent_admins",
+            "ep_count_str": "exp_passwords",
+            "ne_count_str": "passwords_never_exp",
+            "ia_count_str": "inactive_accounts",
+            "ga_count_str": "generic_accounts",
+            "gl_count_str": "generic_logins",
+        }
+        count_parts = {field: [] for field in count_fields}
+
+        risk_fields = {
+            "da_risk_string": "domain_admins",
+            "ea_risk_string": "enterprise_admins",
+            "ep_risk_string": "expired_passwords",
+            "ne_risk_string": "passwords_never_expire",
+            "ia_risk_string": "inactive_accounts",
+            "ga_risk_string": "generic_accounts",
+            "gl_risk_string": "generic_logins",
+        }
+        risk_parts = {field: [] for field in risk_fields}
+
+        def _format_count(value):
+            if value in (None, ""):
+                return "0"
+            return str(value)
+
+        def _format_risk_value(value):
+            if value is None:
+                return ""
+            text = str(value).strip()
+            return text.capitalize() if text else ""
+
+        for entry in ordered:
+            domain = entry.get("domain", "")
+            domains_str_parts.append(domain)
+            details = domain_details.get(domain, {})
+            if not isinstance(details, dict):
+                details = {}
+
+            for output_field, workbook_key in count_fields.items():
+                count_parts[output_field].append(_format_count(details.get(workbook_key)))
+
+            for output_field, metric in risk_fields.items():
+                risk_parts[output_field].append(_format_risk_value(entry.get(metric)))
+
+        summary = {
+            "entries": ordered,
+            "domains_str": "/".join(domains_str_parts),
+        }
+
+        for field, parts in count_parts.items():
+            summary[field] = "/".join(parts)
+
+        for field, parts in risk_parts.items():
+            summary[field] = "/".join(parts)
+
+        return summary
 
     @staticmethod
     def _collect_password_responses(raw_responses, workbook_data):
         password_data = (workbook_data or {}).get("password", {})
         policies = password_data.get("policies", []) if isinstance(password_data, dict) else []
         entries = {}
-        order = []
+        domain_order = []
+        domain_details = {}
         slug_map = {}
+
+        ad_data = (workbook_data or {}).get("ad", {})
+        ad_domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
+        ad_domain_order = []
+        if isinstance(ad_domains, list):
+            for record in ad_domains:
+                if isinstance(record, dict):
+                    domain_value = record.get("domain") or record.get("name")
+                else:
+                    domain_value = record
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if domain_text and domain_text not in ad_domain_order:
+                    ad_domain_order.append(domain_text)
 
         for policy in policies:
             if not isinstance(policy, dict):
                 continue
             domain_name = policy.get("domain_name") or policy.get("domain")
-            domain_name = str(domain_name) if domain_name else "Unnamed Domain"
+            domain_name = str(domain_name).strip() if domain_name else "Unnamed Domain"
+            domain_details[domain_name] = policy
+            entry = entries.setdefault(domain_name, {"domain": domain_name})
+            if domain_name not in domain_order:
+                domain_order.append(domain_name)
             slug = ProjectSerializer._build_slug("password", domain_name)
             if slug:
                 slug_map[slug] = domain_name
                 slug_map[slug.replace("-", "")] = domain_name
                 value = ProjectSerializer._consume_metric(raw_responses, slug, "risk")
                 if value is not None:
-                    entry = entries.setdefault(domain_name, {"domain": domain_name})
                     entry["risk"] = value
-                    if domain_name not in order:
-                        order.append(domain_name)
 
-        if not order:
-            for key, value in raw_responses.items():
-                if not key.startswith("password_") or not key.endswith("_risk"):
-                    continue
-                domain_slug = key[len("password_") : -len("_risk")]
-                slug_key = f"password_{domain_slug}"
-                domain_name = (
-                    slug_map.get(slug_key)
-                    or slug_map.get(slug_key.replace("-", ""))
-                    or domain_slug.replace("-", ".")
-                )
-                entry = entries.setdefault(domain_name, {"domain": domain_name})
+        existing_password_entries = raw_responses.get("password")
+        existing_items = []
+        if isinstance(existing_password_entries, list):
+            existing_items = existing_password_entries
+        elif isinstance(existing_password_entries, dict):
+            entries_value = existing_password_entries.get("entries")
+            if isinstance(entries_value, list):
+                existing_items = entries_value
+
+        for item in existing_items:
+            if not isinstance(item, dict):
+                continue
+            domain = item.get("domain") or item.get("name")
+            if not domain:
+                continue
+            domain = str(domain)
+            entry = entries.setdefault(domain, {"domain": domain})
+            if domain not in domain_order:
+                domain_order.append(domain)
+            value = item.get("risk")
+            if value is not None:
                 entry["risk"] = value
-                if domain_name not in order:
-                    order.append(domain_name)
 
-        return [entries[name] for name in order if len(entries[name]) > 1]
+        for key, value in raw_responses.items():
+            if not isinstance(key, str) or not key.startswith("password_") or not key.endswith("_risk"):
+                continue
+            domain_slug = key[len("password_") : -len("_risk")]
+            slug_key = f"password_{domain_slug}"
+            domain_name = (
+                slug_map.get(slug_key)
+                or slug_map.get(slug_key.replace("-", ""))
+                or domain_slug.replace("-", ".")
+            )
+            entry = entries.setdefault(domain_name, {"domain": domain_name})
+            if domain_name not in domain_order:
+                domain_order.append(domain_name)
+            entry["risk"] = value
+
+        populated_domains = [name for name in domain_order if len(entries[name]) > 1]
+        if not populated_domains:
+            return {}
+
+        summary_domains = []
+        for domain in ad_domain_order:
+            if domain in entries and len(entries[domain]) > 1 and domain not in summary_domains:
+                summary_domains.append(domain)
+        for domain in populated_domains:
+            if domain not in summary_domains:
+                summary_domains.append(domain)
+
+        if not summary_domains:
+            return {}
+
+        def _format_count(value):
+            if value in (None, ""):
+                return "0"
+            return str(value)
+
+        def _format_risk(value):
+            if value is None:
+                return ""
+            text = str(value).strip()
+            return text.capitalize() if text else ""
+
+        domains_str_parts = []
+        cracked_count_parts = []
+        cracked_risk_parts = []
+        ordered_entries = []
+
+        for domain in summary_domains:
+            entry = entries.get(domain)
+            if not entry:
+                continue
+            ordered_entries.append(entry)
+            domains_str_parts.append(domain)
+            details = domain_details.get(domain, {})
+            if not isinstance(details, dict):
+                details = {}
+            cracked_count_parts.append(_format_count(details.get("passwords_cracked")))
+            cracked_risk_parts.append(_format_risk(entry.get("risk")))
+
+        if not ordered_entries:
+            return {}
+
+        return {
+            "entries": ordered_entries,
+            "domains_str": "/".join(domains_str_parts),
+            "cracked_count_str": "/".join(cracked_count_parts),
+            "cracked_risk_string": "/".join(cracked_risk_parts),
+        }
 
     @staticmethod
     def _collect_endpoint_responses(raw_responses, workbook_data):
@@ -899,6 +1089,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         order = []
         endpoint_metrics = ("av_gap", "open_wifi")
         slug_map = {}
+        domain_details = {}
 
         for record in domains:
             if not isinstance(record, dict):
@@ -907,6 +1098,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             if not domain_name:
                 continue
             domain_name = str(domain_name)
+            domain_details[domain_name] = record
             slug = ProjectSerializer._build_slug("endpoint", domain_name)
             if slug:
                 slug_map[slug] = domain_name
@@ -918,6 +1110,23 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     entry[metric] = value
                     if domain_name not in order:
                         order.append(domain_name)
+
+        existing_endpoint_entries = raw_responses.get("endpoint")
+        if isinstance(existing_endpoint_entries, list):
+            for item in existing_endpoint_entries:
+                if not isinstance(item, dict):
+                    continue
+                domain = item.get("domain") or item.get("name")
+                if not domain:
+                    continue
+                domain = str(domain)
+                entry = entries.setdefault(domain, {"domain": domain})
+                for metric in endpoint_metrics:
+                    value = item.get(metric)
+                    if value is not None:
+                        entry[metric] = value
+                if domain not in order:
+                    order.append(domain)
 
         for key, value in raw_responses.items():
             if not key.startswith("endpoint_"):
@@ -938,7 +1147,44 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                         order.append(domain_name)
                     break
 
-        return [entries[name] for name in order if len(entries[name]) > 1]
+        ordered_entries = [entries[name] for name in order if len(entries[name]) > 1]
+        if not ordered_entries:
+            return {}
+
+        domains_str_parts = []
+        ood_count_parts = []
+        wifi_count_parts = []
+        ood_risk_parts = []
+        wifi_risk_parts = []
+
+        def _format_risk_value(value):
+            if value is None:
+                return ""
+            text = str(value).strip()
+            return text.capitalize() if text else ""
+
+        for entry in ordered_entries:
+            domain = entry.get("domain", "")
+            domains_str_parts.append(domain)
+            details = domain_details.get(domain, {})
+
+            systems_ood = details.get("systems_ood") if isinstance(details, dict) else None
+            ood_count_parts.append("0" if systems_ood in (None, "") else str(systems_ood))
+
+            open_wifi_count = details.get("open_wifi") if isinstance(details, dict) else None
+            wifi_count_parts.append("0" if open_wifi_count in (None, "") else str(open_wifi_count))
+
+            ood_risk_parts.append(_format_risk_value(entry.get("av_gap")))
+            wifi_risk_parts.append(_format_risk_value(entry.get("open_wifi")))
+
+        return {
+            "entries": ordered_entries,
+            "domains_str": "/".join(domains_str_parts),
+            "ood_count_str": "/".join(ood_count_parts),
+            "wifi_count_str": "/".join(wifi_count_parts),
+            "ood_risk_string": "/".join(ood_risk_parts),
+            "wifi_risk_string": "/".join(wifi_risk_parts),
+        }
 
     @staticmethod
     def _build_slug(prefix, value):
