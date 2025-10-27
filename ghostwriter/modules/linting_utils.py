@@ -476,35 +476,35 @@ LINTER_CONTEXT = {
             ],
             "external_nexpose_vulnerabilities": {
                 "label": "External Nexpose Vulnerabilities",
-                "entries": [
-                    {
-                        "severity": "High",
-                        "total_unique": 4,
-                        "items": [
-                            {
-                                "title": "OpenSSL Padding Oracle (CVE-2016-2107)",
-                                "impact": "Allows attackers to decrypt TLS traffic and impersonate the server.",
-                                "count": 3,
-                            },
-                            {
-                                "title": "Outdated Apache HTTP Server",
-                                "impact": "Enables remote code execution through known exploits.",
-                                "count": 2,
-                            },
-                        ],
-                    },
-                    {
-                        "severity": "Medium",
-                        "total_unique": 2,
-                        "items": [
-                            {
-                                "title": "SMB Signing Not Required",
-                                "impact": "Permits man-in-the-middle attacks on SMB sessions.",
-                                "count": 4,
-                            }
-                        ],
-                    },
-                ],
+                "high": {
+                    "total_unique": 4,
+                    "items": [
+                        {
+                            "title": "OpenSSL Padding Oracle (CVE-2016-2107)",
+                            "impact": "Allows attackers to decrypt TLS traffic and impersonate the server.",
+                            "count": 3,
+                        },
+                        {
+                            "title": "Outdated Apache HTTP Server",
+                            "impact": "Enables remote code execution through known exploits.",
+                            "count": 2,
+                        },
+                    ],
+                },
+                "med": {
+                    "total_unique": 2,
+                    "items": [
+                        {
+                            "title": "SMB Signing Not Required",
+                            "impact": "Permits man-in-the-middle attacks on SMB sessions.",
+                            "count": 4,
+                        }
+                    ],
+                },
+                "low": {
+                    "total_unique": 0,
+                    "items": [],
+                },
             },
         },
         "extra_fields": {},

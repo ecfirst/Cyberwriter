@@ -262,7 +262,7 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     return issues
 
 
-def parse_nexpose_vulnerability_report(file_obj: File) -> List[Dict[str, Any]]:
+def parse_nexpose_vulnerability_report(file_obj: File) -> Dict[str, Dict[str, Any]]:
     """Parse a Nexpose CSV export into grouped vulnerability summaries."""
 
     grouped: Dict[str, Counter] = {
@@ -286,11 +286,15 @@ def parse_nexpose_vulnerability_report(file_obj: File) -> List[Dict[str, Any]]:
 
         grouped[severity_bucket][(title, impact)] += 1
 
-    summaries: List[Dict[str, Any]] = []
+    summaries: Dict[str, Dict[str, Any]] = {}
+    severity_map = {
+        "High": "high",
+        "Medium": "med",
+        "Low": "low",
+    }
+
     for severity in ("High", "Medium", "Low"):
-        counter = grouped.get(severity)
-        if not counter:
-            continue
+        counter = grouped.get(severity, Counter())
         ordered = sorted(
             counter.items(),
             key=lambda item: (
@@ -302,14 +306,11 @@ def parse_nexpose_vulnerability_report(file_obj: File) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
         for (title, impact), count in ordered[:5]:
             items.append({"title": title, "impact": impact, "count": count})
-        if items:
-            summaries.append(
-                {
-                    "severity": severity,
-                    "total_unique": len(counter),
-                    "items": items,
-                }
-            )
+
+        summaries[severity_map[severity]] = {
+            "total_unique": len(counter),
+            "items": items,
+        }
 
     return summaries
 
@@ -410,12 +411,12 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 firewall_results.extend(parsed_firewall)
         elif label in NEXPOSE_ARTIFACT_DEFINITIONS:
             parsed_vulnerabilities = parse_nexpose_vulnerability_report(data_file.file)
-            if parsed_vulnerabilities:
+            if any(details.get("items") for details in parsed_vulnerabilities.values()):
                 definition = NEXPOSE_ARTIFACT_DEFINITIONS[label]
                 artifact_key = definition["artifact_key"]
                 nexpose_results[artifact_key] = {
                     "label": definition["label"],
-                    "entries": parsed_vulnerabilities,
+                    **parsed_vulnerabilities,
                 }
         else:
             requirement_slug = (data_file.requirement_slug or "").strip()
@@ -468,11 +469,11 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         artifacts["firewall_findings"] = firewall_results
 
     for artifact_key, details in nexpose_results.items():
-        entries = details.get("entries") or []
-        if entries:
-            artifacts[artifact_key] = {
-                "label": details.get("label", artifact_key.replace("_", " ").title()),
-                "entries": entries,
-            }
+        artifacts[artifact_key] = {
+            "label": details.get("label", artifact_key.replace("_", " ").title()),
+            "high": details.get("high", {"total_unique": 0, "items": []}),
+            "med": details.get("med", {"total_unique": 0, "items": []}),
+            "low": details.get("low", {"total_unique": 0, "items": []}),
+        }
 
     return artifacts

@@ -97,12 +97,8 @@ class NexposeDataParserTests(TestCase):
         self.assertIsNotNone(artifact)
         self.assertEqual(artifact["label"], "External Nexpose Vulnerabilities")
 
-        entries = artifact.get("entries")
-        self.assertIsInstance(entries, list)
-        groups = {entry["severity"]: entry for entry in entries}
-
-        high_group = groups.get("High")
-        self.assertIsNotNone(high_group)
+        high_group = artifact.get("high")
+        self.assertIsInstance(high_group, dict)
         self.assertEqual(high_group["total_unique"], 7)
         high_items = high_group["items"]
         self.assertEqual(len(high_items), 5)
@@ -112,16 +108,16 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(high_items[1]["count"], 2)
         self.assertEqual(high_items[-1]["title"], "Epsilon Risk")
 
-        medium_group = groups.get("Medium")
-        self.assertIsNotNone(medium_group)
+        medium_group = artifact.get("med")
+        self.assertIsInstance(medium_group, dict)
         self.assertEqual(medium_group["total_unique"], 2)
         medium_items = medium_group["items"]
         self.assertEqual(len(medium_items), 2)
         self.assertEqual(medium_items[0]["title"], "Medium Alpha")
         self.assertEqual(medium_items[0]["count"], 4)
 
-        low_group = groups.get("Low")
-        self.assertIsNotNone(low_group)
+        low_group = artifact.get("low")
+        self.assertIsInstance(low_group, dict)
         self.assertEqual(low_group["total_unique"], 2)
         low_items = low_group["items"]
         self.assertEqual(len(low_items), 2)
