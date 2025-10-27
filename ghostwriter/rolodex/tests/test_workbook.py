@@ -1,6 +1,7 @@
 """Unit tests for workbook helper utilities."""
 
 # Django Imports
+from django import forms
 from django.test import SimpleTestCase
 
 # Ghostwriter Libraries
@@ -58,3 +59,27 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertTrue(required_files)
         self.assertIn("slug", required_files[0])
         self.assertEqual(required_files[0]["slug"], "required_dns-report-csv_example-com")
+
+    def test_firewall_device_questions_generated(self):
+        workbook_data = {
+            "firewall": {
+                "devices": [
+                    {"name": "Edge-FW01"},
+                    {"name": ""},
+                    "Unknown",
+                ]
+            }
+        }
+
+        questions, _ = build_data_configuration(workbook_data)
+
+        firewall_questions = [q for q in questions if q["section"] == "Firewall"]
+        self.assertGreaterEqual(len(firewall_questions), 3)
+
+        first = next(q for q in firewall_questions if q["subheading"] == "Edge-FW01")
+        self.assertEqual(first["label"], "Firewall Type")
+        self.assertIs(first["field_class"], forms.CharField)
+        self.assertEqual(first["field_kwargs"]["widget"].attrs.get("class"), "form-control")
+
+        unnamed = next(q for q in firewall_questions if q["subheading"].startswith("Firewall"))
+        self.assertTrue(unnamed["key"].endswith("_type"))

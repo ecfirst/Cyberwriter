@@ -369,6 +369,10 @@ LINTER_CONTEXT = {
                     "av_gap": "high",
                 },
             ],
+            "firewall": [
+                {"name": "Edge-FW01", "type": "Appliance"},
+                {"name": "Core-FW02", "type": "Virtual"},
+            ],
         },
         "data_artifacts": {
             "dns_issues": [

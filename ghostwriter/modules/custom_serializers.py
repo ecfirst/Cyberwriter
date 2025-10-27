@@ -49,7 +49,7 @@ from ghostwriter.rolodex.models import (
     ProjectTarget,
     WhiteCard,
 )
-from ghostwriter.rolodex.workbook import AD_DOMAIN_METRICS
+from ghostwriter.rolodex.workbook import AD_DOMAIN_METRICS, _slugify_identifier
 from ghostwriter.shepherd.models import (
     AuxServerAddress,
     Domain,
@@ -725,7 +725,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         result = {
             key: value
             for key, value in raw_responses.items()
-            if not key.startswith(("ad_", "password_", "endpoint_"))
+            if not key.startswith(("ad_", "password_", "endpoint_", "firewall_"))
         }
 
         ad_entries = ProjectSerializer._collect_ad_responses(raw_responses, workbook_data)
@@ -739,6 +739,10 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         endpoint_entries = ProjectSerializer._collect_endpoint_responses(raw_responses, workbook_data)
         if endpoint_entries:
             result["endpoint"] = endpoint_entries
+
+        firewall_entries = ProjectSerializer._collect_firewall_responses(raw_responses, workbook_data)
+        if firewall_entries:
+            result["firewall"] = firewall_entries
 
         return result
 
@@ -886,6 +890,63 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     break
 
         return [entries[name] for name in order if len(entries[name]) > 1]
+
+    @staticmethod
+    def _collect_firewall_responses(raw_responses, workbook_data):
+        firewall_data = (workbook_data or {}).get("firewall", {})
+        devices = firewall_data.get("devices", []) if isinstance(firewall_data, dict) else []
+        device_records = []
+        slug_map = {}
+
+        for index, device in enumerate(devices, 1):
+            if isinstance(device, dict):
+                raw_name = device.get("name") or device.get("device") or device.get("hostname")
+            else:
+                raw_name = device
+            name = str(raw_name).strip() if raw_name else f"Firewall {index}"
+            if not name:
+                name = f"Firewall {index}"
+            slug = _slugify_identifier("firewall", name)
+            indexed_slug = _slugify_identifier("firewall", name, index)
+            if slug:
+                slug_map.setdefault(slug, name)
+                slug_map.setdefault(slug.replace("-", ""), name)
+            if indexed_slug and indexed_slug != slug:
+                slug_map.setdefault(indexed_slug, name)
+                slug_map.setdefault(indexed_slug.replace("-", ""), name)
+            device_records.append((index, name, slug, indexed_slug))
+
+        results = []
+        for index, name, slug, indexed_slug in device_records:
+            candidates = [slug, indexed_slug]
+            seen = set()
+            firewall_type = None
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                for key in (candidate, candidate.replace("-", "")):
+                    if key and key not in seen:
+                        seen.add(key)
+                        response_key = f"{key}_type"
+                        if response_key in raw_responses:
+                            firewall_type = raw_responses[response_key]
+                            break
+                if firewall_type is not None:
+                    break
+            if firewall_type is None:
+                continue
+            results.append({"name": name, "type": firewall_type})
+
+        if not results:
+            for key, value in raw_responses.items():
+                if key.startswith("firewall_") and key.endswith("_type"):
+                    name_slug = key[len("firewall_") : -len("_type")]
+                    name = slug_map.get(f"firewall_{name_slug}") or slug_map.get(f"firewall_{name_slug}".replace("-", ""))
+                    if not name:
+                        name = name_slug.replace("-", " ").replace("_", " ").title()
+                    results.append({"name": name, "type": value})
+
+        return results
 
     @staticmethod
     def _build_slug(prefix, value):

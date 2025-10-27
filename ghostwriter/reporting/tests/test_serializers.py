@@ -155,6 +155,12 @@ class ProjectSerializerDataResponsesTests(TestCase):
                     {"domain": "lab.example.com"},
                 ]
             },
+            "firewall": {
+                "devices": [
+                    {"name": "Edge-FW01"},
+                    {"name": "Core-FW02"},
+                ]
+            },
         }
 
         cls.legacy_responses = {
@@ -182,6 +188,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "ad_corpexamplecom_expired_passwords": "low",
             "ad_corpexamplecom_inactive_accounts": "medium",
             "ad_corpexamplecom_passwords_never_expire": "low",
+            "firewall_firewall-edge-fw01_1_type": "Appliance",
+            "firewall_firewall-core-fw02_2_type": "Virtual",
         }
 
     def setUp(self):
@@ -231,6 +239,15 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertNotIn("password_corpexamplecom_risk", responses)
         self.assertNotIn("endpoint_corpexamplecom_av_gap", responses)
 
+        firewall_entries = responses["firewall"]
+        self.assertEqual(
+            firewall_entries,
+            [
+                {"name": "Edge-FW01", "type": "Appliance"},
+                {"name": "Core-FW02", "type": "Virtual"},
+            ],
+        )
+
     def test_new_structure_is_preserved(self):
         structured = {
             "cloud_config_risk": "low",
@@ -238,6 +255,9 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "password": [{"domain": "corp.example.com", "risk": "low"}],
             "endpoint": [
                 {"domain": "corp.example.com", "av_gap": "medium", "open_wifi": "low"},
+            ],
+            "firewall": [
+                {"name": "Edge-FW01", "type": "Appliance"},
             ],
         }
 
