@@ -183,8 +183,8 @@
         {% endif %}
       </div>
 
-      <div id="data" class="tab-pane">
-        <h4>Supporting Data</h4>
+      <div id="supplementals" class="tab-pane">
+        <h4>Supplemental Files</h4>
         <hr/>
         {% if required_data_files %}
           <div class="offset-2 col-8 mb-4">
@@ -233,8 +233,14 @@
               </div>
             {% endfor %}
           </div>
+        {% else %}
+          <div class="alert alert-info offset-2 col-8 mt-4">No supplemental files have been requested for this project.</div>
         {% endif %}
+      </div>
 
+      <div id="data" class="tab-pane">
+        <h4>Supporting Data</h4>
+        <hr/>
         <div class="offset-2 col-8 mt-4 dynamic-questions-section">
           <h5>Dynamic Reporting Questions</h5>
           <form method="post" action="{% url 'rolodex:project_data_responses' project.id %}">
