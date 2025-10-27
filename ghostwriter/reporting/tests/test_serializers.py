@@ -167,7 +167,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
             },
             "password": {
                 "policies": [
-                    {"domain_name": "corp.example.com"},
+                    {"domain_name": "corp.example.com", "passwords_cracked": 3589},
+                    {"domain_name": "lab.example.com", "passwords_cracked": 4875},
                 ]
             },
             "endpoint": {
@@ -206,6 +207,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "wireless_segmentation_tested": True,
             "wireless_psk_rotation_concern": "yes",
             "password_corpexamplecom_risk": "medium",
+            "password_labexamplecom_risk": "high",
             "endpoint_labexamplecom_av_gap": "high",
             "endpoint_corpexamplecom_av_gap": "medium",
             "ad_corpexamplecom_domain_admins": "high",
@@ -275,11 +277,21 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(ad_summary["ga_risk_string"], "High/Low")
         self.assertEqual(ad_summary["gl_risk_string"], "Medium/Medium")
 
-        password_entries = responses["password"]
-        self.assertEqual(password_entries, [{"domain": "corp.example.com", "risk": "medium"}])
-        self.assertNotIn(
-            "corpexamplecom", [entry["domain"] for entry in password_entries]
+        password_summary = responses["password"]
+        self.assertIn("entries", password_summary)
+        password_entries = password_summary["entries"]
+        self.assertEqual(len(password_entries), 2)
+        corp_password = next(
+            entry for entry in password_entries if entry["domain"] == "corp.example.com"
         )
+        lab_password = next(
+            entry for entry in password_entries if entry["domain"] == "lab.example.com"
+        )
+        self.assertEqual(corp_password["risk"], "medium")
+        self.assertEqual(lab_password["risk"], "high")
+        self.assertEqual(password_summary["domains_str"], "corp.example.com/lab.example.com")
+        self.assertEqual(password_summary["cracked_count_str"], "3589/4875")
+        self.assertEqual(password_summary["cracked_risk_string"], "Medium/High")
 
         endpoint_summary = responses["endpoint"]
         self.assertIn("entries", endpoint_summary)
@@ -320,7 +332,12 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "osint_bucket_risk": "High",
             "osint_leaked_creds_risk": "Medium",
             "ad": [{"domain": "corp.example.com", "domain_admins": "medium"}],
-            "password": [{"domain": "corp.example.com", "risk": "low"}],
+            "password": {
+                "entries": [{"domain": "corp.example.com", "risk": "low"}],
+                "domains_str": "corp.example.com",
+                "cracked_count_str": "100",
+                "cracked_risk_string": "Low",
+            },
             "endpoint": {
                 "entries": [
                     {"domain": "corp.example.com", "av_gap": "medium", "open_wifi": "low"},

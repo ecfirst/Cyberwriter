@@ -374,9 +374,14 @@ LINTER_CONTEXT = {
                 "ga_risk_string": "High",
                 "gl_risk_string": "Medium",
             },
-            "password": [
-                {"domain": "corp.example.com", "risk": "medium"}
-            ],
+            "password": {
+                "entries": [
+                    {"domain": "corp.example.com", "risk": "medium"}
+                ],
+                "domains_str": "corp.example.com",
+                "cracked_count_str": "17",
+                "cracked_risk_string": "Medium",
+            },
             "endpoint": {
                 "entries": [
                     {
