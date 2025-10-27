@@ -12,6 +12,8 @@ from django.core.files.base import File
 if False:  # pragma: no cover - typing only
     from ghostwriter.rolodex.models import Project, ProjectDataFile  # noqa: F401
 
+from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, parse_ip_text
+
 
 DNS_RECOMMENDATION_MAP: Dict[str, str] = {
     "One or more SOA fields are outside recommended ranges": "update SOA fields to follow best practice",
@@ -117,6 +119,23 @@ def _decode_file(file_obj: File) -> Iterable[Dict[str, str]]:
     return csv.DictReader(stream)
 
 
+def _parse_ip_list(file_obj: File) -> List[str]:
+    """Parse a newline-delimited text file into a list of IP entries."""
+
+    file_obj.open("rb")
+    try:
+        raw_bytes = file_obj.read() or b""
+    finally:
+        file_obj.close()
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw_bytes.decode("utf-8", errors="ignore")
+
+    return parse_ip_text(text)
+
+
 def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     """Parse a dns_report.csv file, returning issue metadata for failed checks."""
 
@@ -186,6 +205,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
     web_results: Dict[str, Dict[str, Dict[str, List[str]]]] = {}
+    ip_results: Dict[str, List[str]] = {
+        definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
+    }
 
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
@@ -209,6 +231,20 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     for issue in risk_entry.get("issues", []):
                         if issue not in combined_entry["issues"]:
                             combined_entry["issues"].append(issue)
+        else:
+            requirement_slug = (data_file.requirement_slug or "").strip()
+            if requirement_slug:
+                for definition in IP_ARTIFACT_DEFINITIONS.values():
+                    if requirement_slug != definition.slug:
+                        continue
+                    parsed_ips = _parse_ip_list(data_file.file)
+                    if not parsed_ips:
+                        break
+                    entries = ip_results.setdefault(definition.artifact_key, [])
+                    for ip in parsed_ips:
+                        if ip not in entries:
+                            entries.append(ip)
+                    break
 
     if dns_results:
         artifacts["dns_issues"] = [
@@ -237,5 +273,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             web_entries.append({"site": site, "risks": risks})
         if web_entries:
             artifacts["web_issues"] = web_entries
+
+    for artifact_key, values in ip_results.items():
+        if values:
+            artifacts[artifact_key] = values
 
     return artifacts

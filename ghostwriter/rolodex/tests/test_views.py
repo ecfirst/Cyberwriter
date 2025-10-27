@@ -36,6 +36,11 @@ from ghostwriter.rolodex.forms_project import (
     ProjectTargetFormSet,
     WhiteCardFormSet,
 )
+from ghostwriter.rolodex.ip_artifacts import (
+    IP_ARTIFACT_DEFINITIONS,
+    IP_ARTIFACT_TYPE_EXTERNAL,
+    IP_ARTIFACT_TYPE_INTERNAL,
+)
 from ghostwriter.rolodex.models import ProjectDataFile
 from ghostwriter.rolodex.templatetags import determine_primary
 
@@ -1146,6 +1151,27 @@ class ProjectWorkbookUploadViewTests(TestCase):
         burp_index = labels.index("burp_csv.csv")
         self.assertEqual(burp_index, max(dns_indexes) + 1)
 
+    def test_ip_cards_follow_burp_requirement_in_supplementals(self):
+        workbook_payload = {
+            "web": {"combined_unique": 2},
+        }
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data"])
+
+        response = self.client_auth.get(self.detail_url)
+
+        supplemental_cards = response.context["supplemental_cards"]
+        labels = [card["data"]["label"] for card in supplemental_cards]
+
+        burp_index = labels.index("burp_csv.csv")
+        self.assertEqual(
+            labels[burp_index + 1 : burp_index + 3],
+            [
+                IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_EXTERNAL].label,
+                IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_INTERNAL].label,
+            ],
+        )
+
     def test_dns_required_entry_includes_fail_count(self):
         workbook_payload = {"dns": {"records": [{"domain": "example.com"}]}}
         self.project.workbook_data = workbook_payload
@@ -1197,7 +1223,7 @@ class ProjectWorkbookUploadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, f"{self.detail_url}#data")
+        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
 
         self.project.refresh_from_db()
         self.addCleanup(
@@ -1257,7 +1283,7 @@ class ProjectWorkbookUploadViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, f"{self.detail_url}#data")
+        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
 
         self.project.refresh_from_db()
         self.addCleanup(
@@ -1286,6 +1312,60 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertIn("Informational", intranet_risks)
         self.assertEqual(intranet_risks["Informational"], ["Banner Disclosure"])
 
+    def test_external_ip_submission_creates_artifact(self):
+        upload_url = reverse("rolodex:project_ip_artifact_upload", kwargs={"pk": self.project.pk})
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "ip_type": IP_ARTIFACT_TYPE_EXTERNAL,
+                "ip_text": "192.0.2.1\n198.51.100.2\n192.0.2.1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
+
+        self.project.refresh_from_db()
+        definition = IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_EXTERNAL]
+        data_file = self.project.data_files.get(requirement_slug=definition.slug)
+        self.addCleanup(lambda: (data_file.file.delete(save=False), data_file.delete()))
+
+        artifacts = self.project.data_artifacts
+        self.assertIn(definition.artifact_key, artifacts)
+        self.assertEqual(artifacts[definition.artifact_key], ["192.0.2.1", "198.51.100.2"])
+
+    def test_internal_ip_submission_accepts_file_upload(self):
+        upload_url = reverse("rolodex:project_ip_artifact_upload", kwargs={"pk": self.project.pk})
+        ip_file = SimpleUploadedFile(
+            "internal_ips.txt",
+            b"203.0.113.10\n198.51.100.25\n",
+            content_type="text/plain",
+        )
+
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "ip_type": IP_ARTIFACT_TYPE_INTERNAL,
+                "ip_file": ip_file,
+                "ip_text": "198.51.100.25\n",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
+
+        self.project.refresh_from_db()
+        definition = IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_INTERNAL]
+        data_file = self.project.data_files.get(requirement_slug=definition.slug)
+        self.addCleanup(lambda: (data_file.file.delete(save=False), data_file.delete()))
+
+        artifacts = self.project.data_artifacts
+        self.assertIn(definition.artifact_key, artifacts)
+        self.assertEqual(
+            artifacts[definition.artifact_key],
+            ["203.0.113.10", "198.51.100.25"],
+        )
+
     def test_data_file_deletion_refreshes_project_artifacts(self):
         self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
         self.project.save(update_fields=["workbook_data"])
@@ -1307,7 +1387,7 @@ class ProjectWorkbookUploadViewTests(TestCase):
         response = self.client_auth.post(delete_url)
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, f"{self.detail_url}#data")
+        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
 
         self.project.refresh_from_db()
         self.assertEqual(self.project.data_artifacts, {})

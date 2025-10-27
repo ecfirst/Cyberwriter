@@ -186,51 +186,97 @@
       <div id="supplementals" class="tab-pane">
         <h4>Supplemental Files</h4>
         <hr/>
-        {% if required_data_files %}
+        {% if supplemental_cards %}
           <div class="offset-2 col-8 mb-4">
             <h5>Required Artifacts</h5>
-            {% for requirement in required_data_files %}
-              <div class="card mb-3">
-                <div class="card-body">
-                  <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center">
-                    <div class="mb-3 mb-md-0">
-                      <h6 class="mb-1">
-                        {{ requirement.label }}
-                        {% if requirement.context %}
-                          <small class="text-muted">for {{ requirement.context }}</small>
-                        {% endif %}
-                      </h6>
-                      {% if requirement.existing %}
-                        <p class="mb-1">
-                          <strong>Current file:</strong>
-                          <a href="{{ requirement.existing.file.url }}" download>{{ requirement.existing.filename }}</a>
-                        </p>
-                        {% if requirement.parsed_fail_count is not None %}
-                          <p class="mb-0 text-muted small">Failed checks detected: {{ requirement.parsed_fail_count }}</p>
-                        {% endif %}
-                        <form method="post" class="d-inline" action="{% url 'rolodex:project_data_file_delete' requirement.existing.id %}">
+            {% for card in supplemental_cards %}
+              {% if card.card_type == 'required' %}
+                {% with requirement=card.data %}
+                  <div class="card mb-3">
+                    <div class="card-body">
+                      <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center">
+                        <div class="mb-3 mb-md-0">
+                          <h6 class="mb-1">
+                            {{ requirement.label }}
+                            {% if requirement.context %}
+                              <small class="text-muted">for {{ requirement.context }}</small>
+                            {% endif %}
+                          </h6>
+                          {% if requirement.existing %}
+                            <p class="mb-1">
+                              <strong>Current file:</strong>
+                              <a href="{{ requirement.existing.file.url }}" download>{{ requirement.existing.filename }}</a>
+                            </p>
+                            {% if requirement.parsed_fail_count is not None %}
+                              <p class="mb-0 text-muted small">Failed checks detected: {{ requirement.parsed_fail_count }}</p>
+                            {% endif %}
+                            <form method="post" class="d-inline" action="{% url 'rolodex:project_data_file_delete' requirement.existing.id %}">
+                              {% csrf_token %}
+                              <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                            </form>
+                          {% else %}
+                            <p class="mb-1 text-muted">No file uploaded yet.</p>
+                          {% endif %}
+                        </div>
+                        <form method="post" action="{% url 'rolodex:project_data_file_upload' project.id %}" enctype="multipart/form-data" class="w-100 w-md-auto project-required-data-form">
                           {% csrf_token %}
-                          <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                          <input type="hidden" name="requirement_slug" value="{{ requirement.slug }}"/>
+                          <input type="hidden" name="requirement_label" value="{{ requirement.label }}"/>
+                          <input type="hidden" name="requirement_context" value="{{ requirement.context|default:'' }}"/>
+                          <input type="hidden" name="description" value=""/>
+                          <div class="form-group mb-2">
+                            <label class="sr-only" for="id_required_file_{{ requirement.slug }}">{{ requirement.label }}{% if requirement.context %} for {{ requirement.context }}{% endif %}</label>
+                            <input type="file" name="file" class="form-control-file project-required-data-input" id="id_required_file_{{ requirement.slug }}" accept=".csv,text/csv" required>
+                          </div>
+                          <button type="submit" class="btn btn-primary btn-sm" data-default-text="Upload">Upload</button>
                         </form>
-                      {% else %}
-                        <p class="mb-1 text-muted">No file uploaded yet.</p>
-                      {% endif %}
-                    </div>
-                    <form method="post" action="{% url 'rolodex:project_data_file_upload' project.id %}" enctype="multipart/form-data" class="w-100 w-md-auto project-required-data-form">
-                      {% csrf_token %}
-                      <input type="hidden" name="requirement_slug" value="{{ requirement.slug }}"/>
-                      <input type="hidden" name="requirement_label" value="{{ requirement.label }}"/>
-                      <input type="hidden" name="requirement_context" value="{{ requirement.context|default:'' }}"/>
-                      <input type="hidden" name="description" value=""/>
-                      <div class="form-group mb-2">
-                        <label class="sr-only" for="id_required_file_{{ requirement.slug }}">{{ requirement.label }}{% if requirement.context %} for {{ requirement.context }}{% endif %}</label>
-                        <input type="file" name="file" class="form-control-file project-required-data-input" id="id_required_file_{{ requirement.slug }}" accept=".csv,text/csv" required>
                       </div>
-                      <button type="submit" class="btn btn-primary btn-sm" data-default-text="Upload">Upload</button>
-                    </form>
+                    </div>
                   </div>
-                </div>
-              </div>
+                {% endwith %}
+              {% elif card.card_type == 'ip' %}
+                {% with ip_card=card.data %}
+                  <div class="card mb-3">
+                    <div class="card-body">
+                      <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center">
+                        <div class="mb-3 mb-md-0 w-100">
+                          <h6 class="mb-1">{{ ip_card.label }}</h6>
+                          {% if ip_card.ip_count %}
+                            <p class="mb-1 text-muted">Currently stored: {{ ip_card.ip_count }} IP{% if ip_card.ip_count != 1 %}s{% endif %}.</p>
+                          {% endif %}
+                          {% if ip_card.existing %}
+                            <p class="mb-1">
+                              <strong>Current list:</strong>
+                              <a href="{{ ip_card.existing.file.url }}" download>{{ ip_card.existing.filename }}</a>
+                            </p>
+                            <form method="post" class="d-inline" action="{% url 'rolodex:project_data_file_delete' ip_card.existing.id %}">
+                              {% csrf_token %}
+                              <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                            </form>
+                          {% else %}
+                            <p class="mb-1 text-muted">No IP addresses provided yet.</p>
+                          {% endif %}
+                        </div>
+                        <form method="post" action="{% url 'rolodex:project_ip_artifact_upload' project.id %}" enctype="multipart/form-data" class="w-100 w-md-auto project-required-data-form">
+                          {% csrf_token %}
+                          <input type="hidden" name="ip_type" value="{{ ip_card.type }}"/>
+                          <div class="form-group mb-2 w-100">
+                            <label for="id_ip_text_{{ ip_card.slug }}">Paste IP Addresses</label>
+                            <textarea name="ip_text" id="id_ip_text_{{ ip_card.slug }}" class="form-control" rows="5" placeholder="One IP address per line"></textarea>
+                            <small class="form-text text-muted">You may paste IPs, upload a file, or provide both.</small>
+                          </div>
+                          <div class="form-group mb-2">
+                            <label class="sr-only" for="id_ip_file_{{ ip_card.slug }}">Upload Plain Text</label>
+                            <input type="file" name="ip_file" class="form-control-file project-required-data-input" id="id_ip_file_{{ ip_card.slug }}" accept=".txt,text/plain">
+                            <small class="form-text text-muted">Upload a text file containing one IP address per line.</small>
+                          </div>
+                          <button type="submit" class="btn btn-primary btn-sm" data-default-text="Save">Save</button>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
+                {% endwith %}
+              {% endif %}
             {% endfor %}
           </div>
         {% else %}

@@ -10,6 +10,13 @@ from django.forms.utils import flatatt
 from django.utils.translation import gettext_lazy as _
 
 # Ghostwriter Libraries
+from ghostwriter.rolodex.ip_artifacts import (
+    IP_ARTIFACT_DEFINITIONS,
+    IP_ARTIFACT_TYPE_EXTERNAL,
+    IP_ARTIFACT_TYPE_INTERNAL,
+    normalize_ip_entries,
+    parse_ip_text,
+)
 from ghostwriter.rolodex.models import ProjectDataFile
 
 
@@ -135,6 +142,68 @@ class ProjectDataFileForm(forms.ModelForm):
             "file": forms.ClearableFileInput(attrs={"class": "form-control-file"}),
             "description": forms.TextInput(attrs={"placeholder": _("Optional description")}),
         }
+
+
+class ProjectIPArtifactForm(forms.Form):
+    """Capture supplemental IP list content for a project."""
+
+    ip_type = forms.ChoiceField(
+        choices=(
+            (IP_ARTIFACT_TYPE_EXTERNAL, IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_EXTERNAL].label),
+            (IP_ARTIFACT_TYPE_INTERNAL, IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_INTERNAL].label),
+        ),
+        widget=forms.HiddenInput(),
+    )
+    ip_text = forms.CharField(
+        required=False,
+        widget=forms.Textarea(
+            attrs={
+                "class": "form-control",
+                "rows": 5,
+                "placeholder": _("One IP address per line"),
+            }
+        ),
+        label=_("IP Addresses"),
+    )
+    ip_file = forms.FileField(
+        required=False,
+        widget=forms.ClearableFileInput(
+            attrs={
+                "class": "form-control-file project-required-data-input",
+                "accept": ".txt,text/plain",
+            }
+        ),
+        label=_("Upload Plain Text"),
+        help_text=_("Upload a text file containing one IP address per line."),
+    )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        ip_type = cleaned_data.get("ip_type")
+        if ip_type not in IP_ARTIFACT_DEFINITIONS:
+            raise forms.ValidationError("Unsupported IP list type submitted.")
+
+        text_content = cleaned_data.get("ip_text") or ""
+        uploaded_file = cleaned_data.get("ip_file")
+        if not text_content and not uploaded_file:
+            raise forms.ValidationError("Provide IP addresses by pasting them or uploading a file.")
+
+        parsed_values = []
+        if text_content:
+            parsed_values.extend(parse_ip_text(text_content))
+        if uploaded_file:
+            file_content = uploaded_file.read()
+            if isinstance(file_content, bytes):
+                file_content = file_content.decode("utf-8", "ignore")
+            parsed_values.extend(parse_ip_text(file_content))
+            uploaded_file.seek(0)
+
+        normalized_values = normalize_ip_entries(parsed_values)
+        if not normalized_values:
+            raise forms.ValidationError("No IP addresses were found in the submitted data.")
+
+        cleaned_data["parsed_ips"] = normalized_values
+        return cleaned_data
 
 
 class ProjectDataResponsesForm(forms.Form):
