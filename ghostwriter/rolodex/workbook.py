@@ -293,6 +293,27 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
     if _as_int(_get_nested(firewall_source or {}, ("unique",), 0)) > 0:
         add_required("firewall_csv.csv")
 
+    firewall_devices = _get_nested(firewall_source or {}, ("devices",), []) or []
+    if isinstance(firewall_devices, list):
+        for index, device in enumerate(firewall_devices, start=1):
+            if isinstance(device, dict):
+                device_name = device.get("name") or device.get("device") or device.get("hostname")
+            else:
+                device_name = device
+            display_name = _as_str(device_name).strip() or f"Device {index}"
+            base_slug = _slugify_identifier("firewall", display_name)
+            if not base_slug:
+                base_slug = f"firewall_device_{index}"
+            slug = f"{base_slug}_type"
+            add_question(
+                key=f"{slug}",
+                label="Firewall Type",
+                field_class=forms.CharField,
+                section="Firewall",
+                subheading=display_name,
+                widget=forms.TextInput(attrs={"class": "form-control"}),
+            )
+
     # Active Directory risk questions
     ad_domains = _get_nested(data, ("ad", "domains"), []) or []
     if isinstance(ad_domains, list):

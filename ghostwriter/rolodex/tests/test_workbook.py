@@ -68,3 +68,26 @@ class WorkbookHelpersTests(SimpleTestCase):
 
         labels = [entry["label"] for entry in required_files]
         self.assertIn("firewall_csv.csv", labels)
+
+    def test_firewall_device_questions_include_type_field(self):
+        workbook_data = {
+            "firewall": {
+                "devices": [
+                    {"name": "FW-1"},
+                    {"name": "Branch"},
+                    "Unnamed Entry",
+                ]
+            }
+        }
+
+        questions, _ = build_data_configuration(workbook_data)
+
+        firewall_questions = [q for q in questions if q["section"] == "Firewall"]
+        self.assertEqual(len(firewall_questions), 3)
+        first_question = firewall_questions[0]
+        self.assertEqual(first_question["label"], "Firewall Type")
+        self.assertEqual(first_question["subheading"], "FW-1")
+        self.assertTrue(first_question["key"].startswith("firewall_"))
+        self.assertTrue(first_question["key"].endswith("_type"))
+        last_question = firewall_questions[-1]
+        self.assertEqual(last_question["subheading"], "Unnamed Entry")
