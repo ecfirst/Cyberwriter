@@ -252,8 +252,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(endpoint_summary["domains_str"], "corp.example.com/lab.example.com")
         self.assertEqual(endpoint_summary["ood_count_str"], "25/43")
         self.assertEqual(endpoint_summary["wifi_count_str"], "5/12")
-        self.assertEqual(endpoint_summary["ood_risk_string"], "medium/high")
-        self.assertEqual(endpoint_summary["wifi_risk_string"], "low/high")
+        self.assertEqual(endpoint_summary["ood_risk_string"], "Medium/High")
+        self.assertEqual(endpoint_summary["wifi_risk_string"], "Low/High")
 
         firewall_entries = responses["firewall"]
         self.assertEqual(len(firewall_entries), 2)

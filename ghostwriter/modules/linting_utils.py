@@ -375,8 +375,8 @@ LINTER_CONTEXT = {
                 "domains_str": "corp.example.com/lab.example.com",
                 "ood_count_str": "45/10",
                 "wifi_count_str": "3/1",
-                "ood_risk_string": "medium/high",
-                "wifi_risk_string": "low/high",
+                "ood_risk_string": "Medium/High",
+                "wifi_risk_string": "Low/High",
             },
             "firewall": [
                 {"name": "Edge-FW01", "type": "Next-Gen"},

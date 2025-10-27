@@ -972,6 +972,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         ood_risk_parts = []
         wifi_risk_parts = []
 
+        def _format_risk_value(value):
+            if value is None:
+                return ""
+            text = str(value).strip()
+            return text.capitalize() if text else ""
+
         for entry in ordered_entries:
             domain = entry.get("domain", "")
             domains_str_parts.append(domain)
@@ -983,10 +989,8 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             open_wifi_count = details.get("open_wifi") if isinstance(details, dict) else None
             wifi_count_parts.append("0" if open_wifi_count in (None, "") else str(open_wifi_count))
 
-            ood_risk_parts.append(str(entry.get("av_gap", "")) if entry.get("av_gap") is not None else "")
-            wifi_risk_parts.append(
-                str(entry.get("open_wifi", "")) if entry.get("open_wifi") is not None else ""
-            )
+            ood_risk_parts.append(_format_risk_value(entry.get("av_gap")))
+            wifi_risk_parts.append(_format_risk_value(entry.get("open_wifi")))
 
         return {
             "entries": ordered_entries,
