@@ -5,7 +5,7 @@ from __future__ import annotations
 # Standard Libraries
 import csv
 import io
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from django.core.files.base import File
 
@@ -136,6 +136,70 @@ def _parse_ip_list(file_obj: File) -> List[str]:
     return parse_ip_text(text)
 
 
+FIREWALL_REPORT_FIELD_SPECS: Tuple[Tuple[str, str], ...] = (
+    ("risk", "Risk"),
+    ("issue", "Issue"),
+    ("devices", "Devices"),
+    ("solution", "Solution"),
+    ("impact", "Impact"),
+    ("details", "Details"),
+    ("reference", "Reference"),
+    ("accepted", "Accepted"),
+    ("type", "Type"),
+)
+
+
+def _get_case_insensitive(row: Dict[str, Any], key: str) -> Any:
+    """Return the value for ``key`` in ``row`` using case-insensitive matching."""
+
+    if key in row:
+        return row[key]
+    lowered = key.lower()
+    for candidate_key, value in row.items():
+        if candidate_key.lower() == lowered:
+            return value
+    return ""
+
+
+def _parse_firewall_score(raw_value: Any) -> Optional[float]:
+    """Convert the provided value into a floating point score if possible."""
+
+    text = str(raw_value).strip() if raw_value is not None else ""
+    if not text:
+        return None
+    normalized = text.replace(",", "")
+    try:
+        return float(normalized)
+    except (TypeError, ValueError):  # pragma: no cover - defensive guard
+        return None
+
+
+def parse_firewall_report(file_obj: File) -> List[Dict[str, Any]]:
+    """Parse a firewall_csv.csv export into normalized issue entries."""
+
+    findings: List[Dict[str, Any]] = []
+    for row in _decode_file(file_obj):
+        normalized_entry: Dict[str, Any] = {}
+        has_content = False
+
+        for field_key, header in FIREWALL_REPORT_FIELD_SPECS:
+            value = _get_case_insensitive(row, header)
+            text_value = str(value).strip() if value is not None else ""
+            normalized_entry[field_key] = text_value
+            if text_value:
+                has_content = True
+
+        score_value = _parse_firewall_score(_get_case_insensitive(row, "Score"))
+        normalized_entry["score"] = score_value
+        if score_value is not None:
+            has_content = True
+
+        if has_content:
+            findings.append(normalized_entry)
+
+    return findings
+
+
 def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     """Parse a dns_report.csv file, returning issue metadata for failed checks."""
 
@@ -209,6 +273,8 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
 
+    firewall_results: List[Dict[str, Any]] = []
+
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
         if label == "dns_report.csv":
@@ -231,6 +297,10 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     for issue in risk_entry.get("issues", []):
                         if issue not in combined_entry["issues"]:
                             combined_entry["issues"].append(issue)
+        elif label == "firewall_csv.csv":
+            parsed_firewall = parse_firewall_report(data_file.file)
+            if parsed_firewall:
+                firewall_results.extend(parsed_firewall)
         else:
             requirement_slug = (data_file.requirement_slug or "").strip()
             if requirement_slug:
@@ -277,5 +347,8 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     for artifact_key, values in ip_results.items():
         if values:
             artifacts[artifact_key] = values
+
+    if firewall_results:
+        artifacts["firewall_findings"] = firewall_results
 
     return artifacts

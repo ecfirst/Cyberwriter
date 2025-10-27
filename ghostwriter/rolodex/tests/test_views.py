@@ -1312,6 +1312,67 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertIn("Informational", intranet_risks)
         self.assertEqual(intranet_risks["Informational"], ["Banner Disclosure"])
 
+    def test_firewall_upload_updates_project_artifacts(self):
+        self.project.workbook_data = {"firewall": {"unique": 1}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
+        csv_content = "\n".join(
+            [
+                "Risk,Issue,Devices,Solution,Impact,Details,Reference,Score,Accepted,Type",
+                "High,Blocked traffic review,FW-1;FW-2,Adjust rule set,Service disruption,Traffic dropped,http://example.com,8.5,No,External",
+                ",,,,,,,,,",
+            ]
+        )
+        upload = SimpleUploadedFile(
+            "firewall_csv.csv",
+            csv_content.encode("utf-8"),
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "file": upload,
+                "requirement_slug": "required_firewall-csv-csv",
+                "requirement_label": "firewall_csv.csv",
+                "requirement_context": "",
+                "description": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
+
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+
+        artifacts = self.project.data_artifacts
+        self.assertIn("firewall_findings", artifacts)
+        findings = artifacts["firewall_findings"]
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(
+            finding,
+            {
+                "risk": "High",
+                "issue": "Blocked traffic review",
+                "devices": "FW-1;FW-2",
+                "solution": "Adjust rule set",
+                "impact": "Service disruption",
+                "details": "Traffic dropped",
+                "reference": "http://example.com",
+                "accepted": "No",
+                "type": "External",
+                "score": 8.5,
+            },
+        )
+
     def test_external_ip_submission_creates_artifact(self):
         upload_url = reverse("rolodex:project_ip_artifact_upload", kwargs={"pk": self.project.pk})
         response = self.client_auth.post(
