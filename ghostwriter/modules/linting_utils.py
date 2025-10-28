@@ -422,8 +422,8 @@ LINTER_CONTEXT = {
                     ],
                 }
             ],
-            "web_issues": {
-                "https://portal.example.com": {
+            "web_issues": [
+                {
                     "site": "https://portal.example.com",
                     "high": {
                         "total_unique": 2,
@@ -455,7 +455,7 @@ LINTER_CONTEXT = {
                         "items": [],
                     },
                 }
-            },
+            ],
             "external_ips": [
                 "203.0.113.10",
                 "203.0.113.11",

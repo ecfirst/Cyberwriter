@@ -1318,10 +1318,11 @@ class ProjectWorkbookUploadViewTests(TestCase):
         artifacts = normalize_nexpose_artifacts_map(self.project.data_artifacts)
         self.assertIn("web_issues", artifacts)
         web_entries = artifacts["web_issues"]
-        self.assertIsInstance(web_entries, dict)
-        self.assertEqual(set(web_entries.keys()), {"portal.example.com", "intranet.example.com"})
+        self.assertIsInstance(web_entries, list)
+        entries_by_site = {entry["site"]: entry for entry in web_entries}
+        self.assertEqual(set(entries_by_site.keys()), {"portal.example.com", "intranet.example.com"})
 
-        portal_entry = web_entries["portal.example.com"]
+        portal_entry = entries_by_site["portal.example.com"]
         self.assertEqual(portal_entry["site"], "portal.example.com")
         portal_high = portal_entry["high"]
         self.assertEqual(portal_high["total_unique"], 1)
@@ -1339,7 +1340,7 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertEqual(portal_low["total_unique"], 0)
         self.assertEqual(portal_low["items"], [])
 
-        intranet_entry = web_entries["intranet.example.com"]
+        intranet_entry = entries_by_site["intranet.example.com"]
         self.assertEqual(intranet_entry["site"], "intranet.example.com")
         intranet_high = intranet_entry["high"]
         self.assertEqual(intranet_high["total_unique"], 0)

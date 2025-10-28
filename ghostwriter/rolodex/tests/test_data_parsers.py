@@ -99,22 +99,41 @@ class NexposeDataParserTests(TestCase):
 
     def test_normalize_web_issue_artifacts(self):
         payload = {
-            "web_issues": {
-                "portal.example.com": {
+            "web_issues": [
+                {
                     "site": "portal.example.com",
                     "high": {"total_unique": 1, "items": [{"issue": "SQL", "impact": "", "count": 1}]},
                     "med": {"total_unique": 0, "items": []},
                     "low": {"total_unique": 0, "items": []},
                 }
-            }
+            ]
         }
 
         normalized = normalize_nexpose_artifacts_map(payload)
-        portal = normalized["web_issues"]["portal.example.com"]
+        self.assertIsInstance(normalized["web_issues"], list)
+        self.assertEqual(len(normalized["web_issues"]), 1)
+        portal = normalized["web_issues"][0]
+        self.assertEqual(portal["site"], "portal.example.com")
         high_group = portal["high"]
         self.assertEqual(high_group["total_unique"], 1)
         self.assertEqual(high_group["items"], [{"issue": "SQL", "impact": "", "count": 1}])
         self.assertEqual(list(high_group.items), high_group["items"])
+
+        legacy_payload = {
+            "web_issues": {
+                "legacy.example.com": {
+                    "high": {"total_unique": 2, "items": []},
+                }
+            }
+        }
+
+        normalized_legacy = normalize_nexpose_artifacts_map(legacy_payload)
+        self.assertIsInstance(normalized_legacy["web_issues"], list)
+        self.assertEqual(len(normalized_legacy["web_issues"]), 1)
+        legacy_site = normalized_legacy["web_issues"][0]
+        self.assertEqual(legacy_site["site"], "legacy.example.com")
+        self.assertEqual(legacy_site["med"]["total_unique"], 0)
+        self.assertEqual(legacy_site["low"]["total_unique"], 0)
 
         artifact = self.project.data_artifacts.get("external_nexpose_vulnerabilities")
         artifact = normalize_nexpose_artifact_payload(artifact)

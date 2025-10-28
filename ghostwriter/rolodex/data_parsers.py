@@ -330,15 +330,19 @@ def normalize_nexpose_artifact_payload(payload: Any) -> Dict[str, Any]:
     return normalized
 
 
-def _normalize_web_site_payload(payload: Any) -> Any:
+def _normalize_web_site_payload(payload: Any, site_name: Optional[str] = None) -> Any:
     """Normalize a single web issue site payload for template access."""
 
     if not isinstance(payload, dict):
         return payload
+
     normalized: Dict[str, Any] = dict(payload)
+    if site_name and not normalized.get("site"):
+        normalized["site"] = site_name
+
     for severity_key in ("high", "med", "low"):
-        if severity_key in normalized:
-            normalized[severity_key] = _coerce_severity_group(normalized[severity_key])
+        normalized[severity_key] = _coerce_severity_group(normalized.get(severity_key, {}))
+
     return normalized
 
 
@@ -353,13 +357,17 @@ def normalize_nexpose_artifacts_map(artifacts: Any) -> Any:
             normalized[key] = normalize_nexpose_artifact_payload(value)
         elif key == "web_issues":
             if isinstance(value, dict):
-                normalized[key] = {
-                    site: _normalize_web_site_payload(site_payload)
-                    for site, site_payload in value.items()
-                }
-            elif isinstance(value, list):  # pragma: no cover - legacy support
                 normalized[key] = [
-                    _normalize_web_site_payload(site_payload) for site_payload in value
+                    _normalize_web_site_payload(site_payload, site)
+                    for site, site_payload in sorted(
+                        value.items(), key=lambda item: (item[0] or "").lower()
+                    )
+                ]
+            elif isinstance(value, list):
+                normalized[key] = [
+                    _normalize_web_site_payload(site_payload)
+                    for site_payload in value
+                    if isinstance(site_payload, dict)
                 ]
     return normalized
 
@@ -576,13 +584,14 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         ]
 
     if web_results:
-        web_entries: Dict[str, Dict[str, Any]] = {}
-        for site, severity_map in web_results.items():
+        web_entries: List[Dict[str, Any]] = []
+        for site in sorted(web_results):
+            severity_map = web_results[site]
             site_entry: Dict[str, Any] = {"site": site}
             for severity_key in ("high", "med", "low"):
                 counter = severity_map.get(severity_key, Counter())
                 site_entry[severity_key] = _summarize_severity_counter(counter)
-            web_entries[site] = site_entry
+            web_entries.append(site_entry)
         if web_entries:
             artifacts["web_issues"] = web_entries
 
