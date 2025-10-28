@@ -12,6 +12,7 @@ from django.test import TestCase
 # Ghostwriter Libraries
 from ghostwriter.factories import GenerateMockProject
 from ghostwriter.rolodex.data_parsers import (
+    NEXPOSE_ARTIFACT_DEFINITIONS,
     normalize_nexpose_artifact_payload,
     normalize_nexpose_artifacts_map,
 )
@@ -45,6 +46,21 @@ class NexposeDataParserTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.client, cls.project, _ = GenerateMockProject()
+
+    def _assert_default_nexpose_artifacts(self, artifacts):
+        for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values():
+            artifact = artifacts.get(definition["artifact_key"])
+            self.assertIsNotNone(
+                artifact,
+                msg=f"Missing Nexpose artifact for {definition['artifact_key']}",
+            )
+            normalized = normalize_nexpose_artifact_payload(artifact)
+            self.assertEqual(normalized.get("label"), definition["label"])
+            for severity_key in ("high", "med", "low"):
+                group = normalized.get(severity_key)
+                self.assertIsNotNone(group)
+                self.assertEqual(group["total_unique"], 0)
+                self.assertEqual(group["items"], [])
 
     def _build_csv_file(self, filename: str, rows: Iterable[Dict[str, str]]) -> SimpleUploadedFile:
         buffer = io.StringIO()
@@ -209,8 +225,14 @@ class NexposeDataParserTests(TestCase):
         self.project.rebuild_data_artifacts()
         self.project.refresh_from_db()
 
-        self.assertNotIn("external_nexpose_vulnerabilities", self.project.data_artifacts)
+        self._assert_default_nexpose_artifacts(self.project.data_artifacts)
         self.assertEqual(self.project.data_responses, {"custom": "value"})
+
+    def test_nexpose_artifacts_present_without_uploads(self):
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self._assert_default_nexpose_artifacts(self.project.data_artifacts)
 
     def test_web_issue_sample_strings(self):
         csv_lines = [

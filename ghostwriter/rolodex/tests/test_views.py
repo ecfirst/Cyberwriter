@@ -36,7 +36,11 @@ from ghostwriter.rolodex.forms_project import (
     ProjectTargetFormSet,
     WhiteCardFormSet,
 )
-from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
+from ghostwriter.rolodex.data_parsers import (
+    NEXPOSE_ARTIFACT_DEFINITIONS,
+    normalize_nexpose_artifact_payload,
+    normalize_nexpose_artifacts_map,
+)
 from ghostwriter.rolodex.ip_artifacts import (
     IP_ARTIFACT_DEFINITIONS,
     IP_ARTIFACT_TYPE_EXTERNAL,
@@ -48,6 +52,24 @@ from ghostwriter.rolodex.templatetags import determine_primary
 logging.disable(logging.CRITICAL)
 
 PASSWORD = "SuperNaturalReporting!"
+
+
+def assert_default_nexpose_artifacts(testcase, artifacts):
+    """Assert that the provided ``artifacts`` contain empty Nexpose placeholders."""
+
+    for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values():
+        artifact = artifacts.get(definition["artifact_key"])
+        testcase.assertIsNotNone(
+            artifact,
+            msg=f"Missing Nexpose artifact for {definition['artifact_key']}",
+        )
+        normalized = normalize_nexpose_artifact_payload(artifact)
+        testcase.assertEqual(normalized.get("label"), definition["label"])
+        for severity_key in ("high", "med", "low"):
+            group = normalized.get(severity_key)
+            testcase.assertIsNotNone(group)
+            testcase.assertEqual(group["total_unique"], 0)
+            testcase.assertEqual(group["items"], [])
 
 
 class IndexViewTests(TestCase):
@@ -1082,7 +1104,11 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertFalse(self.project.workbook_file)
         self.assertEqual(self.project.workbook_data, {})
         self.assertEqual(self.project.data_responses, {})
-        self.assertEqual(self.project.data_artifacts, {})
+        assert_default_nexpose_artifacts(self, self.project.data_artifacts)
+        expected_keys = {
+            definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
+        }
+        self.assertEqual(set(self.project.data_artifacts.keys()), expected_keys)
         self.assertFalse(self.project.data_files.exists())
 
         # Uploaded files should be deleted by the view; ensure no leftover references remain
@@ -1500,4 +1526,8 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertEqual(response.url, f"{self.detail_url}#supplementals")
 
         self.project.refresh_from_db()
-        self.assertEqual(self.project.data_artifacts, {})
+        assert_default_nexpose_artifacts(self, self.project.data_artifacts)
+        expected_keys = {
+            definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
+        }
+        self.assertEqual(set(self.project.data_artifacts.keys()), expected_keys)

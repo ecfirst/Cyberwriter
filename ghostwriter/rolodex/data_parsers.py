@@ -318,6 +318,23 @@ def _coerce_severity_group(value: Any) -> _SeverityGroup:
     return _SeverityGroup(total_unique=total_unique, items=items)
 
 
+def _empty_severity_group() -> _SeverityGroup:
+    """Return a severity group with zero findings."""
+
+    return _SeverityGroup(total_unique=0, items=[])
+
+
+def _default_nexpose_artifact(label: str) -> Dict[str, Any]:
+    """Return a default Nexpose artifact payload for the provided label."""
+
+    return {
+        "label": label,
+        "high": _empty_severity_group(),
+        "med": _empty_severity_group(),
+        "low": _empty_severity_group(),
+    }
+
+
 def normalize_nexpose_artifact_payload(payload: Any) -> Dict[str, Any]:
     """Return a copy of ``payload`` with severity buckets wrapped for templates."""
 
@@ -668,7 +685,14 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     }
 
     firewall_results: List[Dict[str, Any]] = []
-    nexpose_results: Dict[str, Dict[str, Any]] = {}
+    nexpose_definitions_by_key: Dict[str, str] = {
+        definition["artifact_key"]: definition["label"]
+        for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
+    }
+    nexpose_results: Dict[str, Dict[str, Any]] = {
+        artifact_key: _default_nexpose_artifact(label)
+        for artifact_key, label in nexpose_definitions_by_key.items()
+    }
 
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
@@ -771,10 +795,12 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     for artifact_key, details in nexpose_results.items():
         artifacts[artifact_key] = {
-            "label": details.get("label", artifact_key.replace("_", " ").title()),
-            "high": details.get("high", {"total_unique": 0, "items": []}),
-            "med": details.get("med", {"total_unique": 0, "items": []}),
-            "low": details.get("low", {"total_unique": 0, "items": []}),
+            "label": details.get(
+                "label", nexpose_definitions_by_key.get(artifact_key, artifact_key.replace("_", " ").title())
+            ),
+            "high": _coerce_severity_group(details.get("high")),
+            "med": _coerce_severity_group(details.get("med")),
+            "low": _coerce_severity_group(details.get("low")),
         }
 
     return artifacts
