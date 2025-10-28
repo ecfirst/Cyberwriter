@@ -520,6 +520,77 @@ LINTER_CONTEXT = {
                     "items": [],
                 },
             },
+            "internal_nexpose_vulnerabilities": {
+                "label": "Internal Nexpose Vulnerabilities",
+                "high": {
+                    "total_unique": 3,
+                    "items": [
+                        {
+                            "title": "Unsupported Windows Server",
+                            "impact": "Legacy operating systems permit trivial remote exploitation.",
+                            "count": 5,
+                        },
+                        {
+                            "title": "Exposed SMB Shares",
+                            "impact": "Anonymous access allows data exfiltration and lateral movement.",
+                            "count": 2,
+                        },
+                    ],
+                },
+                "med": {
+                    "total_unique": 2,
+                    "items": [
+                        {
+                            "title": "Outdated Database Service",
+                            "impact": "Known vulnerabilities enable privilege escalation against the service.",
+                            "count": 4,
+                        }
+                    ],
+                },
+                "low": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "title": "Information Disclosure Banner",
+                            "impact": "Verbose service banners reveal version information to attackers.",
+                            "count": 3,
+                        }
+                    ],
+                },
+            },
+            "iot_nexpose_vulnerabilities": {
+                "label": "IoT/IoMT Nexpose Vulnerabilities",
+                "high": {
+                    "total_unique": 2,
+                    "items": [
+                        {
+                            "title": "Unpatched Medical Device Firmware",
+                            "impact": "Outdated firmware enables arbitrary code execution on clinical systems.",
+                            "count": 3,
+                        }
+                    ],
+                },
+                "med": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "title": "Default Credentials Enabled",
+                            "impact": "Shared vendor passwords allow unauthorized access to device management.",
+                            "count": 2,
+                        }
+                    ],
+                },
+                "low": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "title": "Deprecated TLS Protocols",
+                            "impact": "Weak encryption permits interception of device telemetry.",
+                            "count": 4,
+                        }
+                    ],
+                },
+            },
         },
         "extra_fields": {},
     },
