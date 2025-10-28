@@ -803,4 +803,49 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             "low": _coerce_severity_group(details.get("low")),
         }
 
+    workbook_data = getattr(project, "workbook_data", None)
+    if isinstance(workbook_data, dict):
+        ad_data = workbook_data.get("ad", {})
+        domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
+        legacy_domains: List[str] = []
+
+        if isinstance(domains, list):
+            for entry in domains:
+                if isinstance(entry, dict):
+                    domain_value = entry.get("domain") or entry.get("name") or ""
+                    functionality_value = entry.get("functionality_level")
+                else:
+                    domain_value = entry
+                    functionality_value = None
+
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if not domain_text:
+                    continue
+
+                functionality_text = ""
+                if functionality_value is not None:
+                    functionality_text = str(functionality_value)
+
+                if "2000" not in functionality_text and "2003" not in functionality_text:
+                    continue
+
+                if domain_text not in legacy_domains:
+                    legacy_domains.append(domain_text)
+
+        if legacy_domains:
+            ad_artifact: Dict[str, Any]
+            existing_ad_artifact = artifacts.get("ad_issues")
+            if isinstance(existing_ad_artifact, dict):
+                ad_artifact = dict(existing_ad_artifact)
+            else:
+                ad_artifact = {}
+
+            ad_artifact.update(
+                {
+                    "old_domains_string": _format_sample_string(legacy_domains),
+                    "old_domains_count": len(legacy_domains),
+                }
+            )
+            artifacts["ad_issues"] = ad_artifact
+
     return artifacts

@@ -452,6 +452,10 @@ LINTER_CONTEXT = {
             },
             "low": {"total_unique": 0, "items": []},
         },
+            "ad_issues": {
+                "old_domains_string": "'legacy.local' and 'ancient.local'",
+                "old_domains_count": 2,
+            },
             "external_ips": [
                 "203.0.113.10",
                 "203.0.113.11",

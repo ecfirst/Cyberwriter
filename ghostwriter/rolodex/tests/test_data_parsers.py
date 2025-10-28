@@ -198,6 +198,7 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(high_items[0]["count"], 3)
         self.assertEqual(high_items[1]["title"], "Alpha Exposure")
         self.assertEqual(high_items[1]["count"], 2)
+
         self.assertEqual(high_items[-1]["title"], "Epsilon Risk")
         self.assertEqual(list(high_group.items), high_items)
 
@@ -227,6 +228,28 @@ class NexposeDataParserTests(TestCase):
 
         self._assert_default_nexpose_artifacts(self.project.data_artifacts)
         self.assertEqual(self.project.data_responses, {"custom": "value"})
+
+    def test_workbook_populates_old_domain_artifact(self):
+        workbook_payload = {
+            "ad": {
+                "domains": [
+                    {"domain": "legacy.local", "functionality_level": "Windows Server 2003"},
+                    {"domain": "modern.local", "functionality_level": "Windows Server 2019"},
+                    {"domain": "ancient.local", "functionality_level": "Windows 2000 Mixed"},
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("ad_issues")
+        self.assertIsInstance(artifact, dict)
+        self.assertEqual(artifact.get("old_domains_string"), "'legacy.local' and 'ancient.local'")
+        self.assertEqual(artifact.get("old_domains_count"), 2)
 
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()
