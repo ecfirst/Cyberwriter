@@ -450,6 +450,14 @@ def normalize_nexpose_artifacts_map(artifacts: Any) -> Any:
     if not isinstance(artifacts, dict):
         return artifacts
     normalized: Dict[str, Any] = dict(artifacts)
+
+    for legacy_key, new_key in LEGACY_NEXPOSE_ARTIFACT_ALIASES.items():
+        if legacy_key not in normalized:
+            continue
+        if new_key not in normalized:
+            normalized[new_key] = normalized[legacy_key]
+        normalized.pop(legacy_key, None)
+
     for key, value in list(normalized.items()):
         if isinstance(key, str) and key.endswith("_nexpose_vulnerabilities"):
             normalized[key] = normalize_nexpose_artifact_payload(value)
@@ -521,14 +529,18 @@ NEXPOSE_ARTIFACT_DEFINITIONS: Dict[str, Dict[str, str]] = {
         "label": "Internal Nexpose Vulnerabilities",
     },
     "iot_nexpose_csv.csv": {
-        "artifact_key": "iot_nexpose_vulnerabilities",
+        "artifact_key": "iot_iomt_nexpose_vulnerabilities",
         "label": "IoT/IoMT Nexpose Vulnerabilities",
     },
 }
 
+LEGACY_NEXPOSE_ARTIFACT_ALIASES: Dict[str, str] = {
+    "iot_nexpose_vulnerabilities": "iot_iomt_nexpose_vulnerabilities",
+}
+
 NEXPOSE_ARTIFACT_KEYS = {
     definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
-}
+}.union(LEGACY_NEXPOSE_ARTIFACT_ALIASES.keys())
 
 
 def _categorize_web_risk(raw_value: str) -> Optional[str]:

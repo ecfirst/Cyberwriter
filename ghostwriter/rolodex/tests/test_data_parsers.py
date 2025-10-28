@@ -150,6 +150,24 @@ class NexposeDataParserTests(TestCase):
             normalized_legacy["web_issues"]["high"]["total_unique"], 2
         )
 
+    def test_normalize_iot_alias(self):
+        payload = {
+            "iot_nexpose_vulnerabilities": {
+                "label": "Legacy IoT Nexpose Vulnerabilities",
+                "high": {"total_unique": 1, "items": []},
+                "med": {"total_unique": 0, "items": []},
+                "low": {"total_unique": 0, "items": []},
+            }
+        }
+
+        normalized = normalize_nexpose_artifacts_map(payload)
+        self.assertIn("iot_iomt_nexpose_vulnerabilities", normalized)
+        self.assertNotIn("iot_nexpose_vulnerabilities", normalized)
+        self.assertEqual(
+            normalized["iot_iomt_nexpose_vulnerabilities"]["label"],
+            "Legacy IoT Nexpose Vulnerabilities",
+        )
+
         artifact = self.project.data_artifacts.get("external_nexpose_vulnerabilities")
         artifact = normalize_nexpose_artifact_payload(artifact)
         self.assertIsNotNone(artifact)

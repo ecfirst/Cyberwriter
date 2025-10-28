@@ -558,7 +558,7 @@ LINTER_CONTEXT = {
                     ],
                 },
             },
-            "iot_nexpose_vulnerabilities": {
+            "iot_iomt_nexpose_vulnerabilities": {
                 "label": "IoT/IoMT Nexpose Vulnerabilities",
                 "high": {
                     "total_unique": 2,
