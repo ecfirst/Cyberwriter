@@ -298,9 +298,15 @@ class _SeverityGroup(dict):
 
 
 class _WebIssueCollection(list):
-    """List subclass that also exposes aggregate sample strings."""
+    """List subclass that exposes aggregate sample strings and severity groups."""
 
-    __slots__ = ("low_sample_string", "med_sample_string")
+    __slots__ = (
+        "low_sample_string",
+        "med_sample_string",
+        "high",
+        "med",
+        "low",
+    )
 
     def __init__(
         self,
@@ -308,10 +314,15 @@ class _WebIssueCollection(list):
         *,
         low_sample_string: str = "",
         med_sample_string: str = "",
+        severity_map: Optional[Dict[str, "_SeverityGroup"]] = None,
     ) -> None:
         super().__init__(entries or [])
         self.low_sample_string = low_sample_string
         self.med_sample_string = med_sample_string
+        severity_map = severity_map or {}
+        self.high = severity_map.get("high", _coerce_severity_group({}))
+        self.med = severity_map.get("med", _coerce_severity_group({}))
+        self.low = severity_map.get("low", _coerce_severity_group({}))
 
 
 def _coerce_severity_group(value: Any) -> _SeverityGroup:
@@ -372,10 +383,20 @@ def _coerce_web_issue_collection(value: Any) -> _WebIssueCollection:
     low_sample_string = ""
     med_sample_string = ""
     entries: List[Dict[str, Any]] = []
+    severity_groups = {
+        key: _coerce_severity_group({}) for key in ("high", "med", "low")
+    }
+    has_explicit_summary = False
 
     if isinstance(value, dict):
         low_sample_string = str(value.get("low_sample_string") or "")
         med_sample_string = str(value.get("med_sample_string") or "")
+        for severity_key in ("high", "med", "low"):
+            if severity_key in value:
+                severity_groups[severity_key] = _coerce_severity_group(
+                    value.get(severity_key, {})
+                )
+                has_explicit_summary = True
         raw_sites = value.get("sites")
         if isinstance(raw_sites, list):
             entries = [
@@ -387,7 +408,7 @@ def _coerce_web_issue_collection(value: Any) -> _WebIssueCollection:
             for site, site_payload in sorted(
                 value.items(), key=lambda item: (item[0] or "").lower()
             ):
-                if site in {"low_sample_string", "med_sample_string"}:
+                if site in {"low_sample_string", "med_sample_string", "high", "med", "low"}:
                     continue
                 if isinstance(site_payload, dict):
                     entries.append(_normalize_web_site_payload(site_payload, site))
@@ -398,10 +419,39 @@ def _coerce_web_issue_collection(value: Any) -> _WebIssueCollection:
             if isinstance(site_payload, dict)
         ]
 
+    if not has_explicit_summary:
+        aggregated: Dict[str, Counter[Tuple[str, str]]] = {
+            "high": Counter(),
+            "med": Counter(),
+            "low": Counter(),
+        }
+        normalized_entries: List[Dict[str, Any]] = []
+        for site_payload in entries:
+            normalized_site = dict(site_payload)
+            for severity_key in ("high", "med", "low"):
+                group = _coerce_severity_group(normalized_site.get(severity_key, {}))
+                normalized_site[severity_key] = group
+                for item in group.get("items", []):
+                    issue = str(item.get("issue", "") or "").strip()
+                    impact = str(item.get("impact", "") or "").strip()
+                    count = item.get("count", 1)
+                    try:
+                        count_value = int(count)
+                    except (TypeError, ValueError):  # pragma: no cover - defensive guard
+                        count_value = 1
+                    aggregated[severity_key][(issue, impact)] += max(count_value, 0)
+            normalized_entries.append(normalized_site)
+        entries = normalized_entries
+        severity_groups = {
+            severity_key: _summarize_severity_counter(counter)
+            for severity_key, counter in aggregated.items()
+        }
+
     return _WebIssueCollection(
         entries,
         low_sample_string=low_sample_string,
         med_sample_string=med_sample_string,
+        severity_map=severity_groups,
     )
 
 
@@ -523,6 +573,12 @@ def _categorize_web_risk(raw_value: str) -> Optional[str]:
     if score >= 0:
         return "low"
     return None
+
+
+def _summarize_site_severity_counter(counter: Counter[Tuple[str, str]]) -> _SeverityGroup:
+    """Return a severity summary for a single site without item details."""
+
+    return _SeverityGroup(total_unique=len(counter), items=[])
 
 
 def _summarize_severity_counter(counter: Counter[Tuple[str, str]]) -> _SeverityGroup:
@@ -674,22 +730,36 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         web_entries: List[Dict[str, Any]] = []
         low_issue_counter: Counter[str] = Counter()
         med_impact_counter: Counter[str] = Counter()
+        aggregated_severity: Dict[str, Counter[Tuple[str, str]]] = {
+            "high": Counter(),
+            "med": Counter(),
+            "low": Counter(),
+        }
+
         for site in sorted(web_results):
             severity_map = web_results[site]
             site_entry: Dict[str, Any] = {"site": site}
             for severity_key in ("high", "med", "low"):
                 counter = severity_map.get(severity_key, Counter())
-                site_entry[severity_key] = _summarize_severity_counter(counter)
-            for (issue, _impact), count in severity_map.get("low", Counter()).items():
-                issue_sample = (issue or "").strip()
-                if issue_sample:
-                    low_issue_counter[issue_sample] += count
-            for (_issue, impact), count in severity_map.get("med", Counter()).items():
-                impact_sample = _clean_impact_sample(impact)
-                if impact_sample:
-                    med_impact_counter[impact_sample] += count
+                aggregated_severity[severity_key].update(counter)
+                site_entry[severity_key] = _summarize_site_severity_counter(counter)
+                if severity_key == "low":
+                    for (issue, _impact), count in counter.items():
+                        issue_sample = (issue or "").strip()
+                        if issue_sample:
+                            low_issue_counter[issue_sample] += count
+                elif severity_key == "med":
+                    for (_issue, impact), count in counter.items():
+                        impact_sample = _clean_impact_sample(impact)
+                        if impact_sample:
+                            med_impact_counter[impact_sample] += count
             web_entries.append(site_entry)
+
         if web_entries:
+            severity_summaries = {
+                severity_key: _summarize_severity_counter(counter)
+                for severity_key, counter in aggregated_severity.items()
+            }
             artifacts["web_issues"] = {
                 "sites": web_entries,
                 "low_sample_string": _format_sample_string(
@@ -698,6 +768,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 "med_sample_string": _format_sample_string(
                     _select_top_samples(med_impact_counter)
                 ),
+                **severity_summaries,
             }
 
     for artifact_key, values in ip_results.items():

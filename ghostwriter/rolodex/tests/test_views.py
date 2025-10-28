@@ -1341,30 +1341,12 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertEqual(portal_entry["site"], "portal.example.com")
         portal_high = portal_entry["high"]
         self.assertEqual(portal_high["total_unique"], 1)
-        self.assertEqual(
-            portal_high["items"],
-            [
-                {
-                    "issue": "SQL Injection",
-                    "impact": "This may lead to full database compromise.",
-                    "count": 1,
-                }
-            ],
-        )
+        self.assertEqual(portal_high["items"], [])
         self.assertEqual(list(portal_high.items), portal_high["items"])
 
         portal_med = portal_entry["med"]
         self.assertEqual(portal_med["total_unique"], 1)
-        self.assertEqual(
-            portal_med["items"],
-            [
-                {
-                    "issue": "Cross-Site Scripting",
-                    "impact": "This can result in credential theft.",
-                    "count": 2,
-                }
-            ],
-        )
+        self.assertEqual(portal_med["items"], [])
 
         portal_low = portal_entry["low"]
         self.assertEqual(portal_low["total_unique"], 0)
@@ -1378,29 +1360,11 @@ class ProjectWorkbookUploadViewTests(TestCase):
 
         intranet_med = intranet_entry["med"]
         self.assertEqual(intranet_med["total_unique"], 1)
-        self.assertEqual(
-            intranet_med["items"],
-            [
-                {
-                    "issue": "Authentication Bypass",
-                    "impact": "This may expose sensitive data.",
-                    "count": 2,
-                }
-            ],
-        )
+        self.assertEqual(intranet_med["items"], [])
 
         intranet_low = intranet_entry["low"]
         self.assertEqual(intranet_low["total_unique"], 1)
-        self.assertEqual(
-            intranet_low["items"],
-            [
-                {
-                    "issue": "Directory Listing",
-                    "impact": "This may expose directory structure.",
-                    "count": 2,
-                }
-            ],
-        )
+        self.assertEqual(intranet_low["items"], [])
 
         extranet_entry = entries_by_site["extranet.example.com"]
         self.assertEqual(extranet_entry["site"], "extranet.example.com")
@@ -1412,16 +1376,31 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertEqual(extranet_med["items"], [])
         extranet_low = extranet_entry["low"]
         self.assertEqual(extranet_low["total_unique"], 1)
+        self.assertEqual(extranet_low["items"], [])
+
+        high_summary = web_entries.high
+        self.assertEqual(high_summary["total_unique"], 1)
         self.assertEqual(
-            extranet_low["items"],
+            high_summary["items"],
             [
                 {
-                    "issue": "Banner Disclosure",
-                    "impact": "This can reveal version information.",
-                    "count": 2,
+                    "issue": "SQL Injection",
+                    "impact": "This may lead to full database compromise.",
+                    "count": 1,
                 }
             ],
         )
+
+        med_summary = web_entries.med
+        self.assertEqual(med_summary["total_unique"], 2)
+        self.assertEqual(len(med_summary["items"]), 2)
+        self.assertEqual(med_summary["items"][0]["issue"], "Authentication Bypass")
+        self.assertEqual(med_summary["items"][0]["count"], 2)
+
+        low_summary = web_entries.low
+        self.assertEqual(low_summary["total_unique"], 2)
+        self.assertEqual(len(low_summary["items"]), 2)
+        self.assertEqual(low_summary["items"][0]["issue"], "Banner Disclosure")
 
     def test_firewall_upload_updates_project_artifacts(self):
         self.project.workbook_data = {"firewall": {"unique": 1}}

@@ -105,7 +105,7 @@ class NexposeDataParserTests(TestCase):
                         "site": "portal.example.com",
                         "high": {
                             "total_unique": 1,
-                            "items": [{"issue": "SQL", "impact": "", "count": 1}],
+                            "items": [],
                         },
                         "med": {"total_unique": 0, "items": []},
                         "low": {"total_unique": 0, "items": []},
@@ -113,6 +113,12 @@ class NexposeDataParserTests(TestCase):
                 ],
                 "low_sample_string": "'SQL'",
                 "med_sample_string": "",
+                "high": {
+                    "total_unique": 1,
+                    "items": [{"issue": "SQL", "impact": "", "count": 1}],
+                },
+                "med": {"total_unique": 0, "items": []},
+                "low": {"total_unique": 0, "items": []},
             }
         }
 
@@ -120,12 +126,17 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(normalized["web_issues"], list)
         self.assertEqual(normalized["web_issues"].low_sample_string, "'SQL'")
         self.assertEqual(normalized["web_issues"].med_sample_string, "")
+        self.assertEqual(normalized["web_issues"].high["total_unique"], 1)
+        self.assertEqual(
+            normalized["web_issues"].high["items"],
+            [{"issue": "SQL", "impact": "", "count": 1}],
+        )
         self.assertEqual(len(normalized["web_issues"]), 1)
         portal = normalized["web_issues"][0]
         self.assertEqual(portal["site"], "portal.example.com")
         high_group = portal["high"]
         self.assertEqual(high_group["total_unique"], 1)
-        self.assertEqual(high_group["items"], [{"issue": "SQL", "impact": "", "count": 1}])
+        self.assertEqual(high_group["items"], [])
         self.assertEqual(list(high_group.items), high_group["items"])
 
         legacy_payload = {
@@ -145,6 +156,7 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(legacy_site["low"]["total_unique"], 0)
         self.assertEqual(normalized_legacy["web_issues"].low_sample_string, "")
         self.assertEqual(normalized_legacy["web_issues"].med_sample_string, "")
+        self.assertEqual(normalized_legacy["web_issues"].high["total_unique"], 2)
 
         artifact = self.project.data_artifacts.get("external_nexpose_vulnerabilities")
         artifact = normalize_nexpose_artifact_payload(artifact)
@@ -227,3 +239,21 @@ class NexposeDataParserTests(TestCase):
             web_artifact["med_sample_string"],
             "'expose sensitive data.' and 'result in credential theft.'",
         )
+        self.assertIn("high", web_artifact)
+        self.assertIn("med", web_artifact)
+        self.assertIn("low", web_artifact)
+        high_summary = web_artifact["high"]
+        self.assertEqual(high_summary["total_unique"], 1)
+        self.assertEqual(len(high_summary["items"]), 1)
+        self.assertEqual(high_summary["items"][0]["issue"], "SQL Injection")
+        self.assertEqual(high_summary["items"][0]["count"], 1)
+        med_summary = web_artifact["med"]
+        self.assertEqual(med_summary["total_unique"], 2)
+        self.assertEqual(len(med_summary["items"]), 2)
+        low_summary = web_artifact["low"]
+        self.assertEqual(low_summary["total_unique"], 2)
+        self.assertEqual(len(low_summary["items"]), 2)
+        for site_entry in web_artifact["sites"]:
+            for severity_key in ("high", "med", "low"):
+                self.assertIn("items", site_entry[severity_key])
+                self.assertEqual(site_entry[severity_key]["items"], [])
