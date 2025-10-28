@@ -330,8 +330,20 @@ def normalize_nexpose_artifact_payload(payload: Any) -> Dict[str, Any]:
     return normalized
 
 
+def _normalize_web_site_payload(payload: Any) -> Any:
+    """Normalize a single web issue site payload for template access."""
+
+    if not isinstance(payload, dict):
+        return payload
+    normalized: Dict[str, Any] = dict(payload)
+    for severity_key in ("high", "med", "low"):
+        if severity_key in normalized:
+            normalized[severity_key] = _coerce_severity_group(normalized[severity_key])
+    return normalized
+
+
 def normalize_nexpose_artifacts_map(artifacts: Any) -> Any:
-    """Normalize Nexpose artifact entries within ``artifacts`` for template access."""
+    """Normalize Nexpose and web issue artifact entries for template access."""
 
     if not isinstance(artifacts, dict):
         return artifacts
@@ -339,6 +351,16 @@ def normalize_nexpose_artifacts_map(artifacts: Any) -> Any:
     for key, value in list(normalized.items()):
         if isinstance(key, str) and key.endswith("_nexpose_vulnerabilities"):
             normalized[key] = normalize_nexpose_artifact_payload(value)
+        elif key == "web_issues":
+            if isinstance(value, dict):
+                normalized[key] = {
+                    site: _normalize_web_site_payload(site_payload)
+                    for site, site_payload in value.items()
+                }
+            elif isinstance(value, list):  # pragma: no cover - legacy support
+                normalized[key] = [
+                    _normalize_web_site_payload(site_payload) for site_payload in value
+                ]
     return normalized
 
 
@@ -395,17 +417,6 @@ def parse_nexpose_vulnerability_report(file_obj: File) -> Dict[str, Dict[str, An
     return summaries
 
 
-WEB_RISK_ORDER = {
-    "CRITICAL": 0,
-    "HIGH": 1,
-    "MEDIUM": 2,
-    "LOW": 3,
-    "INFO": 4,
-    "INFORMATION": 4,
-    "INFORMATIONAL": 4,
-}
-
-
 NEXPOSE_ARTIFACT_DEFINITIONS: Dict[str, Dict[str, str]] = {
     "external_nexpose_csv.csv": {
         "artifact_key": "external_nexpose_vulnerabilities",
@@ -426,26 +437,76 @@ NEXPOSE_ARTIFACT_KEYS = {
 }
 
 
-def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Dict[str, List[str]]]]:
-    """Parse a burp.csv export into issues grouped by site and risk."""
+def _categorize_web_risk(raw_value: str) -> Optional[str]:
+    """Return the severity bucket for a Burp risk string."""
 
-    results: Dict[str, Dict[str, Dict[str, List[str]]]] = {}
+    text = (raw_value or "").strip()
+    if not text:
+        return None
+
+    normalized = text.upper().replace("-", " ")
+    if "(" in normalized:
+        normalized = normalized.split("(", 1)[0]
+    normalized = normalized.strip()
+
+    if normalized in {"CRITICAL", "HIGH"}:
+        return "high"
+    if normalized in {"MEDIUM", "MODERATE"}:
+        return "med"
+    if normalized in {"LOW", "INFO", "INFORMATION", "INFORMATIONAL"}:
+        return "low"
+
+    try:
+        score = float(text)
+    except (TypeError, ValueError):  # pragma: no cover - defensive guard
+        return None
+
+    if score >= 8:
+        return "high"
+    if score >= 4:
+        return "med"
+    if score >= 0:
+        return "low"
+    return None
+
+
+def _summarize_severity_counter(counter: Counter[Tuple[str, str]]) -> _SeverityGroup:
+    """Convert a counter of issue/impact pairs into a severity summary."""
+
+    ordered = sorted(
+        counter.items(),
+        key=lambda item: (
+            -item[1],
+            (item[0][0] or "").lower(),
+            (item[0][1] or "").lower(),
+        ),
+    )
+    items: List[Dict[str, Any]] = []
+    for (issue, impact), count in ordered[:5]:
+        items.append({"issue": issue, "impact": impact, "count": count})
+
+    return _SeverityGroup(total_unique=len(counter), items=items)
+
+
+def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Counter[Tuple[str, str]]]]:
+    """Parse a burp.csv export into counters grouped by site and severity bucket."""
+
+    results: Dict[str, Dict[str, Counter[Tuple[str, str]]]] = {}
     for row in _decode_file(file_obj):
         host = (row.get("Host") or row.get("host") or "").strip() or "Unknown Site"
         risk_raw = (row.get("Risk") or row.get("risk") or "").strip()
-        risk_key = risk_raw.upper() or "UNSPECIFIED"
+        severity_bucket = _categorize_web_risk(risk_raw)
+        if not severity_bucket:
+            continue
+
         issue = (row.get("Issue") or row.get("issue") or "").strip()
-        if not issue:
+        impact = (row.get("Impact") or row.get("impact") or "").strip()
+        if not issue and not impact:
             continue
 
         host_entry = results.setdefault(host, {})
-        risk_entry = host_entry.setdefault(
-            risk_key,
-            {"label": risk_raw or "Unspecified", "issues": []},
-        )
-
-        if issue not in risk_entry["issues"]:
-            risk_entry["issues"].append(issue)
+        counter = host_entry.setdefault(severity_bucket, Counter())
+        counter[(issue, impact)] += 1
 
     return results
 
@@ -455,7 +516,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
-    web_results: Dict[str, Dict[str, Dict[str, List[str]]]] = {}
+    web_results: Dict[str, Dict[str, Counter[Tuple[str, str]]]] = {}
     ip_results: Dict[str, List[str]] = {
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
@@ -473,18 +534,13 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 dns_results.setdefault(domain, []).extend(parsed_dns)
         elif label in {"burp.csv", "burp_csv.csv"}:
             parsed_web = parse_web_report(data_file.file)
-            for site, risk_map in parsed_web.items():
+            for site, severity_map in parsed_web.items():
                 combined_risks = web_results.setdefault(site, {})
-                for risk_key, risk_entry in risk_map.items():
-                    combined_entry = combined_risks.setdefault(
-                        risk_key,
-                        {"label": risk_entry["label"], "issues": []},
-                    )
-                    if not combined_entry["label"] and risk_entry["label"]:
-                        combined_entry["label"] = risk_entry["label"]
-                    for issue in risk_entry.get("issues", []):
-                        if issue not in combined_entry["issues"]:
-                            combined_entry["issues"].append(issue)
+                for severity_key, counter in severity_map.items():
+                    if not counter:
+                        continue
+                    combined_counter = combined_risks.setdefault(severity_key, Counter())
+                    combined_counter.update(counter)
         elif label == "firewall_csv.csv":
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
@@ -520,24 +576,13 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         ]
 
     if web_results:
-        web_entries: List[Dict[str, Any]] = []
-        for site, risk_map in web_results.items():
-            risks: List[Dict[str, Any]] = []
-            for risk_key, risk_entry in risk_map.items():
-                issues = risk_entry.get("issues") or []
-                if not issues:
-                    continue
-                label = str(risk_entry.get("label") or risk_key.title())
-                risks.append({"risk": label, "issues": issues})
-            if not risks:
-                continue
-            risks.sort(
-                key=lambda entry: (
-                    WEB_RISK_ORDER.get(str(entry["risk"]).upper(), 99),
-                    str(entry["risk"]),
-                )
-            )
-            web_entries.append({"site": site, "risks": risks})
+        web_entries: Dict[str, Dict[str, Any]] = {}
+        for site, severity_map in web_results.items():
+            site_entry: Dict[str, Any] = {"site": site}
+            for severity_key in ("high", "med", "low"):
+                counter = severity_map.get(severity_key, Counter())
+                site_entry[severity_key] = _summarize_severity_counter(counter)
+            web_entries[site] = site_entry
         if web_entries:
             artifacts["web_issues"] = web_entries
 

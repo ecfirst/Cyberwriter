@@ -36,6 +36,7 @@ from ghostwriter.rolodex.forms_project import (
     ProjectTargetFormSet,
     WhiteCardFormSet,
 )
+from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
 from ghostwriter.rolodex.ip_artifacts import (
     IP_ARTIFACT_DEFINITIONS,
     IP_ARTIFACT_TYPE_EXTERNAL,
@@ -1314,24 +1315,49 @@ class ProjectWorkbookUploadViewTests(TestCase):
             ]
         )
 
-        artifacts = self.project.data_artifacts
+        artifacts = normalize_nexpose_artifacts_map(self.project.data_artifacts)
         self.assertIn("web_issues", artifacts)
         web_entries = artifacts["web_issues"]
-        self.assertEqual(len(web_entries), 2)
+        self.assertIsInstance(web_entries, dict)
+        self.assertEqual(set(web_entries.keys()), {"portal.example.com", "intranet.example.com"})
 
-        portal_entry = next(entry for entry in web_entries if entry["site"] == "portal.example.com")
-        portal_risks = {risk_entry["risk"]: risk_entry["issues"] for risk_entry in portal_entry["risks"]}
-        self.assertIn("High", portal_risks)
-        self.assertEqual(portal_risks["High"], ["SQL Injection"])
-        self.assertIn("Medium", portal_risks)
-        self.assertEqual(portal_risks["Medium"], ["Cross-Site Scripting"])
+        portal_entry = web_entries["portal.example.com"]
+        self.assertEqual(portal_entry["site"], "portal.example.com")
+        portal_high = portal_entry["high"]
+        self.assertEqual(portal_high["total_unique"], 1)
+        self.assertEqual(portal_high["items"], [{"issue": "SQL Injection", "impact": "", "count": 1}])
+        self.assertEqual(list(portal_high.items), portal_high["items"])
 
-        intranet_entry = next(entry for entry in web_entries if entry["site"] == "intranet.example.com")
-        intranet_risks = {risk_entry["risk"]: risk_entry["issues"] for risk_entry in intranet_entry["risks"]}
-        self.assertIn("Low", intranet_risks)
-        self.assertEqual(intranet_risks["Low"], ["Directory Listing"])
-        self.assertIn("Informational", intranet_risks)
-        self.assertEqual(intranet_risks["Informational"], ["Banner Disclosure"])
+        portal_med = portal_entry["med"]
+        self.assertEqual(portal_med["total_unique"], 1)
+        self.assertEqual(
+            portal_med["items"],
+            [{"issue": "Cross-Site Scripting", "impact": "", "count": 2}],
+        )
+
+        portal_low = portal_entry["low"]
+        self.assertEqual(portal_low["total_unique"], 0)
+        self.assertEqual(portal_low["items"], [])
+
+        intranet_entry = web_entries["intranet.example.com"]
+        self.assertEqual(intranet_entry["site"], "intranet.example.com")
+        intranet_high = intranet_entry["high"]
+        self.assertEqual(intranet_high["total_unique"], 0)
+        self.assertEqual(intranet_high["items"], [])
+
+        intranet_med = intranet_entry["med"]
+        self.assertEqual(intranet_med["total_unique"], 0)
+        self.assertEqual(intranet_med["items"], [])
+
+        intranet_low = intranet_entry["low"]
+        self.assertEqual(intranet_low["total_unique"], 2)
+        self.assertEqual(
+            intranet_low["items"],
+            [
+                {"issue": "Banner Disclosure", "impact": "", "count": 1},
+                {"issue": "Directory Listing", "impact": "", "count": 1},
+            ],
+        )
 
     def test_firewall_upload_updates_project_artifacts(self):
         self.project.workbook_data = {"firewall": {"unique": 1}}

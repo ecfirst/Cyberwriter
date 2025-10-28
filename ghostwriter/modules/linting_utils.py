@@ -422,24 +422,40 @@ LINTER_CONTEXT = {
                     ],
                 }
             ],
-            "web_issues": [
-                {
+            "web_issues": {
+                "https://portal.example.com": {
                     "site": "https://portal.example.com",
-                    "risks": [
-                        {
-                            "risk": "High",
-                            "issues": [
-                                "Reflected Cross-Site Scripting",
-                                "Missing HTTP security headers",
-                            ],
-                        },
-                        {
-                            "risk": "Medium",
-                            "issues": ["Verbose error messages exposed"],
-                        },
-                    ],
+                    "high": {
+                        "total_unique": 2,
+                        "items": [
+                            {
+                                "issue": "Reflected Cross-Site Scripting",
+                                "impact": "Enables theft of user credentials through malicious scripts.",
+                                "count": 3,
+                            },
+                            {
+                                "issue": "Missing HTTP security headers",
+                                "impact": "Allows clickjacking and content injection attacks against users.",
+                                "count": 2,
+                            },
+                        ],
+                    },
+                    "med": {
+                        "total_unique": 1,
+                        "items": [
+                            {
+                                "issue": "Verbose error messages exposed",
+                                "impact": "Reveals stack traces that aid targeted exploitation attempts.",
+                                "count": 1,
+                            }
+                        ],
+                    },
+                    "low": {
+                        "total_unique": 0,
+                        "items": [],
+                    },
                 }
-            ],
+            },
             "external_ips": [
                 "203.0.113.10",
                 "203.0.113.11",

@@ -11,7 +11,10 @@ from django.test import TestCase
 
 # Ghostwriter Libraries
 from ghostwriter.factories import GenerateMockProject
-from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifact_payload
+from ghostwriter.rolodex.data_parsers import (
+    normalize_nexpose_artifact_payload,
+    normalize_nexpose_artifacts_map,
+)
 from ghostwriter.rolodex.models import ProjectDataFile
 
 
@@ -93,6 +96,25 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         self.assertEqual(self.project.data_responses, {"custom": "value"})
+
+    def test_normalize_web_issue_artifacts(self):
+        payload = {
+            "web_issues": {
+                "portal.example.com": {
+                    "site": "portal.example.com",
+                    "high": {"total_unique": 1, "items": [{"issue": "SQL", "impact": "", "count": 1}]},
+                    "med": {"total_unique": 0, "items": []},
+                    "low": {"total_unique": 0, "items": []},
+                }
+            }
+        }
+
+        normalized = normalize_nexpose_artifacts_map(payload)
+        portal = normalized["web_issues"]["portal.example.com"]
+        high_group = portal["high"]
+        self.assertEqual(high_group["total_unique"], 1)
+        self.assertEqual(high_group["items"], [{"issue": "SQL", "impact": "", "count": 1}])
+        self.assertEqual(list(high_group.items), high_group["items"])
 
         artifact = self.project.data_artifacts.get("external_nexpose_vulnerabilities")
         artifact = normalize_nexpose_artifact_payload(artifact)
