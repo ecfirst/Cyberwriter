@@ -595,17 +595,17 @@ def _clean_impact_sample(raw_value: Any) -> str:
 
 
 def _select_top_samples(counter: Counter[str]) -> List[str]:
-    """Return samples tied for the highest count in alphabetical order."""
+    """Return up to three samples ordered by descending frequency then alphabetically."""
 
-    if not counter:
-        return []
-    max_count = max(counter.values())
-    candidates = [
-        sample
-        for sample, count in counter.items()
-        if count == max_count and sample
-    ]
-    return sorted(candidates, key=lambda value: value.lower())[:3]
+    ordered = sorted(
+        (
+            (sample, count)
+            for sample, count in counter.items()
+            if sample
+        ),
+        key=lambda item: (-item[1], item[0].lower()),
+    )
+    return [sample for sample, _count in ordered[:3]]
 
 
 def _format_sample_string(samples: List[str]) -> str:

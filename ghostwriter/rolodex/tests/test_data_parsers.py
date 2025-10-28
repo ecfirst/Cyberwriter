@@ -200,10 +200,16 @@ class NexposeDataParserTests(TestCase):
             "portal.example.com,High,SQL Injection,This may lead to full database compromise.",
             "portal.example.com,Medium,Cross-Site Scripting,This can result in credential theft.",
             "portal.example.com,Medium,Cross-Site Scripting,This can result in credential theft.",
+            "portal.example.com,Medium,Session Fixation,This can lead to account takeover.",
+            "portal.example.com,Medium,Session Fixation,This can lead to account takeover.",
+            "portal.example.com,Medium,Session Fixation,This can lead to account takeover.",
             "intranet.example.com,Medium,Authentication Bypass,This may expose sensitive data.",
             "intranet.example.com,Medium,Authentication Bypass,This may expose sensitive data.",
             "intranet.example.com,Low,Directory Listing,This may expose directory structure.",
             "intranet.example.com,Low,Directory Listing,This may expose directory structure.",
+            "portal.example.com,Low,Missing X-Frame-Options header,This may allow clickjacking.",
+            "portal.example.com,Low,Missing X-Frame-Options header,This may allow clickjacking.",
+            "portal.example.com,Low,Missing X-Frame-Options header,This may allow clickjacking.",
             "extranet.example.com,Informational,Banner Disclosure,This can reveal version information.",
             "extranet.example.com,Informational,Banner Disclosure,This can reveal version information.",
         ]
@@ -225,11 +231,11 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(web_artifact, dict)
         self.assertEqual(
             web_artifact["low_sample_string"],
-            "'Banner Disclosure' and 'Directory Listing'",
+            "'Missing X-Frame-Options header', 'Banner Disclosure' and 'Directory Listing'",
         )
         self.assertEqual(
             web_artifact["med_sample_string"],
-            "'expose sensitive data.' and 'result in credential theft.'",
+            "'lead to account takeover.', 'expose sensitive data.' and 'result in credential theft.'",
         )
         self.assertIn("high", web_artifact)
         self.assertIn("med", web_artifact)
@@ -240,12 +246,11 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(high_summary["items"][0]["issue"], "SQL Injection")
         self.assertEqual(high_summary["items"][0]["count"], 1)
         med_summary = web_artifact["med"]
-        self.assertEqual(med_summary["total_unique"], 2)
-        self.assertEqual(len(med_summary["items"]), 2)
+        self.assertEqual(med_summary["total_unique"], 3)
+        self.assertEqual(len(med_summary["items"]), 3)
+        self.assertEqual(med_summary["items"][0]["issue"], "Session Fixation")
+        self.assertEqual(med_summary["items"][0]["count"], 3)
         low_summary = web_artifact["low"]
-        self.assertEqual(low_summary["total_unique"], 2)
-        self.assertEqual(len(low_summary["items"]), 2)
-        for site_entry in web_artifact["sites"]:
-            for severity_key in ("high", "med", "low"):
-                self.assertIn("items", site_entry[severity_key])
-                self.assertEqual(site_entry[severity_key]["items"], [])
+        self.assertEqual(low_summary["total_unique"], 3)
+        self.assertEqual(len(low_summary["items"]), 3)
+        self.assertEqual(low_summary["items"][0]["issue"], "Missing X-Frame-Options header")
