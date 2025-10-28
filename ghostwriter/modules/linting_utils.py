@@ -1,5 +1,7 @@
 """This contains utilities and values used by template linting."""
 
+from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
+
 # Example JSON reporting data for loading into templates for rendering tests
 LINTER_CONTEXT = {
     "report_date": "Mar. 25, 2021",
@@ -420,24 +422,36 @@ LINTER_CONTEXT = {
                     ],
                 }
             ],
-            "web_issues": [
-                {
-                    "site": "https://portal.example.com",
-                    "risks": [
-                        {
-                            "risk": "High",
-                            "issues": [
-                                "Reflected Cross-Site Scripting",
-                                "Missing HTTP security headers",
-                            ],
-                        },
-                        {
-                            "risk": "Medium",
-                            "issues": ["Verbose error messages exposed"],
-                        },
-                    ],
-                }
-            ],
+        "web_issues": {
+            "low_sample_string": "",
+            "med_sample_string": "'Reveals stack traces that aid targeted exploitation attempts.'",
+            "high": {
+                "total_unique": 2,
+                "items": [
+                    {
+                        "issue": "Reflected Cross-Site Scripting",
+                        "impact": "Enables theft of user credentials through malicious scripts.",
+                        "count": 3,
+                    },
+                    {
+                        "issue": "Missing HTTP security headers",
+                        "impact": "Allows clickjacking and content injection attacks against users.",
+                        "count": 2,
+                    },
+                ],
+            },
+            "med": {
+                "total_unique": 1,
+                "items": [
+                    {
+                        "issue": "Verbose error messages exposed",
+                        "impact": "Reveals stack traces that aid targeted exploitation attempts.",
+                        "count": 1,
+                    }
+                ],
+            },
+            "low": {"total_unique": 0, "items": []},
+        },
             "external_ips": [
                 "203.0.113.10",
                 "203.0.113.11",
@@ -474,6 +488,109 @@ LINTER_CONTEXT = {
                     "type": "Operations",
                 },
             ],
+            "external_nexpose_vulnerabilities": {
+                "label": "External Nexpose Vulnerabilities",
+                "high": {
+                    "total_unique": 4,
+                    "items": [
+                        {
+                            "title": "OpenSSL Padding Oracle (CVE-2016-2107)",
+                            "impact": "Allows attackers to decrypt TLS traffic and impersonate the server.",
+                            "count": 3,
+                        },
+                        {
+                            "title": "Outdated Apache HTTP Server",
+                            "impact": "Enables remote code execution through known exploits.",
+                            "count": 2,
+                        },
+                    ],
+                },
+                "med": {
+                    "total_unique": 2,
+                    "items": [
+                        {
+                            "title": "SMB Signing Not Required",
+                            "impact": "Permits man-in-the-middle attacks on SMB sessions.",
+                            "count": 4,
+                        }
+                    ],
+                },
+                "low": {
+                    "total_unique": 0,
+                    "items": [],
+                },
+            },
+            "internal_nexpose_vulnerabilities": {
+                "label": "Internal Nexpose Vulnerabilities",
+                "high": {
+                    "total_unique": 3,
+                    "items": [
+                        {
+                            "title": "Unsupported Windows Server",
+                            "impact": "Legacy operating systems permit trivial remote exploitation.",
+                            "count": 5,
+                        },
+                        {
+                            "title": "Exposed SMB Shares",
+                            "impact": "Anonymous access allows data exfiltration and lateral movement.",
+                            "count": 2,
+                        },
+                    ],
+                },
+                "med": {
+                    "total_unique": 2,
+                    "items": [
+                        {
+                            "title": "Outdated Database Service",
+                            "impact": "Known vulnerabilities enable privilege escalation against the service.",
+                            "count": 4,
+                        }
+                    ],
+                },
+                "low": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "title": "Information Disclosure Banner",
+                            "impact": "Verbose service banners reveal version information to attackers.",
+                            "count": 3,
+                        }
+                    ],
+                },
+            },
+            "iot_iomt_nexpose_vulnerabilities": {
+                "label": "IoT/IoMT Nexpose Vulnerabilities",
+                "high": {
+                    "total_unique": 2,
+                    "items": [
+                        {
+                            "title": "Unpatched Medical Device Firmware",
+                            "impact": "Outdated firmware enables arbitrary code execution on clinical systems.",
+                            "count": 3,
+                        }
+                    ],
+                },
+                "med": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "title": "Default Credentials Enabled",
+                            "impact": "Shared vendor passwords allow unauthorized access to device management.",
+                            "count": 2,
+                        }
+                    ],
+                },
+                "low": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "title": "Deprecated TLS Protocols",
+                            "impact": "Weak encryption permits interception of device telemetry.",
+                            "count": 4,
+                        }
+                    ],
+                },
+            },
         },
         "extra_fields": {},
     },
@@ -1032,3 +1149,7 @@ LINTER_CONTEXT = {
     },
     "extra_fields": {},
 }
+
+LINTER_CONTEXT["project"]["data_artifacts"] = normalize_nexpose_artifacts_map(
+    LINTER_CONTEXT["project"].get("data_artifacts", {})
+)

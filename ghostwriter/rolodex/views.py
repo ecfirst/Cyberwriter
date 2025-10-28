@@ -85,6 +85,7 @@ from ghostwriter.rolodex.models import (
     ProjectTarget,
 )
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
+from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
 from ghostwriter.rolodex.workbook import build_data_configuration, build_workbook_sections
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
@@ -1635,7 +1636,8 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             if data_file.requirement_slug
         }
         dns_issue_counts: Dict[str, int] = {}
-        artifacts = object.data_artifacts or {}
+        artifacts = normalize_nexpose_artifacts_map(object.data_artifacts or {})
+        object.data_artifacts = artifacts
         for dns_entry in artifacts.get("dns_issues", []) or []:
             domain = (dns_entry.get("domain") or "").strip()
             if domain:
@@ -1655,8 +1657,32 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             }
             ip_cards.append(card_entry)
 
+        nexpose_requirement_labels = {
+            "external_nexpose_csv.csv",
+            "internal_nexpose_csv.csv",
+            "iot_nexpose_csv.csv",
+        }
+        reordered_requirements = []
+        nexpose_requirements = []
+        burp_insert_index = None
+        for requirement in required_files:
+            label = (requirement.get("label") or "").strip().lower()
+            if label in nexpose_requirement_labels:
+                nexpose_requirements.append(requirement)
+                continue
+            reordered_requirements.append(requirement)
+            if label == "burp_csv.csv":
+                burp_insert_index = len(reordered_requirements)
+        if nexpose_requirements:
+            if burp_insert_index is None:
+                reordered_requirements.extend(nexpose_requirements)
+            else:
+                reordered_requirements[burp_insert_index:burp_insert_index] = nexpose_requirements
+        required_files = reordered_requirements
+
         supplemental_cards = []
         inserted_ip_cards = False
+        pending_ip_cards_after_burp = False
         for requirement in required_files:
             slug = requirement.get("slug")
             existing = required_file_lookup.get(slug) if slug else None
@@ -1683,12 +1709,29 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                     fail_count = 0
                 requirement["parsed_fail_count"] = fail_count
                 setattr(existing, "parsed_fail_count", fail_count)
-            if label == "burp_csv.csv" and not inserted_ip_cards:
+            if label == "burp_csv.csv":
                 supplemental_cards.append({"card_type": "required", "data": requirement})
+                pending_ip_cards_after_burp = True
+                continue
+
+            if (
+                pending_ip_cards_after_burp
+                and not inserted_ip_cards
+                and label not in nexpose_requirement_labels
+            ):
                 supplemental_cards.extend({"card_type": "ip", "data": card} for card in ip_cards)
                 inserted_ip_cards = True
+                pending_ip_cards_after_burp = False
+
+            if label in nexpose_requirement_labels:
+                supplemental_cards.append({"card_type": "required", "data": requirement})
                 continue
             supplemental_cards.append({"card_type": "required", "data": requirement})
+
+        if pending_ip_cards_after_burp and not inserted_ip_cards:
+            supplemental_cards.extend({"card_type": "ip", "data": card} for card in ip_cards)
+            inserted_ip_cards = True
+            pending_ip_cards_after_burp = False
 
         if not inserted_ip_cards:
             supplemental_cards.extend({"card_type": "ip", "data": card} for card in ip_cards)
@@ -1727,15 +1770,14 @@ class ProjectWorkbookUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
             project.workbook_file = None
             project.workbook_data = {}
             project.data_responses = {}
-            project.data_artifacts = {}
             project.save(
                 update_fields=[
                     "workbook_file",
                     "workbook_data",
                     "data_responses",
-                    "data_artifacts",
                 ]
             )
+            project.rebuild_data_artifacts()
             messages.success(request, "Workbook removed for this project.")
             return redirect(self.get_success_url())
 

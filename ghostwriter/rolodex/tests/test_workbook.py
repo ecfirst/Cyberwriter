@@ -59,6 +59,34 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertIn("slug", required_files[0])
         self.assertEqual(required_files[0]["slug"], "required_dns-report-csv_example-com")
 
+    def test_nexpose_csv_requirements_added_for_positive_totals(self):
+        workbook_data = {
+            "external_nexpose": {"total": 1},
+            "internal_nexpose": {"total": 2},
+            "iot_iomt_nexpose": {"total": 4},
+        }
+
+        _, required_files = build_data_configuration(workbook_data)
+
+        labels = {entry["label"] for entry in required_files}
+        self.assertIn("external_nexpose_csv.csv", labels)
+        self.assertIn("internal_nexpose_csv.csv", labels)
+        self.assertIn("iot_nexpose_csv.csv", labels)
+
+    def test_nexpose_csv_requirements_skip_zero_totals(self):
+        workbook_data = {
+            "external_nexpose": {"total": 0},
+            "internal_nexpose": {"total": 0},
+            "iot_iomt_nexpose": {"total": 0},
+        }
+
+        _, required_files = build_data_configuration(workbook_data)
+
+        labels = {entry["label"] for entry in required_files}
+        self.assertNotIn("external_nexpose_csv.csv", labels)
+        self.assertNotIn("internal_nexpose_csv.csv", labels)
+        self.assertNotIn("iot_nexpose_csv.csv", labels)
+
     def test_firewall_requirement_included_when_unique_values_present(self):
         workbook_data = {
             "firewall": {"unique": 2},

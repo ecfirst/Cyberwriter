@@ -35,6 +35,7 @@ from ghostwriter.reporting.models import (
     ReportTemplate,
     Severity,
 )
+from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
 from ghostwriter.rolodex.models import (
     Client,
     ClientContact,
@@ -703,6 +704,8 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        if isinstance(data.get("data_artifacts"), dict):
+            data["data_artifacts"] = normalize_nexpose_artifacts_map(data["data_artifacts"])
         raw_responses = instance.data_responses or {}
         workbook_data = instance.workbook_data or {}
         data["data_responses"] = self._format_data_responses(raw_responses, workbook_data)

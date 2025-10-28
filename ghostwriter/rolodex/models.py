@@ -328,11 +328,20 @@ class Project(models.Model):
     def rebuild_data_artifacts(self) -> None:
         """Rebuild supporting data artifacts derived from uploaded files."""
 
-        from ghostwriter.rolodex.data_parsers import build_project_artifacts
+        from ghostwriter.rolodex.data_parsers import (
+            NEXPOSE_ARTIFACT_KEYS,
+            build_project_artifacts,
+        )
 
         artifacts = build_project_artifacts(self)
         self.data_artifacts = artifacts
-        self.save(update_fields=["data_artifacts"])
+
+        existing_responses = dict(self.data_responses or {})
+        for key in NEXPOSE_ARTIFACT_KEYS:
+            existing_responses.pop(key, None)
+        self.data_responses = existing_responses
+
+        self.save(update_fields=["data_artifacts", "data_responses"])
 
 
 class ProjectDataFile(models.Model):

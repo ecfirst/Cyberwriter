@@ -36,6 +36,11 @@ from ghostwriter.rolodex.forms_project import (
     ProjectTargetFormSet,
     WhiteCardFormSet,
 )
+from ghostwriter.rolodex.data_parsers import (
+    NEXPOSE_ARTIFACT_DEFINITIONS,
+    normalize_nexpose_artifact_payload,
+    normalize_nexpose_artifacts_map,
+)
 from ghostwriter.rolodex.ip_artifacts import (
     IP_ARTIFACT_DEFINITIONS,
     IP_ARTIFACT_TYPE_EXTERNAL,
@@ -47,6 +52,24 @@ from ghostwriter.rolodex.templatetags import determine_primary
 logging.disable(logging.CRITICAL)
 
 PASSWORD = "SuperNaturalReporting!"
+
+
+def assert_default_nexpose_artifacts(testcase, artifacts):
+    """Assert that the provided ``artifacts`` contain empty Nexpose placeholders."""
+
+    for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values():
+        artifact = artifacts.get(definition["artifact_key"])
+        testcase.assertIsNotNone(
+            artifact,
+            msg=f"Missing Nexpose artifact for {definition['artifact_key']}",
+        )
+        normalized = normalize_nexpose_artifact_payload(artifact)
+        testcase.assertEqual(normalized.get("label"), definition["label"])
+        for severity_key in ("high", "med", "low"):
+            group = normalized.get(severity_key)
+            testcase.assertIsNotNone(group)
+            testcase.assertEqual(group["total_unique"], 0)
+            testcase.assertEqual(group["items"], [])
 
 
 class IndexViewTests(TestCase):
@@ -1081,7 +1104,11 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertFalse(self.project.workbook_file)
         self.assertEqual(self.project.workbook_data, {})
         self.assertEqual(self.project.data_responses, {})
-        self.assertEqual(self.project.data_artifacts, {})
+        assert_default_nexpose_artifacts(self, self.project.data_artifacts)
+        expected_keys = {
+            definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
+        }
+        self.assertEqual(set(self.project.data_artifacts.keys()), expected_keys)
         self.assertFalse(self.project.data_files.exists())
 
         # Uploaded files should be deleted by the view; ensure no leftover references remain
@@ -1136,6 +1163,8 @@ class ProjectWorkbookUploadViewTests(TestCase):
             "dns": {"records": [{"domain": "example.com"}, {"domain": "test.example.com"}]},
             "web": {"combined_unique": 5},
             "external_nexpose": {"total": 10},
+            "internal_nexpose": {"total": 1},
+            "iot_iomt_nexpose": {"total": 1},
         }
         self.project.workbook_data = workbook_payload
         self.project.save(update_fields=["workbook_data"])
@@ -1150,10 +1179,21 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertTrue(dns_indexes)
         burp_index = labels.index("burp_csv.csv")
         self.assertEqual(burp_index, max(dns_indexes) + 1)
+        self.assertEqual(
+            labels[burp_index + 1 : burp_index + 4],
+            [
+                "external_nexpose_csv.csv",
+                "internal_nexpose_csv.csv",
+                "iot_nexpose_csv.csv",
+            ],
+        )
 
-    def test_ip_cards_follow_burp_requirement_in_supplementals(self):
+    def test_ip_cards_follow_nexpose_cards_after_burp_in_supplementals(self):
         workbook_payload = {
             "web": {"combined_unique": 2},
+            "external_nexpose": {"total": 4},
+            "internal_nexpose": {"total": 2},
+            "iot_iomt_nexpose": {"total": 1},
         }
         self.project.workbook_data = workbook_payload
         self.project.save(update_fields=["workbook_data"])
@@ -1165,7 +1205,15 @@ class ProjectWorkbookUploadViewTests(TestCase):
 
         burp_index = labels.index("burp_csv.csv")
         self.assertEqual(
-            labels[burp_index + 1 : burp_index + 3],
+            labels[burp_index + 1 : burp_index + 4],
+            [
+                "external_nexpose_csv.csv",
+                "internal_nexpose_csv.csv",
+                "iot_nexpose_csv.csv",
+            ],
+        )
+        self.assertEqual(
+            labels[burp_index + 4 : burp_index + 6],
             [
                 IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_EXTERNAL].label,
                 IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_INTERNAL].label,
@@ -1257,12 +1305,22 @@ class ProjectWorkbookUploadViewTests(TestCase):
         upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
         csv_content = "\n".join(
             [
-                "Host,Risk,Issue",
-                "portal.example.com,High,SQL Injection",
-                "portal.example.com,Medium,Cross-Site Scripting",
-                "portal.example.com,Medium,Cross-Site Scripting",
-                "intranet.example.com,Low,Directory Listing",
-                "intranet.example.com,Informational,Banner Disclosure",
+                "Host,Risk,Issue,Impact",
+                "portal.example.com,High,SQL Injection,This may lead to full database compromise.",
+                "portal.example.com,Medium,Cross-Site Scripting,This can result in credential theft.",
+                "portal.example.com,Medium,Cross-Site Scripting,This can result in credential theft.",
+                "portal.example.com,Medium,Session Fixation,This can lead to account takeover.",
+                "portal.example.com,Medium,Session Fixation,This can lead to account takeover.",
+                "portal.example.com,Medium,Session Fixation,This can lead to account takeover.",
+                "intranet.example.com,Medium,Authentication Bypass,This may expose sensitive data.",
+                "intranet.example.com,Medium,Authentication Bypass,This may expose sensitive data.",
+                "intranet.example.com,Low,Directory Listing,This may expose directory structure.",
+                "intranet.example.com,Low,Directory Listing,This may expose directory structure.",
+                "portal.example.com,Low,Missing X-Frame-Options header,This may allow clickjacking.",
+                "portal.example.com,Low,Missing X-Frame-Options header,This may allow clickjacking.",
+                "portal.example.com,Low,Missing X-Frame-Options header,This may allow clickjacking.",
+                "extranet.example.com,Informational,Banner Disclosure,This can reveal version information.",
+                "extranet.example.com,Informational,Banner Disclosure,This can reveal version information.",
             ]
         )
         upload = SimpleUploadedFile(
@@ -1293,24 +1351,41 @@ class ProjectWorkbookUploadViewTests(TestCase):
             ]
         )
 
-        artifacts = self.project.data_artifacts
+        artifacts = normalize_nexpose_artifacts_map(self.project.data_artifacts)
         self.assertIn("web_issues", artifacts)
-        web_entries = artifacts["web_issues"]
-        self.assertEqual(len(web_entries), 2)
+        web_artifacts = artifacts["web_issues"]
+        self.assertIsInstance(web_artifacts, dict)
+        self.assertEqual(
+            web_artifacts["low_sample_string"],
+            "'Missing X-Frame-Options header', 'Banner Disclosure' and 'Directory Listing'",
+        )
+        self.assertEqual(
+            web_artifacts["med_sample_string"],
+            "'lead to account takeover.', 'expose sensitive data.' and 'result in credential theft.'",
+        )
+        high_summary = web_artifacts["high"]
+        self.assertEqual(high_summary["total_unique"], 1)
+        self.assertEqual(
+            high_summary["items"],
+            [
+                {
+                    "issue": "SQL Injection",
+                    "impact": "This may lead to full database compromise.",
+                    "count": 1,
+                }
+            ],
+        )
 
-        portal_entry = next(entry for entry in web_entries if entry["site"] == "portal.example.com")
-        portal_risks = {risk_entry["risk"]: risk_entry["issues"] for risk_entry in portal_entry["risks"]}
-        self.assertIn("High", portal_risks)
-        self.assertEqual(portal_risks["High"], ["SQL Injection"])
-        self.assertIn("Medium", portal_risks)
-        self.assertEqual(portal_risks["Medium"], ["Cross-Site Scripting"])
+        med_summary = web_artifacts["med"]
+        self.assertEqual(med_summary["total_unique"], 3)
+        self.assertEqual(len(med_summary["items"]), 3)
+        self.assertEqual(med_summary["items"][0]["issue"], "Session Fixation")
+        self.assertEqual(med_summary["items"][0]["count"], 3)
 
-        intranet_entry = next(entry for entry in web_entries if entry["site"] == "intranet.example.com")
-        intranet_risks = {risk_entry["risk"]: risk_entry["issues"] for risk_entry in intranet_entry["risks"]}
-        self.assertIn("Low", intranet_risks)
-        self.assertEqual(intranet_risks["Low"], ["Directory Listing"])
-        self.assertIn("Informational", intranet_risks)
-        self.assertEqual(intranet_risks["Informational"], ["Banner Disclosure"])
+        low_summary = web_artifacts["low"]
+        self.assertEqual(low_summary["total_unique"], 3)
+        self.assertEqual(len(low_summary["items"]), 3)
+        self.assertEqual(low_summary["items"][0]["issue"], "Missing X-Frame-Options header")
 
     def test_firewall_upload_updates_project_artifacts(self):
         self.project.workbook_data = {"firewall": {"unique": 1}}
@@ -1451,4 +1526,8 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertEqual(response.url, f"{self.detail_url}#supplementals")
 
         self.project.refresh_from_db()
-        self.assertEqual(self.project.data_artifacts, {})
+        assert_default_nexpose_artifacts(self, self.project.data_artifacts)
+        expected_keys = {
+            definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
+        }
+        self.assertEqual(set(self.project.data_artifacts.keys()), expected_keys)
