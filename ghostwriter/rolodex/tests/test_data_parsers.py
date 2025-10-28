@@ -99,18 +99,27 @@ class NexposeDataParserTests(TestCase):
 
     def test_normalize_web_issue_artifacts(self):
         payload = {
-            "web_issues": [
-                {
-                    "site": "portal.example.com",
-                    "high": {"total_unique": 1, "items": [{"issue": "SQL", "impact": "", "count": 1}]},
-                    "med": {"total_unique": 0, "items": []},
-                    "low": {"total_unique": 0, "items": []},
-                }
-            ]
+            "web_issues": {
+                "sites": [
+                    {
+                        "site": "portal.example.com",
+                        "high": {
+                            "total_unique": 1,
+                            "items": [{"issue": "SQL", "impact": "", "count": 1}],
+                        },
+                        "med": {"total_unique": 0, "items": []},
+                        "low": {"total_unique": 0, "items": []},
+                    }
+                ],
+                "low_sample_string": "'SQL'",
+                "med_sample_string": "",
+            }
         }
 
         normalized = normalize_nexpose_artifacts_map(payload)
         self.assertIsInstance(normalized["web_issues"], list)
+        self.assertEqual(normalized["web_issues"].low_sample_string, "'SQL'")
+        self.assertEqual(normalized["web_issues"].med_sample_string, "")
         self.assertEqual(len(normalized["web_issues"]), 1)
         portal = normalized["web_issues"][0]
         self.assertEqual(portal["site"], "portal.example.com")
@@ -134,6 +143,8 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(legacy_site["site"], "legacy.example.com")
         self.assertEqual(legacy_site["med"]["total_unique"], 0)
         self.assertEqual(legacy_site["low"]["total_unique"], 0)
+        self.assertEqual(normalized_legacy["web_issues"].low_sample_string, "")
+        self.assertEqual(normalized_legacy["web_issues"].med_sample_string, "")
 
         artifact = self.project.data_artifacts.get("external_nexpose_vulnerabilities")
         artifact = normalize_nexpose_artifact_payload(artifact)
@@ -178,3 +189,41 @@ class NexposeDataParserTests(TestCase):
 
         self.assertNotIn("external_nexpose_vulnerabilities", self.project.data_artifacts)
         self.assertEqual(self.project.data_responses, {"custom": "value"})
+
+    def test_web_issue_sample_strings(self):
+        csv_lines = [
+            "Host,Risk,Issue,Impact",
+            "portal.example.com,High,SQL Injection,This may lead to full database compromise.",
+            "portal.example.com,Medium,Cross-Site Scripting,This can result in credential theft.",
+            "portal.example.com,Medium,Cross-Site Scripting,This can result in credential theft.",
+            "intranet.example.com,Medium,Authentication Bypass,This may expose sensitive data.",
+            "intranet.example.com,Medium,Authentication Bypass,This may expose sensitive data.",
+            "intranet.example.com,Low,Directory Listing,This may expose directory structure.",
+            "intranet.example.com,Low,Directory Listing,This may expose directory structure.",
+            "extranet.example.com,Informational,Banner Disclosure,This can reveal version information.",
+            "extranet.example.com,Informational,Banner Disclosure,This can reveal version information.",
+        ]
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "burp_csv.csv",
+                "\n".join(csv_lines).encode("utf-8"),
+                content_type="text/csv",
+            ),
+            requirement_label="burp_csv.csv",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        web_artifact = self.project.data_artifacts.get("web_issues")
+        self.assertIsInstance(web_artifact, dict)
+        self.assertEqual(
+            web_artifact["low_sample_string"],
+            "'Banner Disclosure' and 'Directory Listing'",
+        )
+        self.assertEqual(
+            web_artifact["med_sample_string"],
+            "'expose sensitive data.' and 'result in credential theft.'",
+        )

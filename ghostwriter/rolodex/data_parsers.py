@@ -297,6 +297,23 @@ class _SeverityGroup(dict):
         return dict.__getattribute__(self, name)
 
 
+class _WebIssueCollection(list):
+    """List subclass that also exposes aggregate sample strings."""
+
+    __slots__ = ("low_sample_string", "med_sample_string")
+
+    def __init__(
+        self,
+        entries: Optional[Iterable[Dict[str, Any]]] = None,
+        *,
+        low_sample_string: str = "",
+        med_sample_string: str = "",
+    ) -> None:
+        super().__init__(entries or [])
+        self.low_sample_string = low_sample_string
+        self.med_sample_string = med_sample_string
+
+
 def _coerce_severity_group(value: Any) -> _SeverityGroup:
     """Normalize a severity mapping into a ``_SeverityGroup`` instance."""
 
@@ -346,6 +363,48 @@ def _normalize_web_site_payload(payload: Any, site_name: Optional[str] = None) -
     return normalized
 
 
+def _coerce_web_issue_collection(value: Any) -> _WebIssueCollection:
+    """Return a ``_WebIssueCollection`` for the provided artifact payload."""
+
+    if isinstance(value, _WebIssueCollection):
+        return value
+
+    low_sample_string = ""
+    med_sample_string = ""
+    entries: List[Dict[str, Any]] = []
+
+    if isinstance(value, dict):
+        low_sample_string = str(value.get("low_sample_string") or "")
+        med_sample_string = str(value.get("med_sample_string") or "")
+        raw_sites = value.get("sites")
+        if isinstance(raw_sites, list):
+            entries = [
+                _normalize_web_site_payload(site_payload)
+                for site_payload in raw_sites
+                if isinstance(site_payload, dict)
+            ]
+        else:
+            for site, site_payload in sorted(
+                value.items(), key=lambda item: (item[0] or "").lower()
+            ):
+                if site in {"low_sample_string", "med_sample_string"}:
+                    continue
+                if isinstance(site_payload, dict):
+                    entries.append(_normalize_web_site_payload(site_payload, site))
+    elif isinstance(value, list):
+        entries = [
+            _normalize_web_site_payload(site_payload)
+            for site_payload in value
+            if isinstance(site_payload, dict)
+        ]
+
+    return _WebIssueCollection(
+        entries,
+        low_sample_string=low_sample_string,
+        med_sample_string=med_sample_string,
+    )
+
+
 def normalize_nexpose_artifacts_map(artifacts: Any) -> Any:
     """Normalize Nexpose and web issue artifact entries for template access."""
 
@@ -356,19 +415,7 @@ def normalize_nexpose_artifacts_map(artifacts: Any) -> Any:
         if isinstance(key, str) and key.endswith("_nexpose_vulnerabilities"):
             normalized[key] = normalize_nexpose_artifact_payload(value)
         elif key == "web_issues":
-            if isinstance(value, dict):
-                normalized[key] = [
-                    _normalize_web_site_payload(site_payload, site)
-                    for site, site_payload in sorted(
-                        value.items(), key=lambda item: (item[0] or "").lower()
-                    )
-                ]
-            elif isinstance(value, list):
-                normalized[key] = [
-                    _normalize_web_site_payload(site_payload)
-                    for site_payload in value
-                    if isinstance(site_payload, dict)
-                ]
+            normalized[key] = _coerce_web_issue_collection(value)
     return normalized
 
 
@@ -496,6 +543,46 @@ def _summarize_severity_counter(counter: Counter[Tuple[str, str]]) -> _SeverityG
     return _SeverityGroup(total_unique=len(counter), items=items)
 
 
+def _clean_impact_sample(raw_value: Any) -> str:
+    """Return an impact sample with helper phrases removed."""
+
+    text = str(raw_value or "").strip()
+    lowered = text.lower()
+    for prefix in ("this may", "this can"):
+        if lowered.startswith(prefix):
+            text = text[len(prefix) :].lstrip(" \t-:,;")
+            break
+    return text
+
+
+def _select_top_samples(counter: Counter[str]) -> List[str]:
+    """Return samples tied for the highest count in alphabetical order."""
+
+    if not counter:
+        return []
+    max_count = max(counter.values())
+    candidates = [
+        sample
+        for sample, count in counter.items()
+        if count == max_count and sample
+    ]
+    return sorted(candidates, key=lambda value: value.lower())[:3]
+
+
+def _format_sample_string(samples: List[str]) -> str:
+    """Return a grammatically correct representation of the provided samples."""
+
+    samples = [sample for sample in samples if sample]
+    if not samples:
+        return ""
+    quoted = [f"'{sample}'" for sample in samples]
+    if len(quoted) == 1:
+        return quoted[0]
+    if len(quoted) == 2:
+        return f"{quoted[0]} and {quoted[1]}"
+    return ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
+
+
 def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Counter[Tuple[str, str]]]]:
     """Parse a burp.csv export into counters grouped by site and severity bucket."""
 
@@ -585,15 +672,33 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     if web_results:
         web_entries: List[Dict[str, Any]] = []
+        low_issue_counter: Counter[str] = Counter()
+        med_impact_counter: Counter[str] = Counter()
         for site in sorted(web_results):
             severity_map = web_results[site]
             site_entry: Dict[str, Any] = {"site": site}
             for severity_key in ("high", "med", "low"):
                 counter = severity_map.get(severity_key, Counter())
                 site_entry[severity_key] = _summarize_severity_counter(counter)
+            for (issue, _impact), count in severity_map.get("low", Counter()).items():
+                issue_sample = (issue or "").strip()
+                if issue_sample:
+                    low_issue_counter[issue_sample] += count
+            for (_issue, impact), count in severity_map.get("med", Counter()).items():
+                impact_sample = _clean_impact_sample(impact)
+                if impact_sample:
+                    med_impact_counter[impact_sample] += count
             web_entries.append(site_entry)
         if web_entries:
-            artifacts["web_issues"] = web_entries
+            artifacts["web_issues"] = {
+                "sites": web_entries,
+                "low_sample_string": _format_sample_string(
+                    _select_top_samples(low_issue_counter)
+                ),
+                "med_sample_string": _format_sample_string(
+                    _select_top_samples(med_impact_counter)
+                ),
+            }
 
     for artifact_key, values in ip_results.items():
         if values:
