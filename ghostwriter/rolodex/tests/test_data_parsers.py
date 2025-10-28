@@ -123,20 +123,15 @@ class NexposeDataParserTests(TestCase):
         }
 
         normalized = normalize_nexpose_artifacts_map(payload)
-        self.assertIsInstance(normalized["web_issues"], list)
-        self.assertEqual(normalized["web_issues"].low_sample_string, "'SQL'")
-        self.assertEqual(normalized["web_issues"].med_sample_string, "")
-        self.assertEqual(normalized["web_issues"].high["total_unique"], 1)
+        self.assertIsInstance(normalized["web_issues"], dict)
+        self.assertEqual(normalized["web_issues"]["low_sample_string"], "'SQL'")
+        self.assertEqual(normalized["web_issues"]["med_sample_string"], "")
+        self.assertEqual(normalized["web_issues"]["high"]["total_unique"], 1)
         self.assertEqual(
-            normalized["web_issues"].high["items"],
+            normalized["web_issues"]["high"]["items"],
             [{"issue": "SQL", "impact": "", "count": 1}],
         )
-        self.assertEqual(len(normalized["web_issues"]), 1)
-        portal = normalized["web_issues"][0]
-        self.assertEqual(portal["site"], "portal.example.com")
-        high_group = portal["high"]
-        self.assertEqual(high_group["total_unique"], 1)
-        self.assertEqual(high_group["items"], [])
+        high_group = normalized["web_issues"]["high"]
         self.assertEqual(list(high_group.items), high_group["items"])
 
         legacy_payload = {
@@ -148,15 +143,12 @@ class NexposeDataParserTests(TestCase):
         }
 
         normalized_legacy = normalize_nexpose_artifacts_map(legacy_payload)
-        self.assertIsInstance(normalized_legacy["web_issues"], list)
-        self.assertEqual(len(normalized_legacy["web_issues"]), 1)
-        legacy_site = normalized_legacy["web_issues"][0]
-        self.assertEqual(legacy_site["site"], "legacy.example.com")
-        self.assertEqual(legacy_site["med"]["total_unique"], 0)
-        self.assertEqual(legacy_site["low"]["total_unique"], 0)
-        self.assertEqual(normalized_legacy["web_issues"].low_sample_string, "")
-        self.assertEqual(normalized_legacy["web_issues"].med_sample_string, "")
-        self.assertEqual(normalized_legacy["web_issues"].high["total_unique"], 2)
+        self.assertIsInstance(normalized_legacy["web_issues"], dict)
+        self.assertEqual(normalized_legacy["web_issues"].get("low_sample_string"), "")
+        self.assertEqual(normalized_legacy["web_issues"].get("med_sample_string"), "")
+        self.assertEqual(
+            normalized_legacy["web_issues"]["high"]["total_unique"], 2
+        )
 
         artifact = self.project.data_artifacts.get("external_nexpose_vulnerabilities")
         artifact = normalize_nexpose_artifact_payload(artifact)

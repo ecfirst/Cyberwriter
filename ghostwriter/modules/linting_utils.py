@@ -423,14 +423,6 @@ LINTER_CONTEXT = {
                 }
             ],
         "web_issues": {
-            "sites": [
-                {
-                    "site": "https://portal.example.com",
-                    "high": {"total_unique": 2, "items": []},
-                    "med": {"total_unique": 1, "items": []},
-                    "low": {"total_unique": 0, "items": []},
-                }
-            ],
             "low_sample_string": "",
             "med_sample_string": "'Reveals stack traces that aid targeted exploitation attempts.'",
             "high": {

@@ -1321,64 +1321,17 @@ class ProjectWorkbookUploadViewTests(TestCase):
 
         artifacts = normalize_nexpose_artifacts_map(self.project.data_artifacts)
         self.assertIn("web_issues", artifacts)
-        web_entries = artifacts["web_issues"]
-        self.assertIsInstance(web_entries, list)
+        web_artifacts = artifacts["web_issues"]
+        self.assertIsInstance(web_artifacts, dict)
         self.assertEqual(
-            web_entries.low_sample_string,
+            web_artifacts["low_sample_string"],
             "'Banner Disclosure' and 'Directory Listing'",
         )
         self.assertEqual(
-            web_entries.med_sample_string,
+            web_artifacts["med_sample_string"],
             "'expose sensitive data.' and 'result in credential theft.'",
         )
-        entries_by_site = {entry["site"]: entry for entry in web_entries}
-        self.assertEqual(
-            set(entries_by_site.keys()),
-            {"portal.example.com", "intranet.example.com", "extranet.example.com"},
-        )
-
-        portal_entry = entries_by_site["portal.example.com"]
-        self.assertEqual(portal_entry["site"], "portal.example.com")
-        portal_high = portal_entry["high"]
-        self.assertEqual(portal_high["total_unique"], 1)
-        self.assertEqual(portal_high["items"], [])
-        self.assertEqual(list(portal_high.items), portal_high["items"])
-
-        portal_med = portal_entry["med"]
-        self.assertEqual(portal_med["total_unique"], 1)
-        self.assertEqual(portal_med["items"], [])
-
-        portal_low = portal_entry["low"]
-        self.assertEqual(portal_low["total_unique"], 0)
-        self.assertEqual(portal_low["items"], [])
-
-        intranet_entry = entries_by_site["intranet.example.com"]
-        self.assertEqual(intranet_entry["site"], "intranet.example.com")
-        intranet_high = intranet_entry["high"]
-        self.assertEqual(intranet_high["total_unique"], 0)
-        self.assertEqual(intranet_high["items"], [])
-
-        intranet_med = intranet_entry["med"]
-        self.assertEqual(intranet_med["total_unique"], 1)
-        self.assertEqual(intranet_med["items"], [])
-
-        intranet_low = intranet_entry["low"]
-        self.assertEqual(intranet_low["total_unique"], 1)
-        self.assertEqual(intranet_low["items"], [])
-
-        extranet_entry = entries_by_site["extranet.example.com"]
-        self.assertEqual(extranet_entry["site"], "extranet.example.com")
-        extranet_high = extranet_entry["high"]
-        self.assertEqual(extranet_high["total_unique"], 0)
-        self.assertEqual(extranet_high["items"], [])
-        extranet_med = extranet_entry["med"]
-        self.assertEqual(extranet_med["total_unique"], 0)
-        self.assertEqual(extranet_med["items"], [])
-        extranet_low = extranet_entry["low"]
-        self.assertEqual(extranet_low["total_unique"], 1)
-        self.assertEqual(extranet_low["items"], [])
-
-        high_summary = web_entries.high
+        high_summary = web_artifacts["high"]
         self.assertEqual(high_summary["total_unique"], 1)
         self.assertEqual(
             high_summary["items"],
@@ -1391,13 +1344,13 @@ class ProjectWorkbookUploadViewTests(TestCase):
             ],
         )
 
-        med_summary = web_entries.med
+        med_summary = web_artifacts["med"]
         self.assertEqual(med_summary["total_unique"], 2)
         self.assertEqual(len(med_summary["items"]), 2)
         self.assertEqual(med_summary["items"][0]["issue"], "Authentication Bypass")
         self.assertEqual(med_summary["items"][0]["count"], 2)
 
-        low_summary = web_entries.low
+        low_summary = web_artifacts["low"]
         self.assertEqual(low_summary["total_unique"], 2)
         self.assertEqual(len(low_summary["items"]), 2)
         self.assertEqual(low_summary["items"][0]["issue"], "Banner Disclosure")
