@@ -35,7 +35,10 @@ from ghostwriter.reporting.models import (
     ReportTemplate,
     Severity,
 )
-from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
+from ghostwriter.rolodex.data_parsers import (
+    build_workbook_ad_response,
+    normalize_nexpose_artifacts_map,
+)
 from ghostwriter.rolodex.models import (
     Client,
     ClientContact,
@@ -819,6 +822,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         domain_entries = {}
         domain_order = []
         domain_details = {}
+        workbook_response = build_workbook_ad_response(workbook_data)
 
         slug_map = {}
         for record in domains:
@@ -889,70 +893,72 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     assign(domain_key, metric, value)
                     break
 
+        summary = dict(workbook_response) if isinstance(workbook_response, dict) else {}
+
         ordered = [domain_entries[name] for name in domain_order if len(domain_entries[name]) > 1]
-        if not ordered:
-            return {}
+        if ordered:
+            domains_str_parts = []
+            count_fields = {
+                "enabled_count_str": "enabled_accounts",
+                "da_count_str": "domain_admins",
+                "ea_count_str": "ent_admins",
+                "ep_count_str": "exp_passwords",
+                "ne_count_str": "passwords_never_exp",
+                "ia_count_str": "inactive_accounts",
+                "ga_count_str": "generic_accounts",
+                "gl_count_str": "generic_logins",
+            }
+            count_parts = {field: [] for field in count_fields}
 
-        domains_str_parts = []
-        count_fields = {
-            "enabled_count_str": "enabled_accounts",
-            "da_count_str": "domain_admins",
-            "ea_count_str": "ent_admins",
-            "ep_count_str": "exp_passwords",
-            "ne_count_str": "passwords_never_exp",
-            "ia_count_str": "inactive_accounts",
-            "ga_count_str": "generic_accounts",
-            "gl_count_str": "generic_logins",
-        }
-        count_parts = {field: [] for field in count_fields}
+            risk_fields = {
+                "da_risk_string": "domain_admins",
+                "ea_risk_string": "enterprise_admins",
+                "ep_risk_string": "expired_passwords",
+                "ne_risk_string": "passwords_never_expire",
+                "ia_risk_string": "inactive_accounts",
+                "ga_risk_string": "generic_accounts",
+                "gl_risk_string": "generic_logins",
+            }
+            risk_parts = {field: [] for field in risk_fields}
 
-        risk_fields = {
-            "da_risk_string": "domain_admins",
-            "ea_risk_string": "enterprise_admins",
-            "ep_risk_string": "expired_passwords",
-            "ne_risk_string": "passwords_never_expire",
-            "ia_risk_string": "inactive_accounts",
-            "ga_risk_string": "generic_accounts",
-            "gl_risk_string": "generic_logins",
-        }
-        risk_parts = {field: [] for field in risk_fields}
+            def _format_count(value):
+                if value in (None, ""):
+                    return "0"
+                return str(value)
 
-        def _format_count(value):
-            if value in (None, ""):
-                return "0"
-            return str(value)
+            def _format_risk_value(value):
+                if value is None:
+                    return ""
+                text = str(value).strip()
+                return text.capitalize() if text else ""
 
-        def _format_risk_value(value):
-            if value is None:
-                return ""
-            text = str(value).strip()
-            return text.capitalize() if text else ""
+            for entry in ordered:
+                domain = entry.get("domain", "")
+                domains_str_parts.append(domain)
+                details = domain_details.get(domain, {})
+                if not isinstance(details, dict):
+                    details = {}
 
-        for entry in ordered:
-            domain = entry.get("domain", "")
-            domains_str_parts.append(domain)
-            details = domain_details.get(domain, {})
-            if not isinstance(details, dict):
-                details = {}
+                for output_field, workbook_key in count_fields.items():
+                    count_parts[output_field].append(_format_count(details.get(workbook_key)))
 
-            for output_field, workbook_key in count_fields.items():
-                count_parts[output_field].append(_format_count(details.get(workbook_key)))
+                for output_field, metric in risk_fields.items():
+                    risk_parts[output_field].append(_format_risk_value(entry.get(metric)))
 
-            for output_field, metric in risk_fields.items():
-                risk_parts[output_field].append(_format_risk_value(entry.get(metric)))
+            summary.update(
+                {
+                    "entries": ordered,
+                    "domains_str": "/".join(domains_str_parts),
+                }
+            )
 
-        summary = {
-            "entries": ordered,
-            "domains_str": "/".join(domains_str_parts),
-        }
+            for field, parts in count_parts.items():
+                summary[field] = "/".join(parts)
 
-        for field, parts in count_parts.items():
-            summary[field] = "/".join(parts)
+            for field, parts in risk_parts.items():
+                summary[field] = "/".join(parts)
 
-        for field, parts in risk_parts.items():
-            summary[field] = "/".join(parts)
-
-        return summary
+        return summary if summary else {}
 
     @staticmethod
     def _collect_password_responses(raw_responses, workbook_data):

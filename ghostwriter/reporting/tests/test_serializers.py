@@ -326,6 +326,106 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertNotIn("endpoint_corpexamplecom_av_gap", responses)
         self.assertNotIn("firewall_edge-fw01_type", responses)
 
+    def test_workbook_ad_metrics_are_exposed_without_legacy_entries(self):
+        workbook_payload = {
+            "ad": {
+                "domains": [
+                    {
+                        "domain": "legacy.local",
+                        "functionality_level": "Windows 2000 Mixed",
+                        "total_accounts": 200,
+                        "enabled_accounts": 150,
+                        "old_passwords": 40,
+                        "inactive_accounts": 35,
+                        "domain_admins": 12,
+                        "ent_admins": 6,
+                        "exp_passwords": 22,
+                        "passwords_never_exp": 14,
+                        "generic_accounts": 9,
+                        "generic_logins": 4,
+                    },
+                    {
+                        "domain": "modern.local",
+                        "functionality_level": "Windows Server 2016",
+                        "total_accounts": 100,
+                        "enabled_accounts": 95,
+                        "old_passwords": 5,
+                        "inactive_accounts": 8,
+                        "domain_admins": 4,
+                        "ent_admins": 1,
+                        "exp_passwords": 8,
+                        "passwords_never_exp": 6,
+                        "generic_accounts": 2,
+                        "generic_logins": 1,
+                    },
+                    {
+                        "domain": "ancient.local",
+                        "functionality_level": "Windows 2003 Native",
+                        "total_accounts": 80,
+                        "enabled_accounts": 60,
+                        "old_passwords": 18,
+                        "inactive_accounts": 12,
+                        "domain_admins": 7,
+                        "ent_admins": 3,
+                        "exp_passwords": 11,
+                        "passwords_never_exp": 9,
+                        "generic_accounts": 5,
+                        "generic_logins": 2,
+                    },
+                ]
+            }
+        }
+
+        self.project.data_responses = {}
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+        ad_summary = responses.get("ad")
+
+        self.assertIsInstance(ad_summary, dict)
+        self.assertEqual(ad_summary.get("old_domains_string"), "'legacy.local' and 'ancient.local'")
+        self.assertEqual(ad_summary.get("old_domains_count"), 2)
+        self.assertEqual(
+            ad_summary.get("domain_metrics"),
+            [
+                {
+                    "domain_name": "legacy.local",
+                    "disabled_count": 50,
+                    "disabled_pct": 25.0,
+                    "old_pass_pct": 26.7,
+                    "ia_pct": 23.3,
+                },
+                {
+                    "domain_name": "modern.local",
+                    "disabled_count": 5,
+                    "disabled_pct": 5.0,
+                    "old_pass_pct": 5.3,
+                    "ia_pct": 8.4,
+                },
+                {
+                    "domain_name": "ancient.local",
+                    "disabled_count": 20,
+                    "disabled_pct": 25.0,
+                    "old_pass_pct": 30.0,
+                    "ia_pct": 20.0,
+                },
+            ],
+        )
+        self.assertEqual(ad_summary.get("disabled_account_string"), "50, 5 and 20")
+        self.assertEqual(ad_summary.get("disabled_account_pct_string"), "25%, 5% and 25%")
+        self.assertEqual(ad_summary.get("old_password_string"), "40, 5 and 18")
+        self.assertEqual(ad_summary.get("old_password_pct_string"), "26.7%, 5.3% and 30%")
+        self.assertEqual(ad_summary.get("inactive_accounts_string"), "35, 8 and 12")
+        self.assertEqual(ad_summary.get("inactive_accounts_pct_string"), "23.3%, 8.4% and 20%")
+        self.assertEqual(ad_summary.get("domain_admins_string"), "12, 4 and 7")
+        self.assertEqual(ad_summary.get("ent_admins_string"), "6, 1 and 3")
+        self.assertEqual(ad_summary.get("exp_passwords_string"), "22, 8 and 11")
+        self.assertEqual(ad_summary.get("never_expire_string"), "14, 6 and 9")
+        self.assertEqual(ad_summary.get("generic_accounts_string"), "9, 2 and 5")
+        self.assertEqual(ad_summary.get("generic_logins_string"), "4, 1 and 2")
+
     def test_new_structure_is_preserved(self):
         structured = {
             "cloud_config_risk": "low",
