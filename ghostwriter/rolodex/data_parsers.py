@@ -208,6 +208,38 @@ def _categorize_severity(score: Optional[float]) -> Optional[str]:
     return None
 
 
+def _coerce_int(value: Any) -> Optional[int]:
+    """Best-effort conversion of ``value`` to ``int`` or ``None`` if conversion fails."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, int):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    normalized = text.replace(",", "")
+    try:
+        return int(normalized)
+    except (TypeError, ValueError):
+        try:
+            return int(float(normalized))
+        except (TypeError, ValueError):
+            return None
+
+
+def _calculate_percentage(numerator: Optional[int], denominator: Optional[int]) -> Optional[float]:
+    """Return ``numerator`` / ``denominator`` as a percentage rounded to one decimal place."""
+
+    if numerator is None or denominator in (None, 0):
+        return None
+
+    return round((numerator / denominator) * 100, 1)
+
+
 def parse_firewall_report(file_obj: File) -> List[Dict[str, Any]]:
     """Parse a firewall_csv.csv export into normalized issue entries."""
 
@@ -808,19 +840,42 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         ad_data = workbook_data.get("ad", {})
         domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
         legacy_domains: List[str] = []
+        domain_metrics: List[Dict[str, Any]] = []
 
         if isinstance(domains, list):
             for entry in domains:
                 if isinstance(entry, dict):
                     domain_value = entry.get("domain") or entry.get("name") or ""
                     functionality_value = entry.get("functionality_level")
+                    total_accounts = _coerce_int(entry.get("total_accounts"))
+                    enabled_accounts = _coerce_int(entry.get("enabled_accounts"))
+                    old_passwords = _coerce_int(entry.get("old_passwords"))
+                    inactive_accounts = _coerce_int(entry.get("inactive_accounts"))
                 else:
                     domain_value = entry
                     functionality_value = None
+                    total_accounts = None
+                    enabled_accounts = None
+                    old_passwords = None
+                    inactive_accounts = None
 
                 domain_text = str(domain_value).strip() if domain_value else ""
                 if not domain_text:
                     continue
+
+                disabled_count: Optional[int] = None
+                if total_accounts is not None and enabled_accounts is not None:
+                    disabled_count = max(total_accounts - enabled_accounts, 0)
+
+                domain_metrics.append(
+                    {
+                        "domain_name": domain_text,
+                        "disabled_count": disabled_count,
+                        "disabled_pct": _calculate_percentage(disabled_count, total_accounts),
+                        "old_pass_pct": _calculate_percentage(old_passwords, enabled_accounts),
+                        "ia_pct": _calculate_percentage(inactive_accounts, enabled_accounts),
+                    }
+                )
 
                 functionality_text = ""
                 if functionality_value is not None:
@@ -832,7 +887,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 if domain_text not in legacy_domains:
                     legacy_domains.append(domain_text)
 
-        if legacy_domains:
+        if legacy_domains or domain_metrics:
             ad_artifact: Dict[str, Any]
             existing_ad_artifact = artifacts.get("ad_issues")
             if isinstance(existing_ad_artifact, dict):
@@ -840,12 +895,17 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             else:
                 ad_artifact = {}
 
-            ad_artifact.update(
-                {
-                    "old_domains_string": _format_sample_string(legacy_domains),
-                    "old_domains_count": len(legacy_domains),
-                }
-            )
+            if legacy_domains:
+                ad_artifact.update(
+                    {
+                        "old_domains_string": _format_sample_string(legacy_domains),
+                        "old_domains_count": len(legacy_domains),
+                    }
+                )
+
+            if domain_metrics:
+                ad_artifact["domain_metrics"] = domain_metrics
+
             artifacts["ad_issues"] = ad_artifact
 
     return artifacts

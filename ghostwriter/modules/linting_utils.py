@@ -455,6 +455,22 @@ LINTER_CONTEXT = {
             "ad_issues": {
                 "old_domains_string": "'legacy.local' and 'ancient.local'",
                 "old_domains_count": 2,
+                "domain_metrics": [
+                    {
+                        "domain_name": "corp.example.com",
+                        "disabled_count": 25,
+                        "disabled_pct": 10.2,
+                        "old_pass_pct": 8.2,
+                        "ia_pct": 4.1,
+                    },
+                    {
+                        "domain_name": "lab.example.com",
+                        "disabled_count": 12,
+                        "disabled_pct": 9.2,
+                        "old_pass_pct": 11.5,
+                        "ia_pct": 6.3,
+                    },
+                ],
             },
             "external_ips": [
                 "203.0.113.10",

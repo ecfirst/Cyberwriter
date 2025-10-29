@@ -233,9 +233,30 @@ class NexposeDataParserTests(TestCase):
         workbook_payload = {
             "ad": {
                 "domains": [
-                    {"domain": "legacy.local", "functionality_level": "Windows Server 2003"},
-                    {"domain": "modern.local", "functionality_level": "Windows Server 2019"},
-                    {"domain": "ancient.local", "functionality_level": "Windows 2000 Mixed"},
+                    {
+                        "domain": "legacy.local",
+                        "functionality_level": "Windows Server 2003",
+                        "total_accounts": 200,
+                        "enabled_accounts": 150,
+                        "old_passwords": 30,
+                        "inactive_accounts": 25,
+                    },
+                    {
+                        "domain": "modern.local",
+                        "functionality_level": "Windows Server 2019",
+                        "total_accounts": 100,
+                        "enabled_accounts": 95,
+                        "old_passwords": 5,
+                        "inactive_accounts": 4,
+                    },
+                    {
+                        "domain": "ancient.local",
+                        "functionality_level": "Windows 2000 Mixed",
+                        "total_accounts": 80,
+                        "enabled_accounts": 60,
+                        "old_passwords": 18,
+                        "inactive_accounts": 12,
+                    },
                 ]
             }
         }
@@ -250,6 +271,32 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(artifact, dict)
         self.assertEqual(artifact.get("old_domains_string"), "'legacy.local' and 'ancient.local'")
         self.assertEqual(artifact.get("old_domains_count"), 2)
+        self.assertEqual(
+            artifact.get("domain_metrics"),
+            [
+                {
+                    "domain_name": "legacy.local",
+                    "disabled_count": 50,
+                    "disabled_pct": 25.0,
+                    "old_pass_pct": 20.0,
+                    "ia_pct": 16.7,
+                },
+                {
+                    "domain_name": "modern.local",
+                    "disabled_count": 5,
+                    "disabled_pct": 5.0,
+                    "old_pass_pct": 5.3,
+                    "ia_pct": 4.2,
+                },
+                {
+                    "domain_name": "ancient.local",
+                    "disabled_count": 20,
+                    "disabled_pct": 25.0,
+                    "old_pass_pct": 30.0,
+                    "ia_pct": 20.0,
+                },
+            ],
+        )
 
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()
