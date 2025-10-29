@@ -331,6 +331,7 @@ class Project(models.Model):
         from ghostwriter.rolodex.data_parsers import (
             NEXPOSE_ARTIFACT_KEYS,
             build_project_artifacts,
+            build_workbook_ad_response,
         )
 
         artifacts = build_project_artifacts(self)
@@ -339,6 +340,20 @@ class Project(models.Model):
         existing_responses = dict(self.data_responses or {})
         for key in NEXPOSE_ARTIFACT_KEYS:
             existing_responses.pop(key, None)
+
+        workbook_ad_response = build_workbook_ad_response(getattr(self, "workbook_data", None))
+        if workbook_ad_response:
+            existing_ad_section = existing_responses.get("ad")
+            if isinstance(existing_ad_section, dict):
+                combined_ad_section = dict(existing_ad_section)
+            elif isinstance(existing_ad_section, list):
+                combined_ad_section = {"entries": list(existing_ad_section)}
+            else:
+                combined_ad_section = {}
+
+            combined_ad_section.update(workbook_ad_response)
+            existing_responses["ad"] = combined_ad_section
+
         self.data_responses = existing_responses
 
         self.save(update_fields=["data_artifacts", "data_responses"])

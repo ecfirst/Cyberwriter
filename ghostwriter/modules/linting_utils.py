@@ -375,6 +375,36 @@ LINTER_CONTEXT = {
                 "ia_risk_string": "Medium",
                 "ga_risk_string": "High",
                 "gl_risk_string": "Medium",
+                "old_domains_string": "'legacy.local' and 'ancient.local'",
+                "old_domains_count": 2,
+                "domain_metrics": [
+                    {
+                        "domain_name": "corp.example.com",
+                        "disabled_count": 25,
+                        "disabled_pct": 10.2,
+                        "old_pass_pct": 8.2,
+                        "ia_pct": 4.1,
+                    },
+                    {
+                        "domain_name": "lab.example.com",
+                        "disabled_count": 12,
+                        "disabled_pct": 9.2,
+                        "old_pass_pct": 11.5,
+                        "ia_pct": 6.3,
+                    },
+                ],
+                "disabled_account_string": "25 and 12",
+                "disabled_account_pct_string": "10.2% and 9.2%",
+                "old_password_string": "18 and 12",
+                "old_password_pct_string": "8.2% and 11.5%",
+                "inactive_accounts_string": "10 and 8",
+                "inactive_accounts_pct_string": "4.1% and 6.3%",
+                "domain_admins_string": "5 and 3",
+                "ent_admins_string": "2 and 1",
+                "exp_passwords_string": "12 and 8",
+                "never_expire_string": "8 and 5",
+                "generic_accounts_string": "6 and 4",
+                "generic_logins_string": "3 and 2",
             },
             "password": {
                 "entries": [
@@ -452,26 +482,6 @@ LINTER_CONTEXT = {
             },
             "low": {"total_unique": 0, "items": []},
         },
-            "ad_issues": {
-                "old_domains_string": "'legacy.local' and 'ancient.local'",
-                "old_domains_count": 2,
-                "domain_metrics": [
-                    {
-                        "domain_name": "corp.example.com",
-                        "disabled_count": 25,
-                        "disabled_pct": 10.2,
-                        "old_pass_pct": 8.2,
-                        "ia_pct": 4.1,
-                    },
-                    {
-                        "domain_name": "lab.example.com",
-                        "disabled_count": 12,
-                        "disabled_pct": 9.2,
-                        "old_pass_pct": 11.5,
-                        "ia_pct": 6.3,
-                    },
-                ],
-            },
             "external_ips": [
                 "203.0.113.10",
                 "203.0.113.11",

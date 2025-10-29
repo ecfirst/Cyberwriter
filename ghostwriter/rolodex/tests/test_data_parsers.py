@@ -238,8 +238,14 @@ class NexposeDataParserTests(TestCase):
                         "functionality_level": "Windows Server 2003",
                         "total_accounts": 200,
                         "enabled_accounts": 150,
-                        "old_passwords": 30,
-                        "inactive_accounts": 25,
+                        "old_passwords": 40,
+                        "inactive_accounts": 35,
+                        "domain_admins": 12,
+                        "ent_admins": 6,
+                        "exp_passwords": 22,
+                        "passwords_never_exp": 14,
+                        "generic_accounts": 9,
+                        "generic_logins": 4,
                     },
                     {
                         "domain": "modern.local",
@@ -248,6 +254,12 @@ class NexposeDataParserTests(TestCase):
                         "enabled_accounts": 95,
                         "old_passwords": 5,
                         "inactive_accounts": 4,
+                        "domain_admins": 4,
+                        "ent_admins": 1,
+                        "exp_passwords": 8,
+                        "passwords_never_exp": 6,
+                        "generic_accounts": 2,
+                        "generic_logins": 1,
                     },
                     {
                         "domain": "ancient.local",
@@ -256,6 +268,12 @@ class NexposeDataParserTests(TestCase):
                         "enabled_accounts": 60,
                         "old_passwords": 18,
                         "inactive_accounts": 12,
+                        "domain_admins": 7,
+                        "ent_admins": 3,
+                        "exp_passwords": 11,
+                        "passwords_never_exp": 9,
+                        "generic_accounts": 5,
+                        "generic_logins": 2,
                     },
                 ]
             }
@@ -268,18 +286,21 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("ad_issues")
-        self.assertIsInstance(artifact, dict)
-        self.assertEqual(artifact.get("old_domains_string"), "'legacy.local' and 'ancient.local'")
-        self.assertEqual(artifact.get("old_domains_count"), 2)
+        self.assertIsNone(artifact)
+
+        ad_responses = self.project.data_responses.get("ad")
+        self.assertIsInstance(ad_responses, dict)
+        self.assertEqual(ad_responses.get("old_domains_string"), "'legacy.local' and 'ancient.local'")
+        self.assertEqual(ad_responses.get("old_domains_count"), 2)
         self.assertEqual(
-            artifact.get("domain_metrics"),
+            ad_responses.get("domain_metrics"),
             [
                 {
                     "domain_name": "legacy.local",
                     "disabled_count": 50,
                     "disabled_pct": 25.0,
-                    "old_pass_pct": 20.0,
-                    "ia_pct": 16.7,
+                    "old_pass_pct": 26.7,
+                    "ia_pct": 23.3,
                 },
                 {
                     "domain_name": "modern.local",
@@ -297,6 +318,18 @@ class NexposeDataParserTests(TestCase):
                 },
             ],
         )
+        self.assertEqual(ad_responses.get("disabled_account_string"), "50, 5 and 20")
+        self.assertEqual(ad_responses.get("disabled_account_pct_string"), "25%, 5% and 25%")
+        self.assertEqual(ad_responses.get("old_password_string"), "40, 5 and 18")
+        self.assertEqual(ad_responses.get("old_password_pct_string"), "26.7%, 5.3% and 30%")
+        self.assertEqual(ad_responses.get("inactive_accounts_string"), "35, 4 and 12")
+        self.assertEqual(ad_responses.get("inactive_accounts_pct_string"), "23.3%, 4.2% and 20%")
+        self.assertEqual(ad_responses.get("domain_admins_string"), "12, 4 and 7")
+        self.assertEqual(ad_responses.get("ent_admins_string"), "6, 1 and 3")
+        self.assertEqual(ad_responses.get("exp_passwords_string"), "22, 8 and 11")
+        self.assertEqual(ad_responses.get("never_expire_string"), "14, 6 and 9")
+        self.assertEqual(ad_responses.get("generic_accounts_string"), "9, 2 and 5")
+        self.assertEqual(ad_responses.get("generic_logins_string"), "4, 1 and 2")
 
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()

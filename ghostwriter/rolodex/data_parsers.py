@@ -683,6 +683,37 @@ def _format_sample_string(samples: List[str]) -> str:
     return ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
 
 
+def _format_plain_list(values: List[str]) -> str:
+    """Return a human-readable string for a list of pre-formatted values."""
+
+    entries = [value for value in values if value]
+    if not entries:
+        return ""
+    if len(entries) == 1:
+        return entries[0]
+    if len(entries) == 2:
+        return f"{entries[0]} and {entries[1]}"
+    return ", ".join(entries[:-1]) + f" and {entries[-1]}"
+
+
+def _format_integer_value(value: Optional[int]) -> str:
+    """Normalize integer-like values to strings while preserving zeroes."""
+
+    if value in (None, ""):
+        return "0"
+    return str(value)
+
+
+def _format_percentage_text(value: Optional[float]) -> str:
+    """Render a percentage value with up to one decimal place."""
+
+    if value is None:
+        return "0%"
+
+    text = f"{value:.1f}".rstrip("0").rstrip(".")
+    return f"{text}%"
+
+
 def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Counter[Tuple[str, str]]]]:
     """Parse a burp.csv export into counters grouped by site and severity bucket."""
 
@@ -835,77 +866,140 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             "low": _coerce_severity_group(details.get("low")),
         }
 
-    workbook_data = getattr(project, "workbook_data", None)
-    if isinstance(workbook_data, dict):
-        ad_data = workbook_data.get("ad", {})
-        domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
-        legacy_domains: List[str] = []
-        domain_metrics: List[Dict[str, Any]] = []
-
-        if isinstance(domains, list):
-            for entry in domains:
-                if isinstance(entry, dict):
-                    domain_value = entry.get("domain") or entry.get("name") or ""
-                    functionality_value = entry.get("functionality_level")
-                    total_accounts = _coerce_int(entry.get("total_accounts"))
-                    enabled_accounts = _coerce_int(entry.get("enabled_accounts"))
-                    old_passwords = _coerce_int(entry.get("old_passwords"))
-                    inactive_accounts = _coerce_int(entry.get("inactive_accounts"))
-                else:
-                    domain_value = entry
-                    functionality_value = None
-                    total_accounts = None
-                    enabled_accounts = None
-                    old_passwords = None
-                    inactive_accounts = None
-
-                domain_text = str(domain_value).strip() if domain_value else ""
-                if not domain_text:
-                    continue
-
-                disabled_count: Optional[int] = None
-                if total_accounts is not None and enabled_accounts is not None:
-                    disabled_count = max(total_accounts - enabled_accounts, 0)
-
-                domain_metrics.append(
-                    {
-                        "domain_name": domain_text,
-                        "disabled_count": disabled_count,
-                        "disabled_pct": _calculate_percentage(disabled_count, total_accounts),
-                        "old_pass_pct": _calculate_percentage(old_passwords, enabled_accounts),
-                        "ia_pct": _calculate_percentage(inactive_accounts, enabled_accounts),
-                    }
-                )
-
-                functionality_text = ""
-                if functionality_value is not None:
-                    functionality_text = str(functionality_value)
-
-                if "2000" not in functionality_text and "2003" not in functionality_text:
-                    continue
-
-                if domain_text not in legacy_domains:
-                    legacy_domains.append(domain_text)
-
-        if legacy_domains or domain_metrics:
-            ad_artifact: Dict[str, Any]
-            existing_ad_artifact = artifacts.get("ad_issues")
-            if isinstance(existing_ad_artifact, dict):
-                ad_artifact = dict(existing_ad_artifact)
-            else:
-                ad_artifact = {}
-
-            if legacy_domains:
-                ad_artifact.update(
-                    {
-                        "old_domains_string": _format_sample_string(legacy_domains),
-                        "old_domains_count": len(legacy_domains),
-                    }
-                )
-
-            if domain_metrics:
-                ad_artifact["domain_metrics"] = domain_metrics
-
-            artifacts["ad_issues"] = ad_artifact
-
     return artifacts
+
+
+def build_workbook_ad_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Generate Active Directory response data sourced from workbook details."""
+
+    if not isinstance(workbook_data, dict):
+        return {}
+
+    ad_data = workbook_data.get("ad", {})
+    domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
+    if not isinstance(domains, list):
+        return {}
+
+    legacy_domains: List[str] = []
+    domain_metrics: List[Dict[str, Any]] = []
+    disabled_counts: List[str] = []
+    disabled_percentages: List[str] = []
+    old_password_counts: List[str] = []
+    old_password_percentages: List[str] = []
+    inactive_counts: List[str] = []
+    inactive_percentages: List[str] = []
+    domain_admins_counts: List[str] = []
+    ent_admins_counts: List[str] = []
+    exp_password_counts: List[str] = []
+    never_expire_counts: List[str] = []
+    generic_account_counts: List[str] = []
+    generic_login_counts: List[str] = []
+
+    for entry in domains:
+        if isinstance(entry, dict):
+            domain_value = entry.get("domain") or entry.get("name") or ""
+            functionality_value = entry.get("functionality_level")
+            total_accounts = _coerce_int(entry.get("total_accounts"))
+            enabled_accounts = _coerce_int(entry.get("enabled_accounts"))
+            old_passwords = _coerce_int(entry.get("old_passwords"))
+            inactive_accounts = _coerce_int(entry.get("inactive_accounts"))
+            domain_admins = _coerce_int(entry.get("domain_admins"))
+            ent_admins = _coerce_int(entry.get("ent_admins"))
+            exp_passwords = _coerce_int(entry.get("exp_passwords"))
+            never_expires = _coerce_int(entry.get("passwords_never_exp"))
+            generic_accounts = _coerce_int(entry.get("generic_accounts"))
+            generic_logins = _coerce_int(entry.get("generic_logins"))
+        else:
+            domain_value = entry
+            functionality_value = None
+            total_accounts = None
+            enabled_accounts = None
+            old_passwords = None
+            inactive_accounts = None
+            domain_admins = None
+            ent_admins = None
+            exp_passwords = None
+            never_expires = None
+            generic_accounts = None
+            generic_logins = None
+
+        domain_text = str(domain_value).strip() if domain_value else ""
+        if not domain_text:
+            continue
+
+        disabled_count: Optional[int] = None
+        if total_accounts is not None and enabled_accounts is not None:
+            disabled_count = max(total_accounts - enabled_accounts, 0)
+
+        disabled_counts.append(_format_integer_value(disabled_count))
+        disabled_percentages.append(
+            _format_percentage_text(_calculate_percentage(disabled_count, total_accounts))
+        )
+
+        old_password_counts.append(_format_integer_value(old_passwords))
+        old_password_percentages.append(
+            _format_percentage_text(_calculate_percentage(old_passwords, enabled_accounts))
+        )
+
+        inactive_counts.append(_format_integer_value(inactive_accounts))
+        inactive_percentages.append(
+            _format_percentage_text(_calculate_percentage(inactive_accounts, enabled_accounts))
+        )
+
+        domain_admins_counts.append(_format_integer_value(domain_admins))
+        ent_admins_counts.append(_format_integer_value(ent_admins))
+        exp_password_counts.append(_format_integer_value(exp_passwords))
+        never_expire_counts.append(_format_integer_value(never_expires))
+        generic_account_counts.append(_format_integer_value(generic_accounts))
+        generic_login_counts.append(_format_integer_value(generic_logins))
+
+        domain_metrics.append(
+            {
+                "domain_name": domain_text,
+                "disabled_count": disabled_count,
+                "disabled_pct": _calculate_percentage(disabled_count, total_accounts),
+                "old_pass_pct": _calculate_percentage(old_passwords, enabled_accounts),
+                "ia_pct": _calculate_percentage(inactive_accounts, enabled_accounts),
+            }
+        )
+
+        functionality_text = ""
+        if functionality_value is not None:
+            functionality_text = str(functionality_value)
+
+        if "2000" in functionality_text or "2003" in functionality_text:
+            if domain_text not in legacy_domains:
+                legacy_domains.append(domain_text)
+
+    response: Dict[str, Any] = {}
+
+    if legacy_domains:
+        response.update(
+            {
+                "old_domains_string": _format_sample_string(legacy_domains),
+                "old_domains_count": len(legacy_domains),
+            }
+        )
+
+    if domain_metrics:
+        response["domain_metrics"] = domain_metrics
+
+    if domain_metrics:
+        response.update(
+            {
+                "disabled_account_string": _format_plain_list(disabled_counts),
+                "disabled_account_pct_string": _format_plain_list(disabled_percentages),
+                "old_password_string": _format_plain_list(old_password_counts),
+                "old_password_pct_string": _format_plain_list(old_password_percentages),
+                "inactive_accounts_string": _format_plain_list(inactive_counts),
+                "inactive_accounts_pct_string": _format_plain_list(inactive_percentages),
+                "domain_admins_string": _format_plain_list(domain_admins_counts),
+                "ent_admins_string": _format_plain_list(ent_admins_counts),
+                "exp_passwords_string": _format_plain_list(exp_password_counts),
+                "never_expire_string": _format_plain_list(never_expire_counts),
+                "generic_accounts_string": _format_plain_list(generic_account_counts),
+                "generic_logins_string": _format_plain_list(generic_login_counts),
+            }
+        )
+
+    return response
