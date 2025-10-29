@@ -330,6 +330,7 @@ class Project(models.Model):
 
         from ghostwriter.rolodex.data_parsers import (
             NEXPOSE_ARTIFACT_KEYS,
+            build_ad_risk_contrib,
             build_project_artifacts,
             build_workbook_ad_response,
         )
@@ -352,6 +353,10 @@ class Project(models.Model):
                 combined_ad_section = {}
 
             combined_ad_section.update(workbook_ad_response)
+            combined_ad_section["risk_contrib"] = build_ad_risk_contrib(
+                getattr(self, "workbook_data", None),
+                combined_ad_section.get("entries"),
+            )
             existing_responses["ad"] = combined_ad_section
 
         self.data_responses = existing_responses

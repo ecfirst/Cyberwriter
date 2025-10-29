@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import io
 from collections import Counter
+from collections import abc
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from django.core.files.base import File
@@ -14,6 +15,7 @@ if False:  # pragma: no cover - typing only
     from ghostwriter.rolodex.models import Project, ProjectDataFile  # noqa: F401
 
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, parse_ip_text
+from ghostwriter.rolodex.workbook import AD_DOMAIN_METRICS
 
 
 DNS_RECOMMENDATION_MAP: Dict[str, str] = {
@@ -96,6 +98,85 @@ DNS_IMPACT_MAP: Dict[str, str] = {
     "The SPF value does not allow mail delivery from all mailservers in the domain": "An incomplete SPF record causes legitimate emails to be rejected or marked as spam.",
     "The SPF record contains the overly permissive modifier '+all'": "The '+all' modifier allows any host to send mail for the domain, enabling spoofing and abuse.",
 }
+
+
+AD_RISK_CONTRIBUTION_PHRASES: Dict[str, str] = {
+    "domain_admins": "the number of Domain Admin accounts",
+    "enterprise_admins": "the number of Enterprise Admin accounts",
+    "expired_passwords": "the number of accounts with expired passwords",
+    "passwords_never_expire": "the number of accounts set with passwords that never expire",
+    "inactive_accounts": "the number of potentially inactive accounts",
+    "generic_accounts": "the number of potentially generic accounts",
+    "generic_logins": "the number of generic accounts logged into systems",
+    "old_passwords": "the number of accounts with 'old' passwords",
+    "disabled_accounts": "the number of disabled accounts",
+}
+
+
+def _get_nested_value(data: Any, path: Iterable[str]) -> Any:
+    """Safely fetch a nested value from ``data`` using ``path`` of keys."""
+
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def build_ad_risk_contrib(
+    workbook_data: Optional[Dict[str, Any]],
+    entries: Optional[Iterable[Dict[str, Any]]],
+) -> List[str]:
+    """Return risk contribution phrases derived from AD response entries."""
+
+    source_data: Dict[str, Any] = workbook_data if isinstance(workbook_data, dict) else {}
+
+    risk_value = _get_nested_value(
+        source_data,
+        ("external_internal_grades", "internal", "iam", "risk"),
+    )
+    risk_text = str(risk_value).strip().lower() if risk_value is not None else ""
+    if risk_text not in ("medium", "high"):
+        return []
+
+    allowed_values = {"high", "medium"} if risk_text == "medium" else {"high"}
+
+    if isinstance(entries, dict):
+        candidate = entries.get("entries")
+        if isinstance(candidate, (list, tuple)):
+            potential_entries: Iterable[Dict[str, Any]] = candidate
+        else:
+            potential_entries = []
+    elif isinstance(entries, (list, tuple)):
+        potential_entries = entries
+    elif isinstance(entries, abc.Iterable) and not isinstance(entries, (str, bytes)):
+        potential_entries = entries
+    else:
+        potential_entries = []
+
+    matched_metrics = set()
+    for entry in potential_entries:
+        if not isinstance(entry, dict):
+            continue
+        for metric_key in AD_RISK_CONTRIBUTION_PHRASES:
+            value = entry.get(metric_key)
+            if value is None:
+                continue
+            text = str(value).strip().lower()
+            if text in allowed_values:
+                matched_metrics.add(metric_key)
+
+    if not matched_metrics:
+        return []
+
+    ordered_metrics = [
+        metric_key
+        for metric_key, _ in AD_DOMAIN_METRICS
+        if metric_key in matched_metrics
+    ]
+
+    return [AD_RISK_CONTRIBUTION_PHRASES[key] for key in ordered_metrics]
 
 
 def _decode_file(file_obj: File) -> Iterable[Dict[str, str]]:

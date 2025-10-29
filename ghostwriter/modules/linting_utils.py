@@ -314,7 +314,7 @@ LINTER_CONTEXT = {
                 "internal": {
                     "grade": "B",
                     "total": 3.3,
-                    "iam": {"risk": "Low", "score": 2.2},
+                    "iam": {"risk": "High", "score": 4.2},
                     "sql": {"risk": "High", "score": 4.0},
                     "snmp": {"risk": "Low", "score": 2.8},
                     "cloud": {"risk": "Medium", "score": 3.3},
@@ -377,6 +377,11 @@ LINTER_CONTEXT = {
                 "gl_risk_string": "Medium",
                 "old_domains_string": "'legacy.local' and 'ancient.local'",
                 "old_domains_count": 2,
+                "risk_contrib": [
+                    "the number of Domain Admin accounts",
+                    "the number of potentially generic accounts",
+                    "the number of disabled accounts",
+                ],
                 "domain_metrics": [
                     {
                         "domain_name": "corp.example.com",

@@ -292,6 +292,7 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(ad_responses, dict)
         self.assertEqual(ad_responses.get("old_domains_string"), "'legacy.local' and 'ancient.local'")
         self.assertEqual(ad_responses.get("old_domains_count"), 2)
+        self.assertEqual(ad_responses.get("risk_contrib"), [])
         self.assertEqual(
             ad_responses.get("domain_metrics"),
             [
@@ -357,6 +358,114 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(ad_responses, dict)
         self.assertNotIn("old_domains_string", ad_responses)
         self.assertEqual(ad_responses.get("old_domains_count"), 0)
+        self.assertEqual(ad_responses.get("risk_contrib"), [])
+
+    def test_rebuild_populates_ad_risk_contrib_for_medium_risk(self):
+        workbook_payload = {
+            "external_internal_grades": {
+                "internal": {"iam": {"risk": "Medium"}},
+            },
+            "ad": {
+                "domains": [
+                    {
+                        "domain": "legacy.local",
+                        "functionality_level": "Windows Server 2016",
+                        "total_accounts": 120,
+                        "enabled_accounts": 90,
+                        "old_passwords": 12,
+                        "inactive_accounts": 8,
+                    }
+                ]
+            },
+        }
+
+        ad_entries = [
+            {
+                "domain": "legacy.local",
+                "domain_admins": "medium",
+                "enterprise_admins": "low",
+                "expired_passwords": "high",
+                "passwords_never_expire": "medium",
+                "inactive_accounts": "medium",
+                "generic_accounts": "high",
+                "generic_logins": "medium",
+                "old_passwords": "low",
+                "disabled_accounts": "medium",
+            }
+        ]
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {"ad": {"entries": ad_entries}}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        ad_responses = self.project.data_responses.get("ad")
+        self.assertEqual(
+            ad_responses.get("risk_contrib"),
+            [
+                "the number of Domain Admin accounts",
+                "the number of accounts with expired passwords",
+                "the number of accounts set with passwords that never expire",
+                "the number of potentially inactive accounts",
+                "the number of potentially generic accounts",
+                "the number of generic accounts logged into systems",
+                "the number of disabled accounts",
+            ],
+        )
+
+    def test_rebuild_populates_ad_risk_contrib_for_high_risk(self):
+        workbook_payload = {
+            "external_internal_grades": {
+                "internal": {"iam": {"risk": "High"}},
+            },
+            "ad": {
+                "domains": [
+                    {
+                        "domain": "corp.example.com",
+                        "functionality_level": "Windows Server 2019",
+                        "total_accounts": 80,
+                        "enabled_accounts": 70,
+                        "old_passwords": 5,
+                        "inactive_accounts": 6,
+                    }
+                ]
+            },
+        }
+
+        ad_entries = [
+            {
+                "domain": "corp.example.com",
+                "domain_admins": "high",
+                "enterprise_admins": "medium",
+                "expired_passwords": "high",
+                "passwords_never_expire": "medium",
+                "inactive_accounts": "medium",
+                "generic_accounts": "high",
+                "generic_logins": "medium",
+                "old_passwords": "high",
+                "disabled_accounts": "medium",
+            }
+        ]
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {"ad": {"entries": ad_entries}}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        ad_responses = self.project.data_responses.get("ad")
+        self.assertEqual(
+            ad_responses.get("risk_contrib"),
+            [
+                "the number of Domain Admin accounts",
+                "the number of accounts with expired passwords",
+                "the number of potentially generic accounts",
+                "the number of accounts with 'old' passwords",
+            ],
+        )
 
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()

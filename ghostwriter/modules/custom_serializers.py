@@ -36,6 +36,7 @@ from ghostwriter.reporting.models import (
     Severity,
 )
 from ghostwriter.rolodex.data_parsers import (
+    build_ad_risk_contrib,
     build_workbook_ad_response,
     normalize_nexpose_artifacts_map,
 )
@@ -957,6 +958,10 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
             for field, parts in risk_parts.items():
                 summary[field] = "/".join(parts)
+
+        risk_contrib = build_ad_risk_contrib(workbook_data, ordered)
+        if summary or risk_contrib:
+            summary["risk_contrib"] = risk_contrib
 
         return summary if summary else {}
 

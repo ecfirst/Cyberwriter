@@ -387,6 +387,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertIsInstance(ad_summary, dict)
         self.assertEqual(ad_summary.get("old_domains_string"), "'legacy.local' and 'ancient.local'")
         self.assertEqual(ad_summary.get("old_domains_count"), 2)
+        self.assertEqual(ad_summary.get("risk_contrib"), [])
         self.assertEqual(
             ad_summary.get("domain_metrics"),
             [
@@ -453,6 +454,72 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertIsInstance(ad_summary, dict)
         self.assertNotIn("old_domains_string", ad_summary)
         self.assertEqual(ad_summary.get("old_domains_count"), 0)
+        self.assertEqual(ad_summary.get("risk_contrib"), [])
+
+    def test_ad_summary_populates_risk_contrib_from_entries(self):
+        workbook_payload = {
+            "external_internal_grades": {
+                "internal": {"iam": {"risk": "Medium"}},
+            },
+            "ad": {
+                "domains": [
+                    {
+                        "domain": "legacy.local",
+                        "functionality_level": "Windows Server 2016",
+                        "total_accounts": 120,
+                        "enabled_accounts": 90,
+                        "old_passwords": 12,
+                        "inactive_accounts": 8,
+                        "domain_admins": 6,
+                        "ent_admins": 2,
+                        "exp_passwords": 10,
+                        "passwords_never_exp": 5,
+                        "generic_accounts": 4,
+                        "generic_logins": 2,
+                    }
+                ]
+            },
+        }
+
+        stored_responses = {
+            "ad": {
+                "entries": [
+                    {
+                        "domain": "legacy.local",
+                        "domain_admins": "medium",
+                        "enterprise_admins": "low",
+                        "expired_passwords": "high",
+                        "passwords_never_expire": "medium",
+                        "inactive_accounts": "medium",
+                        "generic_accounts": "high",
+                        "generic_logins": "medium",
+                        "old_passwords": "low",
+                        "disabled_accounts": "medium",
+                    }
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = stored_responses
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+        ad_summary = responses.get("ad")
+
+        self.assertEqual(
+            ad_summary.get("risk_contrib"),
+            [
+                "the number of Domain Admin accounts",
+                "the number of accounts with expired passwords",
+                "the number of accounts set with passwords that never expire",
+                "the number of potentially inactive accounts",
+                "the number of potentially generic accounts",
+                "the number of generic accounts logged into systems",
+                "the number of disabled accounts",
+            ],
+        )
 
     def test_new_structure_is_preserved(self):
         structured = {
