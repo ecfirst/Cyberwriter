@@ -971,15 +971,10 @@ def build_workbook_ad_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[
             if domain_text not in legacy_domains:
                 legacy_domains.append(domain_text)
 
-    response: Dict[str, Any] = {}
+    response: Dict[str, Any] = {"old_domains_count": len(legacy_domains)}
 
     if legacy_domains:
-        response.update(
-            {
-                "old_domains_string": _format_sample_string(legacy_domains),
-                "old_domains_count": len(legacy_domains),
-            }
-        )
+        response["old_domains_string"] = _format_sample_string(legacy_domains)
 
     if domain_metrics:
         response["domain_metrics"] = domain_metrics

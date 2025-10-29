@@ -331,6 +331,33 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(ad_responses.get("generic_accounts_string"), "9, 2 and 5")
         self.assertEqual(ad_responses.get("generic_logins_string"), "4, 1 and 2")
 
+    def test_workbook_old_domain_count_defaults_to_zero(self):
+        workbook_payload = {
+            "ad": {
+                "domains": [
+                    {
+                        "domain": "modern.local",
+                        "functionality_level": "Windows Server 2016",
+                        "total_accounts": 100,
+                        "enabled_accounts": 90,
+                        "old_passwords": 10,
+                        "inactive_accounts": 8,
+                    }
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        ad_responses = self.project.data_responses.get("ad")
+        self.assertIsInstance(ad_responses, dict)
+        self.assertNotIn("old_domains_string", ad_responses)
+        self.assertEqual(ad_responses.get("old_domains_count"), 0)
+
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()
         self.project.refresh_from_db()

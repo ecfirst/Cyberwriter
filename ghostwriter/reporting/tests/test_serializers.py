@@ -426,6 +426,34 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(ad_summary.get("generic_accounts_string"), "9, 2 and 5")
         self.assertEqual(ad_summary.get("generic_logins_string"), "4, 1 and 2")
 
+    def test_ad_summary_includes_default_old_domain_count(self):
+        workbook_payload = {
+            "ad": {
+                "domains": [
+                    {
+                        "domain": "modern.local",
+                        "functionality_level": "Windows Server 2016",
+                        "total_accounts": 100,
+                        "enabled_accounts": 90,
+                        "old_passwords": 10,
+                        "inactive_accounts": 8,
+                    }
+                ]
+            }
+        }
+
+        self.project.data_responses = {}
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"].get("data_responses")
+        ad_summary = responses.get("ad") if isinstance(responses, dict) else None
+
+        self.assertIsInstance(ad_summary, dict)
+        self.assertNotIn("old_domains_string", ad_summary)
+        self.assertEqual(ad_summary.get("old_domains_count"), 0)
+
     def test_new_structure_is_preserved(self):
         structured = {
             "cloud_config_risk": "low",
