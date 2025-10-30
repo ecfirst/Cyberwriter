@@ -1079,3 +1079,124 @@ def build_workbook_ad_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[
         )
 
     return response
+
+
+def build_workbook_password_response(
+    workbook_data: Optional[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]], List[str]]:
+    """Generate password policy summary data sourced from workbook details."""
+
+    if not isinstance(workbook_data, dict):
+        return {}, {}, []
+
+    password_data = workbook_data.get("password", {})
+    policies = password_data.get("policies", []) if isinstance(password_data, dict) else []
+    if not isinstance(policies, list):
+        return {}, {}, []
+
+    ad_data = workbook_data.get("ad", {})
+    ad_domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
+    ad_domain_order: List[str] = []
+    if isinstance(ad_domains, list):
+        for record in ad_domains:
+            if isinstance(record, dict):
+                domain_value = record.get("domain") or record.get("name")
+            else:
+                domain_value = record
+            domain_text = str(domain_value).strip() if domain_value else ""
+            if domain_text and domain_text not in ad_domain_order:
+                ad_domain_order.append(domain_text)
+
+    domain_values: Dict[str, Dict[str, Any]] = {}
+    policy_domain_order: List[str] = []
+
+    def _is_yes(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() == "yes"
+        if isinstance(value, bool):
+            return value
+        return False
+
+    def _normalize_admin_count(entry: Dict[str, Any]) -> Optional[int]:
+        raw_admin = entry.get("admin_cracked")
+        if isinstance(raw_admin, dict):
+            confirm_value = raw_admin.get("confirm")
+            count_value = raw_admin.get("count")
+        else:
+            confirm_value = entry.get("admin_cracked_confirm")
+            count_value = raw_admin
+        if not _is_yes(confirm_value):
+            return 0
+        coerced = _coerce_int(count_value)
+        return coerced if coerced is not None else 0
+
+    def _normalize_fgpp(entry: Dict[str, Any]) -> bool:
+        raw_fgpp = entry.get("fgpp")
+        if isinstance(raw_fgpp, dict):
+            fgpp_count = _coerce_int(raw_fgpp.get("count"))
+        else:
+            fgpp_count = _coerce_int(raw_fgpp)
+        return fgpp_count is not None and fgpp_count < 1
+
+    for policy in policies:
+        if isinstance(policy, dict):
+            domain_value = (
+                policy.get("domain_name")
+                or policy.get("domain")
+                or policy.get("name")
+                or ""
+            )
+            entry = policy
+        else:
+            domain_value = policy
+            entry = {}
+
+        domain_text = str(domain_value).strip()
+        if not domain_text:
+            domain_text = "Unnamed Domain"
+
+        if domain_text not in policy_domain_order:
+            policy_domain_order.append(domain_text)
+
+        normalized_entry = entry if isinstance(entry, dict) else {}
+
+        cracked_value = _coerce_int(normalized_entry.get("passwords_cracked"))
+        enabled_value = _coerce_int(normalized_entry.get("enabled_accounts"))
+        admin_cracked_value = _normalize_admin_count(normalized_entry)
+
+        domain_values[domain_text] = {
+            "passwords_cracked": _format_integer_value(cracked_value),
+            "enabled_accounts": _format_integer_value(enabled_value),
+            "admin_cracked": _format_integer_value(admin_cracked_value),
+            "lanman": _is_yes(normalized_entry.get("lanman_stored")),
+            "no_fgpp": _normalize_fgpp(normalized_entry),
+        }
+
+    summary_domains: List[str] = []
+    for domain in ad_domain_order:
+        if domain in domain_values and domain not in summary_domains:
+            summary_domains.append(domain)
+    for domain in policy_domain_order:
+        if domain in domain_values and domain not in summary_domains:
+            summary_domains.append(domain)
+
+    if not summary_domains:
+        return {}, domain_values, summary_domains
+
+    cracked_counts = [domain_values[domain]["passwords_cracked"] for domain in summary_domains]
+    enabled_counts = [domain_values[domain]["enabled_accounts"] for domain in summary_domains]
+    admin_cracked_counts = [domain_values[domain]["admin_cracked"] for domain in summary_domains]
+    lanman_domains = [domain for domain in summary_domains if domain_values[domain]["lanman"]]
+    no_fgpp_domains = [domain for domain in summary_domains if domain_values[domain]["no_fgpp"]]
+
+    summary = {
+        "domains_str": "/".join(summary_domains),
+        "cracked_count_str": "/".join(cracked_counts),
+        "cracked_finding_string": _format_plain_list(cracked_counts),
+        "enabled_count_string": _format_plain_list(enabled_counts),
+        "admin_cracked_string": _format_plain_list(admin_cracked_counts),
+        "lanman_list_string": _format_sample_string(lanman_domains),
+        "no_fgpp_string": _format_sample_string(no_fgpp_domains),
+    }
+
+    return summary, domain_values, summary_domains

@@ -418,6 +418,11 @@ LINTER_CONTEXT = {
                 "domains_str": "corp.example.com",
                 "cracked_count_str": "17",
                 "cracked_risk_string": "Medium",
+                "cracked_finding_string": "17",
+                "enabled_count_string": "220",
+                "admin_cracked_string": "2",
+                "lanman_list_string": "'corp.example.com'",
+                "no_fgpp_string": "'corp.example.com'",
             },
             "endpoint": {
                 "entries": [

@@ -38,6 +38,7 @@ from ghostwriter.reporting.models import (
 from ghostwriter.rolodex.data_parsers import (
     build_ad_risk_contrib,
     build_workbook_ad_response,
+    build_workbook_password_response,
     normalize_nexpose_artifacts_map,
 )
 from ghostwriter.rolodex.models import (
@@ -967,35 +968,19 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
     @staticmethod
     def _collect_password_responses(raw_responses, workbook_data):
-        password_data = (workbook_data or {}).get("password", {})
-        policies = password_data.get("policies", []) if isinstance(password_data, dict) else []
+        (
+            workbook_summary,
+            workbook_domain_values,
+            workbook_domains,
+        ) = build_workbook_password_response(workbook_data)
+
         entries = {}
         domain_order = []
-        domain_details = {}
         slug_map = {}
 
-        ad_data = (workbook_data or {}).get("ad", {})
-        ad_domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
-        ad_domain_order = []
-        if isinstance(ad_domains, list):
-            for record in ad_domains:
-                if isinstance(record, dict):
-                    domain_value = record.get("domain") or record.get("name")
-                else:
-                    domain_value = record
-                domain_text = str(domain_value).strip() if domain_value else ""
-                if domain_text and domain_text not in ad_domain_order:
-                    ad_domain_order.append(domain_text)
-
-        for policy in policies:
-            if not isinstance(policy, dict):
-                continue
-            domain_name = policy.get("domain_name") or policy.get("domain")
-            domain_name = str(domain_name).strip() if domain_name else "Unnamed Domain"
-            domain_details[domain_name] = policy
+        for domain_name in workbook_domain_values.keys():
             entry = entries.setdefault(domain_name, {"domain": domain_name})
-            if domain_name not in domain_order:
-                domain_order.append(domain_name)
+
             slug = ProjectSerializer._build_slug("password", domain_name)
             if slug:
                 slug_map[slug] = domain_name
@@ -1003,6 +988,10 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 value = ProjectSerializer._consume_metric(raw_responses, slug, "risk")
                 if value is not None:
                     entry["risk"] = value
+
+        for domain_name in workbook_domains:
+            if domain_name not in domain_order:
+                domain_order.append(domain_name)
 
         existing_password_entries = raw_responses.get("password")
         existing_items = []
@@ -1047,7 +1036,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             return {}
 
         summary_domains = []
-        for domain in ad_domain_order:
+        for domain in workbook_domains:
             if domain in entries and len(entries[domain]) > 1 and domain not in summary_domains:
                 summary_domains.append(domain)
         for domain in populated_domains:
@@ -1057,20 +1046,40 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if not summary_domains:
             return {}
 
-        def _format_count(value):
-            if value in (None, ""):
-                return "0"
-            return str(value)
-
         def _format_risk(value):
             if value is None:
                 return ""
             text = str(value).strip()
             return text.capitalize() if text else ""
 
+        def _format_plain(values):
+            items = [value for value in values if value not in (None, "")]
+            if not items:
+                return ""
+            if len(items) == 1:
+                return items[0]
+            if len(items) == 2:
+                return f"{items[0]} and {items[1]}"
+            return ", ".join(items[:-1]) + f" and {items[-1]}"
+
+        def _format_sample(values):
+            entries_list = [value for value in values if value]
+            if not entries_list:
+                return ""
+            quoted = [f"'{value}'" for value in entries_list]
+            if len(quoted) == 1:
+                return quoted[0]
+            if len(quoted) == 2:
+                return f"{quoted[0]} and {quoted[1]}"
+            return ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
+
         domains_str_parts = []
         cracked_count_parts = []
         cracked_risk_parts = []
+        enabled_count_parts = []
+        admin_cracked_parts = []
+        lanman_domains = []
+        no_fgpp_domains = []
         ordered_entries = []
 
         for domain in summary_domains:
@@ -1079,21 +1088,42 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 continue
             ordered_entries.append(entry)
             domains_str_parts.append(domain)
-            details = domain_details.get(domain, {})
-            if not isinstance(details, dict):
-                details = {}
-            cracked_count_parts.append(_format_count(details.get("passwords_cracked")))
+
+            domain_values = workbook_domain_values.get(domain, {})
+            cracked_value = domain_values.get("passwords_cracked", "0")
+            enabled_value = domain_values.get("enabled_accounts", "0")
+            admin_cracked_value = domain_values.get("admin_cracked", "0")
+
+            cracked_count_parts.append(cracked_value or "0")
+            enabled_count_parts.append(enabled_value or "0")
+            admin_cracked_parts.append(admin_cracked_value or "0")
+
+            if domain_values.get("lanman"):
+                lanman_domains.append(domain)
+            if domain_values.get("no_fgpp"):
+                no_fgpp_domains.append(domain)
+
             cracked_risk_parts.append(_format_risk(entry.get("risk")))
 
         if not ordered_entries:
             return {}
 
-        return {
+        summary = {
             "entries": ordered_entries,
             "domains_str": "/".join(domains_str_parts),
             "cracked_count_str": "/".join(cracked_count_parts),
             "cracked_risk_string": "/".join(cracked_risk_parts),
+            "cracked_finding_string": _format_plain(cracked_count_parts),
+            "enabled_count_string": _format_plain(enabled_count_parts),
+            "admin_cracked_string": _format_plain(admin_cracked_parts),
+            "lanman_list_string": _format_sample(lanman_domains),
+            "no_fgpp_string": _format_sample(no_fgpp_domains),
         }
+
+        if not summary.get("cracked_count_str") and workbook_summary.get("cracked_count_str"):
+            summary["cracked_count_str"] = workbook_summary["cracked_count_str"]
+
+        return summary
 
     @staticmethod
     def _collect_endpoint_responses(raw_responses, workbook_data):

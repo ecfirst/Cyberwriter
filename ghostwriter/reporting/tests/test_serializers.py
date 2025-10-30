@@ -167,8 +167,22 @@ class ProjectSerializerDataResponsesTests(TestCase):
             },
             "password": {
                 "policies": [
-                    {"domain_name": "corp.example.com", "passwords_cracked": 3589},
-                    {"domain_name": "lab.example.com", "passwords_cracked": 4875},
+                    {
+                        "domain_name": "corp.example.com",
+                        "passwords_cracked": 3589,
+                        "enabled_accounts": 230,
+                        "admin_cracked": {"count": 2, "confirm": "yes"},
+                        "lanman_stored": "yes",
+                        "fgpp": {"count": 0},
+                    },
+                    {
+                        "domain_name": "lab.example.com",
+                        "passwords_cracked": 4875,
+                        "enabled_accounts": 90,
+                        "admin_cracked": {"count": 4, "confirm": "yes"},
+                        "lanman_stored": "no",
+                        "fgpp": {"count": 2},
+                    },
                 ]
             },
             "endpoint": {
@@ -292,6 +306,11 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(password_summary["domains_str"], "corp.example.com/lab.example.com")
         self.assertEqual(password_summary["cracked_count_str"], "3589/4875")
         self.assertEqual(password_summary["cracked_risk_string"], "Medium/High")
+        self.assertEqual(password_summary["cracked_finding_string"], "3589 and 4875")
+        self.assertEqual(password_summary["enabled_count_string"], "230 and 90")
+        self.assertEqual(password_summary["admin_cracked_string"], "2 and 4")
+        self.assertEqual(password_summary["lanman_list_string"], "'corp.example.com'")
+        self.assertEqual(password_summary["no_fgpp_string"], "'corp.example.com'")
 
         endpoint_summary = responses["endpoint"]
         self.assertIn("entries", endpoint_summary)

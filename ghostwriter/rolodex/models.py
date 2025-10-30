@@ -333,6 +333,7 @@ class Project(models.Model):
             build_ad_risk_contrib,
             build_project_artifacts,
             build_workbook_ad_response,
+            build_workbook_password_response,
         )
 
         artifacts = build_project_artifacts(self)
@@ -358,6 +359,21 @@ class Project(models.Model):
                 combined_ad_section.get("entries"),
             )
             existing_responses["ad"] = combined_ad_section
+
+        workbook_password_response, _, _ = build_workbook_password_response(
+            getattr(self, "workbook_data", None)
+        )
+        if workbook_password_response:
+            existing_password_section = existing_responses.get("password")
+            if isinstance(existing_password_section, dict):
+                combined_password_section = dict(existing_password_section)
+            elif isinstance(existing_password_section, list):
+                combined_password_section = {"entries": list(existing_password_section)}
+            else:
+                combined_password_section = {}
+
+            combined_password_section.update(workbook_password_response)
+            existing_responses["password"] = combined_password_section
 
         self.data_responses = existing_responses
 

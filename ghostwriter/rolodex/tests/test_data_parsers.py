@@ -467,6 +467,66 @@ class NexposeDataParserTests(TestCase):
             ],
         )
 
+    def test_rebuild_populates_password_strings(self):
+        workbook_payload = {
+            "ad": {
+                "domains": [
+                    {"domain": "corp.example.com"},
+                    {"domain": "legacy.local"},
+                ]
+            },
+            "password": {
+                "policies": [
+                    {
+                        "domain_name": "corp.example.com",
+                        "passwords_cracked": 10,
+                        "enabled_accounts": 100,
+                        "admin_cracked": {"count": 1, "confirm": "yes"},
+                        "lanman_stored": "yes",
+                        "fgpp": {"count": 0},
+                    },
+                    {
+                        "domain_name": "legacy.local",
+                        "passwords_cracked": 5,
+                        "enabled_accounts": 40,
+                        "admin_cracked": {"count": 0, "confirm": "no"},
+                        "lanman_stored": "no",
+                        "fgpp": {"count": 0},
+                    },
+                    {
+                        "domain_name": "lab.example.com",
+                        "passwords_cracked": 8,
+                        "enabled_accounts": 60,
+                        "admin_cracked": {"count": 3, "confirm": "yes"},
+                        "lanman_stored": "yes",
+                        "fgpp": {"count": 3},
+                    },
+                ]
+            },
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        password_responses = self.project.data_responses.get("password")
+        self.assertIsInstance(password_responses, dict)
+        self.assertEqual(password_responses.get("cracked_count_str"), "10/5/8")
+        self.assertEqual(password_responses.get("cracked_finding_string"), "10, 5 and 8")
+        self.assertEqual(password_responses.get("enabled_count_string"), "100, 40 and 60")
+        self.assertEqual(password_responses.get("admin_cracked_string"), "1, 0 and 3")
+        self.assertEqual(
+            password_responses.get("lanman_list_string"),
+            "'corp.example.com' and 'lab.example.com'",
+        )
+        self.assertEqual(
+            password_responses.get("no_fgpp_string"),
+            "'corp.example.com' and 'legacy.local'",
+        )
+
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()
         self.project.refresh_from_db()
