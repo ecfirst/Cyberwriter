@@ -413,17 +413,19 @@ LINTER_CONTEXT = {
             },
             "password": {
                 "entries": [
-                    {"domain": "corp.example.com", "risk": "medium"}
+                    {"domain": "corp.example.com", "risk": "medium", "bad_pass": True},
+                    {"domain": "lab.example.com", "risk": "high", "bad_pass": False},
                 ],
-                "domains_str": "corp.example.com",
-                "cracked_count_str": "17",
-                "cracked_risk_string": "Medium",
-                "cracked_finding_string": "17",
-                "enabled_count_string": "220",
-                "admin_cracked_string": "2",
-                "admin_cracked_doms": "'corp.example.com'",
+                "domains_str": "corp.example.com/lab.example.com",
+                "cracked_count_str": "17/9",
+                "cracked_risk_string": "Medium/High",
+                "cracked_finding_string": "17 and 9",
+                "enabled_count_string": "220 and 150",
+                "admin_cracked_string": "2 and 1",
+                "admin_cracked_doms": "'corp.example.com' and 'lab.example.com'",
                 "lanman_list_string": "'corp.example.com'",
-                "no_fgpp_string": "'corp.example.com'",
+                "no_fgpp_string": "'lab.example.com'",
+                "bad_pass_count": 2,
             },
             "endpoint": {
                 "entries": [

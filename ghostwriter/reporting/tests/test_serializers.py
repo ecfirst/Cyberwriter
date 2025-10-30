@@ -173,7 +173,38 @@ class ProjectSerializerDataResponsesTests(TestCase):
                         "enabled_accounts": 230,
                         "admin_cracked": {"count": 2, "confirm": "yes"},
                         "lanman_stored": "yes",
-                        "fgpp": {"count": 0},
+                        "history": 6,
+                        "max_age": 90,
+                        "min_age": 0,
+                        "min_length": 7,
+                        "lockout_threshold": 8,
+                        "lockout_duration": 15,
+                        "lockout_reset": 20,
+                        "complexity_enabled": "yes",
+                        "fgpp": [
+                            {
+                                "fgpp_name": "Tier0Admins",
+                                "history": 24,
+                                "max_age": 0,
+                                "min_age": 1,
+                                "min_length": 14,
+                                "lockout_threshold": 3,
+                                "lockout_duration": 30,
+                                "lockout_reset": 30,
+                                "complexity_enabled": "no",
+                            },
+                            {
+                                "fgpp_name": "ServiceAccounts",
+                                "history": 5,
+                                "max_age": 365,
+                                "min_age": 0,
+                                "min_length": 6,
+                                "lockout_threshold": 8,
+                                "lockout_duration": 10,
+                                "lockout_reset": 10,
+                                "complexity_enabled": "yes",
+                            },
+                        ],
                     },
                     {
                         "domain_name": "lab.example.com",
@@ -181,7 +212,15 @@ class ProjectSerializerDataResponsesTests(TestCase):
                         "enabled_accounts": 90,
                         "admin_cracked": {"count": 4, "confirm": "yes"},
                         "lanman_stored": "no",
-                        "fgpp": {"count": 2},
+                        "history": 15,
+                        "max_age": 0,
+                        "min_age": 2,
+                        "min_length": 12,
+                        "lockout_threshold": 4,
+                        "lockout_duration": 0,
+                        "lockout_reset": 45,
+                        "complexity_enabled": "no",
+                        "fgpp": {"count": 0},
                     },
                 ]
             },
@@ -303,6 +342,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
         )
         self.assertEqual(corp_password["risk"], "medium")
         self.assertEqual(lab_password["risk"], "high")
+        self.assertTrue(corp_password.get("bad_pass"))
+        self.assertFalse(lab_password.get("bad_pass"))
         self.assertEqual(password_summary["domains_str"], "corp.example.com/lab.example.com")
         self.assertEqual(password_summary["cracked_count_str"], "3589/4875")
         self.assertEqual(password_summary["cracked_risk_string"], "Medium/High")
@@ -314,7 +355,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "'corp.example.com' and 'lab.example.com'",
         )
         self.assertEqual(password_summary["lanman_list_string"], "'corp.example.com'")
-        self.assertEqual(password_summary["no_fgpp_string"], "'corp.example.com'")
+        self.assertEqual(password_summary["no_fgpp_string"], "'lab.example.com'")
+        self.assertEqual(password_summary["bad_pass_count"], 2)
 
         endpoint_summary = responses["endpoint"]
         self.assertIn("entries", endpoint_summary)

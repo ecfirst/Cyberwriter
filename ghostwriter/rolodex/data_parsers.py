@@ -1087,12 +1087,12 @@ def build_workbook_password_response(
     """Generate password policy summary data sourced from workbook details."""
 
     if not isinstance(workbook_data, dict):
-        return {}, {}, []
+        return {"bad_pass_count": 0}, {}, []
 
     password_data = workbook_data.get("password", {})
     policies = password_data.get("policies", []) if isinstance(password_data, dict) else []
     if not isinstance(policies, list):
-        return {}, {}, []
+        return {"bad_pass_count": 0}, {}, []
 
     ad_data = workbook_data.get("ad", {})
     ad_domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
@@ -1109,6 +1109,8 @@ def build_workbook_password_response(
 
     domain_values: Dict[str, Dict[str, Any]] = {}
     policy_domain_order: List[str] = []
+    domain_bad_flags: Dict[str, bool] = {}
+    bad_pass_total = 0
 
     def _is_yes(value: Any) -> bool:
         if isinstance(value, str):
@@ -1138,6 +1140,69 @@ def build_workbook_password_response(
             fgpp_count = _coerce_int(raw_fgpp)
         return fgpp_count is not None and fgpp_count < 1
 
+    policy_metric_fields = {
+        "history",
+        "max_age",
+        "min_age",
+        "min_length",
+        "lockout_threshold",
+        "lockout_duration",
+        "lockout_reset",
+        "complexity_enabled",
+    }
+
+    def _coerce_metric_int(entry: Dict[str, Any], key: str) -> Optional[int]:
+        return _coerce_int(entry.get(key))
+
+    def _policy_is_bad(entry: Dict[str, Any]) -> bool:
+        if not isinstance(entry, dict):
+            return False
+
+        max_age = _coerce_metric_int(entry, "max_age")
+        if max_age is not None and max_age != 0:
+            return True
+
+        min_age = _coerce_metric_int(entry, "min_age")
+        if min_age is not None and (min_age < 1 or min_age >= 7):
+            return True
+
+        min_length = _coerce_metric_int(entry, "min_length")
+        if min_length is not None and min_length < 8:
+            return True
+
+        history = _coerce_metric_int(entry, "history")
+        if history is not None and history < 10:
+            return True
+
+        lockout_threshold = _coerce_metric_int(entry, "lockout_threshold")
+        if lockout_threshold is not None and (
+            lockout_threshold == 0 or lockout_threshold > 6
+        ):
+            return True
+
+        lockout_duration = _coerce_metric_int(entry, "lockout_duration")
+        if lockout_duration is not None and 1 <= lockout_duration <= 29:
+            return True
+
+        lockout_reset = _coerce_metric_int(entry, "lockout_reset")
+        if lockout_reset is not None and lockout_reset < 30:
+            return True
+
+        if _is_yes(entry.get("complexity_enabled")):
+            return True
+
+        return False
+
+    def _iter_fgpp_entries(entry: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+        raw_fgpp = entry.get("fgpp")
+        if isinstance(raw_fgpp, list):
+            for item in raw_fgpp:
+                if isinstance(item, dict):
+                    yield item
+        elif isinstance(raw_fgpp, dict):
+            if any(key in raw_fgpp for key in policy_metric_fields):
+                yield raw_fgpp
+
     for policy in policies:
         if isinstance(policy, dict):
             domain_value = (
@@ -1164,12 +1229,27 @@ def build_workbook_password_response(
         enabled_value = _coerce_int(normalized_entry.get("enabled_accounts"))
         admin_cracked_value = _normalize_admin_count(normalized_entry)
 
+        policy_is_bad = _policy_is_bad(normalized_entry)
+        if policy_is_bad:
+            bad_pass_total += 1
+
+        fgpp_is_bad = False
+        for fgpp_entry in _iter_fgpp_entries(normalized_entry):
+            if _policy_is_bad(fgpp_entry):
+                bad_pass_total += 1
+                fgpp_is_bad = True
+
+        combined_bad = policy_is_bad or fgpp_is_bad
+        if combined_bad or domain_text not in domain_bad_flags:
+            domain_bad_flags[domain_text] = domain_bad_flags.get(domain_text, False) or combined_bad
+
         domain_values[domain_text] = {
             "passwords_cracked": _format_integer_value(cracked_value),
             "enabled_accounts": _format_integer_value(enabled_value),
             "admin_cracked": _format_integer_value(admin_cracked_value),
             "lanman": _is_yes(normalized_entry.get("lanman_stored")),
             "no_fgpp": _normalize_fgpp(normalized_entry),
+            "bad_pass": domain_bad_flags.get(domain_text, False),
         }
 
     summary_domains: List[str] = []
@@ -1180,8 +1260,10 @@ def build_workbook_password_response(
         if domain in domain_values and domain not in summary_domains:
             summary_domains.append(domain)
 
+    summary: Dict[str, Any] = {"bad_pass_count": bad_pass_total}
+
     if not summary_domains:
-        return {}, domain_values, summary_domains
+        return summary, domain_values, summary_domains
 
     cracked_counts = [domain_values[domain]["passwords_cracked"] for domain in summary_domains]
     enabled_counts = [domain_values[domain]["enabled_accounts"] for domain in summary_domains]
@@ -1189,15 +1271,17 @@ def build_workbook_password_response(
     lanman_domains = [domain for domain in summary_domains if domain_values[domain]["lanman"]]
     no_fgpp_domains = [domain for domain in summary_domains if domain_values[domain]["no_fgpp"]]
 
-    summary = {
-        "domains_str": "/".join(summary_domains),
-        "cracked_count_str": "/".join(cracked_counts),
-        "cracked_finding_string": _format_plain_list(cracked_counts),
-        "enabled_count_string": _format_plain_list(enabled_counts),
-        "admin_cracked_string": _format_plain_list(admin_cracked_counts),
-        "admin_cracked_doms": _format_sample_string(summary_domains),
-        "lanman_list_string": _format_sample_string(lanman_domains),
-        "no_fgpp_string": _format_sample_string(no_fgpp_domains),
-    }
+    summary.update(
+        {
+            "domains_str": "/".join(summary_domains),
+            "cracked_count_str": "/".join(cracked_counts),
+            "cracked_finding_string": _format_plain_list(cracked_counts),
+            "enabled_count_string": _format_plain_list(enabled_counts),
+            "admin_cracked_string": _format_plain_list(admin_cracked_counts),
+            "admin_cracked_doms": _format_sample_string(summary_domains),
+            "lanman_list_string": _format_sample_string(lanman_domains),
+            "no_fgpp_string": _format_sample_string(no_fgpp_domains),
+        }
+    )
 
     return summary, domain_values, summary_domains

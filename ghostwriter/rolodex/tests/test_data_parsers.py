@@ -483,7 +483,38 @@ class NexposeDataParserTests(TestCase):
                         "enabled_accounts": 100,
                         "admin_cracked": {"count": 1, "confirm": "yes"},
                         "lanman_stored": "yes",
-                        "fgpp": {"count": 0},
+                        "history": 5,
+                        "max_age": 90,
+                        "min_age": 0,
+                        "min_length": 7,
+                        "lockout_threshold": 8,
+                        "lockout_duration": 15,
+                        "lockout_reset": 20,
+                        "complexity_enabled": "yes",
+                        "fgpp": [
+                            {
+                                "fgpp_name": "Tier0Admins",
+                                "history": 24,
+                                "max_age": 0,
+                                "min_age": 1,
+                                "min_length": 14,
+                                "lockout_threshold": 3,
+                                "lockout_duration": 30,
+                                "lockout_reset": 30,
+                                "complexity_enabled": "no",
+                            },
+                            {
+                                "fgpp_name": "ServiceAccounts",
+                                "history": 5,
+                                "max_age": 365,
+                                "min_age": 0,
+                                "min_length": 6,
+                                "lockout_threshold": 8,
+                                "lockout_duration": 10,
+                                "lockout_reset": 10,
+                                "complexity_enabled": "yes",
+                            },
+                        ],
                     },
                     {
                         "domain_name": "legacy.local",
@@ -491,6 +522,14 @@ class NexposeDataParserTests(TestCase):
                         "enabled_accounts": 40,
                         "admin_cracked": {"count": 0, "confirm": "no"},
                         "lanman_stored": "no",
+                        "history": 15,
+                        "max_age": 0,
+                        "min_age": 2,
+                        "min_length": 12,
+                        "lockout_threshold": 4,
+                        "lockout_duration": 0,
+                        "lockout_reset": 45,
+                        "complexity_enabled": "no",
                         "fgpp": {"count": 0},
                     },
                     {
@@ -499,6 +538,14 @@ class NexposeDataParserTests(TestCase):
                         "enabled_accounts": 60,
                         "admin_cracked": {"count": 3, "confirm": "yes"},
                         "lanman_stored": "yes",
+                        "history": 8,
+                        "max_age": 0,
+                        "min_age": 1,
+                        "min_length": 12,
+                        "lockout_threshold": 5,
+                        "lockout_duration": 0,
+                        "lockout_reset": 60,
+                        "complexity_enabled": "no",
                         "fgpp": {"count": 3},
                     },
                 ]
@@ -528,8 +575,9 @@ class NexposeDataParserTests(TestCase):
         )
         self.assertEqual(
             password_responses.get("no_fgpp_string"),
-            "'corp.example.com' and 'legacy.local'",
+            "'legacy.local'",
         )
+        self.assertEqual(password_responses.get("bad_pass_count"), 3)
 
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()

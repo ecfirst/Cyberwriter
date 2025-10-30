@@ -973,6 +973,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             workbook_domain_values,
             workbook_domains,
         ) = build_workbook_password_response(workbook_data)
+        bad_pass_count = workbook_summary.get("bad_pass_count", 0)
 
         entries = {}
         domain_order = []
@@ -1033,7 +1034,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         populated_domains = [name for name in domain_order if len(entries[name]) > 1]
         if not populated_domains:
-            return {}
+            return {"bad_pass_count": bad_pass_count}
 
         summary_domains = []
         for domain in workbook_domains:
@@ -1044,7 +1045,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 summary_domains.append(domain)
 
         if not summary_domains:
-            return {}
+            return {"bad_pass_count": bad_pass_count}
 
         def _format_risk(value):
             if value is None:
@@ -1094,6 +1095,8 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             enabled_value = domain_values.get("enabled_accounts", "0")
             admin_cracked_value = domain_values.get("admin_cracked", "0")
 
+            entry["bad_pass"] = bool(domain_values.get("bad_pass"))
+
             cracked_count_parts.append(cracked_value or "0")
             enabled_count_parts.append(enabled_value or "0")
             admin_cracked_parts.append(admin_cracked_value or "0")
@@ -1106,7 +1109,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             cracked_risk_parts.append(_format_risk(entry.get("risk")))
 
         if not ordered_entries:
-            return {}
+            return {"bad_pass_count": bad_pass_count}
 
         summary = {
             "entries": ordered_entries,
@@ -1119,6 +1122,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             "admin_cracked_doms": _format_sample(domains_str_parts),
             "lanman_list_string": _format_sample(lanman_domains),
             "no_fgpp_string": _format_sample(no_fgpp_domains),
+            "bad_pass_count": bad_pass_count,
         }
 
         if not summary.get("cracked_count_str") and workbook_summary.get("cracked_count_str"):
