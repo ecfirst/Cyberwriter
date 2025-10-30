@@ -519,6 +519,10 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(password_responses.get("enabled_count_string"), "100, 40 and 60")
         self.assertEqual(password_responses.get("admin_cracked_string"), "1, 0 and 3")
         self.assertEqual(
+            password_responses.get("admin_cracked_doms"),
+            "'corp.example.com', 'legacy.local' and 'lab.example.com'",
+        )
+        self.assertEqual(
             password_responses.get("lanman_list_string"),
             "'corp.example.com' and 'lab.example.com'",
         )

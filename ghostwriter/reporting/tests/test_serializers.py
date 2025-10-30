@@ -309,6 +309,10 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(password_summary["cracked_finding_string"], "3589 and 4875")
         self.assertEqual(password_summary["enabled_count_string"], "230 and 90")
         self.assertEqual(password_summary["admin_cracked_string"], "2 and 4")
+        self.assertEqual(
+            password_summary["admin_cracked_doms"],
+            "'corp.example.com' and 'lab.example.com'",
+        )
         self.assertEqual(password_summary["lanman_list_string"], "'corp.example.com'")
         self.assertEqual(password_summary["no_fgpp_string"], "'corp.example.com'")
 

@@ -421,6 +421,7 @@ LINTER_CONTEXT = {
                 "cracked_finding_string": "17",
                 "enabled_count_string": "220",
                 "admin_cracked_string": "2",
+                "admin_cracked_doms": "'corp.example.com'",
                 "lanman_list_string": "'corp.example.com'",
                 "no_fgpp_string": "'corp.example.com'",
             },

@@ -1195,6 +1195,7 @@ def build_workbook_password_response(
         "cracked_finding_string": _format_plain_list(cracked_counts),
         "enabled_count_string": _format_plain_list(enabled_counts),
         "admin_cracked_string": _format_plain_list(admin_cracked_counts),
+        "admin_cracked_doms": _format_sample_string(summary_domains),
         "lanman_list_string": _format_sample_string(lanman_domains),
         "no_fgpp_string": _format_sample_string(no_fgpp_domains),
     }

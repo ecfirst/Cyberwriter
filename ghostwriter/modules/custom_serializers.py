@@ -1116,6 +1116,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             "cracked_finding_string": _format_plain(cracked_count_parts),
             "enabled_count_string": _format_plain(enabled_count_parts),
             "admin_cracked_string": _format_plain(admin_cracked_parts),
+            "admin_cracked_doms": _format_sample(domains_str_parts),
             "lanman_list_string": _format_sample(lanman_domains),
             "no_fgpp_string": _format_sample(no_fgpp_domains),
         }
