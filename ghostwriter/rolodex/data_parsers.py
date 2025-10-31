@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import io
 from collections import Counter
+from collections import abc
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from django.core.files.base import File
@@ -14,6 +15,7 @@ if False:  # pragma: no cover - typing only
     from ghostwriter.rolodex.models import Project, ProjectDataFile  # noqa: F401
 
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, parse_ip_text
+from ghostwriter.rolodex.workbook import AD_DOMAIN_METRICS
 
 
 DNS_RECOMMENDATION_MAP: Dict[str, str] = {
@@ -96,6 +98,85 @@ DNS_IMPACT_MAP: Dict[str, str] = {
     "The SPF value does not allow mail delivery from all mailservers in the domain": "An incomplete SPF record causes legitimate emails to be rejected or marked as spam.",
     "The SPF record contains the overly permissive modifier '+all'": "The '+all' modifier allows any host to send mail for the domain, enabling spoofing and abuse.",
 }
+
+
+AD_RISK_CONTRIBUTION_PHRASES: Dict[str, str] = {
+    "domain_admins": "the number of Domain Admin accounts",
+    "enterprise_admins": "the number of Enterprise Admin accounts",
+    "expired_passwords": "the number of accounts with expired passwords",
+    "passwords_never_expire": "the number of accounts set with passwords that never expire",
+    "inactive_accounts": "the number of potentially inactive accounts",
+    "generic_accounts": "the number of potentially generic accounts",
+    "generic_logins": "the number of generic accounts logged into systems",
+    "old_passwords": "the number of accounts with 'old' passwords",
+    "disabled_accounts": "the number of disabled accounts",
+}
+
+
+def _get_nested_value(data: Any, path: Iterable[str]) -> Any:
+    """Safely fetch a nested value from ``data`` using ``path`` of keys."""
+
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def build_ad_risk_contrib(
+    workbook_data: Optional[Dict[str, Any]],
+    entries: Optional[Iterable[Dict[str, Any]]],
+) -> List[str]:
+    """Return risk contribution phrases derived from AD response entries."""
+
+    source_data: Dict[str, Any] = workbook_data if isinstance(workbook_data, dict) else {}
+
+    risk_value = _get_nested_value(
+        source_data,
+        ("external_internal_grades", "internal", "iam", "risk"),
+    )
+    risk_text = str(risk_value).strip().lower() if risk_value is not None else ""
+    if risk_text not in ("medium", "high"):
+        return []
+
+    allowed_values = {"high", "medium"} if risk_text == "medium" else {"high"}
+
+    if isinstance(entries, dict):
+        candidate = entries.get("entries")
+        if isinstance(candidate, (list, tuple)):
+            potential_entries: Iterable[Dict[str, Any]] = candidate
+        else:
+            potential_entries = []
+    elif isinstance(entries, (list, tuple)):
+        potential_entries = entries
+    elif isinstance(entries, abc.Iterable) and not isinstance(entries, (str, bytes)):
+        potential_entries = entries
+    else:
+        potential_entries = []
+
+    matched_metrics = set()
+    for entry in potential_entries:
+        if not isinstance(entry, dict):
+            continue
+        for metric_key in AD_RISK_CONTRIBUTION_PHRASES:
+            value = entry.get(metric_key)
+            if value is None:
+                continue
+            text = str(value).strip().lower()
+            if text in allowed_values:
+                matched_metrics.add(metric_key)
+
+    if not matched_metrics:
+        return []
+
+    ordered_metrics = [
+        metric_key
+        for metric_key, _ in AD_DOMAIN_METRICS
+        if metric_key in matched_metrics
+    ]
+
+    return [AD_RISK_CONTRIBUTION_PHRASES[key] for key in ordered_metrics]
 
 
 def _decode_file(file_obj: File) -> Iterable[Dict[str, str]]:
@@ -206,6 +287,38 @@ def _categorize_severity(score: Optional[float]) -> Optional[str]:
     if score >= 0:
         return "Low"
     return None
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    """Best-effort conversion of ``value`` to ``int`` or ``None`` if conversion fails."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, int):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    normalized = text.replace(",", "")
+    try:
+        return int(normalized)
+    except (TypeError, ValueError):
+        try:
+            return int(float(normalized))
+        except (TypeError, ValueError):
+            return None
+
+
+def _calculate_percentage(numerator: Optional[int], denominator: Optional[int]) -> Optional[float]:
+    """Return ``numerator`` / ``denominator`` as a percentage rounded to one decimal place."""
+
+    if numerator is None or denominator in (None, 0):
+        return None
+
+    return round((numerator / denominator) * 100, 1)
 
 
 def parse_firewall_report(file_obj: File) -> List[Dict[str, Any]]:
@@ -651,6 +764,37 @@ def _format_sample_string(samples: List[str]) -> str:
     return ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
 
 
+def _format_plain_list(values: List[str]) -> str:
+    """Return a human-readable string for a list of pre-formatted values."""
+
+    entries = [value for value in values if value]
+    if not entries:
+        return ""
+    if len(entries) == 1:
+        return entries[0]
+    if len(entries) == 2:
+        return f"{entries[0]} and {entries[1]}"
+    return ", ".join(entries[:-1]) + f" and {entries[-1]}"
+
+
+def _format_integer_value(value: Optional[int]) -> str:
+    """Normalize integer-like values to strings while preserving zeroes."""
+
+    if value in (None, ""):
+        return "0"
+    return str(value)
+
+
+def _format_percentage_text(value: Optional[float]) -> str:
+    """Render a percentage value with up to one decimal place."""
+
+    if value is None:
+        return "0%"
+
+    text = f"{value:.1f}".rstrip("0").rstrip(".")
+    return f"{text}%"
+
+
 def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Counter[Tuple[str, str]]]]:
     """Parse a burp.csv export into counters grouped by site and severity bucket."""
 
@@ -804,3 +948,340 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         }
 
     return artifacts
+
+
+def build_workbook_ad_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Generate Active Directory response data sourced from workbook details."""
+
+    if not isinstance(workbook_data, dict):
+        return {}
+
+    ad_data = workbook_data.get("ad", {})
+    domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
+    if not isinstance(domains, list):
+        return {}
+
+    legacy_domains: List[str] = []
+    domain_metrics: List[Dict[str, Any]] = []
+    disabled_counts: List[str] = []
+    disabled_percentages: List[str] = []
+    old_password_counts: List[str] = []
+    old_password_percentages: List[str] = []
+    inactive_counts: List[str] = []
+    inactive_percentages: List[str] = []
+    domain_admins_counts: List[str] = []
+    ent_admins_counts: List[str] = []
+    exp_password_counts: List[str] = []
+    never_expire_counts: List[str] = []
+    generic_account_counts: List[str] = []
+    generic_login_counts: List[str] = []
+
+    for entry in domains:
+        if isinstance(entry, dict):
+            domain_value = entry.get("domain") or entry.get("name") or ""
+            functionality_value = entry.get("functionality_level")
+            total_accounts = _coerce_int(entry.get("total_accounts"))
+            enabled_accounts = _coerce_int(entry.get("enabled_accounts"))
+            old_passwords = _coerce_int(entry.get("old_passwords"))
+            inactive_accounts = _coerce_int(entry.get("inactive_accounts"))
+            domain_admins = _coerce_int(entry.get("domain_admins"))
+            ent_admins = _coerce_int(entry.get("ent_admins"))
+            exp_passwords = _coerce_int(entry.get("exp_passwords"))
+            never_expires = _coerce_int(entry.get("passwords_never_exp"))
+            generic_accounts = _coerce_int(entry.get("generic_accounts"))
+            generic_logins = _coerce_int(entry.get("generic_logins"))
+        else:
+            domain_value = entry
+            functionality_value = None
+            total_accounts = None
+            enabled_accounts = None
+            old_passwords = None
+            inactive_accounts = None
+            domain_admins = None
+            ent_admins = None
+            exp_passwords = None
+            never_expires = None
+            generic_accounts = None
+            generic_logins = None
+
+        domain_text = str(domain_value).strip() if domain_value else ""
+        if not domain_text:
+            continue
+
+        disabled_count: Optional[int] = None
+        if total_accounts is not None and enabled_accounts is not None:
+            disabled_count = max(total_accounts - enabled_accounts, 0)
+
+        disabled_counts.append(_format_integer_value(disabled_count))
+        disabled_percentages.append(
+            _format_percentage_text(_calculate_percentage(disabled_count, total_accounts))
+        )
+
+        old_password_counts.append(_format_integer_value(old_passwords))
+        old_password_percentages.append(
+            _format_percentage_text(_calculate_percentage(old_passwords, enabled_accounts))
+        )
+
+        inactive_counts.append(_format_integer_value(inactive_accounts))
+        inactive_percentages.append(
+            _format_percentage_text(_calculate_percentage(inactive_accounts, enabled_accounts))
+        )
+
+        domain_admins_counts.append(_format_integer_value(domain_admins))
+        ent_admins_counts.append(_format_integer_value(ent_admins))
+        exp_password_counts.append(_format_integer_value(exp_passwords))
+        never_expire_counts.append(_format_integer_value(never_expires))
+        generic_account_counts.append(_format_integer_value(generic_accounts))
+        generic_login_counts.append(_format_integer_value(generic_logins))
+
+        domain_metrics.append(
+            {
+                "domain_name": domain_text,
+                "disabled_count": disabled_count,
+                "disabled_pct": _calculate_percentage(disabled_count, total_accounts),
+                "old_pass_pct": _calculate_percentage(old_passwords, enabled_accounts),
+                "ia_pct": _calculate_percentage(inactive_accounts, enabled_accounts),
+            }
+        )
+
+        functionality_text = ""
+        if functionality_value is not None:
+            functionality_text = str(functionality_value)
+
+        if "2000" in functionality_text or "2003" in functionality_text:
+            if domain_text not in legacy_domains:
+                legacy_domains.append(domain_text)
+
+    response: Dict[str, Any] = {"old_domains_count": len(legacy_domains)}
+
+    if legacy_domains:
+        response["old_domains_string"] = _format_sample_string(legacy_domains)
+
+    if domain_metrics:
+        response["domain_metrics"] = domain_metrics
+
+    if domain_metrics:
+        response.update(
+            {
+                "disabled_account_string": _format_plain_list(disabled_counts),
+                "disabled_account_pct_string": _format_plain_list(disabled_percentages),
+                "old_password_string": _format_plain_list(old_password_counts),
+                "old_password_pct_string": _format_plain_list(old_password_percentages),
+                "inactive_accounts_string": _format_plain_list(inactive_counts),
+                "inactive_accounts_pct_string": _format_plain_list(inactive_percentages),
+                "domain_admins_string": _format_plain_list(domain_admins_counts),
+                "ent_admins_string": _format_plain_list(ent_admins_counts),
+                "exp_passwords_string": _format_plain_list(exp_password_counts),
+                "never_expire_string": _format_plain_list(never_expire_counts),
+                "generic_accounts_string": _format_plain_list(generic_account_counts),
+                "generic_logins_string": _format_plain_list(generic_login_counts),
+            }
+        )
+
+    return response
+
+
+def build_workbook_password_response(
+    workbook_data: Optional[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]], List[str]]:
+    """Generate password policy summary data sourced from workbook details."""
+
+    if not isinstance(workbook_data, dict):
+        return {"bad_pass_count": 0}, {}, []
+
+    password_data = workbook_data.get("password", {})
+    policies = password_data.get("policies", []) if isinstance(password_data, dict) else []
+    if not isinstance(policies, list):
+        return {"bad_pass_count": 0}, {}, []
+
+    ad_data = workbook_data.get("ad", {})
+    ad_domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
+    ad_domain_order: List[str] = []
+    if isinstance(ad_domains, list):
+        for record in ad_domains:
+            if isinstance(record, dict):
+                domain_value = record.get("domain") or record.get("name")
+            else:
+                domain_value = record
+            domain_text = str(domain_value).strip() if domain_value else ""
+            if domain_text and domain_text not in ad_domain_order:
+                ad_domain_order.append(domain_text)
+
+    domain_values: Dict[str, Dict[str, Any]] = {}
+    policy_domain_order: List[str] = []
+    domain_bad_flags: Dict[str, bool] = {}
+    bad_pass_total = 0
+
+    def _is_yes(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() == "yes"
+        if isinstance(value, bool):
+            return value
+        return False
+
+    def _normalize_admin_count(entry: Dict[str, Any]) -> Optional[int]:
+        raw_admin = entry.get("admin_cracked")
+        if isinstance(raw_admin, dict):
+            confirm_value = raw_admin.get("confirm")
+            count_value = raw_admin.get("count")
+        else:
+            confirm_value = entry.get("admin_cracked_confirm")
+            count_value = raw_admin
+        if not _is_yes(confirm_value):
+            return 0
+        coerced = _coerce_int(count_value)
+        return coerced if coerced is not None else 0
+
+    def _normalize_fgpp(entry: Dict[str, Any]) -> bool:
+        raw_fgpp = entry.get("fgpp")
+        if isinstance(raw_fgpp, dict):
+            fgpp_count = _coerce_int(raw_fgpp.get("count"))
+        else:
+            fgpp_count = _coerce_int(raw_fgpp)
+        return fgpp_count is not None and fgpp_count < 1
+
+    policy_metric_fields = {
+        "history",
+        "max_age",
+        "min_age",
+        "min_length",
+        "lockout_threshold",
+        "lockout_duration",
+        "lockout_reset",
+        "complexity_enabled",
+    }
+
+    def _coerce_metric_int(entry: Dict[str, Any], key: str) -> Optional[int]:
+        return _coerce_int(entry.get(key))
+
+    def _policy_is_bad(entry: Dict[str, Any]) -> bool:
+        if not isinstance(entry, dict):
+            return False
+
+        max_age = _coerce_metric_int(entry, "max_age")
+        if max_age is not None and max_age != 0:
+            return True
+
+        min_age = _coerce_metric_int(entry, "min_age")
+        if min_age is not None and (min_age < 1 or min_age >= 7):
+            return True
+
+        min_length = _coerce_metric_int(entry, "min_length")
+        if min_length is not None and min_length < 8:
+            return True
+
+        history = _coerce_metric_int(entry, "history")
+        if history is not None and history < 10:
+            return True
+
+        lockout_threshold = _coerce_metric_int(entry, "lockout_threshold")
+        if lockout_threshold is not None and (
+            lockout_threshold == 0 or lockout_threshold > 6
+        ):
+            return True
+
+        lockout_duration = _coerce_metric_int(entry, "lockout_duration")
+        if lockout_duration is not None and 1 <= lockout_duration <= 29:
+            return True
+
+        lockout_reset = _coerce_metric_int(entry, "lockout_reset")
+        if lockout_reset is not None and lockout_reset < 30:
+            return True
+
+        if _is_yes(entry.get("complexity_enabled")):
+            return True
+
+        return False
+
+    def _iter_fgpp_entries(entry: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+        raw_fgpp = entry.get("fgpp")
+        if isinstance(raw_fgpp, list):
+            for item in raw_fgpp:
+                if isinstance(item, dict):
+                    yield item
+        elif isinstance(raw_fgpp, dict):
+            if any(key in raw_fgpp for key in policy_metric_fields):
+                yield raw_fgpp
+
+    for policy in policies:
+        if isinstance(policy, dict):
+            domain_value = (
+                policy.get("domain_name")
+                or policy.get("domain")
+                or policy.get("name")
+                or ""
+            )
+            entry = policy
+        else:
+            domain_value = policy
+            entry = {}
+
+        domain_text = str(domain_value).strip()
+        if not domain_text:
+            domain_text = "Unnamed Domain"
+
+        if domain_text not in policy_domain_order:
+            policy_domain_order.append(domain_text)
+
+        normalized_entry = entry if isinstance(entry, dict) else {}
+
+        cracked_value = _coerce_int(normalized_entry.get("passwords_cracked"))
+        enabled_value = _coerce_int(normalized_entry.get("enabled_accounts"))
+        admin_cracked_value = _normalize_admin_count(normalized_entry)
+
+        policy_is_bad = _policy_is_bad(normalized_entry)
+        if policy_is_bad:
+            bad_pass_total += 1
+
+        fgpp_is_bad = False
+        for fgpp_entry in _iter_fgpp_entries(normalized_entry):
+            if _policy_is_bad(fgpp_entry):
+                bad_pass_total += 1
+                fgpp_is_bad = True
+
+        combined_bad = policy_is_bad or fgpp_is_bad
+        if combined_bad or domain_text not in domain_bad_flags:
+            domain_bad_flags[domain_text] = domain_bad_flags.get(domain_text, False) or combined_bad
+
+        domain_values[domain_text] = {
+            "passwords_cracked": _format_integer_value(cracked_value),
+            "enabled_accounts": _format_integer_value(enabled_value),
+            "admin_cracked": _format_integer_value(admin_cracked_value),
+            "lanman": _is_yes(normalized_entry.get("lanman_stored")),
+            "no_fgpp": _normalize_fgpp(normalized_entry),
+            "bad_pass": domain_bad_flags.get(domain_text, False),
+        }
+
+    summary_domains: List[str] = []
+    for domain in ad_domain_order:
+        if domain in domain_values and domain not in summary_domains:
+            summary_domains.append(domain)
+    for domain in policy_domain_order:
+        if domain in domain_values and domain not in summary_domains:
+            summary_domains.append(domain)
+
+    summary: Dict[str, Any] = {"bad_pass_count": bad_pass_total}
+
+    if not summary_domains:
+        return summary, domain_values, summary_domains
+
+    cracked_counts = [domain_values[domain]["passwords_cracked"] for domain in summary_domains]
+    enabled_counts = [domain_values[domain]["enabled_accounts"] for domain in summary_domains]
+    admin_cracked_counts = [domain_values[domain]["admin_cracked"] for domain in summary_domains]
+    lanman_domains = [domain for domain in summary_domains if domain_values[domain]["lanman"]]
+    no_fgpp_domains = [domain for domain in summary_domains if domain_values[domain]["no_fgpp"]]
+
+    summary.update(
+        {
+            "domains_str": "/".join(summary_domains),
+            "cracked_count_str": "/".join(cracked_counts),
+            "cracked_finding_string": _format_plain_list(cracked_counts),
+            "enabled_count_string": _format_plain_list(enabled_counts),
+            "admin_cracked_string": _format_plain_list(admin_cracked_counts),
+            "admin_cracked_doms": _format_sample_string(summary_domains),
+            "lanman_list_string": _format_sample_string(lanman_domains),
+            "no_fgpp_string": _format_sample_string(no_fgpp_domains),
+        }
+    )
+
+    return summary, domain_values, summary_domains

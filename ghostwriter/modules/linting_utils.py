@@ -143,6 +143,7 @@ LINTER_CONTEXT = {
                 "domains": [
                     {
                         "domain": "corp.example.com",
+                        "access_pct": 96.5,
                         "open_wifi": 3,
                         "systems_ood": 45,
                         "total_computers": 850,
@@ -151,6 +152,7 @@ LINTER_CONTEXT = {
                     },
                     {
                         "domain": "lab.example.com",
+                        "access_pct": 82.1,
                         "open_wifi": 1,
                         "systems_ood": 10,
                         "total_computers": 120,
@@ -314,7 +316,7 @@ LINTER_CONTEXT = {
                 "internal": {
                     "grade": "B",
                     "total": 3.3,
-                    "iam": {"risk": "Low", "score": 2.2},
+                    "iam": {"risk": "High", "score": 4.2},
                     "sql": {"risk": "High", "score": 4.0},
                     "snmp": {"risk": "Low", "score": 2.8},
                     "cloud": {"risk": "Medium", "score": 3.3},
@@ -375,14 +377,57 @@ LINTER_CONTEXT = {
                 "ia_risk_string": "Medium",
                 "ga_risk_string": "High",
                 "gl_risk_string": "Medium",
+                "old_domains_string": "'legacy.local' and 'ancient.local'",
+                "old_domains_count": 2,
+                "risk_contrib": [
+                    "the number of Domain Admin accounts",
+                    "the number of potentially generic accounts",
+                    "the number of disabled accounts",
+                ],
+                "domain_metrics": [
+                    {
+                        "domain_name": "corp.example.com",
+                        "disabled_count": 25,
+                        "disabled_pct": 10.2,
+                        "old_pass_pct": 8.2,
+                        "ia_pct": 4.1,
+                    },
+                    {
+                        "domain_name": "lab.example.com",
+                        "disabled_count": 12,
+                        "disabled_pct": 9.2,
+                        "old_pass_pct": 11.5,
+                        "ia_pct": 6.3,
+                    },
+                ],
+                "disabled_account_string": "25 and 12",
+                "disabled_account_pct_string": "10.2% and 9.2%",
+                "old_password_string": "18 and 12",
+                "old_password_pct_string": "8.2% and 11.5%",
+                "inactive_accounts_string": "10 and 8",
+                "inactive_accounts_pct_string": "4.1% and 6.3%",
+                "domain_admins_string": "5 and 3",
+                "ent_admins_string": "2 and 1",
+                "exp_passwords_string": "12 and 8",
+                "never_expire_string": "8 and 5",
+                "generic_accounts_string": "6 and 4",
+                "generic_logins_string": "3 and 2",
             },
             "password": {
                 "entries": [
-                    {"domain": "corp.example.com", "risk": "medium"}
+                    {"domain": "corp.example.com", "risk": "medium", "bad_pass": True},
+                    {"domain": "lab.example.com", "risk": "high", "bad_pass": False},
                 ],
-                "domains_str": "corp.example.com",
-                "cracked_count_str": "17",
-                "cracked_risk_string": "Medium",
+                "domains_str": "corp.example.com/lab.example.com",
+                "cracked_count_str": "17/9",
+                "cracked_risk_string": "Medium/High",
+                "cracked_finding_string": "17 and 9",
+                "enabled_count_string": "220 and 150",
+                "admin_cracked_string": "2 and 1",
+                "admin_cracked_doms": "'corp.example.com' and 'lab.example.com'",
+                "lanman_list_string": "'corp.example.com'",
+                "no_fgpp_string": "'lab.example.com'",
+                "bad_pass_count": 2,
             },
             "endpoint": {
                 "entries": [
