@@ -143,6 +143,7 @@ LINTER_CONTEXT = {
                 "domains": [
                     {
                         "domain": "corp.example.com",
+                        "access_pct": 96.5,
                         "open_wifi": 3,
                         "systems_ood": 45,
                         "total_computers": 850,
@@ -151,6 +152,7 @@ LINTER_CONTEXT = {
                     },
                     {
                         "domain": "lab.example.com",
+                        "access_pct": 82.1,
                         "open_wifi": 1,
                         "systems_ood": 10,
                         "total_computers": 120,
