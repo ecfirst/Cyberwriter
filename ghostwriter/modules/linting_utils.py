@@ -198,6 +198,7 @@ LINTER_CONTEXT = {
                         "lockout_duration": 30,
                         "lockout_threshold": 5,
                         "complexity_enabled": "yes",
+                        "lanman_stored": "yes",
                         "mfa_required": "yes",
                         "enabled_accounts": 245,
                         "passwords_cracked": 17,
