@@ -3,7 +3,6 @@ import io
 import logging
 import os
 
-from docxtpl import DocxTemplate
 from docx.opc.exceptions import PackageNotFoundError
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -20,6 +19,7 @@ from ghostwriter.modules.reportwriter.base.html_rich_text import (
     deep_copy_with_copiers,
 )
 from ghostwriter.modules.reportwriter.richtext.docx import HtmlToDocxWithEvidence
+from ghostwriter.modules.reportwriter.base.docx_template import GhostwriterDocxTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ class ExportDocxBase(ExportBase):
 
         # Create Word document writer using the specified template file
         try:
-            self.word_doc = DocxTemplate(template_loc)
+            self.word_doc = GhostwriterDocxTemplate(template_loc)
         except PackageNotFoundError as err:
             logger.exception("Failed to load the provided template document: %s", template_loc)
             raise ReportExportTemplateError("Template document file could not be found - try re-uploading it") from err
