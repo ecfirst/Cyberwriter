@@ -579,6 +579,32 @@ class NexposeDataParserTests(TestCase):
         )
         self.assertEqual(password_responses.get("bad_pass_count"), 3)
 
+    def test_firewall_ood_names_populated_from_workbook(self):
+        workbook_payload = {
+            "firewall": {
+                "devices": [
+                    {"name": "Firewall 1", "ood": "yes"},
+                    {"name": "Firewall 2", "ood": "YES"},
+                    {"name": "Firewall 3", "ood": True},
+                    {"name": "Firewall 4", "ood": "no"},
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        firewall_responses = self.project.data_responses.get("firewall")
+        self.assertIsInstance(firewall_responses, dict)
+        self.assertEqual(
+            firewall_responses.get("ood_name_list"),
+            "'Firewall 1', 'Firewall 2', and 'Firewall 3'",
+        )
+
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()
         self.project.refresh_from_db()

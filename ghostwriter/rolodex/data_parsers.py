@@ -764,6 +764,20 @@ def _format_sample_string(samples: List[str]) -> str:
     return ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
 
 
+def _format_oxford_quoted_list(values: List[str]) -> str:
+    """Return a quoted list that includes an Oxford comma when needed."""
+
+    entries = [str(value).strip() for value in values if str(value).strip()]
+    if not entries:
+        return ""
+    quoted = [f"'{entry}'" for entry in entries]
+    if len(quoted) == 1:
+        return quoted[0]
+    if len(quoted) == 2:
+        return f"{quoted[0]} and {quoted[1]}"
+    return ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
+
+
 def _format_plain_list(values: List[str]) -> str:
     """Return a human-readable string for a list of pre-formatted values."""
 
@@ -1285,3 +1299,52 @@ def build_workbook_password_response(
     )
 
     return summary, domain_values, summary_domains
+
+
+def build_workbook_firewall_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Generate supplemental firewall details derived from workbook metadata."""
+
+    if not isinstance(workbook_data, dict):
+        return {}
+
+    firewall_data = workbook_data.get("firewall", {})
+    if not isinstance(firewall_data, dict):
+        return {}
+
+    devices = firewall_data.get("devices", [])
+    if not isinstance(devices, list):
+        return {}
+
+    def _normalize_name(raw_value: Any, index: int) -> str:
+        if raw_value is None:
+            return f"Device {index}"
+        text = str(raw_value).strip()
+        return text or f"Device {index}"
+
+    def _normalize_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        text = str(value).strip().lower()
+        return text in {"yes", "true", "1", "y"}
+
+    ood_names: List[str] = []
+    seen_names: set[str] = set()
+
+    for index, record in enumerate(devices, start=1):
+        if not isinstance(record, dict):
+            continue
+        if not _normalize_bool(record.get("ood")):
+            continue
+        name_value = record.get("name") or record.get("device") or record.get("hostname")
+        normalized_name = _normalize_name(name_value, index)
+        if normalized_name not in seen_names:
+            seen_names.add(normalized_name)
+            ood_names.append(normalized_name)
+
+    formatted_names = _format_oxford_quoted_list(ood_names)
+    if not formatted_names:
+        return {}
+
+    return {"ood_name_list": formatted_names}

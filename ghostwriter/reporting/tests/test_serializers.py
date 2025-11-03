@@ -240,8 +240,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
             },
             "firewall": {
                 "devices": [
-                    {"name": "Edge-FW01"},
-                    {"name": "Core-FW02"},
+                    {"name": "Edge-FW01", "ood": "yes"},
+                    {"name": "Core-FW02", "ood": "no"},
                 ]
             },
         }
@@ -390,12 +390,15 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(endpoint_summary["ood_risk_string"], "Medium/High")
         self.assertEqual(endpoint_summary["wifi_risk_string"], "Low/High")
 
-        firewall_entries = responses["firewall"]
+        firewall_summary = responses["firewall"]
+        self.assertIn("entries", firewall_summary)
+        firewall_entries = firewall_summary["entries"]
         self.assertEqual(len(firewall_entries), 2)
         edge_firewall = next(entry for entry in firewall_entries if entry["name"] == "Edge-FW01")
         core_firewall = next(entry for entry in firewall_entries if entry["name"] == "Core-FW02")
         self.assertEqual(edge_firewall["type"], "Next-Gen")
         self.assertEqual(core_firewall["type"], "Appliance")
+        self.assertEqual(firewall_summary["ood_name_list"], "'Edge-FW01'")
 
         self.assertNotIn("password_corpexamplecom_risk", responses)
         self.assertNotIn("endpoint_corpexamplecom_av_gap", responses)

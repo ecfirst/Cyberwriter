@@ -6,6 +6,9 @@
 from datetime import datetime
 import zoneinfo
 
+# Standard Libraries
+from typing import Any, Dict
+
 # Django Imports
 from django.conf import settings
 from django.utils import dateformat
@@ -38,6 +41,7 @@ from ghostwriter.reporting.models import (
 from ghostwriter.rolodex.data_parsers import (
     build_ad_risk_contrib,
     build_workbook_ad_response,
+    build_workbook_firewall_response,
     build_workbook_password_response,
     normalize_nexpose_artifacts_map,
 )
@@ -779,6 +783,13 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         firewall_data = (workbook_data or {}).get("firewall", {})
         devices = firewall_data.get("devices", []) if isinstance(firewall_data, dict) else []
 
+        existing_section = raw_responses.get("firewall")
+        section: Dict[str, Any] = {}
+        if isinstance(existing_section, dict):
+            section.update(existing_section)
+        elif isinstance(existing_section, list):
+            section["entries"] = list(existing_section)
+
         slug_map = {}
         if isinstance(devices, list):
             for index, record in enumerate(devices, start=1):
@@ -819,7 +830,18 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             if device_name not in order:
                 order.append(device_name)
 
-        return [entries[name] for name in order if len(entries[name]) > 1]
+        if entries:
+            section["entries"] = [entries[name] for name in order if len(entries[name]) > 1]
+
+        workbook_firewall_details = build_workbook_firewall_response(workbook_data)
+        for key, value in workbook_firewall_details.items():
+            if key not in section or not section.get(key):
+                section[key] = value
+
+        if not section.get("entries"):
+            section.pop("entries", None)
+
+        return section
 
     @staticmethod
     def _collect_wireless_responses(raw_responses):

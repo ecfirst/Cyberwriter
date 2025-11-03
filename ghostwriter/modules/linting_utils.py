@@ -453,10 +453,13 @@ LINTER_CONTEXT = {
                 "ood_risk_string": "Medium/High",
                 "wifi_risk_string": "Low/High",
             },
-            "firewall": [
-                {"name": "Edge-FW01", "type": "Next-Gen"},
-                {"name": "Core-FW02", "type": "Appliance"},
-            ],
+            "firewall": {
+                "entries": [
+                    {"name": "Edge-FW01", "type": "Next-Gen"},
+                    {"name": "Core-FW02", "type": "Appliance"},
+                ],
+                "ood_name_list": "'Edge-FW01'",
+            },
         },
         "data_artifacts": {
             "dns_issues": [
