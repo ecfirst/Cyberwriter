@@ -327,6 +327,18 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
     if iot_nexpose_total > 0:
         add_required("iot_nexpose_csv.csv")
 
+    iot_section = _get_nested(data, ("iot_iomt_nexpose",), None)
+    if isinstance(iot_section, dict):
+        add_question(
+            key="iot_testing_confirm",
+            label="Was Internal IoT/IoMT testing performed?",
+            field_class=forms.ChoiceField,
+            section="IoT/IoMT",
+            choices=YES_NO_CHOICES,
+            widget=forms.RadioSelect,
+            initial="no",
+        )
+
     firewall_source = _get_nested(data, ("fierwall",), None)
     if not isinstance(firewall_source, dict):
         firewall_source = _get_nested(data, ("firewall",), {})

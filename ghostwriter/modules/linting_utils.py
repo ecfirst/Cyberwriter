@@ -339,6 +339,7 @@ LINTER_CONTEXT = {
             "has_internal_lab": "yes",
             "cloud_config_risk": "low",
             "system_config_risk": "medium",
+            "iot_testing_confirm": "yes",
             "dns": {"zone_trans": 1},
             "osint_squat_concern": "example.com",
             "osint_bucket_risk": "High",
