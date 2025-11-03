@@ -405,6 +405,29 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertNotIn("endpoint_corpexamplecom_av_gap", responses)
         self.assertNotIn("firewall_edge-fw01_type", responses)
 
+    def test_dns_zone_transfer_summary_is_exposed(self):
+        workbook_payload = {
+            "dns": {
+                "records": [
+                    {"zone_transfer": "yes"},
+                    {"zone_transfer": "no"},
+                    {"zone_transfer": "YES"},
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {"dns": {"existing": "value"}}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+
+        dns_summary = responses.get("dns")
+        self.assertIsInstance(dns_summary, dict)
+        self.assertEqual(dns_summary.get("zone_trans"), 2)
+        self.assertEqual(dns_summary.get("existing"), "value")
+
     def test_workbook_ad_metrics_are_exposed_without_legacy_entries(self):
         workbook_payload = {
             "ad": {

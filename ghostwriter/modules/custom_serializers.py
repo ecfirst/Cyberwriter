@@ -41,6 +41,7 @@ from ghostwriter.reporting.models import (
 from ghostwriter.rolodex.data_parsers import (
     build_ad_risk_contrib,
     build_workbook_ad_response,
+    build_workbook_dns_response,
     build_workbook_firewall_response,
     build_workbook_password_response,
     normalize_nexpose_artifacts_map,
@@ -772,6 +773,10 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if firewall_entries:
             result["firewall"] = firewall_entries
 
+        dns_entries = ProjectSerializer._collect_dns_responses(raw_responses, workbook_data)
+        if dns_entries:
+            result["dns"] = dns_entries
+
         wireless_entries = ProjectSerializer._collect_wireless_responses(raw_responses)
         if wireless_entries:
             result["wireless"] = wireless_entries
@@ -837,6 +842,28 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         for key, value in workbook_firewall_details.items():
             if key not in section or not section.get(key):
                 section[key] = value
+
+        if not section.get("entries"):
+            section.pop("entries", None)
+
+        return section
+
+    @staticmethod
+    def _collect_dns_responses(raw_responses, workbook_data):
+        existing_section = raw_responses.get("dns")
+        section: Dict[str, Any] = {}
+        if isinstance(existing_section, dict):
+            section.update(existing_section)
+        elif isinstance(existing_section, list):
+            section["entries"] = list(existing_section)
+
+        workbook_dns_details = build_workbook_dns_response(workbook_data)
+        for key, value in workbook_dns_details.items():
+            if key not in section or not section.get(key):
+                section[key] = value
+
+        if not section:
+            return {}
 
         if not section.get("entries"):
             section.pop("entries", None)
