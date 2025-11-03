@@ -8,7 +8,7 @@ from django import forms
 from django.utils.text import slugify
 
 # Ghostwriter Libraries
-from ghostwriter.rolodex.forms_workbook import MultiValueField
+from ghostwriter.rolodex.forms_workbook import MultiValueField, SummaryMultipleChoiceField
 
 SECTION_DISPLAY_ORDER = [
     "client",
@@ -50,6 +50,12 @@ WEAK_PSK_CHOICES = (
     ("not_enough_entropy", "Not enough entropy"),
     ("dictionary_or_company", "Based on dictionary word or Company name"),
 )
+
+WEAK_PSK_SUMMARY_MAP = {
+    "too_short": "to short",
+    "not_enough_entropy": "not enough entropy",
+    "dictionary_or_company": "based on a dictionary word or Company name",
+}
 
 WIRELESS_NETWORK_TYPES = (
     ("open", "Open Networks"),
@@ -232,19 +238,22 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
         choices: Optional[Iterable[Tuple[str, str]]] = None,
         widget: Optional[forms.Widget] = None,
         initial: Any = None,
+        field_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
-        field_kwargs: Dict[str, Any] = {
+        base_field_kwargs: Dict[str, Any] = {
             "label": label,
             "required": False,
         }
         if help_text:
-            field_kwargs["help_text"] = help_text
+            base_field_kwargs["help_text"] = help_text
         if choices is not None:
-            field_kwargs["choices"] = tuple(choices)
+            base_field_kwargs["choices"] = tuple(choices)
         if widget is not None:
-            field_kwargs["widget"] = widget
+            base_field_kwargs["widget"] = widget
         if initial is not None:
-            field_kwargs["initial"] = initial
+            base_field_kwargs["initial"] = initial
+        if field_kwargs:
+            base_field_kwargs.update(field_kwargs)
         questions.append(
             {
                 "key": key,
@@ -252,7 +261,7 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
                 "section": section,
                 "subheading": subheading,
                 "field_class": field_class,
-                "field_kwargs": field_kwargs,
+                "field_kwargs": base_field_kwargs,
             }
         )
 
@@ -448,11 +457,12 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
         add_question(
             key="wireless_psk_weak_reasons",
             label="Why was the wireless PSK(s) weak?",
-            field_class=forms.MultipleChoiceField,
+            field_class=SummaryMultipleChoiceField,
             section="Wireless",
             subheading="PSK Analysis",
             choices=WEAK_PSK_CHOICES,
             widget=forms.CheckboxSelectMultiple,
+            field_kwargs={"summary_map": WEAK_PSK_SUMMARY_MAP},
         )
         add_question(
             key="wireless_psk_masterpass",
@@ -463,6 +473,13 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
             choices=YES_NO_CHOICES,
             widget=forms.RadioSelect,
             initial="no",
+        )
+        add_question(
+            key="wireless_psk_masterpass_ssids",
+            label="Enter the network SSID(s) with PSK's contained in 'masterpass'",
+            field_class=MultiValueField,
+            section="Wireless",
+            subheading="PSK Analysis",
         )
 
     wep_confirm = _as_str(_get_nested(data, ("wireless", "wep_inuse", "confirm"), "")).lower()

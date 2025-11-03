@@ -206,13 +206,102 @@ class ProjectIPArtifactForm(forms.Form):
         return cleaned_data
 
 
+def _format_summary_with_conjunction(parts: List[str]) -> str:
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    leading = ", ".join(parts[:-1])
+    return f"{leading} and {parts[-1]}"
+
+
+def _flatten_grouped_initial(initial: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of ``initial`` with grouped sections expanded for form fields."""
+
+    flattened = dict(initial or {})
+    wireless_values = flattened.pop("wireless", None)
+    if isinstance(wireless_values, dict):
+        for key, value in wireless_values.items():
+            flattened[f"wireless_{key}"] = value
+    return flattened
+
+
+class SummaryMultipleChoiceField(forms.MultipleChoiceField):
+    """Return a natural language summary string for the selected options."""
+
+    def __init__(self, *args, summary_map: Optional[Dict[str, str]] = None, **kwargs):
+        self.summary_map = summary_map or {}
+        super().__init__(*args, **kwargs)
+
+    def clean(self, value: Any):  # type: ignore[override]
+        selected_values = super().clean(value)
+        if not selected_values:
+            return ""
+        parts: List[str] = []
+        for option in selected_values:
+            summary_text = self.summary_map.get(option)
+            if summary_text is None:
+                summary_text = self._lookup_label(option)
+            parts.append(summary_text)
+        return _format_summary_with_conjunction(parts)
+
+    def prepare_value(self, value):  # type: ignore[override]
+        if isinstance(value, str):
+            return self._parse_summary(value)
+        return super().prepare_value(value)
+
+    def _lookup_label(self, option_value: str) -> str:
+        for candidate_value, candidate_label in self.choices:
+            if isinstance(candidate_label, (list, tuple)):
+                for nested_value, nested_label in candidate_label:
+                    if nested_value == option_value:
+                        return str(nested_label)
+            elif candidate_value == option_value:
+                return str(candidate_label)
+        return str(option_value)
+
+    def _parse_summary(self, summary: str) -> List[str]:
+        summary = summary.strip()
+        if not summary:
+            return []
+        parts: List[str]
+        if " and " in summary:
+            leading, last = summary.rsplit(" and ", 1)
+            leading_parts = [segment.strip() for segment in leading.split(",") if segment.strip()]
+            parts = leading_parts + [last.strip()]
+        else:
+            parts = [summary]
+
+        reverse_map = {text: key for key, text in self.summary_map.items()}
+        resolved: List[str] = []
+        for part in parts:
+            value = reverse_map.get(part)
+            if value is None:
+                value = self._find_value_by_label(part)
+            if value is not None:
+                resolved.append(value)
+        return resolved
+
+    def _find_value_by_label(self, label: str) -> Optional[str]:
+        for candidate_value, candidate_label in self.choices:
+            if isinstance(candidate_label, (list, tuple)):
+                for nested_value, nested_label in candidate_label:
+                    if str(nested_label) == label:
+                        return nested_value
+            elif str(candidate_label) == label:
+                return candidate_value
+        return None
+
+
 class ProjectDataResponsesForm(forms.Form):
     """Dynamically render questions driven by the workbook contents."""
 
     def __init__(self, *args, question_definitions: Optional[List[Dict[str, Any]]] = None, **kwargs):
         self.question_definitions = question_definitions or []
         super().__init__(*args, **kwargs)
-        initial_values = self.initial.copy()
+        initial_values = _flatten_grouped_initial(self.initial)
         for definition in self.question_definitions:
             field_kwargs = definition.get("field_kwargs", {}).copy()
             key = definition["key"]
@@ -220,6 +309,31 @@ class ProjectDataResponsesForm(forms.Form):
             if key in initial_values:
                 field_kwargs.setdefault("initial", initial_values[key])
             self.fields[key] = field_class(**field_kwargs)
+
+    def clean(self):  # type: ignore[override]
+        cleaned_data = super().clean()
+        if not isinstance(cleaned_data, dict):
+            return cleaned_data
+
+        wireless_prefix = "wireless_"
+        wireless_values = cleaned_data.get("wireless")
+        if isinstance(wireless_values, dict):
+            grouped = dict(wireless_values)
+        else:
+            grouped = {}
+
+        for key in list(cleaned_data.keys()):
+            if isinstance(key, str) and key.startswith(wireless_prefix):
+                value = cleaned_data.pop(key)
+                grouped_key = key[len(wireless_prefix) :]
+                grouped[grouped_key] = value
+
+        if grouped:
+            cleaned_data["wireless"] = grouped
+        else:
+            cleaned_data.pop("wireless", None)
+
+        return cleaned_data
 
     @property
     def ordered_questions(self) -> List[Dict[str, Any]]:

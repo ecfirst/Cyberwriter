@@ -259,6 +259,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "wireless_segmentation_ssids": ["Guest"],
             "wireless_segmentation_tested": True,
             "wireless_psk_rotation_concern": "yes",
+            "wireless_psk_weak_reasons": "to short and not enough entropy",
             "password_corpexamplecom_risk": "medium",
             "password_labexamplecom_risk": "high",
             "endpoint_labexamplecom_av_gap": "high",
@@ -299,9 +300,18 @@ class ProjectSerializerDataResponsesTests(TestCase):
         responses = project_data["data_responses"]
 
         self.assertEqual(responses["cloud_config_risk"], "low")
-        self.assertEqual(responses["wireless_segmentation_ssids"], ["Guest"])
         self.assertEqual(responses["osint_bucket_risk"], "High")
         self.assertEqual(responses["osint_leaked_creds_risk"], "Medium")
+
+        wireless_summary = responses["wireless"]
+        self.assertEqual(wireless_summary["segmentation_ssids"], ["Guest"])
+        self.assertTrue(wireless_summary["segmentation_tested"])
+        self.assertEqual(wireless_summary["psk_rotation_concern"], "yes")
+        self.assertEqual(wireless_summary["psk_risk"], "medium")
+        self.assertEqual(wireless_summary["open_risk"], "high")
+        self.assertEqual(wireless_summary["rogue_risk"], "medium")
+        self.assertEqual(wireless_summary["hidden_risk"], "low")
+        self.assertEqual(wireless_summary["psk_weak_reasons"], "to short and not enough entropy")
 
         ad_summary = responses["ad"]
         self.assertIn("entries", ad_summary)

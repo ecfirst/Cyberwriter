@@ -721,7 +721,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if not isinstance(raw_responses, dict):
             return raw_responses or {}
 
-        legacy_prefixes = ("ad_", "password_", "endpoint_")
+        legacy_prefixes = ("ad_", "password_", "endpoint_", "wireless_")
         has_legacy_keys = any(
             isinstance(key, str) and key.startswith(prefix)
             for key in raw_responses
@@ -732,7 +732,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         if not has_legacy_keys:
             preformatted_sections = []
-            for section_key in ("ad", "endpoint", "password"):
+            for section_key in ("ad", "endpoint", "password", "wireless"):
                 value = raw_responses.get(section_key)
                 if value is None:
                     continue
@@ -746,7 +746,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         result = {}
         for key, value in raw_responses.items():
-            if key.startswith(("ad_", "password_", "endpoint_")):
+            if key.startswith(("ad_", "password_", "endpoint_", "wireless_")):
                 continue
             if key.startswith("firewall_") and key.endswith("_type"):
                 continue
@@ -767,6 +767,10 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         firewall_entries = ProjectSerializer._collect_firewall_responses(raw_responses, workbook_data)
         if firewall_entries:
             result["firewall"] = firewall_entries
+
+        wireless_entries = ProjectSerializer._collect_wireless_responses(raw_responses)
+        if wireless_entries:
+            result["wireless"] = wireless_entries
 
         return result
 
@@ -816,6 +820,21 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 order.append(device_name)
 
         return [entries[name] for name in order if len(entries[name]) > 1]
+
+    @staticmethod
+    def _collect_wireless_responses(raw_responses):
+        entries = {}
+        existing_group = raw_responses.get("wireless")
+        if isinstance(existing_group, dict):
+            entries.update(existing_group)
+
+        prefix = "wireless_"
+        for key, value in raw_responses.items():
+            if not isinstance(key, str) or not key.startswith(prefix):
+                continue
+            entries[key[len(prefix) :]] = value
+
+        return entries
 
     @staticmethod
     def _collect_ad_responses(raw_responses, workbook_data):

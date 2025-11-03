@@ -4,7 +4,12 @@
 from django.test import SimpleTestCase
 
 # Ghostwriter Libraries
-from ghostwriter.rolodex.workbook import build_data_configuration, build_workbook_sections
+from ghostwriter.rolodex.forms_workbook import SummaryMultipleChoiceField
+from ghostwriter.rolodex.workbook import (
+    WEAK_PSK_SUMMARY_MAP,
+    build_data_configuration,
+    build_workbook_sections,
+)
 
 
 class WorkbookHelpersTests(SimpleTestCase):
@@ -144,3 +149,17 @@ class WorkbookHelpersTests(SimpleTestCase):
             bucket_question["field_kwargs"]["choices"],
             (("High", "High"), ("Medium", "Medium"), ("Low", "Low")),
         )
+
+    def test_wireless_psk_questions_include_summary_and_networks(self):
+        workbook_data = {"wireless": {"weak_psks": "yes"}}
+
+        questions, _ = build_data_configuration(workbook_data)
+
+        keys = {question["key"] for question in questions}
+        self.assertIn("wireless_psk_weak_reasons", keys)
+        self.assertIn("wireless_psk_masterpass", keys)
+        self.assertIn("wireless_psk_masterpass_ssids", keys)
+
+        weak_reason = next(q for q in questions if q["key"] == "wireless_psk_weak_reasons")
+        self.assertIs(weak_reason["field_class"], SummaryMultipleChoiceField)
+        self.assertEqual(weak_reason["field_kwargs"].get("summary_map"), WEAK_PSK_SUMMARY_MAP)
