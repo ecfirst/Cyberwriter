@@ -113,6 +113,168 @@ class NexposeDataParserTests(TestCase):
 
         self.assertEqual(self.project.data_responses, {"custom": "value"})
 
+    def test_firewall_csv_adds_vulnerability_summary(self):
+        headers = [
+            "Risk",
+            "Issue",
+            "Devices",
+            "Solution",
+            "Impact",
+            "Details",
+            "Reference",
+            "Accepted",
+            "Type",
+            "Score",
+        ]
+
+        rows = [
+            {
+                "Risk": "High",
+                "Issue": "Open management interface",
+                "Devices": "FW-EDGE",
+                "Solution": "Restrict access",
+                "Impact": "Allows remote compromise. Additional details beyond the first sentence.",
+                "Details": "Management interface exposed",
+                "Reference": "http://example.com/high-1",
+                "Accepted": "No",
+                "Type": "Configuration",
+                "Score": "8.0",
+            },
+            {
+                "Risk": "High",
+                "Issue": "Open management interface",
+                "Devices": "FW-EDGE",
+                "Solution": "Restrict access",
+                "Impact": "Allows remote compromise.",
+                "Details": "Duplicate finding",
+                "Reference": "http://example.com/high-2",
+                "Accepted": "No",
+                "Type": "Configuration",
+                "Score": "8.0",
+            },
+            {
+                "Risk": "High",
+                "Issue": "Legacy cipher suites enabled",
+                "Devices": "FW-DMZ",
+                "Solution": "Disable legacy ciphers",
+                "Impact": "Enables downgrade attacks! Attackers may intercept data.",
+                "Details": "TLS settings allow weak ciphers",
+                "Reference": "http://example.com/high-3",
+                "Accepted": "No",
+                "Type": "Configuration",
+                "Score": "7.5",
+            },
+            {
+                "Risk": "Medium",
+                "Issue": "Unused objects",
+                "Devices": "FW-CORE",
+                "Solution": "Remove stale objects",
+                "Impact": "Clutters policy reviews. Leads to oversight of risky rules.",
+                "Details": "Objects no longer referenced",
+                "Reference": "",
+                "Accepted": "Yes",
+                "Type": "Operations",
+                "Score": "5.0",
+            },
+            {
+                "Risk": "Medium",
+                "Issue": "Audit logging disabled",
+                "Devices": "FW-CORE",
+                "Solution": "Enable logging",
+                "Impact": "Obscures incident response",
+                "Details": "Logging turned off",
+                "Reference": "http://example.com/med-2",
+                "Accepted": "No",
+                "Type": "Operations",
+                "Score": "4.5",
+            },
+            {
+                "Risk": "Low",
+                "Issue": "Banner not customized",
+                "Devices": "FW-EDGE",
+                "Solution": "Update login banner",
+                "Impact": "Reveals platform details",
+                "Details": "Default login banner present",
+                "Reference": "",
+                "Accepted": "No",
+                "Type": "Operations",
+                "Score": "2.0",
+            },
+        ]
+
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=headers)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+        content = buffer.getvalue().encode("utf-8")
+        buffer.close()
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("firewall_csv.csv", content, content_type="text/csv"),
+            requirement_label="firewall_csv.csv",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("firewall_findings")
+        self.assertIsInstance(artifact, dict)
+        self.assertIn("findings", artifact)
+        self.assertIn("vulnerabilities", artifact)
+
+        summaries = artifact["vulnerabilities"]
+        self.assertEqual(summaries["high"]["total_unique"], 2)
+        self.assertEqual(
+            summaries["high"]["items"],
+            [
+                {
+                    "issue": "Open management interface",
+                    "impact": "Allows remote compromise.",
+                    "count": 2,
+                },
+                {
+                    "issue": "Legacy cipher suites enabled",
+                    "impact": "Enables downgrade attacks!",
+                    "count": 1,
+                },
+            ],
+        )
+
+        self.assertEqual(summaries["med"]["total_unique"], 2)
+        self.assertEqual(
+            summaries["med"]["items"],
+            [
+                {
+                    "issue": "Audit logging disabled",
+                    "impact": "Obscures incident response",
+                    "count": 1,
+                },
+                {
+                    "issue": "Unused objects",
+                    "impact": "Clutters policy reviews.",
+                    "count": 1,
+                },
+            ],
+        )
+
+        self.assertEqual(summaries["low"]["total_unique"], 1)
+        self.assertEqual(
+            summaries["low"]["items"],
+            [
+                {
+                    "issue": "Banner not customized",
+                    "impact": "Reveals platform details",
+                    "count": 1,
+                }
+            ],
+        )
+
+        findings = artifact["findings"]
+        self.assertEqual(len(findings), 6)
+
     def test_normalize_web_issue_artifacts(self):
         payload = {
             "web_issues": {

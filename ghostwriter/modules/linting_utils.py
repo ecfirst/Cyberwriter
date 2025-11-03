@@ -515,32 +515,60 @@ LINTER_CONTEXT = {
                 "10.20.30.40",
                 "172.16.50.5",
             ],
-            "firewall_findings": [
-                {
-                    "risk": "High",
-                    "issue": "Overly permissive inbound access",
-                    "devices": "Edge-FW01",
-                    "solution": "Restrict inbound rules to required services",
-                    "impact": "Increases the exposed attack surface for external actors.",
-                    "details": "Inbound rules allow any source to reach management interfaces.",
-                    "reference": "https://example.com/firewall-hardening",
-                    "score": 8.5,
-                    "accepted": "No",
-                    "type": "Configuration",
+            "firewall_findings": {
+                "findings": [
+                    {
+                        "risk": "High",
+                        "issue": "Overly permissive inbound access",
+                        "devices": "Edge-FW01",
+                        "solution": "Restrict inbound rules to required services",
+                        "impact": "Increases the exposed attack surface for external actors.",
+                        "details": "Inbound rules allow any source to reach management interfaces.",
+                        "reference": "https://example.com/firewall-hardening",
+                        "score": 8.5,
+                        "accepted": "No",
+                        "type": "Configuration",
+                    },
+                    {
+                        "risk": "Medium",
+                        "issue": "Stale decommissioned network objects",
+                        "devices": "Core-FW02",
+                        "solution": "Remove unused objects from rule base",
+                        "impact": "Obsolete objects complicate reviews and obscure risky rules.",
+                        "details": "Multiple inactive objects remain referenced by disabled policies.",
+                        "reference": "",
+                        "score": 5.0,
+                        "accepted": "Yes",
+                        "type": "Operations",
+                    },
+                ],
+                "vulnerabilities": {
+                    "high": {
+                        "total_unique": 1,
+                        "items": [
+                            {
+                                "issue": "Overly permissive inbound access",
+                                "impact": "Increases the exposed attack surface for external actors.",
+                                "count": 1,
+                            }
+                        ],
+                    },
+                    "med": {
+                        "total_unique": 1,
+                        "items": [
+                            {
+                                "issue": "Stale decommissioned network objects",
+                                "impact": "Obsolete objects complicate reviews and obscure risky rules.",
+                                "count": 1,
+                            }
+                        ],
+                    },
+                    "low": {
+                        "total_unique": 0,
+                        "items": [],
+                    },
                 },
-                {
-                    "risk": "Medium",
-                    "issue": "Stale decommissioned network objects",
-                    "devices": "Core-FW02",
-                    "solution": "Remove unused objects from rule base",
-                    "impact": "Obsolete objects complicate reviews and obscure risky rules.",
-                    "details": "Multiple inactive objects remain referenced by disabled policies.",
-                    "reference": "",
-                    "score": 5.0,
-                    "accepted": "Yes",
-                    "type": "Operations",
-                },
-            ],
+            },
             "external_nexpose_vulnerabilities": {
                 "label": "External Nexpose Vulnerabilities",
                 "high": {
