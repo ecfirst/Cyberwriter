@@ -184,6 +184,8 @@ LINTER_CONTEXT = {
                 "unique_high": 2,
                 "majority_type": "Rules",
                 "majority_count": 8,
+                "minority_type": "Complexity",
+                "minority_count": 3,
                 "complexity_count": 5,
             },
             "password": {
