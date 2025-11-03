@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 from typing import Iterator
 
 from docx.oxml import parse_xml
 from docxtpl.template import DocxTemplate
 from jinja2 import Environment, meta
+
+
+_JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
@@ -74,6 +78,46 @@ class GhostwriterDocxTemplate(DocxTemplate):
         env = jinja_env or Environment()
         parse_content = env.parse("".join(xml_sources))
         return meta.find_undeclared_variables(parse_content)
+
+    def patch_xml(self, src_xml):  # type: ignore[override]
+        """Normalize XML for templating across Word body and SmartArt parts."""
+
+        patched = super().patch_xml(src_xml)
+
+        def strip_namespaced_tags(match: re.Match[str]) -> str:
+            statement = match.group(0)
+            cleaned: list[str] = []
+            in_single = False
+            in_double = False
+            idx = 0
+
+            while idx < len(statement):
+                char = statement[idx]
+                if char == "'" and not in_double:
+                    in_single = not in_single
+                    cleaned.append(char)
+                    idx += 1
+                    continue
+                if char == '"' and not in_single:
+                    in_double = not in_double
+                    cleaned.append(char)
+                    idx += 1
+                    continue
+                if char == "<" and not in_single and not in_double:
+                    end = statement.find(">", idx)
+                    if end == -1:
+                        cleaned.append(char)
+                        idx += 1
+                        continue
+                    idx = end + 1
+                    continue
+
+                cleaned.append(char)
+                idx += 1
+
+            return "".join(cleaned)
+
+        return _JINJA_STATEMENT_RE.sub(strip_namespaced_tags, patched)
 
     # ------------------------------------------------------------------
     # Helpers

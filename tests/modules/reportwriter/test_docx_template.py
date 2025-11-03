@@ -23,6 +23,12 @@ DIAGRAM_XML = (
     "</dgm:data>"
 )
 
+DIAGRAM_SPLIT_XML = (
+    '<dgm:data xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram">'
+    "<dgm:t>{{{{</dgm:t><dgm:t>{}</dgm:t><dgm:t>}}}}</dgm:t>"
+    "</dgm:data>"
+)
+
 
 class FakeXmlPart:
     """Minimal XML part used to exercise templating helpers."""
@@ -57,7 +63,7 @@ def test_render_additional_parts_updates_diagram_xml(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
 
-    part = FakeXmlPart("/word/diagrams/data1.xml", DIAGRAM_XML.format("{{ item }}"))
+    part = FakeXmlPart("/word/diagrams/data1.xml", DIAGRAM_SPLIT_XML.format(" item "))
     monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([part]))
 
     template._render_additional_parts({"item": "Rendered"}, None)
@@ -69,7 +75,7 @@ def test_render_additional_parts_updates_diagram_xml(monkeypatch):
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
 
-    part = FakeXmlPart("/word/diagrams/drawing1.xml", DIAGRAM_XML.format("{{ missing }}"))
+    part = FakeXmlPart("/word/diagrams/drawing1.xml", DIAGRAM_SPLIT_XML.format(" missing "))
     monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([part]))
     monkeypatch.setattr(template, "get_xml", lambda: "")
     monkeypatch.setattr(template, "get_headers_footers", lambda _uri: [])
@@ -77,4 +83,13 @@ def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
     variables = template.get_undeclared_template_variables()
 
     assert "missing" in variables
+
+
+def test_patch_xml_removes_namespaced_tags_inside_jinja():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(DIAGRAM_SPLIT_XML.format(" value "))
+
+    assert "{{ value }}" in cleaned
+    assert "{{<" not in cleaned
 
