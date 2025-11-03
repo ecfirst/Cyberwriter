@@ -355,6 +355,13 @@ LINTER_CONTEXT = {
                 "psk_weak_reasons": "to short and not enough entropy",
                 "psk_masterpass": "no",
             },
+            "assessment_scope": ["external", "internal", "firewall"],
+            "assessment_scope_cloud_on_prem": "yes",
+            "scope_string": (
+                "External network and systems, Internal network and systems and "
+                "Firewall configuration(s) & rules"
+            ),
+            "scope_count": 3,
             "ad": {
                 "entries": [
                     {
