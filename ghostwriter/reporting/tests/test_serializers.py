@@ -399,6 +399,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(edge_firewall["type"], "Next-Gen")
         self.assertEqual(core_firewall["type"], "Appliance")
         self.assertEqual(firewall_summary["ood_name_list"], "'Edge-FW01'")
+        self.assertEqual(firewall_summary["ood_count"], 1)
 
         self.assertNotIn("password_corpexamplecom_risk", responses)
         self.assertNotIn("endpoint_corpexamplecom_av_gap", responses)

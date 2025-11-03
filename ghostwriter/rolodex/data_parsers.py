@@ -1434,4 +1434,4 @@ def build_workbook_firewall_response(workbook_data: Optional[Dict[str, Any]]) ->
     if not formatted_names:
         return {}
 
-    return {"ood_name_list": formatted_names}
+    return {"ood_name_list": formatted_names, "ood_count": len(ood_names)}

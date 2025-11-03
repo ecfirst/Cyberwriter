@@ -766,6 +766,7 @@ class NexposeDataParserTests(TestCase):
             firewall_responses.get("ood_name_list"),
             "'Firewall 1', 'Firewall 2', and 'Firewall 3'",
         )
+        self.assertEqual(firewall_responses.get("ood_count"), 3)
 
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()

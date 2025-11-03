@@ -459,6 +459,7 @@ LINTER_CONTEXT = {
                     {"name": "Core-FW02", "type": "Appliance"},
                 ],
                 "ood_name_list": "'Edge-FW01'",
+                "ood_count": 1,
             },
         },
         "data_artifacts": {
