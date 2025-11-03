@@ -305,7 +305,7 @@
                       {% for question in subgroup.list %}
                         {% with field=data_responses_fields|get_item:question.key %}
                           {% if field %}
-                            <div class="form-group dynamic-question-item{% if question.key == 'wireless_psk_masterpass_ssids' %} d-none{% endif %}" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}{% if question.key == 'wireless_psk_masterpass_ssids' %} data-masterpass-target{% endif %}>
+                            <div class="form-group dynamic-question-item{% if question.key == 'wireless_psk_masterpass_ssids' or question.key == 'assessment_scope_cloud_on_prem' %} d-none{% endif %}" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}{% if question.key == 'wireless_psk_masterpass_ssids' %} data-masterpass-target{% endif %}{% if question.key == 'assessment_scope' %} data-scope-control{% endif %}{% if question.key == 'assessment_scope_cloud_on_prem' %} data-scope-cloud-followup{% endif %}>
                               {% if field.label %}{{ field.label_tag }}{% endif %}
                               {{ field }}
                               {% if field.help_text %}<small class="form-text text-muted">{{ field.help_text }}</small>{% endif %}
@@ -697,11 +697,36 @@
       }
     }
 
+    function toggleScopeFollowup() {
+      const control = document.querySelector('[data-scope-control]');
+      const followup = document.querySelector('[data-scope-cloud-followup]');
+      if (!control || !followup) {
+        return;
+      }
+      const checkboxes = control.querySelectorAll('input[name="assessment_scope"]');
+      let cloudSelected = false;
+      checkboxes.forEach(function(checkbox) {
+        if (checkbox.value === 'cloud' && checkbox.checked) {
+          cloudSelected = true;
+        }
+      });
+      if (cloudSelected) {
+        followup.classList.remove('d-none');
+      } else {
+        followup.classList.add('d-none');
+        const radios = followup.querySelectorAll('input[type="radio"]');
+        radios.forEach(function(radio) {
+          radio.checked = false;
+        });
+      }
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
       initialiseCalendar();
       handleMultipleTextInputs();
       toggleSegmentationDetails();
       toggleMasterpassDetails();
+      toggleScopeFollowup();
     });
 
     document.addEventListener('change', function(event) {
@@ -710,6 +735,9 @@
       }
       if (event.target && event.target.name === 'wireless_psk_masterpass') {
         toggleMasterpassDetails();
+      }
+      if (event.target && event.target.name === 'assessment_scope') {
+        toggleScopeFollowup();
       }
     });
   </script>

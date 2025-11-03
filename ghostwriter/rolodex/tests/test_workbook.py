@@ -6,10 +6,13 @@ from django.test import SimpleTestCase
 # Ghostwriter Libraries
 from ghostwriter.rolodex.forms_workbook import SummaryMultipleChoiceField
 from ghostwriter.rolodex.workbook import (
+    SCOPE_CHOICES,
     WEAK_PSK_SUMMARY_MAP,
     YES_NO_CHOICES,
     build_data_configuration,
+    build_scope_summary,
     build_workbook_sections,
+    normalize_scope_selection,
 )
 
 
@@ -64,6 +67,23 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertTrue(required_files)
         self.assertIn("slug", required_files[0])
         self.assertEqual(required_files[0]["slug"], "required_dns-report-csv_example-com")
+
+    def test_scope_question_added_with_defaults(self):
+        questions, _ = build_data_configuration({}, project_type="Gold")
+
+        self.assertGreaterEqual(len(questions), 2)
+        scope_question = questions[0]
+        self.assertEqual(scope_question["key"], "assessment_scope")
+        self.assertEqual(scope_question["field_kwargs"].get("choices"), SCOPE_CHOICES)
+        self.assertEqual(
+            scope_question["field_kwargs"].get("initial"),
+            ["external", "internal", "firewall"],
+        )
+
+        followup = next((q for q in questions if q["key"] == "assessment_scope_cloud_on_prem"), None)
+        self.assertIsNotNone(followup)
+        assert followup is not None  # pragma: no cover - typing aid
+        self.assertEqual(followup["field_kwargs"].get("choices"), YES_NO_CHOICES)
 
     def test_nexpose_csv_requirements_added_for_positive_totals(self):
         workbook_data = {
@@ -183,3 +203,27 @@ class WorkbookHelpersTests(SimpleTestCase):
         weak_reason = next(q for q in questions if q["key"] == "wireless_psk_weak_reasons")
         self.assertIs(weak_reason["field_class"], SummaryMultipleChoiceField)
         self.assertEqual(weak_reason["field_kwargs"].get("summary_map"), WEAK_PSK_SUMMARY_MAP)
+
+    def test_scope_summary_generation(self):
+        summary = build_scope_summary(["external", "internal", "firewall"], None)
+        self.assertEqual(
+            summary,
+            "External network and systems, Internal network and systems and Firewall configuration(s) & rules",
+        )
+
+        cloud_on_prem = build_scope_summary(["external", "cloud"], "yes")
+        self.assertEqual(
+            cloud_on_prem,
+            "External network and systems, Cloud/On-Prem network and systems and Cloud management configuration",
+        )
+
+        cloud_only = build_scope_summary(["external", "cloud"], "no")
+        self.assertEqual(
+            cloud_only,
+            "External network and systems, Cloud systems and Cloud management configuration",
+        )
+
+    def test_scope_selection_normalization(self):
+        ordered = normalize_scope_selection(["cloud", "external", "wireless"])
+        self.assertEqual(ordered, ["external", "wireless", "cloud"])
+        self.assertEqual(normalize_scope_selection("internal"), ["internal"])

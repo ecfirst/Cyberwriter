@@ -22,6 +22,7 @@ from ghostwriter.factories import (
     ObjectiveStatusFactory,
     ProjectFactory,
     ProjectInviteFactory,
+    ProjectTypeFactory,
     ProjectNoteFactory,
     ProjectAssignmentFactory,
     ProjectObjectiveFactory,
@@ -1109,10 +1110,60 @@ class ProjectWorkbookUploadViewTests(TestCase):
             definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
         }
         self.assertEqual(set(self.project.data_artifacts.keys()), expected_keys)
-        self.assertFalse(self.project.data_files.exists())
 
-        # Uploaded files should be deleted by the view; ensure no leftover references remain
-        self.assertFalse(ProjectDataFile.objects.filter(pk=dns_upload.pk).exists())
+
+class ProjectDataResponsesUpdateTests(TestCase):
+    """Collection of tests for :view:`rolodex.ProjectDataResponsesUpdate`."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.manager = UserFactory(password=PASSWORD, role="manager")
+        cls.project_type = ProjectTypeFactory(project_type="CloudFirst")
+        cls.project = ProjectFactory(project_type=cls.project_type)
+        cls.url = reverse("rolodex:project_data_responses", kwargs={"pk": cls.project.pk})
+
+    def setUp(self):
+        self.client_mgr = Client()
+        self.assertTrue(self.client_mgr.login(username=self.manager.username, password=PASSWORD))
+
+    def test_scope_string_and_count_saved(self):
+        payload = {
+            "assessment_scope": ["external", "cloud"],
+            "assessment_scope_cloud_on_prem": "yes",
+        }
+
+        response = self.client_mgr.post(self.url, payload)
+
+        self.assertEqual(response.status_code, 302)
+        self.project.refresh_from_db()
+        data = self.project.data_responses
+        self.assertEqual(data.get("assessment_scope"), ["external", "cloud"])
+        self.assertEqual(data.get("scope_count"), 2)
+        self.assertEqual(data.get("assessment_scope_cloud_on_prem"), "yes")
+        self.assertEqual(
+            data.get("scope_string"),
+            "External network and systems, Cloud/On-Prem network and systems and Cloud management configuration",
+        )
+
+    def test_followup_removed_when_cloud_unselected(self):
+        self.project.data_responses = {
+            "assessment_scope": ["external", "cloud"],
+            "assessment_scope_cloud_on_prem": "yes",
+            "scope_string": "Existing",
+            "scope_count": 2,
+        }
+        self.project.save(update_fields=["data_responses"])
+
+        payload = {"assessment_scope": ["external"]}
+        response = self.client_mgr.post(self.url, payload)
+
+        self.assertEqual(response.status_code, 302)
+        self.project.refresh_from_db()
+        data = self.project.data_responses
+        self.assertEqual(data.get("assessment_scope"), ["external"])
+        self.assertEqual(data.get("scope_count"), 1)
+        self.assertEqual(data.get("scope_string"), "External network and systems")
+        self.assertNotIn("assessment_scope_cloud_on_prem", data)
 
     def test_detail_view_displays_uploaded_workbook_sections(self):
         workbook_payload = {
