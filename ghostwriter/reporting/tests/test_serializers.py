@@ -240,8 +240,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
             },
             "firewall": {
                 "devices": [
-                    {"name": "Edge-FW01"},
-                    {"name": "Core-FW02"},
+                    {"name": "Edge-FW01", "ood": "yes"},
+                    {"name": "Core-FW02", "ood": "no"},
                 ]
             },
         }
@@ -259,6 +259,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "wireless_segmentation_ssids": ["Guest"],
             "wireless_segmentation_tested": True,
             "wireless_psk_rotation_concern": "yes",
+            "wireless_psk_weak_reasons": "to short and not enough entropy",
             "password_corpexamplecom_risk": "medium",
             "password_labexamplecom_risk": "high",
             "endpoint_labexamplecom_av_gap": "high",
@@ -299,9 +300,18 @@ class ProjectSerializerDataResponsesTests(TestCase):
         responses = project_data["data_responses"]
 
         self.assertEqual(responses["cloud_config_risk"], "low")
-        self.assertEqual(responses["wireless_segmentation_ssids"], ["Guest"])
         self.assertEqual(responses["osint_bucket_risk"], "High")
         self.assertEqual(responses["osint_leaked_creds_risk"], "Medium")
+
+        wireless_summary = responses["wireless"]
+        self.assertEqual(wireless_summary["segmentation_ssids"], ["Guest"])
+        self.assertTrue(wireless_summary["segmentation_tested"])
+        self.assertEqual(wireless_summary["psk_rotation_concern"], "yes")
+        self.assertEqual(wireless_summary["psk_risk"], "medium")
+        self.assertEqual(wireless_summary["open_risk"], "high")
+        self.assertEqual(wireless_summary["rogue_risk"], "medium")
+        self.assertEqual(wireless_summary["hidden_risk"], "low")
+        self.assertEqual(wireless_summary["psk_weak_reasons"], "to short and not enough entropy")
 
         ad_summary = responses["ad"]
         self.assertIn("entries", ad_summary)
@@ -380,16 +390,43 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(endpoint_summary["ood_risk_string"], "Medium/High")
         self.assertEqual(endpoint_summary["wifi_risk_string"], "Low/High")
 
-        firewall_entries = responses["firewall"]
+        firewall_summary = responses["firewall"]
+        self.assertIn("entries", firewall_summary)
+        firewall_entries = firewall_summary["entries"]
         self.assertEqual(len(firewall_entries), 2)
         edge_firewall = next(entry for entry in firewall_entries if entry["name"] == "Edge-FW01")
         core_firewall = next(entry for entry in firewall_entries if entry["name"] == "Core-FW02")
         self.assertEqual(edge_firewall["type"], "Next-Gen")
         self.assertEqual(core_firewall["type"], "Appliance")
+        self.assertEqual(firewall_summary["ood_name_list"], "'Edge-FW01'")
+        self.assertEqual(firewall_summary["ood_count"], 1)
 
         self.assertNotIn("password_corpexamplecom_risk", responses)
         self.assertNotIn("endpoint_corpexamplecom_av_gap", responses)
         self.assertNotIn("firewall_edge-fw01_type", responses)
+
+    def test_dns_zone_transfer_summary_is_exposed(self):
+        workbook_payload = {
+            "dns": {
+                "records": [
+                    {"zone_transfer": "yes"},
+                    {"zone_transfer": "no"},
+                    {"zone_transfer": "YES"},
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {"dns": {"existing": "value"}}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+
+        dns_summary = responses.get("dns")
+        self.assertIsInstance(dns_summary, dict)
+        self.assertEqual(dns_summary.get("zone_trans"), 2)
+        self.assertEqual(dns_summary.get("existing"), "value")
 
     def test_workbook_ad_metrics_are_exposed_without_legacy_entries(self):
         workbook_payload = {

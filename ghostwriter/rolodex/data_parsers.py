@@ -5,6 +5,7 @@ from __future__ import annotations
 # Standard Libraries
 import csv
 import io
+import re
 from collections import Counter
 from collections import abc
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -345,6 +346,89 @@ def parse_firewall_report(file_obj: File) -> List[Dict[str, Any]]:
             findings.append(normalized_entry)
 
     return findings
+
+
+def _normalize_firewall_risk(value: str) -> Optional[str]:
+    """Map textual firewall risk levels to ``high``/``med``/``low`` buckets."""
+
+    if not value:
+        return None
+
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+
+    if normalized.startswith("crit") or normalized.startswith("high"):
+        return "high"
+    if normalized.startswith("med") or normalized.startswith("moder"):
+        return "med"
+    if normalized.startswith("low"):
+        return "low"
+    return None
+
+
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _first_sentence(value: str) -> str:
+    """Return the first sentence from the provided ``value`` string."""
+
+    text = (value or "").strip()
+    if not text:
+        return ""
+
+    normalized = " ".join(text.split())
+    parts = _SENTENCE_BOUNDARY_RE.split(normalized, maxsplit=1)
+    return parts[0].strip()
+
+
+def _summarize_firewall_vulnerabilities(
+    findings: Iterable[Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
+    """Aggregate firewall findings into severity summaries."""
+
+    severity_counters: Dict[str, Counter[Tuple[str, str]]] = {
+        "high": Counter(),
+        "med": Counter(),
+        "low": Counter(),
+    }
+
+    for entry in findings:
+        if not isinstance(entry, dict):
+            continue
+
+        risk_value = _normalize_firewall_risk(str(entry.get("risk") or ""))
+        if not risk_value:
+            continue
+
+        issue_text = (entry.get("issue") or "").strip()
+        impact_text = _first_sentence(entry.get("impact") or "")
+
+        if not issue_text and not impact_text:
+            continue
+
+        severity_counters[risk_value][(issue_text, impact_text)] += 1
+
+    summaries: Dict[str, Dict[str, Any]] = {}
+    for severity, counter in severity_counters.items():
+        sorted_items = sorted(
+            counter.items(),
+            key=lambda item: (
+                -item[1],
+                item[0][0].lower(),
+                item[0][1].lower(),
+            ),
+        )
+        top_items = [
+            {"issue": issue, "impact": impact, "count": count}
+            for (issue, impact), count in sorted_items[:5]
+        ]
+        summaries[severity] = {
+            "total_unique": len(counter),
+            "items": top_items,
+        }
+
+    return summaries
 
 
 def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
@@ -764,6 +848,20 @@ def _format_sample_string(samples: List[str]) -> str:
     return ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
 
 
+def _format_oxford_quoted_list(values: List[str]) -> str:
+    """Return a quoted list that includes an Oxford comma when needed."""
+
+    entries = [str(value).strip() for value in values if str(value).strip()]
+    if not entries:
+        return ""
+    quoted = [f"'{entry}'" for entry in entries]
+    if len(quoted) == 1:
+        return quoted[0]
+    if len(quoted) == 2:
+        return f"{quoted[0]} and {quoted[1]}"
+    return ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
+
+
 def _format_plain_list(values: List[str]) -> str:
     """Return a human-readable string for a list of pre-formatted values."""
 
@@ -935,7 +1033,10 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             artifacts[artifact_key] = values
 
     if firewall_results:
-        artifacts["firewall_findings"] = firewall_results
+        artifacts["firewall_findings"] = {
+            "findings": firewall_results,
+            "vulnerabilities": _summarize_firewall_vulnerabilities(firewall_results),
+        }
 
     for artifact_key, details in nexpose_results.items():
         artifacts[artifact_key] = {
@@ -1285,3 +1386,89 @@ def build_workbook_password_response(
     )
 
     return summary, domain_values, summary_domains
+
+
+def build_workbook_dns_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Generate supplemental DNS details derived from workbook metadata."""
+
+    if not isinstance(workbook_data, dict):
+        return {}
+
+    dns_data = workbook_data.get("dns", {})
+    if not isinstance(dns_data, dict):
+        return {}
+
+    records = dns_data.get("records")
+    if not isinstance(records, list) or not records:
+        return {}
+
+    def _is_yes(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"yes", "y", "true", "1"}
+
+    total_records = 0
+    zone_transfer_count = 0
+
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        total_records += 1
+        if _is_yes(record.get("zone_transfer")):
+            zone_transfer_count += 1
+
+    if total_records == 0:
+        return {}
+
+    return {"zone_trans": zone_transfer_count}
+
+
+def build_workbook_firewall_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Generate supplemental firewall details derived from workbook metadata."""
+
+    if not isinstance(workbook_data, dict):
+        return {}
+
+    firewall_data = workbook_data.get("firewall", {})
+    if not isinstance(firewall_data, dict):
+        return {}
+
+    devices = firewall_data.get("devices", [])
+    if not isinstance(devices, list):
+        return {}
+
+    def _normalize_name(raw_value: Any, index: int) -> str:
+        if raw_value is None:
+            return f"Device {index}"
+        text = str(raw_value).strip()
+        return text or f"Device {index}"
+
+    def _normalize_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        text = str(value).strip().lower()
+        return text in {"yes", "true", "1", "y"}
+
+    ood_names: List[str] = []
+    seen_names: set[str] = set()
+
+    for index, record in enumerate(devices, start=1):
+        if not isinstance(record, dict):
+            continue
+        if not _normalize_bool(record.get("ood")):
+            continue
+        name_value = record.get("name") or record.get("device") or record.get("hostname")
+        normalized_name = _normalize_name(name_value, index)
+        if normalized_name not in seen_names:
+            seen_names.add(normalized_name)
+            ood_names.append(normalized_name)
+
+    formatted_names = _format_oxford_quoted_list(ood_names)
+    if not formatted_names:
+        return {}
+
+    return {"ood_name_list": formatted_names, "ood_count": len(ood_names)}

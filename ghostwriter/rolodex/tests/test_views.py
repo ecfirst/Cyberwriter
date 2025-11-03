@@ -1430,8 +1430,9 @@ class ProjectWorkbookUploadViewTests(TestCase):
         artifacts = self.project.data_artifacts
         self.assertIn("firewall_findings", artifacts)
         findings = artifacts["firewall_findings"]
-        self.assertEqual(len(findings), 1)
-        finding = findings[0]
+        entries = findings["findings"]
+        self.assertEqual(len(entries), 1)
+        finding = entries[0]
         self.assertEqual(
             finding,
             {
@@ -1447,6 +1448,21 @@ class ProjectWorkbookUploadViewTests(TestCase):
                 "score": 8.5,
             },
         )
+
+        vulnerabilities = findings["vulnerabilities"]
+        self.assertEqual(vulnerabilities["high"]["total_unique"], 1)
+        self.assertEqual(
+            vulnerabilities["high"]["items"],
+            [
+                {
+                    "issue": "Blocked traffic review",
+                    "impact": "Service disruption",
+                    "count": 1,
+                }
+            ],
+        )
+        self.assertEqual(vulnerabilities["med"], {"total_unique": 0, "items": []})
+        self.assertEqual(vulnerabilities["low"], {"total_unique": 0, "items": []})
 
     def test_external_ip_submission_creates_artifact(self):
         upload_url = reverse("rolodex:project_ip_artifact_upload", kwargs={"pk": self.project.pk})

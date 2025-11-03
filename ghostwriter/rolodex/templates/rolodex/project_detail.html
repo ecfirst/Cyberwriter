@@ -305,7 +305,7 @@
                       {% for question in subgroup.list %}
                         {% with field=data_responses_fields|get_item:question.key %}
                           {% if field %}
-                            <div class="form-group dynamic-question-item" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}>
+                            <div class="form-group dynamic-question-item{% if question.key == 'wireless_psk_masterpass_ssids' %} d-none{% endif %}" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}{% if question.key == 'wireless_psk_masterpass_ssids' %} data-masterpass-target{% endif %}>
                               {% if field.label %}{{ field.label_tag }}{% endif %}
                               {{ field }}
                               {% if field.help_text %}<small class="form-text text-muted">{{ field.help_text }}</small>{% endif %}
@@ -684,15 +684,32 @@
       }
     }
 
+    function toggleMasterpassDetails() {
+      const target = document.querySelector('[data-masterpass-target]');
+      if (!target) {
+        return;
+      }
+      const selected = document.querySelector('input[name="wireless_psk_masterpass"]:checked');
+      if (selected && selected.value === 'yes') {
+        target.classList.remove('d-none');
+      } else {
+        target.classList.add('d-none');
+      }
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
       initialiseCalendar();
       handleMultipleTextInputs();
       toggleSegmentationDetails();
+      toggleMasterpassDetails();
     });
 
     document.addEventListener('change', function(event) {
       if (event.target && event.target.id === 'id_wireless_segmentation_tested') {
         toggleSegmentationDetails();
+      }
+      if (event.target && event.target.name === 'wireless_psk_masterpass') {
+        toggleMasterpassDetails();
       }
     });
   </script>

@@ -184,6 +184,8 @@ LINTER_CONTEXT = {
                 "unique_high": 2,
                 "majority_type": "Rules",
                 "majority_count": 8,
+                "minority_type": "Complexity",
+                "minority_count": 3,
                 "complexity_count": 5,
             },
             "password": {
@@ -198,6 +200,7 @@ LINTER_CONTEXT = {
                         "lockout_duration": 30,
                         "lockout_threshold": 5,
                         "complexity_enabled": "yes",
+                        "lanman_stored": "yes",
                         "mfa_required": "yes",
                         "enabled_accounts": 245,
                         "passwords_cracked": 17,
@@ -333,19 +336,25 @@ LINTER_CONTEXT = {
                 "hank.hooper@example.com",
                 "jack.donaghy@example.com",
             ],
-            "wireless_segmentation_ssids": ["Guest", "Corp", "Production"],
             "has_internal_lab": "yes",
             "cloud_config_risk": "low",
             "system_config_risk": "medium",
-            "wireless_psk_risk": "medium",
-            "wireless_open_risk": "high",
-            "wireless_rogue_risk": "medium",
-            "wireless_hidden_risk": "low",
-            "wireless_psk_rotation_concern": "yes",
+            "iot_testing_confirm": "yes",
+            "dns": {"zone_trans": 1},
             "osint_squat_concern": "example.com",
             "osint_bucket_risk": "High",
             "osint_leaked_creds_risk": "Medium",
-            "wireless_segmentation_tested": True,
+            "wireless": {
+                "segmentation_ssids": ["Guest", "Corp", "Production"],
+                "psk_risk": "medium",
+                "open_risk": "high",
+                "rogue_risk": "medium",
+                "hidden_risk": "low",
+                "psk_rotation_concern": "yes",
+                "segmentation_tested": True,
+                "psk_weak_reasons": "to short and not enough entropy",
+                "psk_masterpass": "no",
+            },
             "ad": {
                 "entries": [
                     {
@@ -448,10 +457,14 @@ LINTER_CONTEXT = {
                 "ood_risk_string": "Medium/High",
                 "wifi_risk_string": "Low/High",
             },
-            "firewall": [
-                {"name": "Edge-FW01", "type": "Next-Gen"},
-                {"name": "Core-FW02", "type": "Appliance"},
-            ],
+            "firewall": {
+                "entries": [
+                    {"name": "Edge-FW01", "type": "Next-Gen"},
+                    {"name": "Core-FW02", "type": "Appliance"},
+                ],
+                "ood_name_list": "'Edge-FW01'",
+                "ood_count": 1,
+            },
         },
         "data_artifacts": {
             "dns_issues": [
@@ -507,32 +520,60 @@ LINTER_CONTEXT = {
                 "10.20.30.40",
                 "172.16.50.5",
             ],
-            "firewall_findings": [
-                {
-                    "risk": "High",
-                    "issue": "Overly permissive inbound access",
-                    "devices": "Edge-FW01",
-                    "solution": "Restrict inbound rules to required services",
-                    "impact": "Increases the exposed attack surface for external actors.",
-                    "details": "Inbound rules allow any source to reach management interfaces.",
-                    "reference": "https://example.com/firewall-hardening",
-                    "score": 8.5,
-                    "accepted": "No",
-                    "type": "Configuration",
+            "firewall_findings": {
+                "findings": [
+                    {
+                        "risk": "High",
+                        "issue": "Overly permissive inbound access",
+                        "devices": "Edge-FW01",
+                        "solution": "Restrict inbound rules to required services",
+                        "impact": "Increases the exposed attack surface for external actors.",
+                        "details": "Inbound rules allow any source to reach management interfaces.",
+                        "reference": "https://example.com/firewall-hardening",
+                        "score": 8.5,
+                        "accepted": "No",
+                        "type": "Configuration",
+                    },
+                    {
+                        "risk": "Medium",
+                        "issue": "Stale decommissioned network objects",
+                        "devices": "Core-FW02",
+                        "solution": "Remove unused objects from rule base",
+                        "impact": "Obsolete objects complicate reviews and obscure risky rules.",
+                        "details": "Multiple inactive objects remain referenced by disabled policies.",
+                        "reference": "",
+                        "score": 5.0,
+                        "accepted": "Yes",
+                        "type": "Operations",
+                    },
+                ],
+                "vulnerabilities": {
+                    "high": {
+                        "total_unique": 1,
+                        "items": [
+                            {
+                                "issue": "Overly permissive inbound access",
+                                "impact": "Increases the exposed attack surface for external actors.",
+                                "count": 1,
+                            }
+                        ],
+                    },
+                    "med": {
+                        "total_unique": 1,
+                        "items": [
+                            {
+                                "issue": "Stale decommissioned network objects",
+                                "impact": "Obsolete objects complicate reviews and obscure risky rules.",
+                                "count": 1,
+                            }
+                        ],
+                    },
+                    "low": {
+                        "total_unique": 0,
+                        "items": [],
+                    },
                 },
-                {
-                    "risk": "Medium",
-                    "issue": "Stale decommissioned network objects",
-                    "devices": "Core-FW02",
-                    "solution": "Remove unused objects from rule base",
-                    "impact": "Obsolete objects complicate reviews and obscure risky rules.",
-                    "details": "Multiple inactive objects remain referenced by disabled policies.",
-                    "reference": "",
-                    "score": 5.0,
-                    "accepted": "Yes",
-                    "type": "Operations",
-                },
-            ],
+            },
             "external_nexpose_vulnerabilities": {
                 "label": "External Nexpose Vulnerabilities",
                 "high": {

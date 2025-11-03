@@ -4,7 +4,13 @@
 from django.test import SimpleTestCase
 
 # Ghostwriter Libraries
-from ghostwriter.rolodex.workbook import build_data_configuration, build_workbook_sections
+from ghostwriter.rolodex.forms_workbook import SummaryMultipleChoiceField
+from ghostwriter.rolodex.workbook import (
+    WEAK_PSK_SUMMARY_MAP,
+    YES_NO_CHOICES,
+    build_data_configuration,
+    build_workbook_sections,
+)
 
 
 class WorkbookHelpersTests(SimpleTestCase):
@@ -72,6 +78,25 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertIn("external_nexpose_csv.csv", labels)
         self.assertIn("internal_nexpose_csv.csv", labels)
         self.assertIn("iot_nexpose_csv.csv", labels)
+
+    def test_iot_testing_question_added_when_iot_section_present(self):
+        workbook_data = {
+            "iot_iomt_nexpose": {"total": 0},
+        }
+
+        questions, _ = build_data_configuration(workbook_data)
+
+        iot_question = next(
+            (q for q in questions if q["key"] == "iot_testing_confirm"),
+            None,
+        )
+
+        self.assertIsNotNone(iot_question)
+        assert iot_question is not None  # pragma: no cover - clarify typing
+        self.assertEqual(iot_question["label"], "Was Internal IoT/IoMT testing performed?")
+        self.assertEqual(iot_question["section"], "IoT/IoMT")
+        self.assertEqual(iot_question["field_kwargs"].get("choices"), YES_NO_CHOICES)
+        self.assertEqual(iot_question["field_kwargs"].get("initial"), "no")
 
     def test_nexpose_csv_requirements_skip_zero_totals(self):
         workbook_data = {
@@ -144,3 +169,17 @@ class WorkbookHelpersTests(SimpleTestCase):
             bucket_question["field_kwargs"]["choices"],
             (("High", "High"), ("Medium", "Medium"), ("Low", "Low")),
         )
+
+    def test_wireless_psk_questions_include_summary_and_networks(self):
+        workbook_data = {"wireless": {"weak_psks": "yes"}}
+
+        questions, _ = build_data_configuration(workbook_data)
+
+        keys = {question["key"] for question in questions}
+        self.assertIn("wireless_psk_weak_reasons", keys)
+        self.assertIn("wireless_psk_masterpass", keys)
+        self.assertIn("wireless_psk_masterpass_ssids", keys)
+
+        weak_reason = next(q for q in questions if q["key"] == "wireless_psk_weak_reasons")
+        self.assertIs(weak_reason["field_class"], SummaryMultipleChoiceField)
+        self.assertEqual(weak_reason["field_kwargs"].get("summary_map"), WEAK_PSK_SUMMARY_MAP)

@@ -6,6 +6,9 @@
 from datetime import datetime
 import zoneinfo
 
+# Standard Libraries
+from typing import Any, Dict
+
 # Django Imports
 from django.conf import settings
 from django.utils import dateformat
@@ -38,6 +41,8 @@ from ghostwriter.reporting.models import (
 from ghostwriter.rolodex.data_parsers import (
     build_ad_risk_contrib,
     build_workbook_ad_response,
+    build_workbook_dns_response,
+    build_workbook_firewall_response,
     build_workbook_password_response,
     normalize_nexpose_artifacts_map,
 )
@@ -721,7 +726,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if not isinstance(raw_responses, dict):
             return raw_responses or {}
 
-        legacy_prefixes = ("ad_", "password_", "endpoint_")
+        legacy_prefixes = ("ad_", "password_", "endpoint_", "wireless_")
         has_legacy_keys = any(
             isinstance(key, str) and key.startswith(prefix)
             for key in raw_responses
@@ -732,7 +737,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         if not has_legacy_keys:
             preformatted_sections = []
-            for section_key in ("ad", "endpoint", "password"):
+            for section_key in ("ad", "endpoint", "password", "wireless"):
                 value = raw_responses.get(section_key)
                 if value is None:
                     continue
@@ -746,7 +751,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         result = {}
         for key, value in raw_responses.items():
-            if key.startswith(("ad_", "password_", "endpoint_")):
+            if key.startswith(("ad_", "password_", "endpoint_", "wireless_")):
                 continue
             if key.startswith("firewall_") and key.endswith("_type"):
                 continue
@@ -768,12 +773,27 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if firewall_entries:
             result["firewall"] = firewall_entries
 
+        dns_entries = ProjectSerializer._collect_dns_responses(raw_responses, workbook_data)
+        if dns_entries:
+            result["dns"] = dns_entries
+
+        wireless_entries = ProjectSerializer._collect_wireless_responses(raw_responses)
+        if wireless_entries:
+            result["wireless"] = wireless_entries
+
         return result
 
     @staticmethod
     def _collect_firewall_responses(raw_responses, workbook_data):
         firewall_data = (workbook_data or {}).get("firewall", {})
         devices = firewall_data.get("devices", []) if isinstance(firewall_data, dict) else []
+
+        existing_section = raw_responses.get("firewall")
+        section: Dict[str, Any] = {}
+        if isinstance(existing_section, dict):
+            section.update(existing_section)
+        elif isinstance(existing_section, list):
+            section["entries"] = list(existing_section)
 
         slug_map = {}
         if isinstance(devices, list):
@@ -815,7 +835,55 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             if device_name not in order:
                 order.append(device_name)
 
-        return [entries[name] for name in order if len(entries[name]) > 1]
+        if entries:
+            section["entries"] = [entries[name] for name in order if len(entries[name]) > 1]
+
+        workbook_firewall_details = build_workbook_firewall_response(workbook_data)
+        for key, value in workbook_firewall_details.items():
+            if key not in section or not section.get(key):
+                section[key] = value
+
+        if not section.get("entries"):
+            section.pop("entries", None)
+
+        return section
+
+    @staticmethod
+    def _collect_dns_responses(raw_responses, workbook_data):
+        existing_section = raw_responses.get("dns")
+        section: Dict[str, Any] = {}
+        if isinstance(existing_section, dict):
+            section.update(existing_section)
+        elif isinstance(existing_section, list):
+            section["entries"] = list(existing_section)
+
+        workbook_dns_details = build_workbook_dns_response(workbook_data)
+        for key, value in workbook_dns_details.items():
+            if key not in section or not section.get(key):
+                section[key] = value
+
+        if not section:
+            return {}
+
+        if not section.get("entries"):
+            section.pop("entries", None)
+
+        return section
+
+    @staticmethod
+    def _collect_wireless_responses(raw_responses):
+        entries = {}
+        existing_group = raw_responses.get("wireless")
+        if isinstance(existing_group, dict):
+            entries.update(existing_group)
+
+        prefix = "wireless_"
+        for key, value in raw_responses.items():
+            if not isinstance(key, str) or not key.startswith(prefix):
+                continue
+            entries[key[len(prefix) :]] = value
+
+        return entries
 
     @staticmethod
     def _collect_ad_responses(raw_responses, workbook_data):
