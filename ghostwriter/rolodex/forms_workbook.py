@@ -307,7 +307,7 @@ class ProjectDataResponsesForm(forms.Form):
             key = definition["key"]
             field_class = definition["field_class"]
             if key in initial_values:
-                field_kwargs.setdefault("initial", initial_values[key])
+                field_kwargs["initial"] = initial_values[key]
             self.fields[key] = field_class(**field_kwargs)
 
     def clean(self):  # type: ignore[override]

@@ -4,7 +4,7 @@
 import datetime
 import json
 import logging
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 # Django Imports
 from django import forms
@@ -86,7 +86,12 @@ from ghostwriter.rolodex.models import (
 )
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
 from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
-from ghostwriter.rolodex.workbook import build_data_configuration, build_workbook_sections
+from ghostwriter.rolodex.workbook import (
+    build_data_configuration,
+    build_scope_summary,
+    build_workbook_sections,
+    normalize_scope_selection,
+)
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
 # Using __name__ resolves to ghostwriter.rolodex.views
@@ -1613,7 +1618,8 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["export_templates"] = ReportTemplate.objects.filter(
             Q(doc_type__doc_type__iexact="project_docx") | Q(doc_type__doc_type__iexact="pptx")
         ).filter(Q(client=object.client) | Q(client__isnull=True))
-        questions, required_files = build_data_configuration(object.workbook_data)
+        project_type_name = getattr(getattr(object, "project_type", None), "project_type", None)
+        questions, required_files = build_data_configuration(object.workbook_data, project_type_name)
         ctx["workbook_form"] = ProjectWorkbookForm()
         ctx["workbook_sections"] = build_workbook_sections(object.workbook_data)
         ctx["data_file_form"] = ProjectDataFileForm()
@@ -1953,10 +1959,41 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
 
     def post(self, request, *args, **kwargs):
         project = self.get_object()
-        questions, _ = build_data_configuration(project.workbook_data)
+        project_type_name = getattr(getattr(project, "project_type", None), "project_type", None)
+        questions, _ = build_data_configuration(project.workbook_data, project_type_name)
         form = ProjectDataResponsesForm(request.POST, question_definitions=questions)
         if form.is_valid():
-            project.data_responses = form.cleaned_data
+            responses = dict(form.cleaned_data)
+            scope_selection = responses.get("assessment_scope")
+            normalized_scope = normalize_scope_selection(scope_selection)
+
+            if normalized_scope:
+                responses["assessment_scope"] = normalized_scope
+                responses["scope_count"] = len(normalized_scope)
+
+                raw_on_prem = responses.get("assessment_scope_cloud_on_prem")
+                if "cloud" not in normalized_scope:
+                    responses.pop("assessment_scope_cloud_on_prem", None)
+                    on_prem_value: Optional[str] = None
+                else:
+                    on_prem_value = raw_on_prem if raw_on_prem in {"yes", "no"} else None
+                    if on_prem_value is None:
+                        responses.pop("assessment_scope_cloud_on_prem", None)
+                    else:
+                        responses["assessment_scope_cloud_on_prem"] = on_prem_value
+
+                scope_summary = build_scope_summary(normalized_scope, on_prem_value)
+                if scope_summary:
+                    responses["scope_string"] = scope_summary
+                else:
+                    responses.pop("scope_string", None)
+            else:
+                responses.pop("assessment_scope", None)
+                responses.pop("assessment_scope_cloud_on_prem", None)
+                responses.pop("scope_count", None)
+                responses.pop("scope_string", None)
+
+            project.data_responses = responses
             project.save(update_fields=["data_responses"])
             messages.success(request, "Project data responses saved.")
         else:

@@ -45,6 +45,31 @@ YES_NO_CHOICES = (
     ("no", "No"),
 )
 
+SCOPE_CHOICES = (
+    ("external", "External"),
+    ("internal", "Internal"),
+    ("wireless", "Wireless"),
+    ("firewall", "Firewall"),
+    ("cloud", "Cloud"),
+)
+
+SCOPE_OPTION_ORDER = [choice for choice, _ in SCOPE_CHOICES]
+
+_SCOPE_PRESET_MAP = {
+    "silver": {"external", "firewall"},
+    "gold": {"external", "internal", "firewall"},
+    "platinum": {"external", "internal", "wireless", "firewall"},
+    "titanium": {"external", "internal", "wireless", "firewall"},
+    "cloudfirst": {"external", "cloud"},
+}
+
+_SCOPE_SUMMARY_MAP = {
+    "external": "External network and systems",
+    "internal": "Internal network and systems",
+    "wireless": "Wireless network and systems",
+    "firewall": "Firewall configuration(s) & rules",
+}
+
 WEAK_PSK_CHOICES = (
     ("too_short", "To short"),
     ("not_enough_entropy", "Not enough entropy"),
@@ -121,6 +146,61 @@ def _get_nested(data: Dict[str, Any], path: Iterable[str], default: Any = None) 
             return default
         result = result.get(key)
     return result if result is not None else default
+
+
+def get_scope_initial(project_type: Optional[str]) -> List[str]:
+    """Return default scope selections for the provided ``project_type``."""
+
+    if not project_type:
+        return []
+    normalized = project_type.replace(" ", "").strip().lower()
+    preset = _SCOPE_PRESET_MAP.get(normalized, set())
+    if not preset:
+        return []
+    return [key for key in SCOPE_OPTION_ORDER if key in preset]
+
+
+def normalize_scope_selection(selection: Iterable[str]) -> List[str]:
+    """Return scope choices in canonical order, removing invalid entries."""
+
+    if selection is None:
+        return []
+    if isinstance(selection, str):
+        normalized_set = {selection}
+    else:
+        normalized_set = {value for value in selection if isinstance(value, str)}
+    normalized_set = {value for value in normalized_set if value in SCOPE_OPTION_ORDER}
+    return [key for key in SCOPE_OPTION_ORDER if key in normalized_set]
+
+
+def build_scope_summary(selection: Iterable[str], on_prem: Optional[str]) -> str:
+    """Build a human-readable description of the selected assessment scope."""
+
+    ordered_selection = normalize_scope_selection(selection)
+    if not ordered_selection:
+        return ""
+
+    segments: List[str] = []
+    include_on_prem = str(on_prem or "").strip().lower() == "yes"
+
+    for key in ordered_selection:
+        if key == "cloud":
+            segments.append(
+                "Cloud/On-Prem network and systems" if include_on_prem else "Cloud systems"
+            )
+            segments.append("Cloud management configuration")
+            continue
+        summary = _SCOPE_SUMMARY_MAP.get(key)
+        if summary:
+            segments.append(summary)
+
+    if not segments:
+        return ""
+    if len(segments) == 1:
+        return segments[0]
+    if len(segments) == 2:
+        return " and ".join(segments)
+    return ", ".join(segments[:-1]) + " and " + segments[-1]
 
 
 def _humanize_section_name(raw_key: str) -> str:
@@ -207,7 +287,10 @@ def build_workbook_sections(workbook_data: Optional[Dict[str, Any]]) -> List[Dic
     return sections
 
 
-def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+def build_data_configuration(
+    workbook_data: Optional[Dict[str, Any]],
+    project_type: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
     """Return dynamic questions and file requirements derived from workbook data."""
 
     data = workbook_data or {}
@@ -264,6 +347,31 @@ def build_data_configuration(workbook_data: Optional[Dict[str, Any]]) -> Tuple[L
                 "field_kwargs": base_field_kwargs,
             }
         )
+
+    # Project scope confirmation
+    scope_initial = get_scope_initial(project_type)
+    scope_field_kwargs: Dict[str, Any] = {}
+    if scope_initial:
+        scope_field_kwargs["initial"] = scope_initial
+
+    add_question(
+        key="assessment_scope",
+        label="Confirm the assessment scope",
+        field_class=forms.MultipleChoiceField,
+        section="General",
+        choices=SCOPE_CHOICES,
+        widget=forms.CheckboxSelectMultiple,
+        field_kwargs=scope_field_kwargs or None,
+    )
+
+    add_question(
+        key="assessment_scope_cloud_on_prem",
+        label="Was on-prem testing included?",
+        field_class=forms.ChoiceField,
+        section="General",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
 
     # Intelligence questions
     osint_data = _get_nested(data, ("osint",), {}) or {}
