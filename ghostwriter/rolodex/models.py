@@ -333,6 +333,7 @@ class Project(models.Model):
             build_ad_risk_contrib,
             build_project_artifacts,
             build_workbook_ad_response,
+            build_workbook_dns_response,
             build_workbook_firewall_response,
             build_workbook_password_response,
         )
@@ -390,6 +391,21 @@ class Project(models.Model):
 
             combined_firewall_section.update(workbook_firewall_response)
             existing_responses["firewall"] = combined_firewall_section
+
+        workbook_dns_response = build_workbook_dns_response(
+            getattr(self, "workbook_data", None)
+        )
+        if workbook_dns_response:
+            existing_dns_section = existing_responses.get("dns")
+            if isinstance(existing_dns_section, dict):
+                combined_dns_section = dict(existing_dns_section)
+            elif isinstance(existing_dns_section, list):
+                combined_dns_section = {"entries": list(existing_dns_section)}
+            else:
+                combined_dns_section = {}
+
+            combined_dns_section.update(workbook_dns_response)
+            existing_responses["dns"] = combined_dns_section
 
         self.data_responses = existing_responses
 

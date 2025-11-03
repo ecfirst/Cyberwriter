@@ -768,6 +768,31 @@ class NexposeDataParserTests(TestCase):
         )
         self.assertEqual(firewall_responses.get("ood_count"), 3)
 
+    def test_dns_zone_transfer_count_populated_from_workbook(self):
+        workbook_payload = {
+            "dns": {
+                "records": [
+                    {"zone_transfer": "yes"},
+                    {"zone_transfer": "Yes"},
+                    {"zone_transfer": "no"},
+                    {"zone_transfer": None},
+                    "invalid",
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {"dns": {"existing": "value"}}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        dns_responses = self.project.data_responses.get("dns")
+        self.assertIsInstance(dns_responses, dict)
+        self.assertEqual(dns_responses.get("zone_trans"), 2)
+        self.assertEqual(dns_responses.get("existing"), "value")
+
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()
         self.project.refresh_from_db()

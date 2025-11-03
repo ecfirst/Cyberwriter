@@ -1388,6 +1388,43 @@ def build_workbook_password_response(
     return summary, domain_values, summary_domains
 
 
+def build_workbook_dns_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Generate supplemental DNS details derived from workbook metadata."""
+
+    if not isinstance(workbook_data, dict):
+        return {}
+
+    dns_data = workbook_data.get("dns", {})
+    if not isinstance(dns_data, dict):
+        return {}
+
+    records = dns_data.get("records")
+    if not isinstance(records, list) or not records:
+        return {}
+
+    def _is_yes(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"yes", "y", "true", "1"}
+
+    total_records = 0
+    zone_transfer_count = 0
+
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        total_records += 1
+        if _is_yes(record.get("zone_transfer")):
+            zone_transfer_count += 1
+
+    if total_records == 0:
+        return {}
+
+    return {"zone_trans": zone_transfer_count}
+
+
 def build_workbook_firewall_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Generate supplemental firewall details derived from workbook metadata."""
 
