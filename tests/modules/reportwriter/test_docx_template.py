@@ -33,6 +33,16 @@ DIAGRAM_SPLIT_XML = (
     "</dgm:data>"
 )
 
+CHART_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+    "<c:chart><c:plotArea><c:barChart>"
+    "<c:ser><c:idx val=\"0\"/><c:order val=\"0\"/>"
+    "<c:val><c:numRef><c:numCache><c:ptCount val=\"1\"/>"
+    "<c:pt idx=\"0\"><c:v>{}</c:v></c:pt>"
+    "</c:numCache></c:numRef></c:val></c:ser>"
+    "</c:barChart></c:plotArea></c:chart></c:chartSpace>"
+)
+
 
 class FakeXmlPart:
     """Minimal XML part used to exercise templating helpers."""
@@ -79,20 +89,21 @@ class FakeXlsxPart:
             return archive.read(filename).decode("utf-8")
 
 
-def test_iter_additional_parts_filters_to_smart_art(monkeypatch):
+def test_iter_additional_parts_filters_to_configured_patterns(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
 
     matching = FakeXmlPart("/word/diagrams/data1.xml", DIAGRAM_XML.format("value"))
-    other = FakeXmlPart("/word/charts/chart1.xml", DIAGRAM_XML.format("value"))
+    chart = FakeXmlPart("/word/charts/chart1.xml", CHART_XML.format("value"))
+    other = FakeXmlPart("/word/styles.xml", DIAGRAM_XML.format("value"))
 
     monkeypatch.setattr(
         template.docx.part.package,
         "iter_parts",
-        lambda: iter([matching, other]),
+        lambda: iter([matching, chart, other]),
     )
 
-    assert list(template._iter_additional_parts()) == [matching]
+    assert list(template._iter_additional_parts()) == [matching, chart]
 
 
 def test_iter_additional_parts_includes_embedded_excel(monkeypatch):
@@ -124,6 +135,19 @@ def test_render_additional_parts_updates_diagram_xml(monkeypatch):
 
     text = etree.tostring(part._element, encoding="unicode")
     assert "Rendered" in text
+
+
+def test_render_additional_parts_updates_chart_xml(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    part = FakeXmlPart("/word/charts/chart1.xml", CHART_XML.format("{{ item }}"))
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([part]))
+
+    template._render_additional_parts({"item": "123"}, None)
+
+    text = etree.tostring(part._element, encoding="unicode")
+    assert "123" in text
 
 
 def test_render_additional_parts_updates_excel_xml(monkeypatch):
@@ -263,6 +287,19 @@ def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
 
     part = FakeXmlPart("/word/diagrams/drawing1.xml", DIAGRAM_SPLIT_XML.format(" missing "))
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([part]))
+    monkeypatch.setattr(template, "get_xml", lambda: "")
+    monkeypatch.setattr(template, "get_headers_footers", lambda _uri: [])
+
+    variables = template.get_undeclared_template_variables()
+
+    assert "missing" in variables
+
+
+def test_get_undeclared_variables_includes_chart_parts(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    part = FakeXmlPart("/word/charts/chart1.xml", CHART_XML.format("{{ missing }}"))
     monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([part]))
     monkeypatch.setattr(template, "get_xml", lambda: "")
     monkeypatch.setattr(template, "get_headers_footers", lambda _uri: [])

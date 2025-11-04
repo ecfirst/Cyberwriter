@@ -35,6 +35,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
     _EXTRA_TEMPLATED_PATTERNS: tuple[str, ...] = (
         "word/diagrams/data*.xml",
         "word/diagrams/drawing*.xml",
+        "word/charts/*.xml",
         "word/embeddings/*.xlsx",
     )
 
