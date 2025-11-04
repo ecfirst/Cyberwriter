@@ -6,6 +6,7 @@ import fnmatch
 import io
 import re
 import zipfile
+import posixpath
 from typing import Iterator
 
 from docx.oxml import parse_xml
@@ -229,6 +230,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         sheet_map = self._build_sheet_map(rendered_xml, files)
         rendered_xml, workbook_values = self._coerce_excel_types(rendered_xml, sheet_map)
+        rendered_xml, table_map = self._sync_excel_tables(
+            rendered_xml,
+            files,
+            sheet_map,
+            workbook_values,
+        )
+        if table_map:
+            workbook_values.setdefault("__tables__", table_map)
 
         output = io.BytesIO()
         with zipfile.ZipFile(output, "w") as archive:
@@ -344,6 +353,277 @@ class GhostwriterDocxTemplate(DocxTemplate):
             xml_files[shared_strings_key] = self._serialise_shared_strings(shared_strings)
 
         return xml_files, workbook_values
+
+    def _sync_excel_tables(
+        self,
+        xml_files: dict[str, str],
+        files: dict[str, bytes],
+        sheet_map: dict[str, str],
+        workbook_values: dict[str, dict[str, str]],
+    ) -> tuple[dict[str, str], dict[str, dict[str, object]]]:
+        if not sheet_map:
+            return xml_files, {}
+
+        tables: dict[str, dict[str, object]] = {}
+        lower_lookup: dict[str, str] = {}
+
+        for sheet_path, sheet_name in sheet_map.items():
+            sheet_xml = xml_files.get(sheet_path)
+            if sheet_xml is None and sheet_path in files:
+                sheet_xml = files[sheet_path].decode("utf-8")
+            if not sheet_xml:
+                continue
+
+            table_data = self._extract_sheet_tables(
+                sheet_path,
+                sheet_name,
+                sheet_xml,
+                xml_files,
+                files,
+                workbook_values,
+            )
+            if not table_data:
+                continue
+
+            for table_name, info in table_data.items():
+                tables[table_name] = info
+                lower_lookup[table_name.lower()] = table_name
+
+        if tables:
+            tables["__lower__"] = lower_lookup
+
+        return xml_files, tables
+
+    def _extract_sheet_tables(
+        self,
+        sheet_path: str,
+        sheet_name: str,
+        sheet_xml: str,
+        xml_files: dict[str, str],
+        files: dict[str, bytes],
+        workbook_values: dict[str, dict[str, str]],
+    ) -> dict[str, dict[str, object]]:
+        try:
+            sheet_tree = etree.fromstring(sheet_xml.encode("utf-8"))
+        except etree.XMLSyntaxError:
+            return {}
+
+        ns = sheet_tree.nsmap.get(None)
+        prefix = f"{{{ns}}}" if ns else ""
+        r_ns = sheet_tree.nsmap.get("r")
+        default_r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        r_prefix = f"{{{r_ns}}}" if r_ns else f"{{{default_r_ns}}}"
+
+        rels_path = sheet_path.replace("worksheets/", "worksheets/_rels/") + ".rels"
+        rels_xml = xml_files.get(rels_path)
+        if rels_xml is None and rels_path in files:
+            rels_xml = files[rels_path].decode("utf-8")
+        rel_targets = self._parse_relationship_targets(rels_xml)
+
+        row_columns = self._map_sheet_columns(sheet_tree)
+
+        tables: dict[str, dict[str, object]] = {}
+        for table_part in sheet_tree.findall(f".//{prefix}tablePart"):
+            rel_id = table_part.get(f"{r_prefix}id")
+            if not rel_id:
+                continue
+            target = rel_targets.get(rel_id)
+            if not target:
+                continue
+            table_path = self._normalise_excel_path(target, sheet_path)
+            table_xml = xml_files.get(table_path)
+            if table_xml is None and table_path in files:
+                table_xml = files[table_path].decode("utf-8")
+            if not table_xml:
+                continue
+
+            updated_xml, table_info = self._update_table_definition(
+                table_xml,
+                sheet_name,
+                row_columns,
+            )
+            if updated_xml is not None:
+                xml_files[table_path] = updated_xml
+            if table_info is not None:
+                tables[table_info["name"]] = table_info
+
+        return tables
+
+    def _normalise_excel_path(self, target: str, base_path: str) -> str:
+        cleaned = target.strip()
+        if not cleaned:
+            return base_path
+        if cleaned.startswith("/"):
+            cleaned = cleaned[1:]
+            return cleaned if cleaned.startswith("xl/") else f"xl/{cleaned}"
+
+        base_dir = posixpath.dirname(base_path)
+        combined = posixpath.normpath(posixpath.join(base_dir, cleaned))
+        if not combined.startswith("xl/"):
+            combined = posixpath.normpath(posixpath.join("xl", cleaned))
+        if not combined.startswith("xl/"):
+            combined = f"xl/{combined.lstrip('/')}"
+        return combined
+
+    def _parse_relationship_targets(self, xml: str | None) -> dict[str, str]:
+        if not xml:
+            return {}
+        try:
+            tree = etree.fromstring(xml.encode("utf-8"))
+        except etree.XMLSyntaxError:
+            return {}
+
+        ns = tree.nsmap.get(None)
+        prefix = f"{{{ns}}}" if ns else ""
+        targets: dict[str, str] = {}
+        for rel in tree.findall(f"{prefix}Relationship"):
+            rel_id = rel.get("Id")
+            target = rel.get("Target")
+            if not rel_id or not target:
+                continue
+            targets[rel_id] = target
+        return targets
+
+    def _map_sheet_columns(self, sheet_tree: etree._Element) -> dict[int, set[int]]:
+        ns = sheet_tree.nsmap.get(None)
+        prefix = f"{{{ns}}}" if ns else ""
+
+        rows: dict[int, set[int]] = {}
+        for row in sheet_tree.findall(f".//{prefix}row"):
+            row_index = row.get("r")
+            if row_index:
+                try:
+                    idx = int(row_index)
+                except ValueError:
+                    continue
+            else:
+                # Fallback: count rows sequentially if "r" missing
+                idx = len(rows) + 1
+            cols: set[int] = set()
+            for cell in row.findall(f"{prefix}c"):
+                cell_ref = cell.get("r")
+                if not cell_ref:
+                    continue
+                parsed = self._split_cell(cell_ref)
+                if parsed is None:
+                    continue
+                col_index, _ = parsed
+                cols.add(col_index)
+            rows[idx] = cols
+        return rows
+
+    def _update_table_definition(
+        self,
+        table_xml: str,
+        sheet_name: str,
+        row_columns: dict[int, set[int]],
+    ) -> tuple[str | None, dict[str, object] | None]:
+        try:
+            table_tree = etree.fromstring(table_xml.encode("utf-8"))
+        except etree.XMLSyntaxError:
+            return None, None
+
+        ns = table_tree.nsmap.get(None)
+        prefix = f"{{{ns}}}" if ns else ""
+
+        table_name = table_tree.get("name") or table_tree.get("displayName")
+        if not table_name:
+            return None, None
+
+        ref = table_tree.get("ref")
+        if not ref:
+            return None, None
+
+        start_cell, end_cell = ref.split(":") if ":" in ref else (ref, ref)
+        start = self._split_cell(start_cell)
+        end = self._split_cell(end_cell)
+        if start is None or end is None:
+            return None, None
+
+        start_col, start_row = start
+        end_col, end_row = end
+
+        header_rows = int(table_tree.get("headerRowCount", "1") or 0)
+        totals_rows = int(table_tree.get("totalsRowCount", "0") or 0)
+        data_start_row = start_row + header_rows
+        data_end_row = end_row - totals_rows if totals_rows else end_row
+
+        # Determine actual last data row based on rendered worksheet
+        actual_end_row = data_end_row
+        for row_index in sorted(row_columns):
+            if row_index < data_start_row:
+                continue
+            if totals_rows and row_index > data_end_row:
+                continue
+            columns = row_columns[row_index]
+            if any(start_col <= col <= end_col for col in columns):
+                actual_end_row = max(actual_end_row, row_index)
+
+        if totals_rows:
+            new_end_row = max(actual_end_row, data_start_row - 1) + totals_rows
+        else:
+            new_end_row = max(actual_end_row, data_start_row - 1)
+
+        if new_end_row < data_start_row and not totals_rows:
+            new_end_row = data_start_row - 1
+
+        if new_end_row != end_row:
+            new_ref = f"{self._column_letters(start_col)}{start_row}:{self._column_letters(end_col)}{new_end_row}"
+            table_tree.set("ref", new_ref)
+            for auto_filter in table_tree.findall(f"{prefix}autoFilter"):
+                auto_filter.set("ref", new_ref)
+            end_row = new_end_row
+
+        table_columns = table_tree.find(f"{prefix}tableColumns")
+        column_names: list[str] = []
+        if table_columns is not None:
+            for column in table_columns.findall(f"{prefix}tableColumn"):
+                name = column.get("name") or column.get("id")
+                if name:
+                    column_names.append(name)
+
+        if not column_names:
+            width = end_col - start_col + 1
+            column_names = [f"Column{idx}" for idx in range(1, width + 1)]
+
+        table_info: dict[str, object] = {
+            "name": table_name,
+            "sheet": sheet_name,
+            "columns": {},
+            "order": column_names,
+        }
+
+        data_end_row = end_row - totals_rows if totals_rows else end_row
+
+        columns_info: dict[str, dict[str, list[str]]] = {}
+        for offset, column_name in enumerate(column_names):
+            column_index = start_col + offset
+            column_letter = self._column_letters(column_index)
+
+            headers = [
+                f"{column_letter}{row_index}"
+                for row_index in range(start_row, start_row + header_rows)
+            ] if header_rows else []
+
+            data_cells = [
+                f"{column_letter}{row_index}"
+                for row_index in range(data_start_row, data_end_row + 1)
+            ] if data_start_row <= data_end_row else []
+
+            totals_cells = [
+                f"{column_letter}{row_index}"
+                for row_index in range(data_end_row + 1, end_row + 1)
+            ] if totals_rows else []
+
+            columns_info[column_name] = {
+                "headers": headers,
+                "data": data_cells,
+                "totals": totals_cells,
+            }
+
+        table_info["columns"] = columns_info
+
+        return etree.tostring(table_tree, encoding="unicode"), table_info
 
     def _parse_shared_strings(self, xml: str) -> tuple[list[str], etree._Element]:
         try:
@@ -593,12 +873,22 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     values.extend(extracted)
             return values or None
 
-        if "!" not in formula:
-            return None
+        sheet_name = None
+        cell_part = formula
+        if "!" in formula:
+            sheet_part, cell_part = formula.rsplit("!", 1)
+            sheet_name = self._normalise_sheet_name(sheet_part)
 
-        sheet_part, cell_part = formula.rsplit("!", 1)
-        sheet_name = self._normalise_sheet_name(sheet_part)
-        if not sheet_name:
+        if "[" in cell_part and "]" in cell_part:
+            structured = self._extract_structured_reference(
+                sheet_name,
+                cell_part,
+                workbook_data,
+            )
+            if structured is not None:
+                return structured
+
+        if sheet_name is None:
             return None
 
         sheet_values = workbook_data.get(sheet_name)
@@ -673,6 +963,205 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 for row in range(start_row, end_row + 1):
                     cells.append(f"{self._column_letters(col)}{row}")
         return cells
+
+    def _extract_structured_reference(
+        self,
+        sheet_name: str | None,
+        reference: str,
+        workbook_data: dict[str, dict[str, str]],
+    ) -> list[str] | None:
+        tables = workbook_data.get("__tables__")
+        if not isinstance(tables, dict):
+            return None
+
+        table_name, tokens = self._parse_structured_reference(reference)
+        if not table_name:
+            return None
+
+        table_info = tables.get(table_name)
+        if table_info is None:
+            lower_lookup = tables.get("__lower__")
+            if isinstance(lower_lookup, dict):
+                resolved = lower_lookup.get(table_name.lower())
+                if resolved:
+                    table_info = tables.get(resolved)
+        if not isinstance(table_info, dict):
+            return None
+
+        resolved_sheet = sheet_name or table_info.get("sheet")
+        if not isinstance(resolved_sheet, str) or not resolved_sheet:
+            return None
+
+        sheet_values = workbook_data.get(resolved_sheet)
+        if sheet_values is None:
+            return None
+
+        qualifiers, columns = self._interpret_structured_tokens(tokens, table_info)
+        if columns is None or not columns:
+            return None
+
+        values: list[str] = []
+        columns_info = table_info.get("columns")
+        if not isinstance(columns_info, dict):
+            return None
+
+        include_headers = qualifiers.get("headers", False)
+        include_data = qualifiers.get("data", False)
+        include_totals = qualifiers.get("totals", False)
+
+        for column_name in columns:
+            column_info = columns_info.get(column_name)
+            if not isinstance(column_info, dict):
+                continue
+            if include_headers:
+                for cell in column_info.get("headers", []):
+                    values.append(sheet_values.get(cell, ""))
+            if include_data:
+                for cell in column_info.get("data", []):
+                    values.append(sheet_values.get(cell, ""))
+            if include_totals:
+                for cell in column_info.get("totals", []):
+                    values.append(sheet_values.get(cell, ""))
+
+        return values or None
+
+    def _parse_structured_reference(
+        self,
+        reference: str,
+    ) -> tuple[str | None, list[object]]:
+        cleaned = reference.strip()
+        if cleaned.startswith("="):
+            cleaned = cleaned[1:]
+        if not cleaned:
+            return None, []
+
+        if "[" not in cleaned:
+            return self._strip_structured_quotes(cleaned), []
+
+        name_part, rest = cleaned.split("[", 1)
+        table_name = self._strip_structured_quotes(name_part)
+        tokens = self._split_structured_tokens("[" + rest)
+        return table_name, tokens
+
+    def _split_structured_tokens(self, token_str: str) -> list[object]:
+        tokens: list[str] = []
+        current: list[str] = []
+        depth = 0
+        for char in token_str:
+            if char == "[":
+                depth += 1
+                if depth == 1:
+                    current = []
+                    continue
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    token = "".join(current).strip()
+                    if token:
+                        tokens.append(token)
+                    current = []
+                    continue
+            elif char == "," and depth == 1:
+                token = "".join(current).strip()
+                if token:
+                    tokens.append(token)
+                current = []
+                continue
+
+            if depth >= 1:
+                current.append(char)
+
+        normalised: list[object] = []
+        for token in tokens:
+            token = token.strip()
+            if not token:
+                continue
+            if ":" in token:
+                start, end = token.split(":", 1)
+                start = self._strip_structured_component(start)
+                end = self._strip_structured_component(end)
+                if start and end:
+                    normalised.append((start, end))
+                continue
+            normalised.append(self._strip_structured_component(token))
+        return normalised
+
+    def _strip_structured_component(self, component: str) -> str:
+        result = component.strip()
+        while result.startswith("[") and result.endswith("]") and len(result) >= 2:
+            result = result[1:-1].strip()
+        return self._strip_structured_quotes(result)
+
+    def _strip_structured_quotes(self, value: str) -> str | None:
+        stripped = value.strip()
+        if stripped.startswith("'") and stripped.endswith("'") and len(stripped) >= 2:
+            stripped = stripped[1:-1]
+        return stripped or None
+
+    def _interpret_structured_tokens(
+        self,
+        tokens: list[object],
+        table_info: dict[str, object],
+    ) -> tuple[dict[str, bool], list[str] | None]:
+        order = table_info.get("order")
+        if not isinstance(order, list):
+            order = []
+        order_lookup = {name: idx for idx, name in enumerate(order) if isinstance(name, str)}
+
+        qualifier_flags: set[str] = set()
+        selected_indices: list[int] = []
+
+        def add_column(name: str | None) -> None:
+            if not name:
+                return
+            idx = order_lookup.get(name)
+            if idx is None:
+                return
+            if idx not in selected_indices:
+                selected_indices.append(idx)
+
+        for token in tokens:
+            if isinstance(token, tuple):
+                start, end = token
+                if not isinstance(start, str) or not isinstance(end, str):
+                    continue
+                start_idx = order_lookup.get(start)
+                end_idx = order_lookup.get(end)
+                if start_idx is None or end_idx is None:
+                    continue
+                if start_idx <= end_idx:
+                    indices = range(start_idx, end_idx + 1)
+                else:
+                    indices = range(end_idx, start_idx + 1)
+                for idx in indices:
+                    if idx not in selected_indices:
+                        selected_indices.append(idx)
+                continue
+
+            if isinstance(token, str):
+                lowered = token.lower()
+                if lowered.startswith("#"):
+                    qualifier_flags.add(lowered)
+                    continue
+                add_column(token)
+
+        if not selected_indices:
+            selected_indices = list(range(len(order)))
+
+        qualifiers = {
+            "headers": "#headers" in qualifier_flags or "#all" in qualifier_flags,
+            "data": bool(
+                {"#data", "#all"}.intersection(qualifier_flags)
+                or not qualifier_flags
+            ),
+            "totals": "#totals" in qualifier_flags or "#all" in qualifier_flags,
+        }
+
+        if "#this row" in qualifier_flags:
+            return qualifiers, None
+
+        columns = [order[idx] for idx in sorted(selected_indices) if idx < len(order)]
+        return qualifiers, columns
 
     def _normalise_cell_reference(self, cell: str) -> str | None:
         parsed = self._split_cell(cell)
