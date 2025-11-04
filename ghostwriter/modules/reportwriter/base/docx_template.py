@@ -32,6 +32,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         "word/diagrams/data*.xml",
         "word/diagrams/drawing*.xml",
         "word/embeddings/Microsoft_Excel_Worksheet*.xlsx",
+        "word/charts/chart*.xml",
     )
 
     def render(self, context, jinja_env=None, autoescape: bool = False) -> None:  # type: ignore[override]
@@ -159,17 +160,35 @@ class GhostwriterDocxTemplate(DocxTemplate):
         return partname.endswith(".xlsx")
 
     def _render_additional_parts(self, context, jinja_env) -> None:
-        for part in self._iter_additional_parts():
+        parts = list(self._iter_additional_parts())
+        excel_values: dict[str, dict[str, dict[str, str]]] = {}
+
+        for part in parts:
+            partname = self._normalise_partname(part)
+            if not self._is_excel_part(partname):
+                continue
+
+            rendered = self._render_excel_part(part, context, jinja_env)
+            if rendered is None:
+                continue
+
+            rendered_blob, workbook_values = rendered
+            if rendered_blob is not None and hasattr(part, "_blob"):
+                part._blob = rendered_blob
+            if workbook_values:
+                excel_values[partname] = workbook_values
+
+        for part in parts:
             partname = self._normalise_partname(part)
             if self._is_excel_part(partname):
-                rendered_blob = self._render_excel_part(part, context, jinja_env)
-                if rendered_blob is not None and hasattr(part, "_blob"):
-                    part._blob = rendered_blob
                 continue
 
             xml = self.get_part_xml(part)
             patched = self.patch_xml(xml)
             rendered = self.render_xml_part(patched, part, context, jinja_env)
+            if self._is_chart_part(partname):
+                rendered = self._sync_chart_cache(rendered, part, excel_values)
+
             rendered_bytes = rendered.encode("utf-8")
             if hasattr(part, "_element"):
                 part._element = parse_xml(rendered_bytes)
@@ -208,7 +227,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
             patched = self.patch_xml(xml)
             rendered_xml[name] = self.render_xml_part(patched, part, context, jinja_env)
 
-        rendered_xml = self._coerce_excel_types(rendered_xml)
+        sheet_map = self._build_sheet_map(rendered_xml, files)
+        rendered_xml, workbook_values = self._coerce_excel_types(rendered_xml, sheet_map)
 
         output = io.BytesIO()
         with zipfile.ZipFile(output, "w") as archive:
@@ -228,28 +248,102 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 new_info.flag_bits = info.flag_bits
                 archive.writestr(new_info, content)
 
-        return output.getvalue()
+        return output.getvalue(), workbook_values
+
+    def _is_chart_part(self, partname: str) -> bool:
+        return partname.startswith("word/charts/") and partname.endswith(".xml")
+
+    def _build_sheet_map(
+        self,
+        rendered_xml: dict[str, str],
+        files: dict[str, bytes],
+    ) -> dict[str, str]:
+        workbook_xml = rendered_xml.get("xl/workbook.xml")
+        if workbook_xml is None and "xl/workbook.xml" in files:
+            workbook_xml = files["xl/workbook.xml"].decode("utf-8")
+
+        rels_xml = rendered_xml.get("xl/_rels/workbook.xml.rels")
+        if rels_xml is None and "xl/_rels/workbook.xml.rels" in files:
+            rels_xml = files["xl/_rels/workbook.xml.rels"].decode("utf-8")
+
+        if not workbook_xml or not rels_xml:
+            return {}
+
+        return self._parse_sheet_map(workbook_xml, rels_xml)
+
+    def _parse_sheet_map(self, workbook_xml: str, rels_xml: str) -> dict[str, str]:
+        try:
+            workbook_tree = etree.fromstring(workbook_xml.encode("utf-8"))
+            rels_tree = etree.fromstring(rels_xml.encode("utf-8"))
+        except etree.XMLSyntaxError:
+            return {}
+
+        ns = workbook_tree.nsmap.get(None)
+        prefix = f"{{{ns}}}" if ns else ""
+        rels_ns = rels_tree.nsmap.get(None)
+        rels_prefix = f"{{{rels_ns}}}" if rels_ns else ""
+        r_ns = workbook_tree.nsmap.get("r")
+        default_r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        r_prefix = f"{{{r_ns}}}" if r_ns else f"{{{default_r_ns}}}"
+
+        rel_targets: dict[str, str] = {}
+        for rel in rels_tree.findall(f"{rels_prefix}Relationship"):
+            rel_id = rel.get("Id")
+            target = rel.get("Target")
+            if not rel_id or not target:
+                continue
+            rel_targets[rel_id] = target
+
+        sheet_map: dict[str, str] = {}
+        for sheet in workbook_tree.findall(f".//{prefix}sheet"):
+            name = sheet.get("name")
+            rel_id = sheet.get(f"{r_prefix}id")
+            if not name or not rel_id:
+                continue
+            target = rel_targets.get(rel_id)
+            if not target:
+                continue
+            target_path = target.lstrip("/")
+            if not target_path.startswith("xl/"):
+                target_path = f"xl/{target_path}"
+            sheet_map[target_path] = name
+
+        return sheet_map
 
     # Excel helpers -------------------------------------------------
 
-    def _coerce_excel_types(self, xml_files: dict[str, str]) -> dict[str, str]:
+    def _coerce_excel_types(
+        self,
+        xml_files: dict[str, str],
+        sheet_map: dict[str, str],
+    ) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
         if not xml_files:
-            return xml_files
+            return xml_files, {}
 
         shared_strings = None
         shared_strings_key = "xl/sharedStrings.xml"
         if shared_strings_key in xml_files:
             shared_strings = self._parse_shared_strings(xml_files[shared_strings_key])
 
+        workbook_values: dict[str, dict[str, str]] = {}
         for name, xml in list(xml_files.items()):
             if not name.startswith("xl/worksheets/"):
                 continue
-            xml_files[name] = self._coerce_sheet_types(xml, shared_strings)
+            sheet_name = sheet_map.get(name)
+            coerced, cell_values = self._coerce_sheet_types(
+                xml,
+                shared_strings,
+            )
+            xml_files[name] = coerced
+            if cell_values:
+                if sheet_name:
+                    workbook_values[sheet_name] = cell_values
+                workbook_values.setdefault(name, cell_values)
 
         if shared_strings is not None and shared_strings_key in xml_files:
             xml_files[shared_strings_key] = self._serialise_shared_strings(shared_strings)
 
-        return xml_files
+        return xml_files, workbook_values
 
     def _parse_shared_strings(self, xml: str) -> tuple[list[str], etree._Element]:
         try:
@@ -287,41 +381,62 @@ class GhostwriterDocxTemplate(DocxTemplate):
         self,
         xml: str,
         shared_strings: tuple[list[str], etree._Element] | None,
-    ) -> str:
+    ) -> tuple[str, dict[str, str]]:
         try:
             tree = etree.fromstring(xml.encode("utf-8"))
         except etree.XMLSyntaxError:
-            return xml
+            return xml, {}
 
         ns = tree.nsmap.get(None)
         prefix = f"{{{ns}}}" if ns else ""
 
         shared_values = shared_strings[0] if shared_strings else []
+        cell_values: dict[str, str] = {}
         for cell in tree.findall(f".//{prefix}c"):
             cell_type = cell.get("t")
+            cell_ref = cell.get("r")
+            value_text: str | None = None
             if cell_type == "s":
                 value_node = cell.find(f"{prefix}v")
                 if value_node is None or value_node.text is None:
+                    if cell_ref and cell_ref not in cell_values:
+                        cell_values[cell_ref] = ""
                     continue
                 try:
                     index = int(value_node.text)
                 except (TypeError, ValueError):
+                    if cell_ref and cell_ref not in cell_values:
+                        cell_values[cell_ref] = value_node.text or ""
                     continue
                 if 0 <= index < len(shared_values):
-                    coerced = self._maybe_numeric(shared_values[index])
+                    original_value = shared_values[index]
+                    coerced = self._maybe_numeric(original_value)
                     if coerced is not None:
                         cell.attrib.pop("t", None)
                         value_node.text = coerced
+                        shared_values[index] = coerced
+                        value_text = coerced
+                    else:
+                        value_text = original_value
+                if cell_ref and value_text is not None:
+                    cell_values[cell_ref] = value_text
+                elif cell_ref and cell_ref not in cell_values:
+                    cell_values[cell_ref] = ""
                 continue
 
             if cell_type in _INLINE_STRING_TYPES:
                 inline = cell.find(f"{prefix}is")
                 if inline is None:
+                    if cell_ref and cell_ref not in cell_values:
+                        cell_values[cell_ref] = ""
                     continue
                 text_nodes = inline.findall(f".//{prefix}t")
                 text = "".join(node.text or "" for node in text_nodes)
                 coerced = self._maybe_numeric(text)
                 if coerced is None:
+                    value_text = text
+                    if cell_ref:
+                        cell_values[cell_ref] = value_text
                     continue
                 cell.attrib.pop("t", None)
                 for node in text_nodes:
@@ -333,18 +448,35 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     inline_parent.remove(inline)
                 value_node = etree.SubElement(cell, f"{prefix}v")
                 value_node.text = coerced
+                value_text = coerced
+                if cell_ref:
+                    cell_values[cell_ref] = value_text
                 continue
 
             if cell_type == "str" or cell_type == "b":
                 value_node = cell.find(f"{prefix}v")
                 if value_node is None or value_node.text is None:
+                    if cell_ref and cell_ref not in cell_values:
+                        cell_values[cell_ref] = ""
                     continue
                 coerced = self._maybe_numeric(value_node.text)
                 if coerced is not None:
                     cell.attrib.pop("t", None)
                     value_node.text = coerced
+                    value_text = coerced
+                else:
+                    value_text = value_node.text
+                if cell_ref:
+                    cell_values[cell_ref] = value_text
+                continue
 
-        return etree.tostring(tree, encoding="unicode")
+            value_node = cell.find(f"{prefix}v")
+            if value_node is not None and value_node.text is not None:
+                value_text = value_node.text
+            if cell_ref and value_text is not None:
+                cell_values[cell_ref] = value_text
+
+        return etree.tostring(tree, encoding="unicode"), cell_values
 
     def _maybe_numeric(self, value: str) -> str | None:
         stripped = value.strip()
@@ -362,4 +494,222 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 else stripped
             )
         return None
+
+    # Chart helpers -------------------------------------------------
+
+    def _sync_chart_cache(
+        self,
+        xml: str,
+        part,
+        excel_values: dict[str, dict[str, dict[str, str]]],
+    ) -> str:
+        workbook_data = self._resolve_chart_workbook(part, excel_values)
+        if not workbook_data:
+            return xml
+
+        try:
+            tree = etree.fromstring(xml.encode("utf-8"))
+        except etree.XMLSyntaxError:
+            return xml
+
+        ns = tree.nsmap.get("c") or tree.nsmap.get(None)
+        prefix = f"{{{ns}}}" if ns else ""
+        updated = False
+
+        for num_ref in tree.findall(f".//{prefix}numRef"):
+            formula = self._find_chart_formula(num_ref, prefix)
+            if not formula:
+                continue
+            values = self._extract_range_values(formula, workbook_data)
+            if values is None:
+                continue
+            cache = num_ref.find(f"{prefix}numCache")
+            if cache is None:
+                cache = etree.SubElement(num_ref, f"{prefix}numCache")
+            self._write_cache(cache, values, prefix)
+            updated = True
+
+        for str_ref in tree.findall(f".//{prefix}strRef"):
+            formula = self._find_chart_formula(str_ref, prefix)
+            if not formula:
+                continue
+            values = self._extract_range_values(formula, workbook_data)
+            if values is None:
+                continue
+            cache = str_ref.find(f"{prefix}strCache")
+            if cache is None:
+                cache = etree.SubElement(str_ref, f"{prefix}strCache")
+            self._write_cache(cache, values, prefix)
+            updated = True
+
+        if not updated:
+            return xml
+
+        return etree.tostring(tree, encoding="unicode")
+
+    def _resolve_chart_workbook(
+        self,
+        part,
+        excel_values: dict[str, dict[str, dict[str, str]]],
+    ) -> dict[str, dict[str, str]] | None:
+        rels = getattr(part, "rels", None)
+        if not rels:
+            return None
+
+        for rel in rels.values():
+            reltype = getattr(rel, "reltype", "")
+            if not reltype or "embeddedPackage" not in reltype:
+                continue
+            target = getattr(rel, "target_part", None)
+            if target is None:
+                continue
+            partname = self._normalise_partname(target)
+            workbook_data = excel_values.get(partname)
+            if workbook_data:
+                return workbook_data
+        return None
+
+    def _find_chart_formula(self, ref_node, prefix: str) -> str | None:
+        formula_node = ref_node.find(f"{prefix}f")
+        if formula_node is None or formula_node.text is None:
+            return None
+        return formula_node.text.strip()
+
+    def _extract_range_values(
+        self,
+        formula: str,
+        workbook_data: dict[str, dict[str, str]],
+    ) -> list[str] | None:
+        if not formula:
+            return None
+
+        if "(" in formula and ")" in formula:
+            inner = formula[formula.find("(") + 1 : formula.rfind(")")]
+            parts = self._split_formula_arguments(inner)
+            values: list[str] = []
+            for part in parts:
+                extracted = self._extract_range_values(part, workbook_data)
+                if extracted:
+                    values.extend(extracted)
+            return values or None
+
+        if "!" not in formula:
+            return None
+
+        sheet_part, cell_part = formula.rsplit("!", 1)
+        sheet_name = self._normalise_sheet_name(sheet_part)
+        if not sheet_name:
+            return None
+
+        sheet_values = workbook_data.get(sheet_name)
+        if sheet_values is None:
+            return None
+
+        cells = self._expand_cell_range(cell_part)
+        if not cells:
+            return None
+
+        values = [sheet_values.get(cell, "") for cell in cells]
+        return values
+
+    def _split_formula_arguments(self, formula: str) -> list[str]:
+        depth = 0
+        current: list[str] = []
+        parts: list[str] = []
+        for char in formula:
+            if char == "," and depth == 0:
+                part = "".join(current).strip()
+                if part:
+                    parts.append(part)
+                current = []
+                continue
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+            current.append(char)
+        tail = "".join(current).strip()
+        if tail:
+            parts.append(tail)
+        return parts
+
+    def _normalise_sheet_name(self, sheet_part: str) -> str | None:
+        stripped = sheet_part.strip()
+        if stripped.startswith("="):
+            stripped = stripped[1:]
+        if stripped.startswith("'") and stripped.endswith("'"):
+            stripped = stripped[1:-1]
+        if stripped.startswith("[") and "]" in stripped:
+            stripped = stripped.split("]", 1)[1]
+        if stripped.startswith("'") and stripped.endswith("'"):
+            stripped = stripped[1:-1]
+        return stripped or None
+
+    def _expand_cell_range(self, cell_part: str) -> list[str]:
+        reference = cell_part.strip()
+        if reference.startswith("="):
+            reference = reference[1:]
+        if not reference:
+            return []
+
+        ranges = [r.strip() for r in reference.split(",") if r.strip()]
+        cells: list[str] = []
+        for cell_range in ranges:
+            start_end = cell_range.split(":")
+            if len(start_end) == 1:
+                coord = self._normalise_cell_reference(start_end[0])
+                if coord:
+                    cells.append(coord)
+                continue
+            if len(start_end) != 2:
+                continue
+            start = self._split_cell(start_end[0])
+            end = self._split_cell(start_end[1])
+            if start is None or end is None:
+                continue
+            start_col, start_row = start
+            end_col, end_row = end
+            for col in range(start_col, end_col + 1):
+                for row in range(start_row, end_row + 1):
+                    cells.append(f"{self._column_letters(col)}{row}")
+        return cells
+
+    def _normalise_cell_reference(self, cell: str) -> str | None:
+        parsed = self._split_cell(cell)
+        if parsed is None:
+            return None
+        col, row = parsed
+        return f"{self._column_letters(col)}{row}"
+
+    def _split_cell(self, cell: str) -> tuple[int, int] | None:
+        cleaned = cell.strip().replace("$", "")
+        match = re.fullmatch(r"([A-Za-z]+)(\d+)", cleaned)
+        if not match:
+            return None
+        col_letters, row_str = match.groups()
+        col_index = 0
+        for char in col_letters.upper():
+            col_index = col_index * 26 + (ord(char) - ord("A") + 1)
+        return col_index, int(row_str)
+
+    def _column_letters(self, index: int) -> str:
+        letters: list[str] = []
+        while index > 0:
+            index, remainder = divmod(index - 1, 26)
+            letters.append(chr(ord("A") + remainder))
+        return "".join(reversed(letters))
+
+    def _write_cache(self, cache, values: list[str], prefix: str) -> None:
+        pt_count = cache.find(f"{prefix}ptCount")
+        if pt_count is None:
+            pt_count = etree.SubElement(cache, f"{prefix}ptCount")
+        pt_count.set("val", str(len(values)))
+
+        for pt in list(cache.findall(f"{prefix}pt")):
+            cache.remove(pt)
+
+        for idx, value in enumerate(values):
+            pt = etree.SubElement(cache, f"{prefix}pt", idx=str(idx))
+            v = etree.SubElement(pt, f"{prefix}v")
+            v.text = "" if value is None else str(value)
 
