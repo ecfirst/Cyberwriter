@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import fnmatch
+from io import BytesIO
 import re
 from typing import Iterator
+from zipfile import ZipFile
 
 from docx.oxml import parse_xml
 from docxtpl.template import DocxTemplate
@@ -15,18 +17,20 @@ _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
-    """Docx template that also renders SmartArt diagram parts.
+    """Docx template that also renders SmartArt and embedded workbook parts.
 
     Microsoft Word stores SmartArt data in the ``word/diagrams`` folder of the
-    DOCX package. The python-docx-template library does not process those XML
-    parts when rendering a document or when collecting undeclared variables for
-    linting.  This subclass extends the renderer so those parts participate in
-    templating just like the document body.
+    DOCX package and embedded worksheets in ``word/embeddings`` as XLSX files.
+    The python-docx-template library does not process those parts when
+    rendering a document or when collecting undeclared variables for linting.
+    This subclass extends the renderer so those parts participate in templating
+    just like the document body.
     """
 
     _EXTRA_TEMPLATED_PATTERNS: tuple[str, ...] = (
         "word/diagrams/data*.xml",
         "word/diagrams/drawing*.xml",
+        "word/embeddings/*.xlsx",
     )
 
     def render(self, context, jinja_env=None, autoescape: bool = False) -> None:  # type: ignore[override]
@@ -73,7 +77,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 xml_sources.append(self.patch_xml(self.get_part_xml(part)))
 
         for part in self._iter_additional_parts():
-            xml_sources.append(self.patch_xml(self.get_part_xml(part)))
+            if self._is_excel_part(part):
+                xml_sources.extend(self._iter_excel_xml_strings(part))
+            else:
+                xml_sources.append(self.patch_xml(self.get_part_xml(part)))
 
         env = jinja_env or Environment()
         parse_content = env.parse("".join(xml_sources))
@@ -143,6 +150,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
     def _render_additional_parts(self, context, jinja_env) -> None:
         for part in self._iter_additional_parts():
+            if self._is_excel_part(part):
+                self._render_excel_part(part, context, jinja_env)
+                continue
+
             xml = self.get_part_xml(part)
             patched = self.patch_xml(xml)
             rendered = self.render_xml_part(patched, part, context, jinja_env)
@@ -151,4 +162,46 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 part._element = parse_xml(rendered_bytes)
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
+
+    def _is_excel_part(self, part) -> bool:
+        partname = str(part.partname).lstrip("/")
+        return partname.endswith(".xlsx")
+
+    def _iter_excel_xml_strings(self, part) -> Iterator[str]:
+        blob = getattr(part, "blob", None)
+        if blob is None:
+            blob = getattr(part, "_blob", b"")
+        if not blob:
+            return
+
+        with ZipFile(BytesIO(blob)) as archive:
+            for info in archive.infolist():
+                if not info.filename.lower().endswith(".xml"):
+                    continue
+                xml = archive.read(info.filename).decode("utf-8")
+                yield self.patch_xml(xml)
+
+    def _render_excel_part(self, part, context, jinja_env) -> None:
+        blob = getattr(part, "blob", None)
+        if blob is None:
+            blob = getattr(part, "_blob", b"")
+        if not blob:
+            return
+
+        source = BytesIO(blob)
+        destination = BytesIO()
+
+        with ZipFile(source, "r") as archive, ZipFile(destination, "w") as patched_archive:
+            for info in archive.infolist():
+                data = archive.read(info.filename)
+                if info.filename.lower().endswith(".xml"):
+                    xml = data.decode("utf-8")
+                    patched = self.patch_xml(xml)
+                    rendered = self.render_xml_part(patched, part, context, jinja_env)
+                    data = rendered.encode("utf-8")
+                patched_archive.writestr(info, data)
+
+        rendered_bytes = destination.getvalue()
+        if hasattr(part, "_blob"):
+            part._blob = rendered_bytes
 
