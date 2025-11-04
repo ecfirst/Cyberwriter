@@ -617,6 +617,7 @@ def test_patch_xml_handles_excel_tc_tr_tags():
 
     assert "{% for row in rows %}" in cleaned
     assert "{% endfor %}" in cleaned
+    assert "{% for for" not in cleaned
     assert "{{ row.value }}" in cleaned
     assert "{{tc" not in cleaned
     assert "{%tc" not in cleaned
