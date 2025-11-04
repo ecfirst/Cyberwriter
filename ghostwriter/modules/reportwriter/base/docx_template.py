@@ -422,16 +422,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
         except ET.ParseError:
             return xml
 
-        changed = self._ensure_chart_auto_update(root)
-
         workbook_map = self._resolve_chart_workbooks(part, excel_results)
         if not workbook_map:
-            if not changed:
-                return xml
-            source_xml = original_xml or xml
-            return self._serialize_xml_with_declaration(source_xml, root)
+            return xml
 
-        updated = changed
+        updated = False
 
         for num_ref in root.findall(".//c:numRef", _CHART_NS):
             if self._update_chart_reference(num_ref, workbook_map, numeric=True):
@@ -446,23 +441,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         source_xml = original_xml or xml
         return self._serialize_xml_with_declaration(source_xml, root)
-
-    def _ensure_chart_auto_update(self, root: ET.Element) -> bool:
-        external = root.find(".//c:externalData", _CHART_NS)
-        if external is None:
-            return False
-
-        auto = external.find("c:autoUpdate", _CHART_NS)
-        if auto is None:
-            ET.SubElement(external, f"{{{_CHART_MAIN_NS}}}autoUpdate", {"val": "1"})
-            return True
-
-        previous = auto.get("val")
-        if previous != "1":
-            auto.set("val", "1")
-            return True
-
-        return False
 
     def _resolve_chart_workbooks(
         self,

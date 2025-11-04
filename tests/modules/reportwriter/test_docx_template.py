@@ -244,11 +244,6 @@ def test_render_chart_part_refreshes_cache_from_workbook(monkeypatch):
     ]
     assert values == ["5", "10", "15"]
 
-    auto_update = chart_part._element.xpath(
-        ".//c:externalData/c:autoUpdate[@val='1']", namespaces=ns
-    )
-    assert auto_update
-
 
 def test_render_additional_parts_updates_excel_xml(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
