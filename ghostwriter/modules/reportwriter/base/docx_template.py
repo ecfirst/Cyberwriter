@@ -96,6 +96,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         """Normalize XML for templating across Word body and SmartArt parts."""
 
         patched = super().patch_xml(src_xml)
+        patched = self._strip_excel_table_tags(patched)
 
         def strip_namespaced_tags(match: re.Match[str]) -> str:
             statement = match.group(0)
@@ -131,6 +132,40 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return "".join(cleaned)
 
         return _JINJA_STATEMENT_RE.sub(strip_namespaced_tags, patched)
+
+    def _strip_excel_table_tags(self, xml: str) -> str:
+        """Remove Excel row/cell wrappers around Ghostwriter ``tr``/``tc`` tags."""
+
+        def _strip_container(value: str, container: str, tag: str) -> str:
+            open_regex = "<(?:[A-Za-z_][\\w.-]*:)?%s[^>]*>\\s*%s\\s*%s"
+            close_regex = "%s.*?%s\\s*</(?:[A-Za-z_][\\w.-]*:)?%s>"
+            for start, end, start_regex in (
+                ("{{", "}}", "\\{\\{"),
+                ("{%", "%}", "\\{%"),
+                ("{#", "#}", "\\{#"),
+            ):
+                open_pattern = re.compile(
+                    open_regex % (container, start_regex, tag),
+                    re.DOTALL,
+                )
+                value = open_pattern.sub(start, value)
+                close_pattern = re.compile(
+                    close_regex % (start_regex, end, container),
+                    re.DOTALL,
+                )
+
+                def close_replacement(match: re.Match[str]) -> str:
+                    matched = match.group(0)
+                    end_index = matched.rfind(end)
+                    return matched[: end_index + len(end)] if end_index != -1 else matched
+
+                value = close_pattern.sub(close_replacement, value)
+
+            return re.sub(r"(\{\{|\{%|\{#)\s+", lambda m: m.group(1) + " ", value)
+
+        xml = _strip_container(xml, "row", "tr")
+        xml = _strip_container(xml, "c", "tc")
+        return xml
 
     # ------------------------------------------------------------------
     # Helpers
@@ -792,34 +827,28 @@ class GhostwriterDocxTemplate(DocxTemplate):
         except etree.XMLSyntaxError:
             return xml
 
-        ns = tree.nsmap.get("c") or tree.nsmap.get(None)
-        prefix = f"{{{ns}}}" if ns else ""
         updated = False
 
-        for num_ref in tree.findall(f".//{prefix}numRef"):
-            formula = self._find_chart_formula(num_ref, prefix)
+        for num_ref in tree.findall(".//{*}numRef"):
+            formula = self._find_chart_formula(num_ref)
             if not formula:
                 continue
             values = self._extract_range_values(formula, workbook_data)
             if values is None:
                 continue
-            cache = num_ref.find(f"{prefix}numCache")
-            if cache is None:
-                cache = etree.SubElement(num_ref, f"{prefix}numCache")
-            self._write_cache(cache, values, prefix)
+            cache = self._find_or_create_cache(num_ref, "numCache")
+            self._write_cache(cache, values)
             updated = True
 
-        for str_ref in tree.findall(f".//{prefix}strRef"):
-            formula = self._find_chart_formula(str_ref, prefix)
+        for str_ref in tree.findall(".//{*}strRef"):
+            formula = self._find_chart_formula(str_ref)
             if not formula:
                 continue
             values = self._extract_range_values(formula, workbook_data)
             if values is None:
                 continue
-            cache = str_ref.find(f"{prefix}strCache")
-            if cache is None:
-                cache = etree.SubElement(str_ref, f"{prefix}strCache")
-            self._write_cache(cache, values, prefix)
+            cache = self._find_or_create_cache(str_ref, "strCache")
+            self._write_cache(cache, values)
             updated = True
 
         if not updated:
@@ -849,11 +878,24 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 return workbook_data
         return None
 
-    def _find_chart_formula(self, ref_node, prefix: str) -> str | None:
-        formula_node = ref_node.find(f"{prefix}f")
-        if formula_node is None or formula_node.text is None:
-            return None
-        return formula_node.text.strip()
+    def _find_chart_formula(self, ref_node) -> str | None:
+        for child in ref_node:
+            qname = etree.QName(child)
+            if qname.localname != "f":
+                continue
+            if child.text is None:
+                return None
+            return child.text.strip()
+        return None
+
+    def _find_or_create_cache(self, ref_node, local_name: str):
+        for child in ref_node:
+            if etree.QName(child).localname == local_name:
+                return child
+
+        namespace = etree.QName(ref_node).namespace
+        tag = f"{{{namespace}}}{local_name}" if namespace else local_name
+        return etree.SubElement(ref_node, tag)
 
     def _extract_range_values(
         self,
@@ -1188,7 +1230,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
             letters.append(chr(ord("A") + remainder))
         return "".join(reversed(letters))
 
-    def _write_cache(self, cache, values: list[str], prefix: str) -> None:
+    def _write_cache(self, cache, values: list[str]) -> None:
+        namespace = etree.QName(cache).namespace
+        prefix = f"{{{namespace}}}" if namespace else ""
         pt_count = cache.find(f"{prefix}ptCount")
         if pt_count is None:
             pt_count = etree.SubElement(cache, f"{prefix}ptCount")

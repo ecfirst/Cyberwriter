@@ -67,6 +67,18 @@ WORKSHEET_CHART_XML = (
     "</worksheet>"
 )
 
+WORKSHEET_TR_TC_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    "<row>{%tr for row in rows %}</row>"
+    "<row>{% endtr %}</row>"
+    "<c>{{tc row.value }}</c>"
+    "<c>{%tc%}</c>"
+    "</sheetData>"
+    "</worksheet>"
+)
+
 SHARED_STRINGS_CHART_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -95,6 +107,48 @@ CHART_XML = (
     "</c:strCache></c:strRef></c:cat>"
     "</c:ser>"
     "</c:lineChart>"
+    "</c:plotArea>"
+    "</c:chart>"
+    "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"0\"/></c:externalData>"
+    "</c:chartSpace>"
+)
+
+CHART_EXT_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+    'xmlns:x14="http://schemas.microsoft.com/office/drawing/2010/chart">'
+    "<c:chart>"
+    "<c:plotArea>"
+    "<c:barChart>"
+    "<c:ser>"
+    "<c:val><c:numRef><c:f>Sheet1!$A$1:$A$2</c:f>"
+    "<c:numCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>1</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>2</c:v></c:pt>"
+    "</c:numCache>"
+    "<c:extLst><c:ext uri=\"{C5E0089C-D5B0-43F5-8A56-9C2E5A163620}\">"
+    "<x14:numRef><x14:f>Sheet1!$A$1:$A$2</x14:f>"
+    "<x14:numCache><x14:ptCount val=\"2\"/>"
+    "<x14:pt idx=\"0\"><x14:v>1</x14:v></x14:pt>"
+    "<x14:pt idx=\"1\"><x14:v>2</x14:v></x14:pt>"
+    "</x14:numCache></x14:numRef>"
+    "</c:ext></c:extLst>"
+    "</c:numRef></c:val>"
+    "<c:cat><c:strRef><c:f>Sheet1!$B$1:$B$2</c:f>"
+    "<c:strCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>Old</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>Data</c:v></c:pt>"
+    "</c:strCache>"
+    "<c:extLst><c:ext uri=\"{C5E0089C-D5B0-43F5-8A56-9C2E5A163620}\">"
+    "<x14:strRef><x14:f>Sheet1!$B$1:$B$2</x14:f>"
+    "<x14:strCache><x14:ptCount val=\"2\"/>"
+    "<x14:pt idx=\"0\"><x14:v>Old</x14:v></x14:pt>"
+    "<x14:pt idx=\"1\"><x14:v>Data</x14:v></x14:pt>"
+    "</x14:strCache></x14:strRef>"
+    "</c:ext></c:extLst>"
+    "</c:strRef></c:cat>"
+    "</c:ser>"
+    "</c:barChart>"
     "</c:plotArea>"
     "</c:chart>"
     "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"0\"/></c:externalData>"
@@ -459,6 +513,45 @@ def test_render_additional_parts_updates_chart_cache_structured_ref(monkeypatch)
     assert "{{" not in table_xml
 
 
+def test_render_additional_parts_updates_chart_cache_extensions(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_CHART_XML,
+        SHARED_STRINGS_CHART_XML,
+    )
+    chart = FakeChartPart(
+        "/word/charts/chart1.xml",
+        CHART_EXT_XML,
+        excel,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel, chart]))
+
+    template._render_additional_parts(
+        {
+            "first_val": 10,
+            "second_val": 20,
+            "first_label": "Alpha",
+            "second_label": "Beta",
+        },
+        None,
+    )
+
+    chart_xml = etree.tostring(chart._element, encoding="unicode")
+    assert "<c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt>" in chart_xml
+    assert "<x14:pt idx=\"0\"><x14:v>10</x14:v></x14:pt>" in chart_xml
+    assert "<x14:pt idx=\"1\"><x14:v>20</x14:v></x14:pt>" in chart_xml
+    assert "<c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt>" in chart_xml
+    assert "<x14:pt idx=\"0\"><x14:v>Alpha</x14:v></x14:pt>" in chart_xml
+    assert "<x14:pt idx=\"1\"><x14:v>Beta</x14:v></x14:pt>" in chart_xml
+    assert "{{" not in chart_xml
+
+
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
 
@@ -498,6 +591,17 @@ def test_patch_xml_removes_namespaced_tags_inside_jinja():
 
     assert "{{ value }}" in cleaned
     assert "{{<" not in cleaned
+
+
+def test_patch_xml_handles_excel_tc_tr_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TR_TC_XML)
+
+    assert "{% for row in rows %}" in cleaned
+    assert "{{ row.value }}" in cleaned
+    assert "{{tc" not in cleaned
+    assert "{%tc" not in cleaned
 
 
 def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):
