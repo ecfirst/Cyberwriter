@@ -178,6 +178,50 @@ class ProjectType(models.Model):
         return f"{self.project_type}"
 
 
+class DNSFindingMapping(models.Model):
+    """Store curated finding summaries for DNS scanner issues."""
+
+    issue_text = models.TextField(
+        "DNS issue",
+        unique=True,
+        help_text="Exact text of the DNS check failure (matches dns_report.csv entries).",
+    )
+    finding_text = models.TextField(
+        "Finding summary",
+        help_text="Short description used when summarizing the issue in reports.",
+    )
+
+    class Meta:
+        ordering = ["issue_text"]
+        verbose_name = "DNS finding mapping"
+        verbose_name_plural = "DNS finding mappings"
+
+    def __str__(self):
+        return f"{self.issue_text}"
+
+
+class DNSRecommendationMapping(models.Model):
+    """Store remediation guidance for DNS scanner issues."""
+
+    issue_text = models.TextField(
+        "DNS issue",
+        unique=True,
+        help_text="Exact text of the DNS check failure (matches dns_report.csv entries).",
+    )
+    recommendation_text = models.TextField(
+        "Recommendation",
+        help_text="Remediation guidance presented alongside the DNS finding.",
+    )
+
+    class Meta:
+        ordering = ["issue_text"]
+        verbose_name = "DNS recommendation mapping"
+        verbose_name_plural = "DNS recommendation mappings"
+
+    def __str__(self):
+        return f"{self.issue_text}"
+
+
 class Project(models.Model):
     """
     Stores an individual project, related to :model:`rolodex.Client`,

@@ -10,7 +10,9 @@ from collections import Counter
 from collections import abc
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from django.apps import apps
 from django.core.files.base import File
+from django.db.utils import OperationalError, ProgrammingError
 
 if False:  # pragma: no cover - typing only
     from ghostwriter.rolodex.models import Project, ProjectDataFile  # noqa: F401
@@ -19,7 +21,7 @@ from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, parse_ip_t
 from ghostwriter.rolodex.workbook import AD_DOMAIN_METRICS
 
 
-DNS_RECOMMENDATION_MAP: Dict[str, str] = {
+DEFAULT_DNS_RECOMMENDATION_MAP: Dict[str, str] = {
     "One or more SOA fields are outside recommended ranges": "update SOA fields to follow best practice",
     "Less than 2 nameservers exist": "assign a minimum of 2 nameservers for the domain",
     "More than 8 nameservers exist": "limit the number of nameservers to less than 8",
@@ -46,7 +48,7 @@ DNS_RECOMMENDATION_MAP: Dict[str, str] = {
     "The SPF record contains the overly permissive modifier '+all'": "remove the '+all' modifier",
 }
 
-DNS_FINDING_MAP: Dict[str, str] = {
+DEFAULT_DNS_FINDING_MAP: Dict[str, str] = {
     "One or more SOA fields are outside recommended ranges": "configuring DNS records according to best practice",
     "Less than 2 nameservers exist": "the number/availability of nameservers",
     "More than 8 nameservers exist": "the number/availability of nameservers",
@@ -99,6 +101,27 @@ DNS_IMPACT_MAP: Dict[str, str] = {
     "The SPF value does not allow mail delivery from all mailservers in the domain": "An incomplete SPF record causes legitimate emails to be rejected or marked as spam.",
     "The SPF record contains the overly permissive modifier '+all'": "The '+all' modifier allows any host to send mail for the domain, enabling spoofing and abuse.",
 }
+
+
+def _load_dns_mapping(
+    model_name: str,
+    value_field: str,
+    default_map: Dict[str, str],
+) -> Dict[str, str]:
+    """Return DNS issue mappings from the database, falling back to defaults."""
+
+    try:
+        model = apps.get_model("rolodex", model_name)
+    except LookupError:
+        return default_map
+
+    try:
+        values = model.objects.all().values_list("issue_text", value_field)
+    except (OperationalError, ProgrammingError):  # pragma: no cover - defensive guard
+        return default_map
+
+    mapping = {issue: text for issue, text in values if issue}
+    return mapping or default_map
 
 
 AD_RISK_CONTRIBUTION_PHRASES: Dict[str, str] = {
@@ -434,6 +457,17 @@ def _summarize_firewall_vulnerabilities(
 def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     """Parse a dns_report.csv file, returning issue metadata for failed checks."""
 
+    finding_map = _load_dns_mapping(
+        "DNSFindingMapping",
+        "finding_text",
+        DEFAULT_DNS_FINDING_MAP,
+    )
+    recommendation_map = _load_dns_mapping(
+        "DNSRecommendationMapping",
+        "recommendation_text",
+        DEFAULT_DNS_RECOMMENDATION_MAP,
+    )
+
     issues: List[Dict[str, str]] = []
     for row in _decode_file(file_obj):
         status = (row.get("Status") or row.get("status") or "").strip().upper()
@@ -445,8 +479,8 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
         issue_text = info.splitlines()[0].strip()
         if not issue_text:
             continue
-        finding = DNS_FINDING_MAP.get(issue_text, "")
-        recommendation = DNS_RECOMMENDATION_MAP.get(issue_text, "")
+        finding = finding_map.get(issue_text, "")
+        recommendation = recommendation_map.get(issue_text, "")
         impact = DNS_IMPACT_MAP.get(issue_text, "")
         issues.append(
             {
