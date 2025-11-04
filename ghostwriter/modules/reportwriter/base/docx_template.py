@@ -165,6 +165,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         xml = _strip_container(xml, "row", "tr")
         xml = _strip_container(xml, "c", "tc")
+        xml = re.sub(r"\{%\s*tr\b", "{% for", xml)
+        xml = re.sub(r"\{%\s*endtr\b", "{% endfor", xml)
+        xml = re.sub(r"(\{[\{%#])\s*tc\b", r"\1", xml)
         return xml
 
     # ------------------------------------------------------------------
