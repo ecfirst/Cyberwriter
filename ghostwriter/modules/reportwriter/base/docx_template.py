@@ -175,7 +175,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return "{%" + trim + " endfor"
 
         xml = re.sub(r"\{%(?P<trim>-?)\s*tr\s+for\b", _replace_open_tr, xml)
-        xml = re.sub(r"\{%(?P<trim>-?)\s*endtr\b", _replace_close_tr, xml)
+        xml = re.sub(
+            r"\{%(?P<trim>-?)\s*(?:endtr|tr\s+endfor)\b",
+            _replace_close_tr,
+            xml,
+        )
         xml = re.sub(r"(\{[\{%#])\s*tc\b", r"\1", xml)
         return xml
 

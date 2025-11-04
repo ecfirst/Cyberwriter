@@ -90,6 +90,16 @@ WORKSHEET_TR_TC_TRIMMED_XML = (
     "</worksheet>"
 )
 
+WORKSHEET_TR_ENDFOR_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    "<row>{%tr for site in sites %}</row>"
+    "<row>{%tr endfor %}</row>"
+    "</sheetData>"
+    "</worksheet>"
+)
+
 SHARED_STRINGS_CHART_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -643,6 +653,17 @@ def test_patch_xml_handles_trimmed_excel_tr_tags():
     assert "{%- endfor -%}" in cleaned
     assert "tr for" not in cleaned
     assert "endtr" not in cleaned
+
+
+def test_patch_xml_handles_excel_tr_endfor_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TR_ENDFOR_XML)
+
+    assert "{% for site in sites %}" in cleaned
+    assert "{% endfor %}" in cleaned
+    assert "tr for" not in cleaned
+    assert "tr endfor" not in cleaned
 
 
 def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):
