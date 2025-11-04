@@ -124,6 +124,41 @@ WORKSHEET_TR_LOOP_ROWS_XML = (
     '</worksheet>'
 )
 
+WORKSHEET_TR_SHARED_STRINGS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<dimension ref="A1:D2"/>'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>Site</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>High</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>Medium</t></is></c>'
+    '<c r="D1" t="inlineStr"><is><t>Low</t></is></c>'
+    '</row>'
+    '<row>{%tr for site in sites %}</row>'
+    '<row r="2">'
+    '<c r="A2" t="s"><v>0</v></c>'
+    '<c r="B2" t="s"><v>1</v></c>'
+    '<c r="C2" t="s"><v>2</v></c>'
+    '<c r="D2" t="s"><v>3</v></c>'
+    '</row>'
+    '<row>{%tr endfor %}</row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
+SHARED_STRINGS_TR_LOOP_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'count="4" uniqueCount="4">'
+    '<si><t>{{tc site.url }}</t></si>'
+    '<si><t>{{tc site.high }}</t></si>'
+    '<si><t>{{tc site.medium }}</t></si>'
+    '<si><t>{{tc site.low }}</t></si>'
+    '</sst>'
+)
+
 SHARED_STRINGS_CHART_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -773,4 +808,60 @@ def test_render_additional_parts_inserts_rows_for_tr_loop(monkeypatch):
         assert f">{site['high']}<" in sheet_xml
         assert f">{site['medium']}<" in sheet_xml
         assert f">{site['low']}<" in sheet_xml
+
+
+def test_render_additional_parts_handles_tr_loop_shared_strings(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TR_SHARED_STRINGS_XML,
+        SHARED_STRINGS_TR_LOOP_XML,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    sites = [
+        {"url": "alpha", "high": 3, "medium": 2, "low": 1},
+        {"url": "beta", "high": 4, "medium": 3, "low": 2},
+    ]
+
+    template._render_additional_parts({"sites": sites}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        shared_xml = archive.read("xl/sharedStrings.xml").decode("utf-8")
+
+    assert "{{" not in shared_xml
+
+    tree = etree.fromstring(sheet_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert len(rows) == len(sites) + 1
+
+    data_rows = rows[1:]
+    for row, site in zip(data_rows, sites):
+        row_index = int(row.get("r"))
+        cells = {cell.get("r"): cell for cell in row.findall(f"{prefix}c")}
+
+        url_cell = cells[f"A{row_index}"]
+        assert url_cell.get("t") == "inlineStr"
+        url_text = url_cell.find(f"{prefix}is/{prefix}t")
+        assert url_text is not None
+        assert url_text.text == site["url"]
+
+        for column, key in zip(("B", "C", "D"), ("high", "medium", "low")):
+            ref = f"{column}{row_index}"
+            cell = cells[ref]
+            assert cell.get("t") is None
+            value = cell.find(f"{prefix}v")
+            assert value is not None
+            assert value.text == str(site[key])
+
+    dimension = tree.find(f"{prefix}dimension")
+    assert dimension is not None
+    assert dimension.get("ref") == f"A1:D{len(sites) + 1}"
 
