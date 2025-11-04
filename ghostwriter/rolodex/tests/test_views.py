@@ -1055,6 +1055,70 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertEqual(self.project.workbook_data["client"]["name"], "Example Client")
         self.assertTrue(self.project.workbook_file.name.endswith("workbook.json"))
 
+    def test_upload_populates_project_risks(self):
+        workbook_payload = {
+            "external_internal_grades": {
+                "external": {
+                    "osint": {"risk": "high"},
+                    "dns": {"risk": "medium"},
+                    "nexpose": {"risk": "low"},
+                    "web": {"risk": "medium"},
+                },
+                "internal": {
+                    "cloud": {"risk": "medium"},
+                    "configuration": {"risk": "low"},
+                    "nexpose": {"risk": "high"},
+                    "endpoint": {"risk": "medium"},
+                    "snmp": {"risk": "low"},
+                    "sql": {"risk": "medium"},
+                    "iam": {"risk": "high"},
+                    "password": {"risk": "low"},
+                },
+            },
+            "report_card": {
+                "overall": "B",
+                "external": "C+",
+                "internal": "D",
+                "wireless": "A-",
+                "firewall": "C-",
+            },
+        }
+
+        upload = SimpleUploadedFile(
+            "workbook.json",
+            json.dumps(workbook_payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        response = self.client_auth.post(self.upload_url, {"workbook_file": upload})
+
+        self.assertEqual(response.status_code, 302)
+
+        self.project.refresh_from_db()
+        expected_risks = {
+            "osint": "High",
+            "dns": "Medium",
+            "external_nexpose": "Low",
+            "web": "Medium",
+            "cloud_config": "Medium",
+            "system_config": "Low",
+            "internal_nexpose": "High",
+            "endpoint": "Medium",
+            "snmp": "Low",
+            "sql": "Medium",
+            "iam": "High",
+            "password": "Low",
+            "cloud": "Medium",
+            "configuration": "Low",
+            "overall_risk": "Medium",
+            "external": "Medium",
+            "internal": "High",
+            "wireless": "Low",
+            "firewall": "High",
+        }
+
+        self.assertEqual(self.project.risks, expected_risks)
+
     def test_invalid_json_is_rejected(self):
         upload = SimpleUploadedFile(
             "workbook.json",
@@ -1105,6 +1169,7 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertFalse(self.project.workbook_file)
         self.assertEqual(self.project.workbook_data, {})
         self.assertEqual(self.project.data_responses, {})
+        self.assertEqual(self.project.risks, {})
         assert_default_nexpose_artifacts(self, self.project.data_artifacts)
         expected_keys = {
             definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()

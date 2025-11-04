@@ -22,6 +22,7 @@ from ghostwriter.reporting.models import (
     ReportFindingLink,
     ReportObservationLink,
     ReportTemplate,
+    GradeRiskMapping,
     Severity,
 )
 from ghostwriter.reporting.resources import FindingResource, ObservationResource
@@ -218,6 +219,13 @@ class ReportFindingLinkAdmin(CollabAdminBase):
 class SeverityAdmin(admin.ModelAdmin):
     list_display = ("severity", "color", "weight")
     form = SeverityForm
+
+
+@admin.register(GradeRiskMapping)
+class GradeRiskMappingAdmin(admin.ModelAdmin):
+    list_display = ("grade", "risk")
+    list_editable = ("risk",)
+    ordering = ("grade",)
 
 
 @admin.register(ReportTemplate)

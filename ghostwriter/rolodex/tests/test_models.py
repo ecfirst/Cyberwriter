@@ -36,6 +36,7 @@ from ghostwriter.factories import (
     UserFactory,
     WhiteCardFactory,
 )
+from ghostwriter.rolodex import risk as risk_helpers
 from ghostwriter.rolodex.models import Client, Project
 
 logging.disable(logging.CRITICAL)
@@ -258,6 +259,44 @@ class ProjectModelTests(TestCase):
         self.assertFalse(project.user_can_edit(user))
         self.assertFalse(project.user_can_delete(user))
 
+    def test_save_updates_risks_from_workbook(self):
+        project: Project = ProjectFactory()
+        workbook_payload = {
+            "external_internal_grades": {
+                "external": {
+                    "osint": {"risk": "high"},
+                    "dns": {"risk": "medium"},
+                    "nexpose": {"risk": "low"},
+                    "web": {"risk": "medium"},
+                },
+                "internal": {
+                    "cloud": {"risk": "medium"},
+                    "configuration": {"risk": "low"},
+                    "nexpose": {"risk": "high"},
+                    "endpoint": {"risk": "medium"},
+                    "snmp": {"risk": "low"},
+                    "sql": {"risk": "medium"},
+                    "iam": {"risk": "high"},
+                    "password": {"risk": "low"},
+                },
+            },
+            "report_card": {
+                "overall": "B",
+                "external": "C+",
+                "internal": "D",
+                "wireless": "A-",
+                "firewall": "C-",
+            },
+        }
+
+        project.workbook_data = workbook_payload
+        project.save(update_fields=["workbook_data"])
+
+        project.refresh_from_db()
+        self.assertEqual(project.risks.get("osint"), "High")
+        self.assertEqual(project.risks.get("overall_risk"), "Medium")
+        self.assertEqual(project.risks.get("internal"), "High")
+
         assignment = ProjectAssignmentFactory(operator=user, project=project)
         self.assertFalse(Project.user_can_create(user))
         self.assertTrue(project.user_can_view(user))
@@ -281,6 +320,55 @@ class ProjectModelTests(TestCase):
         self.assertFalse(project.user_can_view(user))
         self.assertFalse(project.user_can_edit(user))
         self.assertFalse(project.user_can_delete(user))
+
+
+class ProjectRiskBackfillTests(TestCase):
+    """Tests for retroactively populating project risk summaries."""
+
+    def setUp(self):
+        self.workbook_payload = {
+            "external_internal_grades": {
+                "external": {
+                    "osint": {"risk": "high"},
+                    "dns": {"risk": "medium"},
+                },
+                "internal": {
+                    "cloud": {"risk": "low"},
+                },
+            },
+            "report_card": {
+                "overall": "B",
+                "external": "C+",
+                "internal": "D",
+            },
+        }
+
+    def test_backfill_updates_projects_missing_risks(self):
+        project: Project = ProjectFactory()
+        Project.objects.filter(pk=project.pk).update(workbook_data=self.workbook_payload, risks={})
+
+        updated = risk_helpers.backfill_missing_project_risks()
+
+        self.assertEqual(updated, 1)
+
+        project.refresh_from_db()
+        self.assertEqual(project.risks.get("osint"), "High")
+        self.assertEqual(project.risks.get("overall_risk"), "Medium")
+        self.assertEqual(project.risks.get("internal"), "High")
+
+    def test_backfill_skips_projects_with_existing_risks(self):
+        project: Project = ProjectFactory()
+        Project.objects.filter(pk=project.pk).update(
+            workbook_data=self.workbook_payload,
+            risks={"osint": "Medium"},
+        )
+
+        updated = risk_helpers.backfill_missing_project_risks()
+
+        self.assertEqual(updated, 0)
+
+        project.refresh_from_db()
+        self.assertEqual(project.risks, {"osint": "Medium"})
 
 
 class ProjectRoleModelTests(TestCase):

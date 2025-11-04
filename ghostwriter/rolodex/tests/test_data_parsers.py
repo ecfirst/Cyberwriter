@@ -15,8 +15,13 @@ from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_ARTIFACT_DEFINITIONS,
     normalize_nexpose_artifact_payload,
     normalize_nexpose_artifacts_map,
+    parse_dns_report,
 )
-from ghostwriter.rolodex.models import ProjectDataFile
+from ghostwriter.rolodex.models import (
+    DNSFindingMapping,
+    DNSRecommendationMapping,
+    ProjectDataFile,
+)
 
 
 NEXPOSE_HEADERS: Iterable[str] = (
@@ -859,3 +864,37 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(low_summary["total_unique"], 3)
         self.assertEqual(len(low_summary["items"]), 3)
         self.assertEqual(low_summary["items"][0]["issue"], "Missing X-Frame-Options header")
+
+
+class DNSDataParserTests(TestCase):
+    """Validate DNS CSV parsing behaviour."""
+
+    def test_parse_dns_report_uses_database_mappings(self):
+        issue_text = "Custom authoritative nameserver issue"
+        DNSFindingMapping.objects.create(
+            issue_text=issue_text,
+            finding_text="custom finding language",
+        )
+        DNSRecommendationMapping.objects.create(
+            issue_text=issue_text,
+            recommendation_text="custom recommendation language",
+        )
+
+        upload = SimpleUploadedFile(
+            "dns_report.csv",
+            f"Status,Info\nFAIL,{issue_text}\n".encode("utf-8"),
+            content_type="text/csv",
+        )
+
+        issues = parse_dns_report(upload)
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(
+            issues[0],
+            {
+                "issue": issue_text,
+                "finding": "custom finding language",
+                "recommendation": "custom recommendation language",
+                "impact": "",
+            },
+        )

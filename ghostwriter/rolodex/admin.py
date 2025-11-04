@@ -9,6 +9,8 @@ from ghostwriter.rolodex.models import (
     ClientContact,
     ClientInvite,
     ClientNote,
+    DNSFindingMapping,
+    DNSRecommendationMapping,
     Deconfliction,
     DeconflictionStatus,
     ObjectivePriority,
@@ -26,6 +28,18 @@ from ghostwriter.rolodex.models import (
     ProjectType,
     WhiteCard,
 )
+
+
+@admin.register(DNSFindingMapping)
+class DNSFindingMappingAdmin(admin.ModelAdmin):
+    list_display = ("issue_text", "finding_text")
+    search_fields = ("issue_text", "finding_text")
+
+
+@admin.register(DNSRecommendationMapping)
+class DNSRecommendationMappingAdmin(admin.ModelAdmin):
+    list_display = ("issue_text", "recommendation_text")
+    search_fields = ("issue_text", "recommendation_text")
 
 
 @admin.register(Client)

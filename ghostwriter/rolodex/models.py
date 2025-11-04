@@ -3,6 +3,7 @@
 # Standard Libraries
 import os
 from datetime import time, timedelta
+from typing import Dict
 
 # Django Imports
 from django.conf import settings
@@ -177,6 +178,50 @@ class ProjectType(models.Model):
         return f"{self.project_type}"
 
 
+class DNSFindingMapping(models.Model):
+    """Store curated finding summaries for DNS scanner issues."""
+
+    issue_text = models.TextField(
+        "DNS issue",
+        unique=True,
+        help_text="Exact text of the DNS check failure (matches dns_report.csv entries).",
+    )
+    finding_text = models.TextField(
+        "Finding summary",
+        help_text="Short description used when summarizing the issue in reports.",
+    )
+
+    class Meta:
+        ordering = ["issue_text"]
+        verbose_name = "DNS finding mapping"
+        verbose_name_plural = "DNS finding mappings"
+
+    def __str__(self):
+        return f"{self.issue_text}"
+
+
+class DNSRecommendationMapping(models.Model):
+    """Store remediation guidance for DNS scanner issues."""
+
+    issue_text = models.TextField(
+        "DNS issue",
+        unique=True,
+        help_text="Exact text of the DNS check failure (matches dns_report.csv entries).",
+    )
+    recommendation_text = models.TextField(
+        "Recommendation",
+        help_text="Remediation guidance presented alongside the DNS finding.",
+    )
+
+    class Meta:
+        ordering = ["issue_text"]
+        verbose_name = "DNS recommendation mapping"
+        verbose_name_plural = "DNS recommendation mappings"
+
+    def __str__(self):
+        return f"{self.issue_text}"
+
+
 class Project(models.Model):
     """
     Stores an individual project, related to :model:`rolodex.Client`,
@@ -219,6 +264,11 @@ class Project(models.Model):
         default=dict,
         blank=True,
         help_text="Responses collected from the dynamic reporting data form",
+    )
+    risks = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Risk ratings derived from the uploaded workbook",
     )
     slack_channel = models.CharField(
         "Project Slack Channel",
@@ -324,6 +374,31 @@ class Project(models.Model):
 
     def user_can_delete(self, user) -> bool:
         return self.user_can_view(user)
+
+    def update_risks_from_workbook(self) -> Dict[str, str]:
+        """Update ``risks`` based on the current ``workbook_data`` contents."""
+
+        from ghostwriter.rolodex.risk import build_project_risk_summary
+
+        summary = build_project_risk_summary(getattr(self, "workbook_data", {}))
+        self.risks = summary
+        return summary
+
+    def save(self, *args, **kwargs):  # type: ignore[override]
+        update_fields = kwargs.get("update_fields")
+        update_field_set = set(update_fields) if update_fields is not None else None
+        should_refresh = update_fields is None or (
+            update_field_set is not None and "workbook_data" in update_field_set
+        )
+
+        if should_refresh:
+            self.update_risks_from_workbook()
+            if update_fields is not None:
+                updated = set(update_fields)
+                updated.add("risks")
+                kwargs["update_fields"] = list(updated)
+
+        super().save(*args, **kwargs)
 
     def rebuild_data_artifacts(self) -> None:
         """Rebuild supporting data artifacts derived from uploaded files."""
