@@ -352,6 +352,35 @@ def test_render_excel_part_coerces_shared_string_cells(monkeypatch):
     assert cells[1].find("x:v", ns).text == "1"
 
 
+def test_render_excel_part_preserves_xml_declaration(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    declaration = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+    sheet_xml = (
+        declaration
+        + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        + "<sheetData>"
+        + '<row r="1">'
+        + '<c r="A1" t="inlineStr"><is><t>{{ number }}</t></is></c>'
+        + "</row>"
+        + "</sheetData>"
+        + "</worksheet>"
+    )
+
+    part = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        {"xl/worksheets/sheet1.xml": sheet_xml},
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([part]))
+
+    template._render_additional_parts({"number": 7}, None)
+
+    updated_xml = part.read_xml("xl/worksheets/sheet1.xml")
+    assert updated_xml.startswith(declaration)
+
+
 def test_render_excel_part_collects_workbook_values():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
@@ -409,6 +438,28 @@ def test_render_excel_part_collects_workbook_values():
     assert cells["A1"].find("x:v", ns).text == "5.5"
     assert cells["B1"].get("t") == "s"
     assert cells["B1"].find("x:v", ns).text == "0"
+
+
+def test_serialize_xml_with_declaration_restores_header():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    original = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+        "<root xmlns=\"http://example.com\"><value>1</value></root>"
+    )
+    root = ET.fromstring(original)
+
+    serialized = template._serialize_xml_with_declaration(original, root)
+
+    assert serialized.startswith(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+    )
+    parsed = ET.fromstring(serialized)
+    assert parsed.tag.endswith("root")
+    namespace = "{http://example.com}"
+    value = parsed.find(f"{namespace}value")
+    assert value is not None and value.text == "1"
 
 
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):

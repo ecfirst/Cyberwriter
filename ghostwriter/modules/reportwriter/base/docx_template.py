@@ -29,6 +29,8 @@ _CHART_FORMULA_RE = re.compile(
     r"^(?:\[(?P<workbook>[^\]]+)\])?(?P<sheet>'[^']+'|[^'!]+)!(?P<range>.+)$"
 )
 
+_XML_DECLARATION_RE = re.compile(r"^\s*<\?xml[^>]*\?>")
+
 
 class GhostwriterDocxTemplate(DocxTemplate):
     """Docx template that also renders SmartArt and embedded workbook parts.
@@ -242,11 +244,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         rendered_files: dict[str, bytes] = {}
         file_infos: dict[str, ZipInfo] = {}
+        original_xml: dict[str, str] = {}
+
         with ZipFile(source, "r") as archive:
             for info in archive.infolist():
                 data = archive.read(info.filename)
                 if info.filename.lower().endswith(".xml"):
                     xml = data.decode("utf-8")
+                    original_xml[info.filename] = xml
                     patched = self.patch_xml(xml)
                     rendered = self.render_xml_part(patched, part, context, jinja_env)
                     data = rendered.encode("utf-8")
@@ -270,7 +275,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
             xml = data.decode("utf-8")
             processed_xml, sheet_data = self._process_excel_worksheet_xml(
-                xml, shared_strings
+                xml, shared_strings, original_xml.get(filename)
             )
             if processed_xml != xml:
                 rendered_files[filename] = processed_xml.encode("utf-8")
@@ -300,7 +305,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
         xml = self.get_part_xml(part)
         patched = self.patch_xml(xml)
         rendered = self.render_xml_part(patched, part, context, jinja_env)
-        rendered = self._refresh_chart_cache_from_workbooks(part, rendered, excel_results)
+        rendered = self._refresh_chart_cache_from_workbooks(
+            part, rendered, excel_results, original_xml=xml
+        )
         rendered_bytes = rendered.encode("utf-8")
         if hasattr(part, "_element"):
             part._element = parse_xml(rendered_bytes)
@@ -324,7 +331,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
         return buffer.getvalue()
 
     def _process_excel_worksheet_xml(
-        self, xml: str, shared_strings: dict[int, str] | None
+        self,
+        xml: str,
+        shared_strings: dict[int, str] | None,
+        original_xml: str | None = None,
     ) -> tuple[str, dict[str, object]]:
         """Coerce numeric cells and return extracted worksheet values."""
 
@@ -370,7 +380,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 sheet_data[coordinate] = text_value
 
         if changed:
-            return ET.tostring(root, encoding="unicode"), sheet_data
+            source_xml = original_xml or xml
+            return self._serialize_xml_with_declaration(source_xml, root), sheet_data
 
         return xml, sheet_data
 
@@ -400,6 +411,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
         part,
         xml: str,
         excel_results: dict[str, dict[str, object]],
+        *,
+        original_xml: str | None = None,
     ) -> str:
         if not excel_results:
             return xml
@@ -409,13 +422,16 @@ class GhostwriterDocxTemplate(DocxTemplate):
         except ET.ParseError:
             return xml
 
-        self._ensure_chart_auto_update(root)
+        changed = self._ensure_chart_auto_update(root)
 
         workbook_map = self._resolve_chart_workbooks(part, excel_results)
         if not workbook_map:
-            return ET.tostring(root, encoding="unicode")
+            if not changed:
+                return xml
+            source_xml = original_xml or xml
+            return self._serialize_xml_with_declaration(source_xml, root)
 
-        updated = False
+        updated = changed
 
         for num_ref in root.findall(".//c:numRef", _CHART_NS):
             if self._update_chart_reference(num_ref, workbook_map, numeric=True):
@@ -426,19 +442,27 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 updated = True
 
         if not updated:
-            return ET.tostring(root, encoding="unicode")
+            return xml
 
-        return ET.tostring(root, encoding="unicode")
+        source_xml = original_xml or xml
+        return self._serialize_xml_with_declaration(source_xml, root)
 
-    def _ensure_chart_auto_update(self, root: ET.Element) -> None:
+    def _ensure_chart_auto_update(self, root: ET.Element) -> bool:
         external = root.find(".//c:externalData", _CHART_NS)
         if external is None:
-            return
+            return False
 
         auto = external.find("c:autoUpdate", _CHART_NS)
         if auto is None:
-            auto = ET.SubElement(external, f"{{{_CHART_MAIN_NS}}}autoUpdate")
-        auto.set("val", "1")
+            ET.SubElement(external, f"{{{_CHART_MAIN_NS}}}autoUpdate", {"val": "1"})
+            return True
+
+        previous = auto.get("val")
+        if previous != "1":
+            auto.set("val", "1")
+            return True
+
+        return False
 
     def _resolve_chart_workbooks(
         self,
@@ -758,6 +782,37 @@ class GhostwriterDocxTemplate(DocxTemplate):
         clone.external_attr = info.external_attr
         clone.volume = getattr(info, "volume", 0)
         return clone
+
+    def _serialize_xml_with_declaration(self, original_xml: str, root: ET.Element) -> str:
+        serialized = ET.tostring(root, encoding="unicode")
+        match = _XML_DECLARATION_RE.match(original_xml)
+        if not match:
+            return serialized
+
+        declaration = match.group(0)
+        idx = match.end()
+        prefix_parts: list[str] = []
+
+        while idx < len(original_xml):
+            next_lt = original_xml.find("<", idx)
+            if next_lt == -1:
+                prefix_parts.append(original_xml[idx:])
+                break
+
+            prefix_parts.append(original_xml[idx:next_lt])
+
+            if original_xml.startswith("<?", next_lt):
+                pi_end = original_xml.find("?>", next_lt)
+                if pi_end == -1:
+                    break
+                prefix_parts.append(original_xml[next_lt : pi_end + 2])
+                idx = pi_end + 2
+                continue
+
+            break
+
+        prefix = "".join(prefix_parts)
+        return f"{declaration}{prefix}{serialized}"
 
     @staticmethod
     def _cast_numeric_value(numeric_text: str):
