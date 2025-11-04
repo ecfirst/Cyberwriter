@@ -7,6 +7,7 @@ import io
 import re
 import zipfile
 import posixpath
+from copy import deepcopy
 from typing import Iterator
 
 from docx.oxml import parse_xml
@@ -271,6 +272,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
             infos = archive.infolist()
             files: dict[str, bytes] = {info.filename: archive.read(info.filename) for info in infos}
 
+        files = self._inline_templated_shared_strings(files)
+
         rendered_xml: dict[str, str] = {}
         for name, data in files.items():
             if not name.endswith(".xml"):
@@ -309,6 +312,94 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 archive.writestr(new_info, content)
 
         return output.getvalue(), workbook_values
+
+    def _inline_templated_shared_strings(self, files: dict[str, bytes]) -> dict[str, bytes]:
+        """Embed templated shared strings directly in worksheet cells.
+
+        Ghostwriter templates often place ``{{ ... }}`` and ``{% ... %}`` markers in
+        shared string entries that are referenced from worksheet cells. When those
+        entries participate in ``{%tr%}`` loops, the shared string is rendered
+        outside of the loop context and raises ``UndefinedError`` exceptions. To
+        avoid this, shared-string backed cells containing template statements are
+        converted to inline strings and the shared string entries are cleared so
+        the templating engine no longer sees the Ghostwriter markers.
+        """
+
+        shared_key = "xl/sharedStrings.xml"
+        shared_blob = files.get(shared_key)
+        if not shared_blob:
+            return files
+
+        try:
+            shared_tree = etree.fromstring(shared_blob)
+        except etree.XMLSyntaxError:
+            return files
+
+        shared_ns = shared_tree.nsmap.get(None)
+        shared_prefix = f"{{{shared_ns}}}" if shared_ns else ""
+
+        templated_entries: dict[int, etree._Element] = {}
+        changed_shared = False
+        for idx, si in enumerate(shared_tree.findall(f"{shared_prefix}si")):
+            text = "".join(si.itertext())
+            if not any(marker in text for marker in ("{{", "{%", "{#")):
+                continue
+
+            templated_entries[idx] = deepcopy(si)
+            for child in list(si):
+                si.remove(child)
+            empty = etree.SubElement(si, f"{shared_prefix}t")
+            empty.text = ""
+            empty.attrib.pop("{http://www.w3.org/XML/1998/namespace}space", None)
+            changed_shared = True
+
+        if not templated_entries:
+            return files
+
+        if changed_shared:
+            files[shared_key] = etree.tostring(shared_tree, encoding="utf-8")
+
+        for name, blob in list(files.items()):
+            if not name.startswith("xl/worksheets/") or not name.endswith(".xml"):
+                continue
+
+            try:
+                sheet_tree = etree.fromstring(blob)
+            except etree.XMLSyntaxError:
+                continue
+
+            sheet_ns = sheet_tree.nsmap.get(None)
+            sheet_prefix = f"{{{sheet_ns}}}" if sheet_ns else ""
+            updated = False
+
+            for cell in sheet_tree.findall(f".//{sheet_prefix}c[@t='s']"):
+                value_node = cell.find(f"{sheet_prefix}v")
+                if value_node is None or value_node.text is None:
+                    continue
+
+                try:
+                    shared_index = int(value_node.text)
+                except ValueError:
+                    continue
+
+                shared_value = templated_entries.get(shared_index)
+                if shared_value is None:
+                    continue
+
+                for child in list(cell):
+                    if etree.QName(child).localname in {"v", "is"}:
+                        cell.remove(child)
+
+                cell.set("t", "inlineStr")
+                inline = etree.SubElement(cell, f"{sheet_prefix}is")
+                for child in shared_value:
+                    inline.append(deepcopy(child))
+                updated = True
+
+            if updated:
+                files[name] = etree.tostring(sheet_tree, encoding="utf-8")
+
+        return files
 
     def _is_chart_part(self, partname: str) -> bool:
         return partname.startswith("word/charts/") and partname.endswith(".xml")
