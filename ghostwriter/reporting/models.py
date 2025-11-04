@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+from collections import OrderedDict
 
 # Django Imports
 from django.conf import settings
@@ -11,6 +12,7 @@ from django.core.files.storage import FileSystemStorage
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
+from django.db.utils import OperationalError, ProgrammingError
 from django.urls import reverse
 
 # 3rd Party Libraries
@@ -771,6 +773,7 @@ class ReportFindingLink(models.Model):
     def user_can_delete(self, user) -> bool:
         return self.report.user_can_edit(user)
 
+
     @property
     def cvss_data(self):
         if "3.1" in self.cvss_vector:
@@ -1084,3 +1087,93 @@ class ReportObservationLink(models.Model):
 
     def user_can_delete(self, user) -> bool:
         return self.report.user_can_edit(user)
+
+
+class GradeRiskMapping(models.Model):
+    """Map a workbook letter grade to a report risk level."""
+
+    GRADE_CHOICES = (
+        ("A", "A"),
+        ("A-", "A-"),
+        ("B+", "B+"),
+        ("B", "B"),
+        ("B-", "B-"),
+        ("C+", "C+"),
+        ("C", "C"),
+        ("C-", "C-"),
+        ("D+", "D+"),
+        ("D", "D"),
+        ("D-", "D-"),
+        ("F", "F"),
+    )
+
+    RISK_CHOICES = (
+        ("high", "High"),
+        ("medium", "Medium"),
+        ("low", "Low"),
+    )
+
+    DEFAULT_GRADE_RISK_MAP = OrderedDict(
+        (
+            ("A", "low"),
+            ("A-", "low"),
+            ("B+", "low"),
+            ("B", "medium"),
+            ("B-", "medium"),
+            ("C+", "medium"),
+            ("C", "medium"),
+            ("C-", "high"),
+            ("D+", "high"),
+            ("D", "high"),
+            ("D-", "high"),
+            ("F", "high"),
+        )
+    )
+
+    grade = models.CharField(
+        "Letter Grade",
+        max_length=2,
+        unique=True,
+        choices=GRADE_CHOICES,
+        help_text="Letter grade value from uploaded workbooks (e.g., B+ or C-)",
+    )
+    risk = models.CharField(
+        "Mapped Risk",
+        max_length=6,
+        choices=RISK_CHOICES,
+        default="medium",
+        help_text="Risk level that should be associated with this letter grade",
+    )
+
+    class Meta:
+        ordering = ["grade"]
+        verbose_name = "Grade to risk mapping"
+        verbose_name_plural = "Grade to risk mappings"
+
+    def __str__(self):
+        return f"{self.grade} → {self.get_risk_display()}"
+
+    @classmethod
+    def get_grade_map(cls):
+        """Return the configured grade to risk mapping with defaults as a fallback."""
+
+        try:
+            records = cls.objects.all()
+        except (ProgrammingError, OperationalError):  # pragma: no cover - table not ready
+            return dict(cls.DEFAULT_GRADE_RISK_MAP)
+
+        mapping = {record.grade.upper(): record.risk for record in records}
+        if not mapping:
+            mapping = dict(cls.DEFAULT_GRADE_RISK_MAP)
+        return mapping
+
+    @classmethod
+    def risk_for_grade(cls, grade):
+        """Return the configured risk slug (low/medium/high) for ``grade``."""
+
+        if not grade:
+            return None
+        normalized = str(grade).strip().upper()
+        if not normalized:
+            return None
+        return cls.get_grade_map().get(normalized)

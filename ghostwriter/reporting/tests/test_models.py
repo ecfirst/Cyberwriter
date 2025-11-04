@@ -34,7 +34,7 @@ from ghostwriter.factories import (
     SeverityFactory,
     UserFactory,
 )
-from ghostwriter.reporting.models import Report
+from ghostwriter.reporting.models import GradeRiskMapping, Report
 from ghostwriter.rolodex.models import Project
 
 logging.disable(logging.CRITICAL)
@@ -765,3 +765,22 @@ class ArchiveModelTests(TestCase):
             archive.filename
         except Exception:
             self.fail("Archive model `filename` property failed unexpectedly!")
+
+
+class GradeRiskMappingModelTests(TestCase):
+    """Collection of tests for :model:`reporting.GradeRiskMapping`."""
+
+    def test_default_entries_exist(self):
+        self.assertGreaterEqual(
+            GradeRiskMapping.objects.count(),
+            len(GradeRiskMapping.DEFAULT_GRADE_RISK_MAP),
+        )
+
+    def test_get_grade_map_returns_expected_values(self):
+        mapping = GradeRiskMapping.get_grade_map()
+        self.assertEqual(mapping.get("A"), "low")
+        self.assertEqual(mapping.get("D"), "high")
+
+    def test_risk_for_grade_handles_unknown_values(self):
+        self.assertIsNone(GradeRiskMapping.risk_for_grade("Z"))
+        self.assertEqual(GradeRiskMapping.risk_for_grade("B"), "medium")

@@ -3,6 +3,7 @@
 # Standard Libraries
 import os
 from datetime import time, timedelta
+from typing import Dict
 
 # Django Imports
 from django.conf import settings
@@ -108,6 +109,31 @@ class Client(models.Model):
 
     def user_can_delete(self, user) -> bool:
         return self.user_can_view(user)
+
+    def update_risks_from_workbook(self) -> Dict[str, str]:
+        """Update ``risks`` based on the current ``workbook_data`` contents."""
+
+        from ghostwriter.rolodex.risk import build_project_risk_summary
+
+        summary = build_project_risk_summary(getattr(self, "workbook_data", {}))
+        self.risks = summary
+        return summary
+
+    def save(self, *args, **kwargs):  # type: ignore[override]
+        update_fields = kwargs.get("update_fields")
+        update_field_set = set(update_fields) if update_fields is not None else None
+        should_refresh = update_fields is None or (
+            update_field_set is not None and "workbook_data" in update_field_set
+        )
+
+        if should_refresh:
+            self.update_risks_from_workbook()
+            if update_fields is not None:
+                updated = set(update_fields)
+                updated.add("risks")
+                kwargs["update_fields"] = list(updated)
+
+        super().save(*args, **kwargs)
 
 class ClientContact(models.Model):
     """Stores an individual point of contact, related to :model:`rolodex.Client`."""
@@ -219,6 +245,11 @@ class Project(models.Model):
         default=dict,
         blank=True,
         help_text="Responses collected from the dynamic reporting data form",
+    )
+    risks = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Risk ratings derived from the uploaded workbook",
     )
     slack_channel = models.CharField(
         "Project Slack Channel",
