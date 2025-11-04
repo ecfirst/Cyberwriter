@@ -6,7 +6,7 @@ import fnmatch
 from io import BytesIO
 import re
 from typing import Iterator
-from zipfile import ZipFile
+from zipfile import ZipFile, ZipInfo
 
 from docx.oxml import parse_xml
 from docxtpl.template import DocxTemplate
@@ -196,17 +196,43 @@ class GhostwriterDocxTemplate(DocxTemplate):
         source = BytesIO(blob)
         destination = BytesIO()
 
-        with ZipFile(source, "r") as archive, ZipFile(destination, "w") as patched_archive:
+        rendered_files: dict[str, bytes] = {}
+        file_infos: dict[str, ZipInfo] = {}
+        with ZipFile(source, "r") as archive:
             for info in archive.infolist():
                 data = archive.read(info.filename)
                 if info.filename.lower().endswith(".xml"):
                     xml = data.decode("utf-8")
                     patched = self.patch_xml(xml)
                     rendered = self.render_xml_part(patched, part, context, jinja_env)
-                    if info.filename.startswith("xl/worksheets/"):
-                        rendered = self._coerce_excel_numeric_cells(rendered)
                     data = rendered.encode("utf-8")
-                patched_archive.writestr(info, data)
+                rendered_files[info.filename] = data
+                file_infos[info.filename] = info
+
+        shared_strings: dict[int, str] | None = None
+        shared_strings_key = next(
+            (name for name in rendered_files if name.lower() == "xl/sharedstrings.xml"),
+            None,
+        )
+        if shared_strings_key is not None:
+            shared_strings = self._parse_excel_shared_strings(
+                rendered_files[shared_strings_key].decode("utf-8")
+            )
+
+        for filename, data in list(rendered_files.items()):
+            if not filename.startswith("xl/worksheets/"):
+                continue
+            xml = data.decode("utf-8")
+            coerced = self._coerce_excel_numeric_cells(xml, shared_strings)
+            rendered_files[filename] = coerced.encode("utf-8")
+
+        with ZipFile(destination, "w") as patched_archive:
+            for filename, data in rendered_files.items():
+                info = file_infos.get(filename)
+                if info is not None:
+                    patched_archive.writestr(info, data)
+                else:
+                    patched_archive.writestr(filename, data)
 
         rendered_bytes = destination.getvalue()
         if hasattr(part, "_blob"):
@@ -215,7 +241,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
     # ------------------------------------------------------------------
     # Excel helpers
 
-    def _coerce_excel_numeric_cells(self, xml: str) -> str:
+    def _coerce_excel_numeric_cells(
+        self, xml: str, shared_strings: dict[int, str] | None
+    ) -> str:
         """Convert templated inline strings that contain numbers into numeric cells."""
 
         try:
@@ -228,10 +256,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         for cell in root.findall(".//x:c", namespace):
             cell_type = cell.get("t")
-            if cell_type not in {"inlineStr", "str"}:
+            if cell_type not in {"inlineStr", "str", "s"}:
                 continue
 
-            text_value = self._extract_excel_cell_text(cell, cell_type, namespace)
+            text_value = self._extract_excel_cell_text(
+                cell, cell_type, namespace, shared_strings
+            )
             numeric_text = self._normalize_numeric_string(text_value)
             if numeric_text is None:
                 continue
@@ -255,7 +285,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         return ET.tostring(root, encoding="unicode")
 
-    def _extract_excel_cell_text(self, cell, cell_type: str, namespace: dict[str, str]) -> str | None:
+    def _extract_excel_cell_text(
+        self,
+        cell,
+        cell_type: str | None,
+        namespace: dict[str, str],
+        shared_strings: dict[int, str] | None,
+    ) -> str | None:
         if cell_type == "inlineStr":
             text_element = cell.find(".//x:t", namespace)
             if text_element is not None and text_element.text is not None:
@@ -264,8 +300,29 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         value_element = cell.find("x:v", namespace)
         if value_element is not None and value_element.text is not None:
+            if cell_type == "s" and shared_strings is not None:
+                try:
+                    index = int(value_element.text)
+                except (TypeError, ValueError):
+                    return value_element.text
+                return shared_strings.get(index)
             return value_element.text
         return None
+
+    def _parse_excel_shared_strings(self, xml: str) -> dict[int, str]:
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            return {}
+
+        namespace = {"x": _EXCEL_MAIN_NS}
+        parsed: dict[int, str] = {}
+
+        for index, entry in enumerate(root.findall(".//x:si", namespace)):
+            text = "".join(entry.itertext())
+            parsed[index] = text
+
+        return parsed
 
     @staticmethod
     def _normalize_numeric_string(value: str | None) -> str | None:
