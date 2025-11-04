@@ -389,6 +389,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
         for name, xml in list(xml_files.items()):
             if not name.startswith("xl/worksheets/"):
                 continue
+            normalised = self._normalise_sheet_rows(xml)
+            if normalised != xml:
+                xml_files[name] = normalised
+                xml = normalised
+
             sheet_name = sheet_map.get(name)
             coerced, cell_values = self._coerce_sheet_types(
                 xml,
@@ -534,6 +539,119 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
             targets[rel_id] = target
         return targets
+
+    def _normalise_sheet_rows(self, xml: str) -> str:
+        try:
+            tree = etree.fromstring(xml.encode("utf-8"))
+        except etree.XMLSyntaxError:
+            return xml
+
+        ns = tree.nsmap.get(None)
+        prefix = f"{{{ns}}}" if ns else ""
+
+        sheet_data = tree.find(f"{prefix}sheetData")
+        if sheet_data is None:
+            return xml
+
+        rows = list(sheet_data.findall(f"{prefix}row"))
+        if not rows:
+            return xml
+
+        last_index = 0
+        min_col: int | None = None
+        max_col: int | None = None
+        min_row: int | None = None
+        max_row: int | None = None
+
+        for row in rows:
+            attr = row.get("r")
+            try:
+                candidate = int(attr) if attr else None
+            except ValueError:
+                candidate = None
+
+            cells = []
+            parsed_rows: list[int] = []
+            for cell in row.findall(f"{prefix}c"):
+                ref = cell.get("r")
+                parsed = self._split_cell(ref) if ref else None
+                cells.append((cell, parsed))
+                if parsed is not None:
+                    parsed_rows.append(parsed[1])
+
+            unique_rows = {value for value in parsed_rows}
+            if candidate is None and parsed_rows:
+                candidate = min(parsed_rows)
+
+            if candidate is None or candidate <= last_index:
+                row_index = last_index + 1
+            else:
+                row_index = candidate
+
+            row.set("r", str(row_index))
+
+            cols: list[int] = []
+            row_rows: list[int] = []
+            next_col = 0
+            for cell, parsed in cells:
+                if parsed is None:
+                    col_index = next_col + 1
+                    cell_row = row_index
+                else:
+                    col_index, original_row = parsed
+                    if len(unique_rows) <= 1:
+                        cell_row = row_index
+                    else:
+                        cell_row = original_row
+                    row_index = max(row_index, cell_row)
+                next_col = col_index
+                cell.set("r", f"{self._column_letters(col_index)}{cell_row}")
+                cols.append(col_index)
+                row_rows.append(cell_row)
+
+                if min_col is None or col_index < min_col:
+                    min_col = col_index
+                if max_col is None or col_index > max_col:
+                    max_col = col_index
+
+            if cols:
+                row.set("spans", f"{min(cols)}:{max(cols)}")
+            else:
+                row.attrib.pop("spans", None)
+
+            if row_rows:
+                row.set("r", str(min(row_rows)))
+                min_row_val = min(row_rows)
+                max_row_val = max(row_rows)
+                if min_row is None or min_row_val < min_row:
+                    min_row = min_row_val
+                if max_row is None or max_row_val > max_row:
+                    max_row = max_row_val
+                last_index = max(last_index, max_row_val)
+            else:
+                if min_row is None or row_index < min_row:
+                    min_row = row_index
+                if max_row is None or row_index > max_row:
+                    max_row = row_index
+                last_index = max(last_index, row_index)
+
+        dimension = tree.find(f"{prefix}dimension")
+        if min_row is not None and min_col is not None and max_col is not None and max_row is not None:
+            ref = (
+                f"{self._column_letters(min_col)}{min_row}:"
+                f"{self._column_letters(max_col)}{max_row}"
+            )
+        else:
+            ref = "A1"
+
+        if dimension is None:
+            tag = f"{prefix}dimension" if prefix else "dimension"
+            dimension = etree.Element(tag)
+            tree.insert(0, dimension)
+
+        dimension.set("ref", ref)
+
+        return etree.tostring(tree, encoding="unicode")
 
     def _map_sheet_columns(self, sheet_tree: etree._Element) -> dict[int, set[int]]:
         ns = sheet_tree.nsmap.get(None)

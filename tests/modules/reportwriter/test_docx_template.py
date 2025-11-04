@@ -100,6 +100,30 @@ WORKSHEET_TR_ENDFOR_XML = (
     "</worksheet>"
 )
 
+WORKSHEET_TR_LOOP_ROWS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<dimension ref="A1:D2"/>'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>Site</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>High</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>Medium</t></is></c>'
+    '<c r="D1" t="inlineStr"><is><t>Low</t></is></c>'
+    '</row>'
+    '<row>{%tr for site in sites %}</row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><t>{{tc site.url }}</t></is></c>'
+    '<c r="B2"><v>{{tc site.high }}</v></c>'
+    '<c r="C2"><v>{{tc site.medium }}</v></c>'
+    '<c r="D2"><v>{{tc site.low }}</v></c>'
+    '</row>'
+    '<row>{%tr endfor %}</row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
 SHARED_STRINGS_CHART_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -699,4 +723,54 @@ def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):
 
     assert "ref=\"A1:B4\"" in table_xml
     assert "{{" not in table_xml
+
+
+def test_render_additional_parts_inserts_rows_for_tr_loop(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TR_LOOP_ROWS_XML,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    sites = [
+        {"url": "https://alpha", "high": 5, "medium": 3, "low": 1},
+        {"url": "https://beta", "high": 4, "medium": 2, "low": 0},
+        {"url": "https://gamma", "high": 6, "medium": 1, "low": 2},
+    ]
+
+    template._render_additional_parts({"sites": sites}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+    tree = etree.fromstring(sheet_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert [row.get("r") for row in rows] == ["1", "2", "3", "4"]
+
+    data_rows = rows[1:]
+    for idx, row in enumerate(data_rows, start=2):
+        cells = row.findall(f"{prefix}c")
+        assert [cell.get("r") for cell in cells] == [
+            f"A{idx}",
+            f"B{idx}",
+            f"C{idx}",
+            f"D{idx}",
+        ]
+
+    dimension = tree.find(f"{prefix}dimension")
+    assert dimension is not None
+    assert dimension.get("ref") == "A1:D4"
+
+    for site in sites:
+        assert site["url"] in sheet_xml
+        assert f">{site['high']}<" in sheet_xml
+        assert f">{site['medium']}<" in sheet_xml
+        assert f">{site['low']}<" in sheet_xml
 
