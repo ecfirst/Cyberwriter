@@ -51,6 +51,7 @@ class FakeXmlPart:
         self.partname = PackURI(partname)
         self._element = parse_xml(xml.encode("utf-8"))
         self._blob = etree.tostring(self._element)
+        self.related_parts: dict[str, object] = {}
 
     @property
     def blob(self) -> bytes:
@@ -87,6 +88,20 @@ class FakeXlsxPart:
     def read_xml(self, filename: str) -> str:
         with ZipFile(BytesIO(self._blob), "r") as archive:
             return archive.read(filename).decode("utf-8")
+
+
+class FakeChartPart(FakeXmlPart):
+    """Chart part that can reference other parts via relationships."""
+
+    def __init__(
+        self,
+        partname: str,
+        xml: str,
+        related_parts: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(partname, xml)
+        if related_parts is not None:
+            self.related_parts = related_parts
 
 
 def test_iter_additional_parts_filters_to_configured_patterns(monkeypatch):
@@ -148,6 +163,71 @@ def test_render_additional_parts_updates_chart_xml(monkeypatch):
 
     text = etree.tostring(part._element, encoding="unicode")
     assert "123" in text
+
+
+def test_render_chart_part_refreshes_cache_from_workbook(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet1"
+    sheet["A1"] = "{{ first }}"
+    sheet["A2"] = "{{ second }}"
+    sheet["A3"] = "{{ third }}"
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+
+    excel_part = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        blob=buffer.getvalue(),
+    )
+
+    chart_xml = (
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<c:chart><c:plotArea><c:barChart>"
+        "<c:ser><c:idx val=\"0\"/><c:order val=\"0\"/>"
+        "<c:val><c:numRef><c:f>Sheet1!$A$1:$A$3</c:f>"
+        "<c:numCache><c:ptCount val=\"3\"/>"
+        "<c:pt idx=\"0\"><c:v>1</c:v></c:pt>"
+        "<c:pt idx=\"1\"><c:v>2</c:v></c:pt>"
+        "<c:pt idx=\"2\"><c:v>3</c:v></c:pt>"
+        "</c:numCache></c:numRef></c:val></c:ser>"
+        "</c:barChart></c:plotArea></c:chart>"
+        "<c:externalData r:id=\"rId1\"/>"
+        "</c:chartSpace>"
+    )
+
+    chart_part = FakeChartPart(
+        "/word/charts/chart1.xml",
+        chart_xml,
+        related_parts={"rId1": excel_part},
+    )
+
+    monkeypatch.setattr(
+        template,
+        "_iter_additional_parts",
+        lambda: iter([excel_part, chart_part]),
+    )
+
+    context = {"first": 5, "second": 10, "third": 15}
+    template._render_additional_parts(context, None)
+
+    ns = {"c": "http://schemas.openxmlformats.org/drawingml/2006/chart"}
+    values = [
+        node.text
+        for node in chart_part._element.xpath(
+            ".//c:numRef/c:numCache/c:pt/c:v", namespaces=ns
+        )
+    ]
+    assert values == ["5", "10", "15"]
+
+    auto_update = chart_part._element.xpath(
+        ".//c:externalData/c:autoUpdate[@val='1']", namespaces=ns
+    )
+    assert auto_update
 
 
 def test_render_additional_parts_updates_excel_xml(monkeypatch):

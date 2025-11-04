@@ -18,7 +18,15 @@ _EXCEL_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 ET.register_namespace("", _EXCEL_MAIN_NS)
 
 
+_CHART_MAIN_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+_CHART_NS = {"c": _CHART_MAIN_NS}
+
+
 _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
+
+_CHART_FORMULA_RE = re.compile(
+    r"^(?:\[(?P<workbook>[^\]]+)\])?(?P<sheet>'[^']+'|[^'!]+)!(?P<range>.+)$"
+)
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
@@ -155,23 +163,48 @@ class GhostwriterDocxTemplate(DocxTemplate):
         return any(fnmatch.fnmatch(partname, pattern) for pattern in self._EXTRA_TEMPLATED_PATTERNS)
 
     def _render_additional_parts(self, context, jinja_env) -> None:
+        excel_results: dict[str, dict[str, object]] = {}
+        chart_parts: list = []
+        other_parts: list = []
+
         for part in self._iter_additional_parts():
             if self._is_excel_part(part):
-                self._render_excel_part(part, context, jinja_env)
+                partname = self._get_partname(part)
+                result = self._render_excel_part(part, context, jinja_env)
+                if result is not None:
+                    final_bytes, workbook_data = result
+                    excel_results[partname] = {
+                        "bytes": final_bytes,
+                        "data": workbook_data,
+                        "basename": partname.split("/")[-1],
+                    }
                 continue
 
-            xml = self.get_part_xml(part)
-            patched = self.patch_xml(xml)
-            rendered = self.render_xml_part(patched, part, context, jinja_env)
-            rendered_bytes = rendered.encode("utf-8")
-            if hasattr(part, "_element"):
-                part._element = parse_xml(rendered_bytes)
-            if hasattr(part, "_blob"):
-                part._blob = rendered_bytes
+            if self._is_chart_part(part):
+                chart_parts.append(part)
+                continue
+
+            other_parts.append(part)
+
+        for part in other_parts:
+            self._render_generic_xml_part(part, context, jinja_env)
+
+        if not chart_parts:
+            return
+
+        for part in chart_parts:
+            self._render_chart_part(part, context, jinja_env, excel_results)
 
     def _is_excel_part(self, part) -> bool:
         partname = str(part.partname).lstrip("/")
         return partname.endswith(".xlsx")
+
+    def _is_chart_part(self, part) -> bool:
+        partname = self._get_partname(part)
+        return partname.startswith("word/charts/") and partname.endswith(".xml")
+
+    def _get_partname(self, part) -> str:
+        return str(part.partname).lstrip("/")
 
     def _iter_excel_xml_strings(self, part) -> Iterator[str]:
         blob = getattr(part, "blob", None)
@@ -187,12 +220,22 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 xml = archive.read(info.filename).decode("utf-8")
                 yield self.patch_xml(xml)
 
-    def _render_excel_part(self, part, context, jinja_env) -> None:
+    def _render_generic_xml_part(self, part, context, jinja_env) -> None:
+        xml = self.get_part_xml(part)
+        patched = self.patch_xml(xml)
+        rendered = self.render_xml_part(patched, part, context, jinja_env)
+        rendered_bytes = rendered.encode("utf-8")
+        if hasattr(part, "_element"):
+            part._element = parse_xml(rendered_bytes)
+        if hasattr(part, "_blob"):
+            part._blob = rendered_bytes
+
+    def _render_excel_part(self, part, context, jinja_env):
         blob = getattr(part, "blob", None)
         if blob is None:
             blob = getattr(part, "_blob", b"")
         if not blob:
-            return
+            return None
 
         source = BytesIO(blob)
 
@@ -220,7 +263,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             )
 
         initial_bytes = self._build_excel_archive(rendered_files, file_infos)
-        coerced_bytes = self._coerce_excel_numeric_cells(initial_bytes)
+        coerced_bytes, workbook_data = self._coerce_excel_numeric_cells(initial_bytes)
 
         if coerced_bytes is None:
             for filename, data in list(rendered_files.items()):
@@ -230,11 +273,31 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 coerced_xml = self._coerce_excel_numeric_cells_xml(xml, shared_strings)
                 rendered_files[filename] = coerced_xml.encode("utf-8")
             final_bytes = self._build_excel_archive(rendered_files, file_infos)
+            workbook_data = None
         else:
             final_bytes = coerced_bytes
 
         if hasattr(part, "_blob"):
             part._blob = final_bytes
+
+        return final_bytes, workbook_data
+
+    def _render_chart_part(
+        self,
+        part,
+        context,
+        jinja_env,
+        excel_results: dict[str, dict[str, object]],
+    ) -> None:
+        xml = self.get_part_xml(part)
+        patched = self.patch_xml(xml)
+        rendered = self.render_xml_part(patched, part, context, jinja_env)
+        rendered = self._refresh_chart_cache_from_workbooks(part, rendered, excel_results)
+        rendered_bytes = rendered.encode("utf-8")
+        if hasattr(part, "_element"):
+            part._element = parse_xml(rendered_bytes)
+        if hasattr(part, "_blob"):
+            part._blob = rendered_bytes
 
     # ------------------------------------------------------------------
     # Excel helpers
@@ -252,18 +315,20 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     patched_archive.writestr(filename, data)
         return buffer.getvalue()
 
-    def _coerce_excel_numeric_cells(self, blob: bytes) -> bytes | None:
+    def _coerce_excel_numeric_cells(
+        self, blob: bytes
+    ) -> tuple[bytes | None, dict[str, dict[str, object]] | None]:
         """Attempt to coerce templated numeric values using ``openpyxl``."""
 
         try:
             from openpyxl import load_workbook
         except ImportError:
-            return None
+            return None, None
 
         try:
             workbook = load_workbook(BytesIO(blob), data_only=False)
         except Exception:
-            return None
+            return None, None
 
         changed = False
 
@@ -273,12 +338,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     if self._coerce_openpyxl_cell(cell):
                         changed = True
 
+        workbook_data = self._extract_openpyxl_values(workbook)
+
         if not changed:
-            return blob
+            return blob, workbook_data
 
         output = BytesIO()
         workbook.save(output)
-        return output.getvalue()
+        return output.getvalue(), workbook_data
 
     def _coerce_openpyxl_cell(self, cell) -> bool:
         value = getattr(cell, "value", None)
@@ -339,6 +406,266 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return xml
 
         return ET.tostring(root, encoding="unicode")
+
+    # ------------------------------------------------------------------
+    # Chart helpers
+
+    def _refresh_chart_cache_from_workbooks(
+        self,
+        part,
+        xml: str,
+        excel_results: dict[str, dict[str, object]],
+    ) -> str:
+        if not excel_results:
+            return xml
+
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            return xml
+
+        self._ensure_chart_auto_update(root)
+
+        workbook_map = self._resolve_chart_workbooks(part, excel_results)
+        if not workbook_map:
+            return ET.tostring(root, encoding="unicode")
+
+        updated = False
+
+        for num_ref in root.findall(".//c:numRef", _CHART_NS):
+            if self._update_chart_reference(num_ref, workbook_map, numeric=True):
+                updated = True
+
+        for str_ref in root.findall(".//c:strRef", _CHART_NS):
+            if self._update_chart_reference(str_ref, workbook_map, numeric=False):
+                updated = True
+
+        if not updated:
+            return ET.tostring(root, encoding="unicode")
+
+        return ET.tostring(root, encoding="unicode")
+
+    def _ensure_chart_auto_update(self, root: ET.Element) -> None:
+        external = root.find(".//c:externalData", _CHART_NS)
+        if external is None:
+            return
+
+        auto = external.find("c:autoUpdate", _CHART_NS)
+        if auto is None:
+            auto = ET.SubElement(external, f"{{{_CHART_MAIN_NS}}}autoUpdate")
+        auto.set("val", "1")
+
+    def _resolve_chart_workbooks(
+        self,
+        part,
+        excel_results: dict[str, dict[str, object]],
+    ) -> dict[str, dict[str, object]]:
+        partnames = []
+        related_parts = getattr(part, "related_parts", None)
+        if isinstance(related_parts, dict):
+            partnames.extend(
+                self._get_partname(related)
+                for related in related_parts.values()
+                if self._is_excel_part(related)
+            )
+        else:
+            rels = getattr(part, "rels", None)
+            if rels is not None:
+                for rel in getattr(rels, "values", lambda: [])():
+                    target = getattr(rel, "target_part", None)
+                    if target is not None and self._is_excel_part(target):
+                        partnames.append(self._get_partname(target))
+
+        if not partnames and len(excel_results) == 1:
+            partnames = [next(iter(excel_results))]
+
+        workbook_map: dict[str, dict[str, object]] = {}
+        for partname in partnames:
+            info = excel_results.get(partname)
+            if not info:
+                continue
+            data = info.get("data")
+            if isinstance(data, dict):
+                workbook_map[partname] = data
+
+        if workbook_map:
+            return workbook_map
+
+        # Fall back to matching on the basename if direct lookup fails.
+        basename_map = {info["basename"]: key for key, info in excel_results.items() if "basename" in info}
+        resolved: dict[str, dict[str, object]] = {}
+        for partname in partnames:
+            basename = partname.split("/")[-1]
+            target_partname = basename_map.get(basename)
+            if not target_partname:
+                continue
+            data = excel_results[target_partname].get("data")
+            if isinstance(data, dict):
+                resolved[target_partname] = data
+        if resolved:
+            return resolved
+
+        return {}
+
+    def _update_chart_reference(
+        self,
+        ref_element: ET.Element,
+        workbook_map: dict[str, dict[str, object]],
+        *,
+        numeric: bool,
+    ) -> bool:
+        formula = ref_element.find("c:f", _CHART_NS)
+        if formula is None or not formula.text:
+            return False
+
+        workbook_key, sheet_name, coords = self._parse_chart_formula(formula.text)
+        if sheet_name is None or not coords:
+            return False
+
+        workbook_data = None
+        if workbook_key is not None:
+            for partname, data in workbook_map.items():
+                basename = partname.split("/")[-1]
+                if basename == workbook_key:
+                    workbook_data = data
+                    break
+        if workbook_data is None:
+            workbook_data = next(iter(workbook_map.values()), None)
+        if workbook_data is None:
+            return False
+
+        values = self._collect_range_values(workbook_data, sheet_name, coords)
+        if values is None:
+            return False
+
+        cache_tag = "numCache" if numeric else "strCache"
+        cache = ref_element.find(f"c:{cache_tag}", _CHART_NS)
+        if cache is None:
+            cache = ET.SubElement(ref_element, f"{{{_CHART_MAIN_NS}}}{cache_tag}")
+
+        for existing in list(cache.findall("c:pt", _CHART_NS)):
+            cache.remove(existing)
+
+        pt_count = cache.find("c:ptCount", _CHART_NS)
+        if pt_count is None:
+            pt_count = ET.SubElement(cache, f"{{{_CHART_MAIN_NS}}}ptCount")
+        pt_count.set("val", str(len(values)))
+
+        for idx, value in enumerate(values):
+            pt = ET.SubElement(cache, f"{{{_CHART_MAIN_NS}}}pt", {"idx": str(idx)})
+            val = ET.SubElement(pt, f"{{{_CHART_MAIN_NS}}}v")
+            if value is None:
+                val.text = ""
+            elif numeric and isinstance(value, (int, float)):
+                val.text = self._format_numeric_value(value)
+            else:
+                val.text = str(value)
+
+        return True
+
+    def _parse_chart_formula(
+        self, formula: str
+    ) -> tuple[str | None, str | None, tuple[tuple[int, int], tuple[int, int]] | None]:
+        match = _CHART_FORMULA_RE.match(formula.strip())
+        if not match:
+            return None, None, None
+
+        workbook = match.group("workbook")
+        sheet = match.group("sheet")
+        ref_range = match.group("range")
+
+        if sheet:
+            sheet = sheet.strip("'")
+
+        coords = self._parse_range(ref_range)
+        return workbook, sheet, coords
+
+    def _parse_range(
+        self, ref_range: str
+    ) -> tuple[tuple[int, int], tuple[int, int]] | None:
+        if ":" in ref_range:
+            start, end = ref_range.split(":", 1)
+        else:
+            start = end = ref_range
+
+        start_coord = self._parse_coordinate(start)
+        end_coord = self._parse_coordinate(end)
+        if start_coord is None or end_coord is None:
+            return None
+
+        return start_coord, end_coord
+
+    def _parse_coordinate(self, coord: str) -> tuple[int, int] | None:
+        match = re.match(r"\$?([A-Za-z]+)\$?(\d+)", coord.strip())
+        if not match:
+            return None
+
+        column = match.group(1)
+        row = int(match.group(2))
+        return self._column_index_from_string(column), row
+
+    def _collect_range_values(
+        self,
+        workbook_data: dict[str, dict[str, object]],
+        sheet_name: str,
+        coords: tuple[tuple[int, int], tuple[int, int]],
+    ) -> list[object | None] | None:
+        sheet_data = workbook_data.get(sheet_name)
+        if sheet_data is None:
+            return None
+
+        (start_col, start_row), (end_col, end_row) = coords
+        if end_col < start_col:
+            start_col, end_col = end_col, start_col
+        if end_row < start_row:
+            start_row, end_row = end_row, start_row
+
+        values: list[object | None] = []
+
+        for row in range(start_row, end_row + 1):
+            for col in range(start_col, end_col + 1):
+                coordinate = f"{self._column_string_from_index(col)}{row}"
+                values.append(sheet_data.get(coordinate))
+
+        return values
+
+    def _column_index_from_string(self, column: str) -> int:
+        index = 0
+        for char in column.upper():
+            if not char.isalpha():
+                return 0
+            index = index * 26 + (ord(char) - ord("A") + 1)
+        return index
+
+    def _column_string_from_index(self, index: int) -> str:
+        if index <= 0:
+            return "A"
+
+        chars: list[str] = []
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            chars.append(chr(ord("A") + remainder))
+        return "".join(reversed(chars))
+
+    def _format_numeric_value(self, value: int | float) -> str:
+        if isinstance(value, int) or (isinstance(value, float) and value.is_integer()):
+            return str(int(value))
+        return repr(float(value))
+
+    def _extract_openpyxl_values(self, workbook) -> dict[str, dict[str, object]]:
+        data: dict[str, dict[str, object]] = {}
+
+        for worksheet in getattr(workbook, "worksheets", []):
+            sheet_data: dict[str, object] = {}
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    coordinate = getattr(cell, "coordinate", None)
+                    if not coordinate:
+                        continue
+                    sheet_data[coordinate] = getattr(cell, "value", None)
+            data[getattr(worksheet, "title", "")] = sheet_data
+
+        return data
 
     def _extract_excel_cell_text(
         self,
