@@ -88,7 +88,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             else:
                 xml_sources.append(self.patch_xml(self.get_part_xml(part)))
 
-        env = jinja_env or Environment()
+        env = jinja_env or getattr(self, "jinja_env", None) or Environment()
         parse_content = env.parse("".join(xml_sources))
         return meta.find_undeclared_variables(parse_content)
 
@@ -838,6 +838,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
             cache = self._find_or_create_cache(num_ref, "numCache")
             self._write_cache(cache, values)
+            self._write_literal_cache(num_ref, "numLit", values)
             updated = True
 
         for str_ref in tree.findall(".//{*}strRef"):
@@ -849,11 +850,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
             cache = self._find_or_create_cache(str_ref, "strCache")
             self._write_cache(cache, values)
+            self._write_literal_cache(str_ref, "strLit", values)
             updated = True
 
         if not updated:
             return xml
 
+        self._ensure_chart_auto_update(tree)
         return etree.tostring(tree, encoding="unicode")
 
     def _resolve_chart_workbook(
@@ -896,6 +899,24 @@ class GhostwriterDocxTemplate(DocxTemplate):
         namespace = etree.QName(ref_node).namespace
         tag = f"{{{namespace}}}{local_name}" if namespace else local_name
         return etree.SubElement(ref_node, tag)
+
+    def _write_literal_cache(self, ref_node, local_name: str, values: list[str]) -> None:
+        parent = ref_node.getparent()
+        if parent is None:
+            return
+
+        literal = None
+        for child in parent:
+            if etree.QName(child).localname == local_name:
+                literal = child
+                break
+
+        if literal is None:
+            namespace = etree.QName(ref_node).namespace
+            tag = f"{{{namespace}}}{local_name}" if namespace else local_name
+            literal = etree.SubElement(parent, tag)
+
+        self._write_cache(literal, values)
 
     def _extract_range_values(
         self,
@@ -1245,4 +1266,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
             pt = etree.SubElement(cache, f"{prefix}pt", idx=str(idx))
             v = etree.SubElement(pt, f"{prefix}v")
             v.text = "" if value is None else str(value)
+
+    def _ensure_chart_auto_update(self, tree: etree._Element) -> None:
+        for external in tree.findall(".//{*}externalData"):
+            namespace = etree.QName(external).namespace
+            prefix = f"{{{namespace}}}" if namespace else ""
+            auto = external.find(f"{prefix}autoUpdate")
+            if auto is None:
+                auto = etree.SubElement(external, f"{prefix}autoUpdate")
+            auto.set("val", "1")
 
