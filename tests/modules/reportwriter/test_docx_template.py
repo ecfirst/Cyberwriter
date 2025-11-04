@@ -99,12 +99,20 @@ CHART_XML = (
     "<c:numCache><c:ptCount val=\"2\"/>"
     "<c:pt idx=\"0\"><c:v>1</c:v></c:pt>"
     "<c:pt idx=\"1\"><c:v>2</c:v></c:pt>"
-    "</c:numCache></c:numRef></c:val>"
+    "</c:numCache></c:numRef>"
+    "<c:numLit><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>3</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>4</c:v></c:pt>"
+    "</c:numLit></c:val>"
     "<c:cat><c:strRef><c:f>Sheet1!$B$1:$B$2</c:f>"
     "<c:strCache><c:ptCount val=\"2\"/>"
     "<c:pt idx=\"0\"><c:v>First</c:v></c:pt>"
     "<c:pt idx=\"1\"><c:v>Second</c:v></c:pt>"
-    "</c:strCache></c:strRef></c:cat>"
+    "</c:strCache></c:strRef>"
+    "<c:strLit><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>Old</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>Values</c:v></c:pt>"
+    "</c:strLit></c:cat>"
     "</c:ser>"
     "</c:lineChart>"
     "</c:plotArea>"
@@ -462,8 +470,15 @@ def test_render_additional_parts_updates_chart_cache(monkeypatch):
     chart_xml = etree.tostring(chart._element, encoding="unicode")
     assert "<c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt>" in chart_xml
+    assert "<c:numLit><c:ptCount val=\"2\"/>" in chart_xml
+    assert "<c:numLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt></c:numLit>" in chart_xml
     assert "<c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt>" in chart_xml
+    assert "<c:strLit><c:ptCount val=\"2\"/>" in chart_xml
+    assert "<c:strLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt></c:strLit>" in chart_xml
+    assert "<c:autoUpdate val=\"1\"/>" in chart_xml
     assert "{{" not in chart_xml
 
 
@@ -504,6 +519,7 @@ def test_render_additional_parts_updates_chart_cache_structured_ref(monkeypatch)
     assert "<c:pt idx=\"1\"><c:v>7</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"0\"><c:v>One</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"1\"><c:v>Two</c:v></c:pt>" in chart_xml
+    assert "<c:autoUpdate val=\"1\"/>" in chart_xml
     assert "{{" not in chart_xml
 
     with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
@@ -549,6 +565,7 @@ def test_render_additional_parts_updates_chart_cache_extensions(monkeypatch):
     assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt>" in chart_xml
     assert "<x14:pt idx=\"0\"><x14:v>Alpha</x14:v></x14:pt>" in chart_xml
     assert "<x14:pt idx=\"1\"><x14:v>Beta</x14:v></x14:pt>" in chart_xml
+    assert "<c:autoUpdate val=\"1\"/>" in chart_xml
     assert "{{" not in chart_xml
 
 
