@@ -51,6 +51,56 @@ SHARED_STRINGS_XML = (
     "</sst>"
 )
 
+WORKSHEET_CHART_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    "<row r=\"1\">"
+    "<c r=\"A1\"><v>{{ first_val }}</v></c>"
+    "<c r=\"B1\" t=\"inlineStr\"><is><t>{{ first_label }}</t></is></c>"
+    "</row>"
+    "<row r=\"2\">"
+    "<c r=\"A2\" t=\"s\"><v>0</v></c>"
+    "<c r=\"B2\" t=\"s\"><v>1</v></c>"
+    "</row>"
+    "</sheetData>"
+    "</worksheet>"
+)
+
+SHARED_STRINGS_CHART_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    "count=\"2\" uniqueCount=\"2\">"
+    "<si><t>{{ second_val }}</t></si>"
+    "<si><t>{{ second_label }}</t></si>"
+    "</sst>"
+)
+
+CHART_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<c:chart>"
+    "<c:plotArea>"
+    "<c:lineChart>"
+    "<c:ser>"
+    "<c:val><c:numRef><c:f>Sheet1!$A$1:$A$2</c:f>"
+    "<c:numCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>1</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>2</c:v></c:pt>"
+    "</c:numCache></c:numRef></c:val>"
+    "<c:cat><c:strRef><c:f>Sheet1!$B$1:$B$2</c:f>"
+    "<c:strCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>First</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>Second</c:v></c:pt>"
+    "</c:strCache></c:strRef></c:cat>"
+    "</c:ser>"
+    "</c:lineChart>"
+    "</c:plotArea>"
+    "</c:chart>"
+    "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"0\"/></c:externalData>"
+    "</c:chartSpace>"
+)
+
 WORKBOOK_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -114,20 +164,37 @@ class FakeXlsxPart:
         return self._blob
 
 
-def test_iter_additional_parts_filters_to_smart_art(monkeypatch):
+class FakeRelationship:
+    """Relationship pointing a chart to an embedded workbook."""
+
+    def __init__(self, target_part):
+        self.reltype = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/embeddedPackage"
+        self.target_part = target_part
+
+
+class FakeChartPart(FakeXmlPart):
+    """Chart XML part with a relationship to a workbook."""
+
+    def __init__(self, partname: str, xml: str, target_part):
+        super().__init__(partname, xml)
+        self.rels = {"rId1": FakeRelationship(target_part)}
+
+
+def test_iter_additional_parts_filters_to_known_patterns(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
 
     matching = FakeXmlPart("/word/diagrams/data1.xml", DIAGRAM_XML.format("value"))
-    other = FakeXmlPart("/word/charts/chart1.xml", DIAGRAM_XML.format("value"))
+    chart = FakeXmlPart("/word/charts/chart1.xml", DIAGRAM_XML.format("value"))
+    other = FakeXmlPart("/word/document.xml", DIAGRAM_XML.format("value"))
 
     monkeypatch.setattr(
         template.docx.part.package,
         "iter_parts",
-        lambda: iter([matching, other]),
+        lambda: iter([matching, chart, other]),
     )
 
-    assert list(template._iter_additional_parts()) == [matching]
+    assert list(template._iter_additional_parts()) == [matching, chart]
 
 
 def test_render_additional_parts_updates_diagram_xml(monkeypatch):
@@ -178,6 +245,41 @@ def test_render_additional_parts_updates_excel_data(monkeypatch):
     assert "<c r=\"A1\"><v>7</v></c>" in sheet
     assert "<c r=\"A2\"><v>21</v></c>" in sheet
     assert "{{" not in shared
+
+
+def test_render_additional_parts_updates_chart_cache(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_CHART_XML,
+        SHARED_STRINGS_CHART_XML,
+    )
+    chart = FakeChartPart(
+        "/word/charts/chart1.xml",
+        CHART_XML,
+        excel,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel, chart]))
+
+    template._render_additional_parts(
+        {
+            "first_val": 10,
+            "second_val": 20,
+            "first_label": "Alpha",
+            "second_label": "Beta",
+        },
+        None,
+    )
+
+    chart_xml = etree.tostring(chart._element, encoding="unicode")
+    assert "<c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt>" in chart_xml
+    assert "{{" not in chart_xml
 
 
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
