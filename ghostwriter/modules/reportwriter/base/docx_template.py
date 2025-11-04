@@ -11,6 +11,11 @@ from zipfile import ZipFile
 from docx.oxml import parse_xml
 from docxtpl.template import DocxTemplate
 from jinja2 import Environment, meta
+from xml.etree import ElementTree as ET
+
+
+_EXCEL_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+ET.register_namespace("", _EXCEL_MAIN_NS)
 
 
 _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
@@ -198,10 +203,81 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     xml = data.decode("utf-8")
                     patched = self.patch_xml(xml)
                     rendered = self.render_xml_part(patched, part, context, jinja_env)
+                    if info.filename.startswith("xl/worksheets/"):
+                        rendered = self._coerce_excel_numeric_cells(rendered)
                     data = rendered.encode("utf-8")
                 patched_archive.writestr(info, data)
 
         rendered_bytes = destination.getvalue()
         if hasattr(part, "_blob"):
             part._blob = rendered_bytes
+
+    # ------------------------------------------------------------------
+    # Excel helpers
+
+    def _coerce_excel_numeric_cells(self, xml: str) -> str:
+        """Convert templated inline strings that contain numbers into numeric cells."""
+
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            return xml
+
+        namespace = {"x": _EXCEL_MAIN_NS}
+        changed = False
+
+        for cell in root.findall(".//x:c", namespace):
+            cell_type = cell.get("t")
+            if cell_type not in {"inlineStr", "str"}:
+                continue
+
+            text_value = self._extract_excel_cell_text(cell, cell_type, namespace)
+            numeric_text = self._normalize_numeric_string(text_value)
+            if numeric_text is None:
+                continue
+
+            if cell_type == "inlineStr":
+                for child in list(cell):
+                    cell.remove(child)
+                value_element = ET.SubElement(cell, f"{{{_EXCEL_MAIN_NS}}}v")
+                value_element.text = numeric_text
+            else:
+                value_element = cell.find("x:v", namespace)
+                if value_element is None:
+                    value_element = ET.SubElement(cell, f"{{{_EXCEL_MAIN_NS}}}v")
+                value_element.text = numeric_text
+
+            cell.attrib.pop("t", None)
+            changed = True
+
+        if not changed:
+            return xml
+
+        return ET.tostring(root, encoding="unicode")
+
+    def _extract_excel_cell_text(self, cell, cell_type: str, namespace: dict[str, str]) -> str | None:
+        if cell_type == "inlineStr":
+            text_element = cell.find(".//x:t", namespace)
+            if text_element is not None and text_element.text is not None:
+                return text_element.text
+            return None
+
+        value_element = cell.find("x:v", namespace)
+        if value_element is not None and value_element.text is not None:
+            return value_element.text
+        return None
+
+    @staticmethod
+    def _normalize_numeric_string(value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        stripped = value.strip()
+        if not stripped:
+            return None
+
+        if not re.fullmatch(r"-?\d+(\.\d+)?", stripped):
+            return None
+
+        return stripped
 

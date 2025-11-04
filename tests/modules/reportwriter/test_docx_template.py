@@ -132,6 +132,46 @@ def test_render_additional_parts_updates_excel_xml(monkeypatch):
     assert "Rendered" in sheet_xml
 
 
+def test_render_excel_part_coerces_numeric_cells(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    sheet_xml = (
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        "<sheetData>"
+        '<row r="1">'
+        '<c r="A1" t="inlineStr"><is><t>{{ number }}</t></is></c>'
+        '<c r="A2" t="str"><v>{{ number }}</v></c>'
+        '<c r="A3" t="inlineStr"><is><t>{{ text }}</t></is></c>'
+        "</row>"
+        "</sheetData>"
+        "</worksheet>"
+    )
+    part = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        {"xl/worksheets/sheet1.xml": sheet_xml},
+    )
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([part]))
+
+    template._render_additional_parts({"number": 42, "text": "not numeric"}, None)
+
+    sheet_xml = part.read_xml("xl/worksheets/sheet1.xml")
+    root = etree.fromstring(sheet_xml.encode("utf-8"))
+    ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+
+    cells = root.findall(".//x:c", ns)
+    assert len(cells) == 3
+
+    assert cells[0].get("t") is None
+    assert cells[0].find("x:v", ns).text == "42"
+
+    assert cells[1].get("t") is None
+    assert cells[1].find("x:v", ns).text == "42"
+
+    assert cells[2].get("t") == "inlineStr"
+    assert cells[2].find(".//x:t", ns).text == "not numeric"
+
+
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
 
