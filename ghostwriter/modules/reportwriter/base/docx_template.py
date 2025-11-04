@@ -194,7 +194,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return
 
         source = BytesIO(blob)
-        destination = BytesIO()
 
         rendered_files: dict[str, bytes] = {}
         file_infos: dict[str, ZipInfo] = {}
@@ -219,29 +218,84 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 rendered_files[shared_strings_key].decode("utf-8")
             )
 
-        for filename, data in list(rendered_files.items()):
-            if not filename.startswith("xl/worksheets/"):
-                continue
-            xml = data.decode("utf-8")
-            coerced = self._coerce_excel_numeric_cells(xml, shared_strings)
-            rendered_files[filename] = coerced.encode("utf-8")
+        initial_bytes = self._build_excel_archive(rendered_files, file_infos)
+        coerced_bytes = self._coerce_excel_numeric_cells(initial_bytes)
 
-        with ZipFile(destination, "w") as patched_archive:
-            for filename, data in rendered_files.items():
-                info = file_infos.get(filename)
-                if info is not None:
-                    patched_archive.writestr(info, data)
-                else:
-                    patched_archive.writestr(filename, data)
+        if coerced_bytes is None:
+            for filename, data in list(rendered_files.items()):
+                if not filename.startswith("xl/worksheets/"):
+                    continue
+                xml = data.decode("utf-8")
+                coerced_xml = self._coerce_excel_numeric_cells_xml(xml, shared_strings)
+                rendered_files[filename] = coerced_xml.encode("utf-8")
+            final_bytes = self._build_excel_archive(rendered_files, file_infos)
+        else:
+            final_bytes = coerced_bytes
 
-        rendered_bytes = destination.getvalue()
         if hasattr(part, "_blob"):
-            part._blob = rendered_bytes
+            part._blob = final_bytes
 
     # ------------------------------------------------------------------
     # Excel helpers
 
-    def _coerce_excel_numeric_cells(
+    def _build_excel_archive(
+        self, rendered_files: dict[str, bytes], file_infos: dict[str, ZipInfo]
+    ) -> bytes:
+        buffer = BytesIO()
+        with ZipFile(buffer, "w") as patched_archive:
+            for filename, data in rendered_files.items():
+                info = file_infos.get(filename)
+                if info is not None:
+                    patched_archive.writestr(self._clone_zipinfo(info), data)
+                else:
+                    patched_archive.writestr(filename, data)
+        return buffer.getvalue()
+
+    def _coerce_excel_numeric_cells(self, blob: bytes) -> bytes | None:
+        """Attempt to coerce templated numeric values using ``openpyxl``."""
+
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            return None
+
+        try:
+            workbook = load_workbook(BytesIO(blob), data_only=False)
+        except Exception:
+            return None
+
+        changed = False
+
+        for worksheet in workbook.worksheets:
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    if self._coerce_openpyxl_cell(cell):
+                        changed = True
+
+        if not changed:
+            return blob
+
+        output = BytesIO()
+        workbook.save(output)
+        return output.getvalue()
+
+    def _coerce_openpyxl_cell(self, cell) -> bool:
+        value = getattr(cell, "value", None)
+        if not isinstance(value, str):
+            return False
+
+        numeric_text = self._normalize_numeric_string(value)
+        if numeric_text is None:
+            return False
+
+        converted = self._cast_numeric_value(numeric_text)
+        if converted is None:
+            return False
+
+        cell.value = converted
+        return True
+
+    def _coerce_excel_numeric_cells_xml(
         self, xml: str, shared_strings: dict[int, str] | None
     ) -> str:
         """Convert templated inline strings that contain numbers into numeric cells."""
@@ -324,6 +378,32 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         return parsed
 
+    def _clone_zipinfo(self, info: ZipInfo) -> ZipInfo:
+        clone = ZipInfo(info.filename, date_time=info.date_time)
+        clone.compress_type = info.compress_type
+        clone.comment = info.comment
+        clone.extra = info.extra
+        clone.create_system = info.create_system
+        clone.create_version = info.create_version
+        clone.extract_version = info.extract_version
+        clone.flag_bits = info.flag_bits
+        clone.internal_attr = info.internal_attr
+        clone.external_attr = info.external_attr
+        clone.volume = getattr(info, "volume", 0)
+        return clone
+
+    @staticmethod
+    def _cast_numeric_value(numeric_text: str):
+        if "." in numeric_text:
+            try:
+                return float(numeric_text)
+            except ValueError:
+                return None
+        try:
+            return int(numeric_text)
+        except ValueError:
+            return None
+
     @staticmethod
     def _normalize_numeric_string(value: str | None) -> str | None:
         if value is None:
@@ -334,6 +414,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return None
 
         if not re.fullmatch(r"-?\d+(\.\d+)?", stripped):
+            return None
+
+        signless = stripped.lstrip("-")
+        if "." not in signless and len(signless) > 1 and signless.startswith("0"):
             return None
 
         return stripped

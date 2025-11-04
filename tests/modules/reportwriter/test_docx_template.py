@@ -7,6 +7,8 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
 
+from openpyxl import Workbook, load_workbook
+
 from docx.opc.packuri import PackURI
 from docx.oxml import parse_xml
 from lxml import etree
@@ -48,9 +50,17 @@ class FakeXmlPart:
 class FakeXlsxPart:
     """Minimal XLSX part stored inside the DOCX package."""
 
-    def __init__(self, partname: str, files: dict[str, str]):
+    def __init__(
+        self,
+        partname: str,
+        files: dict[str, str] | None = None,
+        blob: bytes | None = None,
+    ):
         self.partname = PackURI(partname)
-        self._blob = self._build_blob(files)
+        if blob is not None:
+            self._blob = blob
+        else:
+            self._blob = self._build_blob(files or {})
 
     @staticmethod
     def _build_blob(files: dict[str, str]) -> bytes:
@@ -216,6 +226,37 @@ def test_render_excel_part_coerces_shared_string_cells(monkeypatch):
 
     assert cells[1].get("t") == "s"
     assert cells[1].find("x:v", ns).text == "1"
+
+
+def test_render_excel_part_coercion_via_openpyxl(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    worksheet["A1"] = "{{ number }}"
+    worksheet["B1"] = "{{ text }}"
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+
+    part = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        blob=buffer.getvalue(),
+    )
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([part]))
+
+    template._render_additional_parts({"number": "5.5", "text": "hello"}, None)
+
+    rendered = BytesIO(part.blob)
+    reloaded = load_workbook(rendered, data_only=False)
+    active = reloaded.active
+
+    assert active["A1"].data_type == "n"
+    assert active["A1"].value == 5.5
+    assert active["B1"].data_type == "s"
+    assert active["B1"].value == "hello"
 
 
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
