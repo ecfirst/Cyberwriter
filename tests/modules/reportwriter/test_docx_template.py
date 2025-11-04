@@ -79,6 +79,17 @@ WORKSHEET_TR_TC_XML = (
     "</worksheet>"
 )
 
+WORKSHEET_TR_TC_TRIMMED_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    "<row>{%-tr for row in rows -%}</row>"
+    "<row>{%- endtr -%}</row>"
+    "<c>{%-tc row.value -%}</c>"
+    "</sheetData>"
+    "</worksheet>"
+)
+
 SHARED_STRINGS_CHART_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -621,6 +632,17 @@ def test_patch_xml_handles_excel_tc_tr_tags():
     assert "{{ row.value }}" in cleaned
     assert "{{tc" not in cleaned
     assert "{%tc" not in cleaned
+
+
+def test_patch_xml_handles_trimmed_excel_tr_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TR_TC_TRIMMED_XML)
+
+    assert "{%- for row in rows -%}" in cleaned
+    assert "{%- endfor -%}" in cleaned
+    assert "tr for" not in cleaned
+    assert "endtr" not in cleaned
 
 
 def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):

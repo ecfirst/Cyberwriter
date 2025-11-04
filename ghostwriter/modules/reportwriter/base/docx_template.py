@@ -165,8 +165,17 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         xml = _strip_container(xml, "row", "tr")
         xml = _strip_container(xml, "c", "tc")
-        xml = re.sub(r"\{%\s*tr\s+for\b", "{% for", xml)
-        xml = re.sub(r"\{%\s*endtr\b", "{% endfor", xml)
+
+        def _replace_open_tr(match: re.Match[str]) -> str:
+            trim = match.group("trim") or ""
+            return "{%" + trim + " for"
+
+        def _replace_close_tr(match: re.Match[str]) -> str:
+            trim = match.group("trim") or ""
+            return "{%" + trim + " endfor"
+
+        xml = re.sub(r"\{%(?P<trim>-?)\s*tr\s+for\b", _replace_open_tr, xml)
+        xml = re.sub(r"\{%(?P<trim>-?)\s*endtr\b", _replace_close_tr, xml)
         xml = re.sub(r"(\{[\{%#])\s*tc\b", r"\1", xml)
         return xml
 
