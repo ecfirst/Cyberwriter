@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import posixpath
 from io import BytesIO
 import re
 from typing import Iterator
@@ -175,7 +176,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     final_bytes, workbook_data = result
                     excel_results[partname] = {
                         "bytes": final_bytes,
-                        "data": workbook_data,
+                        "data": workbook_data or {},
                         "basename": partname.split("/")[-1],
                     }
                 continue
@@ -262,20 +263,27 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 rendered_files[shared_strings_key].decode("utf-8")
             )
 
-        initial_bytes = self._build_excel_archive(rendered_files, file_infos)
-        coerced_bytes, workbook_data = self._coerce_excel_numeric_cells(initial_bytes)
+        worksheet_values: dict[str, dict[str, object]] = {}
 
-        if coerced_bytes is None:
-            for filename, data in list(rendered_files.items()):
-                if not filename.startswith("xl/worksheets/"):
-                    continue
-                xml = data.decode("utf-8")
-                coerced_xml = self._coerce_excel_numeric_cells_xml(xml, shared_strings)
-                rendered_files[filename] = coerced_xml.encode("utf-8")
-            final_bytes = self._build_excel_archive(rendered_files, file_infos)
-            workbook_data = None
-        else:
-            final_bytes = coerced_bytes
+        for filename, data in list(rendered_files.items()):
+            if not filename.startswith("xl/worksheets/") or not filename.lower().endswith(".xml"):
+                continue
+            xml = data.decode("utf-8")
+            processed_xml, sheet_data = self._process_excel_worksheet_xml(
+                xml, shared_strings
+            )
+            if processed_xml != xml:
+                rendered_files[filename] = processed_xml.encode("utf-8")
+            worksheet_values[filename] = sheet_data
+
+        sheet_map = self._parse_workbook_sheets(rendered_files)
+        workbook_data: dict[str, dict[str, object]] = {}
+        for path, name in sheet_map.items():
+            values = worksheet_values.get(path)
+            if values is not None:
+                workbook_data[name] = values
+
+        final_bytes = self._build_excel_archive(rendered_files, file_infos)
 
         if hasattr(part, "_blob"):
             part._blob = final_bytes
@@ -315,97 +323,74 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     patched_archive.writestr(filename, data)
         return buffer.getvalue()
 
-    def _coerce_excel_numeric_cells(
-        self, blob: bytes
-    ) -> tuple[bytes | None, dict[str, dict[str, object]] | None]:
-        """Attempt to coerce templated numeric values using ``openpyxl``."""
-
-        try:
-            from openpyxl import load_workbook
-        except ImportError:
-            return None, None
-
-        try:
-            workbook = load_workbook(BytesIO(blob), data_only=False)
-        except Exception:
-            return None, None
-
-        changed = False
-
-        for worksheet in workbook.worksheets:
-            for row in worksheet.iter_rows():
-                for cell in row:
-                    if self._coerce_openpyxl_cell(cell):
-                        changed = True
-
-        workbook_data = self._extract_openpyxl_values(workbook)
-
-        if not changed:
-            return blob, workbook_data
-
-        output = BytesIO()
-        workbook.save(output)
-        return output.getvalue(), workbook_data
-
-    def _coerce_openpyxl_cell(self, cell) -> bool:
-        value = getattr(cell, "value", None)
-        if not isinstance(value, str):
-            return False
-
-        numeric_text = self._normalize_numeric_string(value)
-        if numeric_text is None:
-            return False
-
-        converted = self._cast_numeric_value(numeric_text)
-        if converted is None:
-            return False
-
-        cell.value = converted
-        return True
-
-    def _coerce_excel_numeric_cells_xml(
+    def _process_excel_worksheet_xml(
         self, xml: str, shared_strings: dict[int, str] | None
-    ) -> str:
-        """Convert templated inline strings that contain numbers into numeric cells."""
+    ) -> tuple[str, dict[str, object]]:
+        """Coerce numeric cells and return extracted worksheet values."""
 
         try:
             root = ET.fromstring(xml)
         except ET.ParseError:
-            return xml
+            return xml, {}
 
         namespace = {"x": _EXCEL_MAIN_NS}
         changed = False
+        sheet_data: dict[str, object] = {}
 
         for cell in root.findall(".//x:c", namespace):
-            cell_type = cell.get("t")
-            if cell_type not in {"inlineStr", "str", "s"}:
+            coordinate = cell.get("r")
+            if not coordinate:
                 continue
 
+            cell_type = cell.get("t")
             text_value = self._extract_excel_cell_text(
                 cell, cell_type, namespace, shared_strings
             )
-            numeric_text = self._normalize_numeric_string(text_value)
-            if numeric_text is None:
+
+            if cell_type in {"inlineStr", "str", "s"}:
+                numeric_text = self._normalize_numeric_string(text_value)
+                if numeric_text is not None:
+                    self._apply_numeric_cell(cell, cell_type, namespace, numeric_text)
+                    converted = self._cast_numeric_value(numeric_text)
+                    sheet_data[coordinate] = converted if converted is not None else numeric_text
+                    changed = True
+                    continue
+                sheet_data[coordinate] = text_value
                 continue
 
-            if cell_type == "inlineStr":
-                for child in list(cell):
-                    cell.remove(child)
-                value_element = ET.SubElement(cell, f"{{{_EXCEL_MAIN_NS}}}v")
-                value_element.text = numeric_text
+            if cell_type == "b":
+                sheet_data[coordinate] = self._interpret_excel_bool(text_value)
+                continue
+
+            numeric_text = self._normalize_numeric_string(text_value)
+            if numeric_text is not None:
+                converted = self._cast_numeric_value(numeric_text)
+                sheet_data[coordinate] = converted if converted is not None else numeric_text
             else:
-                value_element = cell.find("x:v", namespace)
-                if value_element is None:
-                    value_element = ET.SubElement(cell, f"{{{_EXCEL_MAIN_NS}}}v")
-                value_element.text = numeric_text
+                sheet_data[coordinate] = text_value
 
-            cell.attrib.pop("t", None)
-            changed = True
+        if changed:
+            return ET.tostring(root, encoding="unicode"), sheet_data
 
-        if not changed:
-            return xml
+        return xml, sheet_data
 
-        return ET.tostring(root, encoding="unicode")
+    def _apply_numeric_cell(
+        self,
+        cell,
+        cell_type: str | None,
+        namespace: dict[str, str],
+        numeric_text: str,
+    ) -> None:
+        if cell_type == "inlineStr":
+            for child in list(cell):
+                cell.remove(child)
+            value_element = ET.SubElement(cell, f"{{{_EXCEL_MAIN_NS}}}v")
+        else:
+            value_element = cell.find("x:v", namespace)
+            if value_element is None:
+                value_element = ET.SubElement(cell, f"{{{_EXCEL_MAIN_NS}}}v")
+        value_element.text = numeric_text
+        cell.attrib.pop("t", None)
 
     # ------------------------------------------------------------------
     # Chart helpers
@@ -652,20 +637,69 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return str(int(value))
         return repr(float(value))
 
-    def _extract_openpyxl_values(self, workbook) -> dict[str, dict[str, object]]:
-        data: dict[str, dict[str, object]] = {}
+    def _parse_workbook_sheets(self, rendered_files: dict[str, bytes]) -> dict[str, str]:
+        workbook_bytes = rendered_files.get("xl/workbook.xml")
+        if workbook_bytes is None:
+            return {}
 
-        for worksheet in getattr(workbook, "worksheets", []):
-            sheet_data: dict[str, object] = {}
-            for row in worksheet.iter_rows():
-                for cell in row:
-                    coordinate = getattr(cell, "coordinate", None)
-                    if not coordinate:
-                        continue
-                    sheet_data[coordinate] = getattr(cell, "value", None)
-            data[getattr(worksheet, "title", "")] = sheet_data
+        try:
+            root = ET.fromstring(workbook_bytes.decode("utf-8"))
+        except ET.ParseError:
+            return {}
 
-        return data
+        namespace = {
+            "x": _EXCEL_MAIN_NS,
+            "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        }
+
+        sheets: list[tuple[str, str]] = []
+        for sheet in root.findall(".//x:sheet", namespace):
+            name = sheet.get("name")
+            rel_id = sheet.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+            if name and rel_id:
+                sheets.append((rel_id, name))
+
+        if not sheets:
+            return {}
+
+        rels_bytes = rendered_files.get("xl/_rels/workbook.xml.rels")
+        targets: dict[str, str] = {}
+        if rels_bytes is not None:
+            try:
+                rel_root = ET.fromstring(rels_bytes.decode("utf-8"))
+            except ET.ParseError:
+                rel_root = None
+            if rel_root is not None:
+                rel_ns = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+                for rel in rel_root.findall("rel:Relationship", rel_ns):
+                    rel_id = rel.get("Id")
+                    target = rel.get("Target")
+                    if rel_id and target:
+                        targets[rel_id] = target
+
+        sheet_map: dict[str, str] = {}
+        for rel_id, name in sheets:
+            target = targets.get(rel_id)
+            if not target:
+                continue
+            normalized = self._normalize_excel_path(target)
+            sheet_map[normalized] = name
+
+        return sheet_map
+
+    def _normalize_excel_path(self, target: str) -> str:
+        cleaned = target.replace("\\", "/")
+        if cleaned.startswith("/"):
+            cleaned = cleaned.lstrip("/")
+        if cleaned.startswith("xl/"):
+            return posixpath.normpath(cleaned)
+        if cleaned.startswith("../"):
+            combined = posixpath.normpath(posixpath.join("xl", cleaned))
+        else:
+            combined = posixpath.normpath(posixpath.join("xl", cleaned))
+        if not combined.startswith("xl/"):
+            combined = f"xl/{combined.lstrip('/')}"
+        return combined
 
     def _extract_excel_cell_text(
         self,
@@ -690,6 +724,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 return shared_strings.get(index)
             return value_element.text
         return None
+
+    def _interpret_excel_bool(self, value: str | None) -> bool | None:
+        if value is None:
+            return None
+        return value in {"1", "true", "TRUE"}
 
     def _parse_excel_shared_strings(self, xml: str) -> dict[int, str]:
         try:

@@ -7,11 +7,10 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
 
-from openpyxl import Workbook, load_workbook
-
 from docx.opc.packuri import PackURI
 from docx.oxml import parse_xml
 from lxml import etree
+from xml.etree import ElementTree as ET
 
 MODULE_PATH = Path(__file__).resolve().parents[3] / "ghostwriter" / "modules" / "reportwriter" / "base" / "docx_template.py"
 SPEC = util.spec_from_file_location("gw_docx_template", MODULE_PATH)
@@ -169,19 +168,40 @@ def test_render_chart_part_refreshes_cache_from_workbook(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Sheet1"
-    sheet["A1"] = "{{ first }}"
-    sheet["A2"] = "{{ second }}"
-    sheet["A3"] = "{{ third }}"
-
-    buffer = BytesIO()
-    workbook.save(buffer)
-
     excel_part = FakeXlsxPart(
         "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
-        blob=buffer.getvalue(),
+        {
+            "xl/workbook.xml": (
+                '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                "<sheets>"
+                '<sheet name="Sheet1" sheetId="1" r:id="rId1"/>'
+                "</sheets>"
+                "</workbook>"
+            ),
+            "xl/_rels/workbook.xml.rels": (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+                'Target="worksheets/sheet1.xml"/>'
+                "</Relationships>"
+            ),
+            "xl/worksheets/sheet1.xml": (
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                "<sheetData>"
+                '<row r="1">'
+                '<c r="A1" t="inlineStr"><is><t>{{ first }}</t></is></c>'
+                "</row>"
+                '<row r="2">'
+                '<c r="A2" t="inlineStr"><is><t>{{ second }}</t></is></c>'
+                "</row>"
+                '<row r="3">'
+                '<c r="A3" t="inlineStr"><is><t>{{ third }}</t></is></c>'
+                "</row>"
+                "</sheetData>"
+                "</worksheet>"
+            ),
+        },
     )
 
     chart_xml = (
@@ -332,35 +352,63 @@ def test_render_excel_part_coerces_shared_string_cells(monkeypatch):
     assert cells[1].find("x:v", ns).text == "1"
 
 
-def test_render_excel_part_coercion_via_openpyxl(monkeypatch):
+def test_render_excel_part_collects_workbook_values():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
 
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "Sheet1"
-    worksheet["A1"] = "{{ number }}"
-    worksheet["B1"] = "{{ text }}"
-
-    buffer = BytesIO()
-    workbook.save(buffer)
-
     part = FakeXlsxPart(
         "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
-        blob=buffer.getvalue(),
+        {
+            "xl/workbook.xml": (
+                '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                "<sheets>"
+                '<sheet name="Sheet1" sheetId="1" r:id="rId1"/>'
+                "</sheets>"
+                "</workbook>"
+            ),
+            "xl/_rels/workbook.xml.rels": (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+                'Target="worksheets/sheet1.xml"/>'
+                "</Relationships>"
+            ),
+            "xl/sharedStrings.xml": (
+                '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                '<si><t>{{ text }}</t></si>'
+                "</sst>"
+            ),
+            "xl/worksheets/sheet1.xml": (
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                "<sheetData>"
+                '<row r="1">'
+                '<c r="A1" t="inlineStr"><is><t>{{ number }}</t></is></c>'
+                '<c r="B1" t="s"><v>0</v></c>'
+                "</row>"
+                "</sheetData>"
+                "</worksheet>"
+            ),
+        },
     )
-    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([part]))
 
-    template._render_additional_parts({"number": "5.5", "text": "hello"}, None)
+    result = template._render_excel_part(part, {"number": "5.5", "text": "hello"}, None)
+    assert result is not None
 
-    rendered = BytesIO(part.blob)
-    reloaded = load_workbook(rendered, data_only=False)
-    active = reloaded.active
+    final_bytes, workbook_data = result
+    assert final_bytes
+    assert workbook_data["Sheet1"]["A1"] == 5.5
+    assert workbook_data["Sheet1"]["B1"] == "hello"
 
-    assert active["A1"].data_type == "n"
-    assert active["A1"].value == 5.5
-    assert active["B1"].data_type == "s"
-    assert active["B1"].value == "hello"
+    sheet_xml = part.read_xml("xl/worksheets/sheet1.xml")
+    root = ET.fromstring(sheet_xml)
+    ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    cells = {cell.get("r"): cell for cell in root.findall(".//x:c", ns)}
+
+    assert cells["A1"].get("t") is None
+    assert cells["A1"].find("x:v", ns).text == "5.5"
+    assert cells["B1"].get("t") == "s"
+    assert cells["B1"].find("x:v", ns).text == "0"
 
 
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
