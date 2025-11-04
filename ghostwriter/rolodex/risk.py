@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Optional, Sequence
 
+from django.apps import apps as django_apps
+from django.db.models import Q
+
 from ghostwriter.reporting.models import GradeRiskMapping
 
 
@@ -108,3 +111,43 @@ def build_project_risk_summary(workbook_data: Any) -> Dict[str, str]:
             results[risk_key] = normalized
 
     return results
+
+
+def backfill_missing_project_risks(*, using: str = "default", batch_size: int = 200) -> int:
+    """Populate stored risk summaries for existing projects missing this data.
+
+    The helper is intended for upgrade paths where :class:`~ghostwriter.rolodex.models.Project`
+    instances already contain workbook data but were saved before ``Project.risks`` was
+    introduced. Projects that already have risk information recorded are left untouched.
+
+    Parameters
+    ----------
+    using
+        Database alias to operate against.
+    batch_size
+        Chunk size to use when iterating through projects.
+
+    Returns
+    -------
+    int
+        The number of projects whose risks were backfilled.
+    """
+
+    Project = django_apps.get_model("rolodex", "Project")
+
+    queryset = (
+        Project.objects.using(using)
+        .exclude(workbook_data__isnull=True)
+        .exclude(workbook_data={})
+        .filter(Q(risks__isnull=True) | Q(risks={}))
+    )
+
+    updated = 0
+    for project in queryset.iterator(chunk_size=batch_size):
+        summary = build_project_risk_summary(getattr(project, "workbook_data", {}))
+        if not summary:
+            continue
+        Project.objects.using(using).filter(pk=project.pk).update(risks=summary)
+        updated += 1
+
+    return updated
