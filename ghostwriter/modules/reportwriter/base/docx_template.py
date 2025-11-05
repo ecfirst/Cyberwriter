@@ -743,18 +743,29 @@ class GhostwriterDocxTemplate(DocxTemplate):
             else:
                 row_index = min(candidate, target_index)
 
-            cells = []
+            raw_cells = list(row.findall(f"{prefix}c"))
+            cells: list[tuple[etree._Element, tuple[int, int] | None]] = []
             parsed_rows: list[int] = []
-            for cell in row.findall(f"{prefix}c"):
+            defined_cols: list[int] = []
+
+            for cell in raw_cells:
+                if not self._cell_has_value(cell, prefix):
+                    row.remove(cell)
+                    continue
+
                 ref = cell.get("r")
                 parsed = self._split_cell(ref) if ref else None
                 if parsed is not None:
                     col_index, parsed_row = parsed
                     parsed_row = max(1, parsed_row - row_offset)
                     parsed = (col_index, parsed_row)
+                    parsed_rows.append(parsed_row)
+                    defined_cols.append(col_index)
                 cells.append((cell, parsed))
-                if parsed is not None:
-                    parsed_rows.append(parsed[1])
+
+            if not cells:
+                sheet_data.remove(row)
+                continue
 
             unique_rows = {value for value in parsed_rows}
             if candidate is None and parsed_rows:
@@ -764,6 +775,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             row.set("r", str(row_index))
 
+            col_offset = min(defined_cols) - 1 if defined_cols else 0
+            col_offset = max(col_offset, 0)
+
             cols: list[int] = []
             row_rows: list[int] = []
             next_col = 0
@@ -772,11 +786,17 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     col_index = next_col + 1
                     cell_row = row_index
                 else:
-                    col_index, original_row = parsed
+                    original_col, original_row = parsed
+                    col_index = max(1, original_col - col_offset)
+                    previous_row_index = row_index
                     if len(unique_rows) <= 1:
                         cell_row = row_index
                     else:
                         cell_row = original_row
+                    if col_index <= next_col and (
+                        len(unique_rows) <= 1 or cell_row == previous_row_index
+                    ):
+                        col_index = next_col + 1
                     row_index = max(row_index, cell_row)
                 next_col = col_index
                 cell.set("r", f"{self._column_letters(col_index)}{cell_row}")

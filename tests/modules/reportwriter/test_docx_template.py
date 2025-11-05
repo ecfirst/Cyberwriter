@@ -204,6 +204,31 @@ WORKSHEET_TR_RENDERED_GAPS_XML = (
     '</worksheet>'
 )
 
+WORKSHEET_TC_RENDERED_GAPS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<dimension ref="A1:D3"/>'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>Device</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>Alpha</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>Beta</t></is></c>'
+    '</row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><t> </t></is></c>'
+    '<c r="B2"><v>5</v></c>'
+    '<c r="C2"><v>7</v></c>'
+    '</row>'
+    '<row r="3">'
+    '<c r="A3" t="inlineStr"><is><t> </t></is></c>'
+    '<c r="B3"><v>9</v></c>'
+    '<c r="C3"><v>11</v></c>'
+    '</row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
 WORKSHEET_TR_SHARED_STRINGS_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -996,6 +1021,33 @@ def test_normalise_sheet_rows_removes_empty_rows():
     dimension = tree.find(f"{prefix}dimension")
     assert dimension is not None
     assert dimension.get("ref") == "A1:D3"
+
+
+def test_normalise_sheet_rows_compacts_tc_columns():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    normalised = template._normalise_sheet_rows(WORKSHEET_TC_RENDERED_GAPS_XML)
+
+    tree = etree.fromstring(normalised.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert [row.get("r") for row in rows] == ["1", "2", "3"]
+
+    row_cells = {
+        row.get("r"): [cell.get("r") for cell in row.findall(f"{prefix}c")]
+        for row in rows
+    }
+
+    assert row_cells["1"] == ["A1", "B1", "C1"]
+    assert row_cells["2"] == ["A2", "B2"]
+    assert row_cells["3"] == ["A3", "B3"]
+
+    dimension = tree.find(f"{prefix}dimension")
+    assert dimension is not None
+    assert dimension.get("ref") == "A1:C3"
 
 
 def test_render_additional_parts_handles_tr_loop_shared_strings(monkeypatch):
