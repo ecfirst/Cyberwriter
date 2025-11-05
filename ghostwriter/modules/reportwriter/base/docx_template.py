@@ -1042,6 +1042,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         table_columns = table_tree.find(f"{prefix}tableColumns")
         column_names: list[str] = []
+        alias_map: dict[str, str] = {}
         width = max(end_col - start_col + 1, 0)
 
         if table_columns is None:
@@ -1080,22 +1081,29 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         for idx, column in enumerate(table_columns.findall(f"{prefix}tableColumn")):
             column_index = start_col + idx
+            original_name = column.get("name") or column.get("id")
             header_value: str | None = None
             if sheet_values:
                 column_letter = self._column_letters(column_index)
                 for header_row in header_row_indices:
                     cell_key = f"{column_letter}{header_row}"
                     value = sheet_values.get(cell_key)
-                    if value:
+                    if value is not None:
                         header_value = str(value)
-                        break
-            if header_value:
+                        if header_value.strip():
+                            break
+            if header_value is not None:
                 column.set("name", header_value)
-            name_attr = column.get("name") or column.get("id")
+                name_attr = header_value
+            else:
+                name_attr = original_name
             if not name_attr:
                 name_attr = f"Column{idx + 1}"
                 column.set("name", name_attr)
             column_names.append(name_attr)
+
+            if original_name and original_name != name_attr:
+                alias_map[original_name] = name_attr
 
         table_info: dict[str, object] = {
             "name": table_name,
@@ -1126,11 +1134,35 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 for row_index in range(data_end_row + 1, end_row + 1)
             ] if totals_row_count else []
 
-            columns_info[column_name] = {
+            column_info = {
                 "headers": headers,
                 "data": data_cells,
                 "totals": totals_cells,
             }
+            columns_info[column_name] = column_info
+
+            # Preserve aliases for templated chart formulas that still
+            # reference the original column names.  This allows the chart
+            # cache synchronisation to resolve both the rendered header
+            # value and the pre-templated column identifiers.
+            alias_key = None
+            for candidate, mapped in alias_map.items():
+                if mapped == column_name:
+                    alias_key = candidate
+                    break
+            if alias_key and alias_key not in columns_info:
+                columns_info[alias_key] = column_info
+
+        if alias_map:
+            lower_map = {}
+            for key, value in list(alias_map.items()):
+                if isinstance(key, str):
+                    lowered = key.lower()
+                    if lowered not in alias_map:
+                        lower_map[lowered] = value
+            for lowered, value in lower_map.items():
+                alias_map[lowered] = value
+            table_info["aliases"] = alias_map
 
         table_info["columns"] = columns_info
 
@@ -1535,6 +1567,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return None
 
         qualifiers, columns = self._interpret_structured_tokens(tokens, table_info)
+        raw_aliases = table_info.get("aliases")
+        alias_map = raw_aliases if isinstance(raw_aliases, dict) else {}
         if columns is None or not columns:
             return None
 
@@ -1549,6 +1583,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         for column_name in columns:
             column_info = columns_info.get(column_name)
+            if column_info is None and alias_map:
+                mapped = alias_map.get(column_name)
+                if isinstance(mapped, str):
+                    column_info = columns_info.get(mapped)
             if not isinstance(column_info, dict):
                 continue
             if include_headers:
@@ -1645,6 +1683,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if not isinstance(order, list):
             order = []
         order_lookup = {name: idx for idx, name in enumerate(order) if isinstance(name, str)}
+        alias_map = table_info.get("aliases")
+        if isinstance(alias_map, dict):
+            for alias, target in alias_map.items():
+                if not isinstance(alias, str) or not isinstance(target, str):
+                    continue
+                idx = order_lookup.get(target)
+                if idx is not None and alias not in order_lookup:
+                    order_lookup[alias] = idx
 
         qualifier_flags: set[str] = set()
         selected_indices: list[int] = []

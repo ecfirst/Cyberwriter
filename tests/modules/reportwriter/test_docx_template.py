@@ -490,6 +490,92 @@ TABLE_TC_NARROW_XML = (
     '</table>'
 )
 
+WORKSHEET_TC_ALIAS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<sheetData>"
+    "<row r=\"1\">"
+    "<c r=\"A1\" t=\"inlineStr\"><is><t> </t></is></c>"
+    "<c r=\"B1\" t=\"inlineStr\"><is><t>{{ devices[0].name }}</t></is></c>"
+    "<c r=\"C1\" t=\"inlineStr\"><is><t>{{ devices[1].name }}</t></is></c>"
+    "</row>"
+    "<row r=\"2\">"
+    "<c r=\"A2\" t=\"inlineStr\"><is><t>High Risk</t></is></c>"
+    "<c r=\"B2\"><v>{{ devices[0].high }}</v></c>"
+    "<c r=\"C2\"><v>{{ devices[1].high }}</v></c>"
+    "</row>"
+    "<row r=\"3\">"
+    "<c r=\"A3\" t=\"inlineStr\"><is><t>Medium Risk</t></is></c>"
+    "<c r=\"B3\"><v>{{ devices[0].medium }}</v></c>"
+    "<c r=\"C3\"><v>{{ devices[1].medium }}</v></c>"
+    "</row>"
+    "<row r=\"4\">"
+    "<c r=\"A4\" t=\"inlineStr\"><is><t>Low Risk</t></is></c>"
+    "<c r=\"B4\"><v>{{ devices[0].low }}</v></c>"
+    "<c r=\"C4\"><v>{{ devices[1].low }}</v></c>"
+    "</row>"
+    "</sheetData>"
+    "<tableParts count=\"1\"><tablePart r:id=\"rId1\"/></tableParts>"
+    "</worksheet>"
+)
+
+TABLE_TC_ALIAS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'id="1" name="Table1" displayName="Table1" ref="B1:C4" headerRowCount="1">'
+    '<tableColumns count="2">'
+    '<tableColumn id="1" name="Device-1"/>'
+    '<tableColumn id="2" name="Device-2"/>'
+    '</tableColumns>'
+    '<autoFilter ref="B1:C4"/>'
+    '</table>'
+)
+
+CHART_TABLE_ALIAS_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<c:chart>"
+    "<c:plotArea>"
+    "<c:barChart>"
+    "<c:ser>"
+    "<c:idx val=\"0\"/>"
+    "<c:order val=\"0\"/>"
+    "<c:val><c:numRef><c:f>Sheet1!Table1[Device-1]</c:f>"
+    "<c:numCache><c:ptCount val=\"3\"/>"
+    "<c:pt idx=\"0\"><c:v>1</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>2</c:v></c:pt>"
+    "<c:pt idx=\"2\"><c:v>3</c:v></c:pt>"
+    "</c:numCache></c:numRef></c:val>"
+    "<c:cat><c:strRef><c:f>Sheet1!$A$2:$A$4</c:f>"
+    "<c:strCache><c:ptCount val=\"3\"/>"
+    "<c:pt idx=\"0\"><c:v>High Risk</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>Medium Risk</c:v></c:pt>"
+    "<c:pt idx=\"2\"><c:v>Low Risk</c:v></c:pt>"
+    "</c:strCache></c:strRef></c:cat>"
+    "</c:ser>"
+    "<c:ser>"
+    "<c:idx val=\"1\"/>"
+    "<c:order val=\"1\"/>"
+    "<c:val><c:numRef><c:f>Sheet1!Table1[Device-2]</c:f>"
+    "<c:numCache><c:ptCount val=\"3\"/>"
+    "<c:pt idx=\"0\"><c:v>4</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>5</c:v></c:pt>"
+    "<c:pt idx=\"2\"><c:v>6</c:v></c:pt>"
+    "</c:numCache></c:numRef></c:val>"
+    "<c:cat><c:strRef><c:f>Sheet1!$A$2:$A$4</c:f>"
+    "<c:strCache><c:ptCount val=\"3\"/>"
+    "<c:pt idx=\"0\"><c:v>High Risk</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>Medium Risk</c:v></c:pt>"
+    "<c:pt idx=\"2\"><c:v>Low Risk</c:v></c:pt>"
+    "</c:strCache></c:strRef></c:cat>"
+    "</c:ser>"
+    "</c:barChart>"
+    "</c:plotArea>"
+    "</c:chart>"
+    "</c:chartSpace>"
+)
+
 SHEET_TABLE_RELS_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
@@ -755,6 +841,50 @@ def test_render_additional_parts_updates_chart_cache_structured_ref(monkeypatch)
     assert "{{" not in table_xml
 
 
+def test_render_additional_parts_updates_chart_cache_table_alias(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TC_ALIAS_XML,
+        None,
+        content_types_xml=CONTENT_TYPES_WITH_TABLE_XML,
+        extra_files={
+            "xl/worksheets/_rels/sheet1.xml.rels": SHEET_TABLE_RELS_XML,
+            "xl/tables/table1.xml": TABLE_TC_ALIAS_XML,
+        },
+    )
+    chart = FakeChartPart(
+        "/word/charts/chart1.xml",
+        CHART_TABLE_ALIAS_XML,
+        excel,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel, chart]))
+
+    devices = [
+        {"name": "Edge-FW01", "high": 7, "medium": 5, "low": 3},
+        {"name": "Core-FW02", "high": 2, "medium": 4, "low": 6},
+    ]
+
+    template._render_additional_parts({"devices": devices}, None)
+
+    chart_xml = etree.tostring(chart._element, encoding="unicode")
+    assert "<c:pt idx=\"0\"><c:v>7</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>5</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"2\"><c:v>3</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"0\"><c:v>2</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>4</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"2\"><c:v>6</c:v></c:pt>" in chart_xml
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        table_xml = archive.read("xl/tables/table1.xml").decode("utf-8")
+
+    assert "ref=\"B1:C4\"" in table_xml
+    assert "Edge-FW01" in table_xml
+    assert "Core-FW02" in table_xml
+
+
 def test_render_additional_parts_updates_chart_cache_extensions(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
@@ -971,6 +1101,14 @@ def test_update_table_definition_expands_tc_columns():
         for column in table_columns.findall(f"{prefix}tableColumn")
     ]
     assert column_names == ["Edge-FW01", "Core-FW02", "DMZ-FW03"]
+
+    aliases = table_info.get("aliases")
+    assert aliases is not None
+    assert aliases["Device-1"] == "Edge-FW01"
+    assert aliases["Device-2"] == "Core-FW02"
+    assert aliases["device-1"] == "Edge-FW01"
+    assert aliases["device-2"] == "Core-FW02"
+    assert aliases["3"] == "DMZ-FW03"
 
     auto_filter = tree.find(f"{prefix}autoFilter")
     assert auto_filter is not None
