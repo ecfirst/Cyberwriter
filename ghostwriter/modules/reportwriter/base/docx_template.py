@@ -747,7 +747,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             cells = []
             parsed_rows: list[int] = []
+            removed_cells = False
             for cell in row.findall(f"{prefix}c"):
+                if not self._cell_has_value(cell, prefix):
+                    row.remove(cell)
+                    removed_cells = True
+                    continue
                 ref = cell.get("r")
                 parsed = self._split_cell(ref) if ref else None
                 if parsed is not None:
@@ -757,6 +762,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 cells.append((cell, parsed))
                 if parsed is not None:
                     parsed_rows.append(parsed[1])
+
+            if not cells:
+                parent = row.getparent()
+                if parent is not None:
+                    parent.remove(row)
+                continue
 
             unique_rows = {value for value in parsed_rows}
             if candidate is None and parsed_rows:
@@ -770,9 +781,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
             row_rows: list[int] = []
             next_col = 0
             for cell, parsed in cells:
-                if parsed is None:
+                if parsed is None or removed_cells:
                     col_index = next_col + 1
                     cell_row = row_index
+                    if parsed is not None:
+                        _, original_row = parsed
+                        if len(unique_rows) > 1:
+                            cell_row = original_row
+                            row_index = max(row_index, cell_row)
                 else:
                     col_index, original_row = parsed
                     if len(unique_rows) <= 1:
@@ -915,7 +931,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         data_end_row = end_row - totals_rows if totals_rows else end_row
 
         # Determine actual last data row based on rendered worksheet
-        actual_end_row = data_end_row
+        actual_end_row = data_start_row - 1
         for row_index in sorted(row_columns):
             if row_index < data_start_row:
                 continue
