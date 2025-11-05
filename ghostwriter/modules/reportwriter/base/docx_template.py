@@ -83,9 +83,15 @@ class GhostwriterDocxTemplate(DocxTemplate):
         for part in self._iter_additional_parts():
             partname = self._normalise_partname(part)
             if self._is_excel_part(partname):
-                xml_sources.extend(
-                    self.patch_xml(xml) for xml in self._iter_excel_xml(part)
-                )
+                infos_files = self._read_excel_part(part)
+                if infos_files is None:
+                    continue
+                _infos, files = infos_files
+                files = self._inline_templated_shared_strings(files)
+                for name, data in files.items():
+                    if not name.endswith(".xml"):
+                        continue
+                    xml_sources.append(self.patch_xml(data.decode("utf-8")))
             else:
                 xml_sources.append(self.patch_xml(self.get_part_xml(part)))
 
@@ -248,19 +254,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
 
-    def _iter_excel_xml(self, part) -> Iterator[str]:
-        blob = getattr(part, "_blob", None)
-        if blob is None and hasattr(part, "blob"):
-            blob = part.blob
-        if not blob:
-            return
-
-        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
-            for name in archive.namelist():
-                if name.endswith(".xml"):
-                    yield archive.read(name).decode("utf-8")
-
-    def _render_excel_part(self, part, context, jinja_env):
+    def _read_excel_part(self, part) -> tuple[list[zipfile.ZipInfo], dict[str, bytes]] | None:
         blob = getattr(part, "_blob", None)
         if blob is None and hasattr(part, "blob"):
             blob = part.blob
@@ -270,7 +264,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
         source = io.BytesIO(blob)
         with zipfile.ZipFile(source) as archive:
             infos = archive.infolist()
-            files: dict[str, bytes] = {info.filename: archive.read(info.filename) for info in infos}
+            files = {info.filename: archive.read(info.filename) for info in infos}
+        return infos, files
+
+    def _render_excel_part(self, part, context, jinja_env):
+        infos_files = self._read_excel_part(part)
+        if infos_files is None:
+            return None
+        infos, files = infos_files
 
         files = self._inline_templated_shared_strings(files)
 
@@ -1081,7 +1082,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if not updated:
             return xml
 
-        self._ensure_chart_auto_update(tree)
         return etree.tostring(tree, encoding="unicode")
 
     def _resolve_chart_workbook(
@@ -1491,13 +1491,4 @@ class GhostwriterDocxTemplate(DocxTemplate):
             pt = etree.SubElement(cache, f"{prefix}pt", idx=str(idx))
             v = etree.SubElement(pt, f"{prefix}v")
             v.text = "" if value is None else str(value)
-
-    def _ensure_chart_auto_update(self, tree: etree._Element) -> None:
-        for external in tree.findall(".//{*}externalData"):
-            namespace = etree.QName(external).namespace
-            prefix = f"{{{namespace}}}" if namespace else ""
-            auto = external.find(f"{prefix}autoUpdate")
-            if auto is None:
-                auto = etree.SubElement(external, f"{prefix}autoUpdate")
-            auto.set("val", "1")
 
