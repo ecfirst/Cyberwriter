@@ -770,6 +770,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
         max_col: int | None = None
         min_row: int | None = None
         max_row: int | None = None
+        sheet_min_col: int | None = None
+        sheet_max_col: int | None = None
 
         for row in rows:
             attr = row.get("r")
@@ -919,6 +921,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             if cols:
                 row.set("spans", f"{min(cols)}:{max(cols)}")
+                row_min = min(cols)
+                row_max = max(cols)
+                if sheet_min_col is None or row_min < sheet_min_col:
+                    sheet_min_col = row_min
+                if sheet_max_col is None or row_max > sheet_max_col:
+                    sheet_max_col = row_max
             else:
                 row.attrib.pop("spans", None)
 
@@ -939,13 +947,18 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 last_index = max(last_index, row_index)
 
         dimension = tree.find(f"{prefix}dimension")
-        if min_row is not None and min_col is not None and max_col is not None and max_row is not None:
-            ref = (
-                f"{self._column_letters(min_col)}{min_row}:"
-                f"{self._column_letters(max_col)}{max_row}"
-            )
-        else:
-            ref = "A1"
+        start_col = sheet_min_col if sheet_min_col is not None else min_col
+        end_col = sheet_max_col if sheet_max_col is not None else max_col
+
+        if start_col is None:
+            start_col = 1
+        if end_col is None:
+            end_col = start_col
+
+        start_row = min_row if min_row is not None else 1
+        end_row = max_row if max_row is not None else start_row
+
+        ref = f"{self._column_letters(start_col)}{start_row}:{self._column_letters(end_col)}{end_row}"
 
         if dimension is None:
             tag = f"{prefix}dimension" if prefix else "dimension"
