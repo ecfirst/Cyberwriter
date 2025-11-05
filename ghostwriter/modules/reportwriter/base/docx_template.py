@@ -695,6 +695,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         rows = filtered_rows
 
         global_min_col: int | None = None
+        columns_with_values: set[int] = set()
         for row in rows:
             for cell in row.findall(f"{prefix}c"):
                 if not self._cell_has_value(cell, prefix):
@@ -706,6 +707,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 if parsed is None:
                     continue
                 col_index, _ = parsed
+                columns_with_values.add(col_index)
                 if global_min_col is None or col_index < global_min_col:
                     global_min_col = col_index
 
@@ -786,7 +788,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 row_index = min(candidate, target_index)
 
             raw_cells = list(row.findall(f"{prefix}c"))
-            cells: list[tuple[etree._Element, tuple[int, int] | None]] = []
+            cells: list[tuple[etree._Element, tuple[int, int] | None, bool]] = []
             parsed_rows: list[int] = []
             defined_cols: list[int] = []
 
@@ -794,18 +796,28 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 ref = cell.get("r")
                 parsed = self._split_cell(ref) if ref else None
                 has_value = self._cell_has_value(cell, prefix)
-                if not has_value:
+                keep_empty = False
+                if not has_value and parsed is not None:
+                    col_index, parsed_row = parsed
+                    if col_index in columns_with_values:
+                        keep_empty = True
+                if not has_value and not keep_empty:
                     row.remove(cell)
                     continue
                 if parsed is not None:
                     col_index, parsed_row = parsed
                     parsed_row = max(1, parsed_row - row_offset)
                     parsed = (col_index, parsed_row)
-                    parsed_rows.append(parsed_row)
-                    defined_cols.append(col_index)
-                cells.append((cell, parsed))
+                    if has_value:
+                        parsed_rows.append(parsed_row)
+                        defined_cols.append(col_index)
+                else:
+                    parsed_rows.append(row_index)
 
-            if not cells:
+                cells.append((cell, parsed, has_value))
+
+            row_has_value = any(has_value for _cell, _parsed, has_value in cells)
+            if not row_has_value:
                 sheet_data.remove(row)
                 continue
 
@@ -831,7 +843,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             cols: list[int] = []
             row_rows: list[int] = []
             next_col = 0
-            for cell, parsed in cells:
+            for cell, parsed, has_value in cells:
                 if parsed is None:
                     col_index = max(baseline_col, next_col + 1)
                     cell_row = row_index
@@ -853,9 +865,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 cols.append(col_index)
                 row_rows.append(cell_row)
 
-                if min_col is None or col_index < min_col:
+                if has_value and (min_col is None or col_index < min_col):
                     min_col = col_index
-                if max_col is None or col_index > max_col:
+                if has_value and (max_col is None or col_index > max_col):
                     max_col = col_index
 
             if cols:
@@ -867,9 +879,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 row.set("r", str(min(row_rows)))
                 min_row_val = min(row_rows)
                 max_row_val = max(row_rows)
-                if min_row is None or min_row_val < min_row:
+                if row_has_value and (min_row is None or min_row_val < min_row):
                     min_row = min_row_val
-                if max_row is None or max_row_val > max_row:
+                if row_has_value and (max_row is None or max_row_val > max_row):
                     max_row = max_row_val
                 last_index = max(last_index, max_row_val)
             else:

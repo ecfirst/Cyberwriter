@@ -1138,8 +1138,8 @@ def test_normalise_sheet_rows_compacts_tc_columns():
     }
 
     assert row_cells["1"] == ["A1", "B1", "C1"]
-    assert row_cells["2"] == ["A2", "B2"]
-    assert row_cells["3"] == ["A3", "B3"]
+    assert row_cells["2"] == ["A2", "B2", "C2"]
+    assert row_cells["3"] == ["A3", "B3", "C3"]
 
     dimension = tree.find(f"{prefix}dimension")
     assert dimension is not None
