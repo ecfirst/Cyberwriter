@@ -101,6 +101,34 @@ WORKSHEET_TR_ENDFOR_XML = (
     "</worksheet>"
 )
 
+WORKSHEET_TR_SPLIT_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    '<row><c t="inlineStr"><is><r><t>{%</t></r><r><t>tr for site in project.workbook_data.web.sites %}</t></r></is></c></row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><r><t>{{ site.url }}</t></r></is></c>'
+    '<c r="B2" t="inlineStr"><is><r><t>{{ site.unique_high }}</t></r></is></c>'
+    '<c r="C2" t="inlineStr"><is><r><t>{{ site.unique_med }}</t></r></is></c>'
+    '<c r="D2" t="inlineStr"><is><r><t>{{ site.unique_low }}</t></r></is></c>'
+    '</row>'
+    '<row><c t="inlineStr"><is><r><t>{%</t></r><r><t>tr endfor %}</t></r></is></c></row>'
+    "</sheetData>"
+    "</worksheet>"
+)
+
+WORKSHEET_TC_SPLIT_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><r><t>{{</t></r><r><t>tc site.url }}</t></r></is></c>'
+    '<c r="B2" t="inlineStr"><is><r><t>{{</t></r><r><t>tc site.unique_high }}</t></r></is></c>'
+    '</row>'
+    "</sheetData>"
+    "</worksheet>"
+)
+
 WORKSHEET_TR_LOOP_ROWS_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -742,6 +770,28 @@ def test_patch_xml_handles_excel_tr_endfor_tags():
     assert "{% endfor %}" in cleaned
     assert "tr for" not in cleaned
     assert "tr endfor" not in cleaned
+
+
+def test_patch_xml_handles_split_excel_tr_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TR_SPLIT_XML)
+
+    assert "{% for site in project.workbook_data.web.sites %}" in cleaned
+    assert "{% endfor %}" in cleaned
+    assert "tr for" not in cleaned
+    assert "tr endfor" not in cleaned
+
+
+def test_patch_xml_handles_split_excel_tc_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TC_SPLIT_XML)
+
+    assert "tc site.url" not in cleaned
+    assert "tc site.unique_high" not in cleaned
+    assert "{{ site.url }}" in cleaned
+    assert "{{ site.unique_high }}" in cleaned
 
 
 def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):
