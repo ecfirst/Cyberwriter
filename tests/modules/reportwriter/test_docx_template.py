@@ -9,6 +9,7 @@ from pathlib import Path
 
 from docx.opc.packuri import PackURI
 from docx.oxml import parse_xml
+from jinja2 import Environment
 from lxml import etree
 
 MODULE_PATH = Path(__file__).resolve().parents[3] / "ghostwriter" / "modules" / "reportwriter" / "base" / "docx_template.py"
@@ -120,6 +121,24 @@ WORKSHEET_TR_LOOP_ROWS_XML = (
     '<c r="D2"><v>{{tc site.low }}</v></c>'
     '</row>'
     '<row>{%tr endfor %}</row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
+WORKSHEET_TR_PROJECT_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<dimension ref="A1:D2"/>'
+    '<sheetData>'
+    '<row><c r="A1" t="inlineStr"><is><t>{%tr for site in project.workbook_data.web.sites %}</t></is></c></row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><t>{{ site.url }}</t></is></c>'
+    '<c r="B2" t="inlineStr"><is><t>{{ site.unique_high }}</t></is></c>'
+    '<c r="C2" t="inlineStr"><is><t>{{ site.unique_med }}</t></is></c>'
+    '<c r="D2" t="inlineStr"><is><t>{{ site.unique_low }}</t></is></c>'
+    '</row>'
+    '<row><c r="A3" t="inlineStr"><is><t>{%tr endfor %}</t></is></c></row>'
     '</sheetData>'
     '</worksheet>'
 )
@@ -558,7 +577,7 @@ def test_render_additional_parts_updates_chart_cache(monkeypatch):
     assert "<c:strLit><c:ptCount val=\"2\"/>" in chart_xml
     assert "<c:strLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt></c:strLit>" in chart_xml
-    assert "<c:autoUpdate val=\"1\"/>" in chart_xml
+    assert "<c:autoUpdate val=\"0\"/>" in chart_xml
     assert "{{" not in chart_xml
 
 
@@ -599,7 +618,7 @@ def test_render_additional_parts_updates_chart_cache_structured_ref(monkeypatch)
     assert "<c:pt idx=\"1\"><c:v>7</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"0\"><c:v>One</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"1\"><c:v>Two</c:v></c:pt>" in chart_xml
-    assert "<c:autoUpdate val=\"1\"/>" in chart_xml
+    assert "<c:autoUpdate val=\"0\"/>" in chart_xml
     assert "{{" not in chart_xml
 
     with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
@@ -645,7 +664,7 @@ def test_render_additional_parts_updates_chart_cache_extensions(monkeypatch):
     assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt>" in chart_xml
     assert "<x14:pt idx=\"0\"><x14:v>Alpha</x14:v></x14:pt>" in chart_xml
     assert "<x14:pt idx=\"1\"><x14:v>Beta</x14:v></x14:pt>" in chart_xml
-    assert "<c:autoUpdate val=\"1\"/>" in chart_xml
+    assert "<c:autoUpdate val=\"0\"/>" in chart_xml
     assert "{{" not in chart_xml
 
 
@@ -864,4 +883,39 @@ def test_render_additional_parts_handles_tr_loop_shared_strings(monkeypatch):
     dimension = tree.find(f"{prefix}dimension")
     assert dimension is not None
     assert dimension.get("ref") == f"A1:D{len(sites) + 1}"
+
+
+def test_get_undeclared_variables_ignores_tr_loop_variables(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TR_PROJECT_XML,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    env = Environment()
+
+    class _AnyFilter(dict):
+        def __contains__(self, key):  # pragma: no cover - behaviour exercised via meta
+            return True
+
+        def __missing__(self, key):  # pragma: no cover - behaviour exercised via meta
+            stub = lambda value, *args, **kwargs: value
+            self[key] = stub
+            return stub
+
+        def get(self, key, default=None):  # pragma: no cover - behaviour exercised via meta
+            try:
+                return super().__getitem__(key)
+            except KeyError:
+                return self.__missing__(key)
+
+    env.filters = _AnyFilter(env.filters)
+
+    undeclared = template.get_undeclared_template_variables(env)
+    assert "project" in undeclared
+    assert "site" not in undeclared
 
