@@ -862,7 +862,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
             next_col = 0
             for cell, parsed, has_value in cells:
                 if parsed is None:
-                    col_index = max(baseline_col, next_col + 1)
+                    if has_value:
+                        col_index = next_col + 1
+                    else:
+                        col_index = max(baseline_col, next_col + 1)
                     cell_row = row_index
                 else:
                     original_col, original_row = parsed
