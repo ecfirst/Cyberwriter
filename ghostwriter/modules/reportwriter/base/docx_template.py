@@ -672,6 +672,39 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if not rows:
             return xml
 
+        # Determine the smallest referenced row index so we can normalise
+        # templated worksheets that introduced leading control rows (for
+        # example ``{%tr%}`` markers placed before the first data row).  Word
+        # expects contiguous row numbers starting at 1 for the chart ranges to
+        # remain valid. When Ghostwriter removes the control rows, the
+        # remaining worksheet content can start at ``r="2"`` which leaves the
+        # original chart formulas pointing at empty cells.  By tracking the
+        # minimum row value used anywhere in the sheet we can shift everything
+        # back into place after rendering.
+        min_defined_row: int | None = None
+        for row in rows:
+            attr = row.get("r")
+            if attr:
+                try:
+                    row_index = int(attr)
+                except ValueError:
+                    row_index = None
+                if row_index is not None and (
+                    min_defined_row is None or row_index < min_defined_row
+                ):
+                    min_defined_row = row_index
+            for cell in row.findall(f"{prefix}c"):
+                ref = cell.get("r")
+                if not ref:
+                    continue
+                parsed = self._split_cell(ref)
+                if parsed is None:
+                    continue
+                _col, row_index = parsed
+                if min_defined_row is None or row_index < min_defined_row:
+                    min_defined_row = row_index
+
+        row_offset = max((min_defined_row or 1) - 1, 0)
         last_index = 0
         min_col: int | None = None
         max_col: int | None = None
@@ -685,11 +718,18 @@ class GhostwriterDocxTemplate(DocxTemplate):
             except ValueError:
                 candidate = None
 
+            if candidate is not None:
+                candidate = max(1, candidate - row_offset)
+
             cells = []
             parsed_rows: list[int] = []
             for cell in row.findall(f"{prefix}c"):
                 ref = cell.get("r")
                 parsed = self._split_cell(ref) if ref else None
+                if parsed is not None:
+                    col_index, parsed_row = parsed
+                    parsed_row = max(1, parsed_row - row_offset)
+                    parsed = (col_index, parsed_row)
                 cells.append((cell, parsed))
                 if parsed is not None:
                     parsed_rows.append(parsed[1])
