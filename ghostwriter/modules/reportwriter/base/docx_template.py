@@ -1128,17 +1128,22 @@ class GhostwriterDocxTemplate(DocxTemplate):
                         header_value = str(value)
                         if header_value.strip():
                             break
-            if header_value is not None:
-                column.set("name", header_value)
+
+            if header_value is not None and header_value.strip():
                 name_attr = header_value
-            else:
+            elif original_name and str(original_name).strip():
                 name_attr = original_name
-            if not name_attr:
+            else:
                 name_attr = f"Column{idx + 1}"
-                column.set("name", name_attr)
+
+            column.set("name", name_attr)
             column_names.append(name_attr)
 
-            if original_name and original_name != name_attr:
+            if (
+                original_name
+                and original_name != name_attr
+                and str(original_name).strip()
+            ):
                 alias_map[original_name] = name_attr
 
         table_info: dict[str, object] = {

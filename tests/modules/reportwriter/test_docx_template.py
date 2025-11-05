@@ -490,6 +490,19 @@ TABLE_TC_NARROW_XML = (
     '</table>'
 )
 
+TABLE_TC_CATEGORY_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'id="1" name="Table1" displayName="Table1" ref="A1:C4" headerRowCount="1">'
+    '<tableColumns count="3">'
+    '<tableColumn id="1" name="Category"/>'
+    '<tableColumn id="2" name="Device-1"/>'
+    '<tableColumn id="3" name="Device-2"/>'
+    '</tableColumns>'
+    '<autoFilter ref="A1:C4"/>'
+    '</table>'
+)
+
 WORKSHEET_TC_ALIAS_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -1122,6 +1135,51 @@ def test_update_table_definition_expands_tc_columns():
     assert columns_info["Core-FW02"]["data"] == ["C2", "C3", "C4"]
     assert columns_info["DMZ-FW03"]["data"] == ["D2", "D3", "D4"]
 
+
+def test_update_table_definition_preserves_original_name_for_blank_headers():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    row_columns = {
+        1: {1, 2, 3},
+        2: {1, 2, 3},
+        3: {1, 2, 3},
+        4: {1, 2, 3},
+    }
+    sheet_values = {
+        "A1": " ",
+        "B1": "Edge-FW01",
+        "C1": "Core-FW02",
+    }
+
+    updated_xml, table_info = template._update_table_definition(
+        TABLE_TC_CATEGORY_XML,
+        "Sheet1",
+        row_columns,
+        sheet_values,
+    )
+
+    assert updated_xml is not None
+    assert table_info is not None
+
+    tree = etree.fromstring(updated_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    assert tree.get("ref") == "A1:C4"
+
+    table_columns = tree.find(f"{prefix}tableColumns")
+    assert table_columns is not None
+    column_names = [
+        column.get("name")
+        for column in table_columns.findall(f"{prefix}tableColumn")
+    ]
+    assert column_names == ["Category", "Edge-FW01", "Core-FW02"]
+
+    aliases = table_info.get("aliases") or {}
+    assert "Category" not in aliases
+
+    assert table_info["order"] == column_names
 
 def test_render_additional_parts_inserts_rows_for_tr_loop(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
