@@ -172,6 +172,38 @@ WORKSHEET_TR_PROJECT_XML = (
     '</worksheet>'
 )
 
+WORKSHEET_TR_RENDERED_GAPS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<dimension ref="A1:D5"/>'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>Site</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>High Risk</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>Medium Risk</t></is></c>'
+    '<c r="D1" t="inlineStr"><is><t>Low Risk</t></is></c>'
+    '</row>'
+    '<row r="2" spans="1:4"/>'
+    '<row r="3">'
+    '<c r="A3" t="inlineStr"><is><t>https://alpha</t></is></c>'
+    '<c r="B3"><v>3</v></c>'
+    '<c r="C3"><v>7</v></c>'
+    '<c r="D3"><v>5</v></c>'
+    '</row>'
+    '<row r="4">'
+    '<c r="A4" t="inlineStr"><is><t> </t></is></c>'
+    '</row>'
+    '<row r="5">'
+    '<c r="A5" t="inlineStr"><is><t>https://beta</t></is></c>'
+    '<c r="B5"><v>1</v></c>'
+    '<c r="C5"><v>4</v></c>'
+    '<c r="D5"><v>2</v></c>'
+    '</row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
 WORKSHEET_TR_SHARED_STRINGS_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -937,6 +969,33 @@ def test_render_additional_parts_reindexes_project_loop_rows(monkeypatch):
         value = second_values[f"{column}2"].find(f"{prefix}v")
         assert value is not None
         assert value.text == str(sites[1][key])
+
+
+def test_normalise_sheet_rows_removes_empty_rows():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    normalised = template._normalise_sheet_rows(WORKSHEET_TR_RENDERED_GAPS_XML)
+
+    tree = etree.fromstring(normalised.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert [row.get("r") for row in rows] == ["1", "2", "3"]
+
+    header_cells = rows[0].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in header_cells] == ["A1", "B1", "C1", "D1"]
+
+    first_data = rows[1].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in first_data] == ["A2", "B2", "C2", "D2"]
+
+    second_data = rows[2].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in second_data] == ["A3", "B3", "C3", "D3"]
+
+    dimension = tree.find(f"{prefix}dimension")
+    assert dimension is not None
+    assert dimension.get("ref") == "A1:D3"
 
 
 def test_render_additional_parts_handles_tr_loop_shared_strings(monkeypatch):

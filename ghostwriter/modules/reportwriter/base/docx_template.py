@@ -672,6 +672,22 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if not rows:
             return xml
 
+        filtered_rows: list[etree._Element] = []
+        for row in rows:
+            cells = row.findall(f"{prefix}c")
+            if not cells:
+                sheet_data.remove(row)
+                continue
+            if not any(self._cell_has_value(cell, prefix) for cell in cells):
+                sheet_data.remove(row)
+                continue
+            filtered_rows.append(row)
+
+        if not filtered_rows:
+            return etree.tostring(tree, encoding="unicode")
+
+        rows = filtered_rows
+
         # Determine the smallest referenced row index so we can normalise
         # templated worksheets that introduced leading control rows (for
         # example ``{%tr%}`` markers placed before the first data row).  Word
@@ -721,6 +737,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if candidate is not None:
                 candidate = max(1, candidate - row_offset)
 
+            target_index = last_index + 1
+            if candidate is None or candidate <= last_index:
+                row_index = target_index
+            else:
+                row_index = min(candidate, target_index)
+
             cells = []
             parsed_rows: list[int] = []
             for cell in row.findall(f"{prefix}c"):
@@ -737,11 +759,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
             unique_rows = {value for value in parsed_rows}
             if candidate is None and parsed_rows:
                 candidate = min(parsed_rows)
-
-            if candidate is None or candidate <= last_index:
-                row_index = last_index + 1
-            else:
-                row_index = candidate
+                if row_index > candidate:
+                    row_index = candidate
 
             row.set("r", str(row_index))
 
@@ -807,6 +826,25 @@ class GhostwriterDocxTemplate(DocxTemplate):
         dimension.set("ref", ref)
 
         return etree.tostring(tree, encoding="unicode")
+
+    def _cell_has_value(self, cell: etree._Element, prefix: str) -> bool:
+        if cell.find(f"{prefix}f") is not None:
+            return True
+
+        value = cell.find(f"{prefix}v")
+        if value is not None and value.text is not None and value.text.strip():
+            return True
+
+        inline = cell.find(f"{prefix}is")
+        if inline is not None:
+            text = "".join(
+                node.text or ""
+                for node in inline.findall(f".//{prefix}t")
+            )
+            if text.strip():
+                return True
+
+        return False
 
     def _map_sheet_columns(self, sheet_tree: etree._Element) -> dict[int, set[int]]:
         ns = sheet_tree.nsmap.get(None)
