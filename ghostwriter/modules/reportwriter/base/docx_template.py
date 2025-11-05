@@ -870,6 +870,30 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 if has_value and (max_col is None or col_index > max_col):
                     max_col = col_index
 
+            needs_baseline_placeholder = (
+                global_min_col is not None
+                and (first_min_col_row is None or row_index < first_min_col_row)
+                and (global_min_col not in cols)
+            )
+
+            if needs_baseline_placeholder:
+                placeholder = self._build_blank_cell(prefix, global_min_col, row_index)
+                inserted = False
+                existing_cells = list(row.findall(f"{prefix}c"))
+                for idx, cell in enumerate(existing_cells):
+                    ref = cell.get("r")
+                    parsed = self._split_cell(ref) if ref else None
+                    if parsed is not None and parsed[0] > global_min_col:
+                        row.insert(idx, placeholder)
+                        inserted = True
+                        break
+                if not inserted:
+                    row.append(placeholder)
+
+                cols.append(global_min_col)
+                cols.sort()
+                row_rows.append(row_index)
+
             if cols:
                 row.set("spans", f"{min(cols)}:{max(cols)}")
             else:
@@ -927,6 +951,18 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 return True
 
         return False
+
+    def _build_blank_cell(self, prefix: str, column: int, row_index: int) -> etree._Element:
+        """Create an empty inline-string cell for placeholder headers."""
+
+        cell = etree.Element(f"{prefix}c" if prefix else "c")
+        cell.set("r", f"{self._column_letters(column)}{row_index}")
+        cell.set("t", "inlineStr")
+
+        inline = etree.SubElement(cell, f"{prefix}is" if prefix else "is")
+        text = etree.SubElement(inline, f"{prefix}t" if prefix else "t")
+        text.text = ""
+        return cell
 
     def _map_sheet_columns(self, sheet_tree: etree._Element) -> dict[int, set[int]]:
         ns = sheet_tree.nsmap.get(None)

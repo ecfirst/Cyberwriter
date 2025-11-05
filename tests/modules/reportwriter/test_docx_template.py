@@ -1298,7 +1298,13 @@ def test_normalise_sheet_rows_preserves_tc_header_alignment():
     assert [row.get("r") for row in rows] == ["1", "2", "3", "4"]
 
     header_cells = rows[0].findall(f"{prefix}c")
-    assert [cell.get("r") for cell in header_cells] == ["B1", "C1"]
+    assert [cell.get("r") for cell in header_cells] == ["A1", "B1", "C1"]
+
+    header_values = [
+        "".join(t.text or "" for t in cell.findall(f"{prefix}is/{prefix}t"))
+        for cell in header_cells
+    ]
+    assert header_values[0].strip() == ""
 
     first_data = rows[1].findall(f"{prefix}c")
     assert [cell.get("r") for cell in first_data] == ["A2", "B2", "C2"]
