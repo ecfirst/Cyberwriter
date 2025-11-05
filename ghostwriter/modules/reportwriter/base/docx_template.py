@@ -592,6 +592,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
         rel_targets = self._parse_relationship_targets(rels_xml)
 
         row_columns = self._map_sheet_columns(sheet_tree)
+        sheet_values = None
+        if sheet_name:
+            sheet_values = workbook_values.get(sheet_name)
+        if sheet_values is None:
+            sheet_values = workbook_values.get(sheet_path)
 
         tables: dict[str, dict[str, object]] = {}
         for table_part in sheet_tree.findall(f".//{prefix}tablePart"):
@@ -612,6 +617,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 table_xml,
                 sheet_name,
                 row_columns,
+                sheet_values,
             )
             if updated_xml is not None:
                 xml_files[table_path] = updated_xml
@@ -943,6 +949,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         table_xml: str,
         sheet_name: str,
         row_columns: dict[int, set[int]],
+        sheet_values: dict[str, str] | None,
     ) -> tuple[str | None, dict[str, object] | None]:
         try:
             table_tree = etree.fromstring(table_xml.encode("utf-8"))
@@ -969,48 +976,114 @@ class GhostwriterDocxTemplate(DocxTemplate):
         start_col, start_row = start
         end_col, end_row = end
 
-        header_rows = int(table_tree.get("headerRowCount", "1") or 0)
-        totals_rows = int(table_tree.get("totalsRowCount", "0") or 0)
-        data_start_row = start_row + header_rows
-        data_end_row = end_row - totals_rows if totals_rows else end_row
+        header_row_count = int(table_tree.get("headerRowCount", "1") or 0)
+        totals_row_count = int(table_tree.get("totalsRowCount", "0") or 0)
+        data_start_row = start_row + header_row_count
+        data_end_row = end_row - totals_row_count if totals_row_count else end_row
 
         # Determine actual last data row based on rendered worksheet
         actual_end_row = data_end_row
         for row_index in sorted(row_columns):
             if row_index < data_start_row:
                 continue
-            if totals_rows and row_index > data_end_row:
+            if totals_row_count and row_index > data_end_row:
                 continue
             columns = row_columns[row_index]
             if any(start_col <= col <= end_col for col in columns):
                 actual_end_row = max(actual_end_row, row_index)
 
-        if totals_rows:
-            new_end_row = max(actual_end_row, data_start_row - 1) + totals_rows
+        if totals_row_count:
+            new_end_row = max(actual_end_row, data_start_row - 1) + totals_row_count
         else:
             new_end_row = max(actual_end_row, data_start_row - 1)
 
-        if new_end_row < data_start_row and not totals_rows:
+        if new_end_row < data_start_row and not totals_row_count:
             new_end_row = data_start_row - 1
 
-        if new_end_row != end_row:
-            new_ref = f"{self._column_letters(start_col)}{start_row}:{self._column_letters(end_col)}{new_end_row}"
-            table_tree.set("ref", new_ref)
-            for auto_filter in table_tree.findall(f"{prefix}autoFilter"):
-                auto_filter.set("ref", new_ref)
-            end_row = new_end_row
+        end_row = new_end_row
+
+        relevant_columns: set[int] = set()
+        for row_index, columns in row_columns.items():
+            if row_index < start_row:
+                continue
+            if row_index > end_row:
+                continue
+            for column in columns:
+                if column < start_col:
+                    continue
+                relevant_columns.add(column)
+
+        if relevant_columns:
+            actual_end_col = max(relevant_columns)
+        else:
+            actual_end_col = end_col
+
+        if actual_end_col < start_col:
+            actual_end_col = start_col
+
+        end_col = actual_end_col
+
+        new_ref = f"{self._column_letters(start_col)}{start_row}:{self._column_letters(end_col)}{end_row}"
+        table_tree.set("ref", new_ref)
+        for auto_filter in table_tree.findall(f"{prefix}autoFilter"):
+            auto_filter.set("ref", new_ref)
 
         table_columns = table_tree.find(f"{prefix}tableColumns")
         column_names: list[str] = []
-        if table_columns is not None:
-            for column in table_columns.findall(f"{prefix}tableColumn"):
-                name = column.get("name") or column.get("id")
-                if name:
-                    column_names.append(name)
+        width = max(end_col - start_col + 1, 0)
 
-        if not column_names:
-            width = end_col - start_col + 1
-            column_names = [f"Column{idx}" for idx in range(1, width + 1)]
+        if table_columns is None:
+            tag = f"{prefix}tableColumns" if prefix else "tableColumns"
+            table_columns = etree.SubElement(table_tree, tag)
+
+        existing_columns = table_columns.findall(f"{prefix}tableColumn")
+        max_id = 0
+        for column in existing_columns:
+            try:
+                col_id = int(column.get("id", "0"))
+            except ValueError:
+                col_id = 0
+            max_id = max(max_id, col_id)
+
+        while len(existing_columns) < width:
+            max_id += 1
+            new_column = etree.SubElement(
+                table_columns,
+                f"{prefix}tableColumn" if prefix else "tableColumn",
+                id=str(max_id),
+            )
+            existing_columns.append(new_column)
+
+        while len(existing_columns) > width:
+            column = existing_columns.pop()
+            table_columns.remove(column)
+
+        table_columns.set("count", str(width))
+
+        column_names = []
+        if header_row_count:
+            header_row_indices = range(start_row, start_row + header_row_count)
+        else:
+            header_row_indices = [start_row]
+
+        for idx, column in enumerate(table_columns.findall(f"{prefix}tableColumn")):
+            column_index = start_col + idx
+            header_value: str | None = None
+            if sheet_values:
+                column_letter = self._column_letters(column_index)
+                for header_row in header_row_indices:
+                    cell_key = f"{column_letter}{header_row}"
+                    value = sheet_values.get(cell_key)
+                    if value:
+                        header_value = str(value)
+                        break
+            if header_value:
+                column.set("name", header_value)
+            name_attr = column.get("name") or column.get("id")
+            if not name_attr:
+                name_attr = f"Column{idx + 1}"
+                column.set("name", name_attr)
+            column_names.append(name_attr)
 
         table_info: dict[str, object] = {
             "name": table_name,
@@ -1019,7 +1092,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             "order": column_names,
         }
 
-        data_end_row = end_row - totals_rows if totals_rows else end_row
+        data_end_row = end_row - totals_row_count if totals_row_count else end_row
 
         columns_info: dict[str, dict[str, list[str]]] = {}
         for offset, column_name in enumerate(column_names):
@@ -1028,8 +1101,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             headers = [
                 f"{column_letter}{row_index}"
-                for row_index in range(start_row, start_row + header_rows)
-            ] if header_rows else []
+                for row_index in range(start_row, start_row + header_row_count)
+            ] if header_row_count else []
 
             data_cells = [
                 f"{column_letter}{row_index}"
@@ -1039,7 +1112,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             totals_cells = [
                 f"{column_letter}{row_index}"
                 for row_index in range(data_end_row + 1, end_row + 1)
-            ] if totals_rows else []
+            ] if totals_row_count else []
 
             columns_info[column_name] = {
                 "headers": headers,

@@ -478,6 +478,18 @@ TABLE_SMALL_XML = (
     '</table>'
 )
 
+TABLE_TC_NARROW_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'id="1" name="Table1" displayName="Table1" ref="B1:C4" headerRowCount="1">'
+    '<tableColumns count="2">'
+    '<tableColumn id="1" name="Device-1"/>'
+    '<tableColumn id="2" name="Device-2"/>'
+    '</tableColumns>'
+    '<autoFilter ref="B1:C4"/>'
+    '</table>'
+)
+
 SHEET_TABLE_RELS_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
@@ -916,6 +928,61 @@ def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):
 
     assert "ref=\"A1:B4\"" in table_xml
     assert "{{" not in table_xml
+
+
+def test_update_table_definition_expands_tc_columns():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    row_columns = {
+        1: {2, 3, 4},
+        2: {1, 2, 3, 4},
+        3: {1, 2, 3, 4},
+        4: {1, 2, 3, 4},
+    }
+    sheet_values = {
+        "B1": "Edge-FW01",
+        "C1": "Core-FW02",
+        "D1": "DMZ-FW03",
+    }
+
+    updated_xml, table_info = template._update_table_definition(
+        TABLE_TC_NARROW_XML,
+        "Sheet1",
+        row_columns,
+        sheet_values,
+    )
+
+    assert updated_xml is not None
+    assert table_info is not None
+
+    tree = etree.fromstring(updated_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    assert tree.get("ref") == "B1:D4"
+
+    table_columns = tree.find(f"{prefix}tableColumns")
+    assert table_columns is not None
+    assert table_columns.get("count") == "3"
+
+    column_names = [
+        column.get("name")
+        for column in table_columns.findall(f"{prefix}tableColumn")
+    ]
+    assert column_names == ["Edge-FW01", "Core-FW02", "DMZ-FW03"]
+
+    auto_filter = tree.find(f"{prefix}autoFilter")
+    assert auto_filter is not None
+    assert auto_filter.get("ref") == "B1:D4"
+
+    assert table_info["order"] == column_names
+
+    columns_info = table_info["columns"]
+    assert isinstance(columns_info, dict)
+    assert columns_info["Edge-FW01"]["data"] == ["B2", "B3", "B4"]
+    assert columns_info["Core-FW02"]["data"] == ["C2", "C3", "C4"]
+    assert columns_info["DMZ-FW03"]["data"] == ["D2", "D3", "D4"]
 
 
 def test_render_additional_parts_inserts_rows_for_tr_loop(monkeypatch):
