@@ -882,6 +882,63 @@ def test_render_additional_parts_inserts_rows_for_tr_loop(monkeypatch):
         assert f">{site['low']}<" in sheet_xml
 
 
+def test_render_additional_parts_reindexes_project_loop_rows(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TR_PROJECT_XML,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    sites = [
+        {"url": "https://alpha", "unique_high": 7, "unique_med": 5, "unique_low": 3},
+        {"url": "https://beta", "unique_high": 4, "unique_med": 2, "unique_low": 1},
+    ]
+
+    template._render_additional_parts({"project": {"workbook_data": {"web": {"sites": sites}}}}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+    tree = etree.fromstring(sheet_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert [row.get("r") for row in rows] == ["1", "2"]
+
+    dimension = tree.find(f"{prefix}dimension")
+    assert dimension is not None
+    assert dimension.get("ref") == "A1:D2"
+
+    first_cells = rows[0].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in first_cells] == ["A1", "B1", "C1", "D1"]
+
+    first_values = {cell.get("r"): cell for cell in first_cells}
+    url = first_values["A1"].find(f"{prefix}is/{prefix}t")
+    assert url is not None and url.text == sites[0]["url"]
+
+    for column, key in zip(("B", "C", "D"), ("unique_high", "unique_med", "unique_low")):
+        value = first_values[f"{column}1"].find(f"{prefix}v")
+        assert value is not None
+        assert value.text == str(sites[0][key])
+
+    second_cells = rows[1].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in second_cells] == ["A2", "B2", "C2", "D2"]
+
+    second_values = {cell.get("r"): cell for cell in second_cells}
+    url = second_values["A2"].find(f"{prefix}is/{prefix}t")
+    assert url is not None and url.text == sites[1]["url"]
+
+    for column, key in zip(("B", "C", "D"), ("unique_high", "unique_med", "unique_low")):
+        value = second_values[f"{column}2"].find(f"{prefix}v")
+        assert value is not None
+        assert value.text == str(sites[1][key])
+
+
 def test_render_additional_parts_handles_tr_loop_shared_strings(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
