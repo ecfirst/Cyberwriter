@@ -800,7 +800,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 if not has_value:
                     if parsed is not None:
                         col_index, parsed_row = parsed
-                        if col_index in columns_with_values:
+                        if (
+                            col_index in columns_with_values
+                            or (
+                                global_min_col is not None
+                                and col_index < global_min_col
+                            )
+                        ):
                             keep_empty = True
                     else:
                         # Preserve blank cells without an explicit reference so
@@ -862,10 +868,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             next_col = 0
             for cell, parsed, has_value in cells:
                 if parsed is None:
-                    if has_value:
-                        col_index = next_col + 1
-                    else:
-                        col_index = max(baseline_col, next_col + 1)
+                    col_index = next_col + 1
                     cell_row = row_index
                 else:
                     original_col, original_row = parsed
