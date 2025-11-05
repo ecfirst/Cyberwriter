@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import io
+import re
+import zipfile
 from importlib import util
 from pathlib import Path
 
 from docx.opc.packuri import PackURI
 from docx.oxml import parse_xml
+from jinja2 import Environment
 from lxml import etree
 
 MODULE_PATH = Path(__file__).resolve().parents[3] / "ghostwriter" / "modules" / "reportwriter" / "base" / "docx_template.py"
@@ -29,6 +33,430 @@ DIAGRAM_SPLIT_XML = (
     "</dgm:data>"
 )
 
+WORKSHEET_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    "<row r=\"1\">"
+    "<c r=\"A1\" t=\"inlineStr\"><is><t>{{ number }}</t></is></c>"
+    "<c r=\"A2\" t=\"s\"><v>0</v></c>"
+    "</row>"
+    "</sheetData>"
+    "</worksheet>"
+)
+
+SHARED_STRINGS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    "count=\"1\" uniqueCount=\"1\">"
+    "<si><t>{{ chart_value }}</t></si>"
+    "</sst>"
+)
+
+WORKSHEET_CHART_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    "<row r=\"1\">"
+    "<c r=\"A1\"><v>{{ first_val }}</v></c>"
+    "<c r=\"B1\" t=\"inlineStr\"><is><t>{{ first_label }}</t></is></c>"
+    "</row>"
+    "<row r=\"2\">"
+    "<c r=\"A2\" t=\"s\"><v>0</v></c>"
+    "<c r=\"B2\" t=\"s\"><v>1</v></c>"
+    "</row>"
+    "</sheetData>"
+    "</worksheet>"
+)
+
+WORKSHEET_TR_TC_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    "<row>{%tr for row in rows %}</row>"
+    "<row>{% endtr %}</row>"
+    "<c>{{tc row.value }}</c>"
+    "<c>{%tc%}</c>"
+    "</sheetData>"
+    "</worksheet>"
+)
+
+WORKSHEET_TR_TC_TRIMMED_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    "<row>{%-tr for row in rows -%}</row>"
+    "<row>{%- endtr -%}</row>"
+    "<c>{%-tc row.value -%}</c>"
+    "</sheetData>"
+    "</worksheet>"
+)
+
+WORKSHEET_TR_ENDFOR_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    "<row>{%tr for site in sites %}</row>"
+    "<row>{%tr endfor %}</row>"
+    "</sheetData>"
+    "</worksheet>"
+)
+
+WORKSHEET_TR_SPLIT_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    '<row><c t="inlineStr"><is><r><t>{%</t></r><r><t>tr for site in project.workbook_data.web.sites %}</t></r></is></c></row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><r><t>{{ site.url }}</t></r></is></c>'
+    '<c r="B2" t="inlineStr"><is><r><t>{{ site.unique_high }}</t></r></is></c>'
+    '<c r="C2" t="inlineStr"><is><r><t>{{ site.unique_med }}</t></r></is></c>'
+    '<c r="D2" t="inlineStr"><is><r><t>{{ site.unique_low }}</t></r></is></c>'
+    '</row>'
+    '<row><c t="inlineStr"><is><r><t>{%</t></r><r><t>tr endfor %}</t></r></is></c></row>'
+    "</sheetData>"
+    "</worksheet>"
+)
+
+WORKSHEET_TC_SPLIT_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><r><t>{{</t></r><r><t>tc site.url }}</t></r></is></c>'
+    '<c r="B2" t="inlineStr"><is><r><t>{{</t></r><r><t>tc site.unique_high }}</t></r></is></c>'
+    '</row>'
+    "</sheetData>"
+    "</worksheet>"
+)
+
+WORKSHEET_TR_LOOP_ROWS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<dimension ref="A1:D2"/>'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>Site</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>High</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>Medium</t></is></c>'
+    '<c r="D1" t="inlineStr"><is><t>Low</t></is></c>'
+    '</row>'
+    '<row>{%tr for site in sites %}</row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><t>{{tc site.url }}</t></is></c>'
+    '<c r="B2"><v>{{tc site.high }}</v></c>'
+    '<c r="C2"><v>{{tc site.medium }}</v></c>'
+    '<c r="D2"><v>{{tc site.low }}</v></c>'
+    '</row>'
+    '<row>{%tr endfor %}</row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
+WORKSHEET_TR_PROJECT_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<dimension ref="A1:D2"/>'
+    '<sheetData>'
+    '<row><c r="A1" t="inlineStr"><is><t>{%tr for site in project.workbook_data.web.sites %}</t></is></c></row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><t>{{ site.url }}</t></is></c>'
+    '<c r="B2" t="inlineStr"><is><t>{{ site.unique_high }}</t></is></c>'
+    '<c r="C2" t="inlineStr"><is><t>{{ site.unique_med }}</t></is></c>'
+    '<c r="D2" t="inlineStr"><is><t>{{ site.unique_low }}</t></is></c>'
+    '</row>'
+    '<row><c r="A3" t="inlineStr"><is><t>{%tr endfor %}</t></is></c></row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
+WORKSHEET_TR_RENDERED_GAPS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<dimension ref="A1:D5"/>'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>Site</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>High Risk</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>Medium Risk</t></is></c>'
+    '<c r="D1" t="inlineStr"><is><t>Low Risk</t></is></c>'
+    '</row>'
+    '<row r="2" spans="1:4"/>'
+    '<row r="3">'
+    '<c r="A3" t="inlineStr"><is><t>https://alpha</t></is></c>'
+    '<c r="B3"><v>3</v></c>'
+    '<c r="C3"><v>7</v></c>'
+    '<c r="D3"><v>5</v></c>'
+    '</row>'
+    '<row r="4">'
+    '<c r="A4" t="inlineStr"><is><t> </t></is></c>'
+    '</row>'
+    '<row r="5">'
+    '<c r="A5" t="inlineStr"><is><t>https://beta</t></is></c>'
+    '<c r="B5"><v>1</v></c>'
+    '<c r="C5"><v>4</v></c>'
+    '<c r="D5"><v>2</v></c>'
+    '</row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
+WORKSHEET_TR_SHARED_STRINGS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<dimension ref="A1:D2"/>'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>Site</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>High</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>Medium</t></is></c>'
+    '<c r="D1" t="inlineStr"><is><t>Low</t></is></c>'
+    '</row>'
+    '<row>{%tr for site in sites %}</row>'
+    '<row r="2">'
+    '<c r="A2" t="s"><v>0</v></c>'
+    '<c r="B2" t="s"><v>1</v></c>'
+    '<c r="C2" t="s"><v>2</v></c>'
+    '<c r="D2" t="s"><v>3</v></c>'
+    '</row>'
+    '<row>{%tr endfor %}</row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
+SHARED_STRINGS_TR_LOOP_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'count="4" uniqueCount="4">'
+    '<si><t>{{tc site.url }}</t></si>'
+    '<si><t>{{tc site.high }}</t></si>'
+    '<si><t>{{tc site.medium }}</t></si>'
+    '<si><t>{{tc site.low }}</t></si>'
+    '</sst>'
+)
+
+SHARED_STRINGS_CHART_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    "count=\"2\" uniqueCount=\"2\">"
+    "<si><t>{{ second_val }}</t></si>"
+    "<si><t>{{ second_label }}</t></si>"
+    "</sst>"
+)
+
+CHART_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<c:chart>"
+    "<c:plotArea>"
+    "<c:lineChart>"
+    "<c:ser>"
+    "<c:val><c:numRef><c:f>Sheet1!$A$1:$A$2</c:f>"
+    "<c:numCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>1</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>2</c:v></c:pt>"
+    "</c:numCache></c:numRef>"
+    "<c:numLit><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>3</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>4</c:v></c:pt>"
+    "</c:numLit></c:val>"
+    "<c:cat><c:strRef><c:f>Sheet1!$B$1:$B$2</c:f>"
+    "<c:strCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>First</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>Second</c:v></c:pt>"
+    "</c:strCache></c:strRef>"
+    "<c:strLit><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>Old</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>Values</c:v></c:pt>"
+    "</c:strLit></c:cat>"
+    "</c:ser>"
+    "</c:lineChart>"
+    "</c:plotArea>"
+    "</c:chart>"
+    "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"0\"/></c:externalData>"
+    "</c:chartSpace>"
+)
+
+CHART_EXT_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+    'xmlns:x14="http://schemas.microsoft.com/office/drawing/2010/chart">'
+    "<c:chart>"
+    "<c:plotArea>"
+    "<c:barChart>"
+    "<c:ser>"
+    "<c:val><c:numRef><c:f>Sheet1!$A$1:$A$2</c:f>"
+    "<c:numCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>1</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>2</c:v></c:pt>"
+    "</c:numCache>"
+    "<c:extLst><c:ext uri=\"{C5E0089C-D5B0-43F5-8A56-9C2E5A163620}\">"
+    "<x14:numRef><x14:f>Sheet1!$A$1:$A$2</x14:f>"
+    "<x14:numCache><x14:ptCount val=\"2\"/>"
+    "<x14:pt idx=\"0\"><x14:v>1</x14:v></x14:pt>"
+    "<x14:pt idx=\"1\"><x14:v>2</x14:v></x14:pt>"
+    "</x14:numCache></x14:numRef>"
+    "</c:ext></c:extLst>"
+    "</c:numRef></c:val>"
+    "<c:cat><c:strRef><c:f>Sheet1!$B$1:$B$2</c:f>"
+    "<c:strCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>Old</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>Data</c:v></c:pt>"
+    "</c:strCache>"
+    "<c:extLst><c:ext uri=\"{C5E0089C-D5B0-43F5-8A56-9C2E5A163620}\">"
+    "<x14:strRef><x14:f>Sheet1!$B$1:$B$2</x14:f>"
+    "<x14:strCache><x14:ptCount val=\"2\"/>"
+    "<x14:pt idx=\"0\"><x14:v>Old</x14:v></x14:pt>"
+    "<x14:pt idx=\"1\"><x14:v>Data</x14:v></x14:pt>"
+    "</x14:strCache></x14:strRef>"
+    "</c:ext></c:extLst>"
+    "</c:strRef></c:cat>"
+    "</c:ser>"
+    "</c:barChart>"
+    "</c:plotArea>"
+    "</c:chart>"
+    "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"0\"/></c:externalData>"
+    "</c:chartSpace>"
+)
+
+WORKBOOK_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<sheets><sheet name=\"Sheet1\" sheetId=\"1\" r:id=\"rId1\"/></sheets>"
+    "</workbook>"
+)
+
+WORKBOOK_RELS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+    'Target="worksheets/sheet1.xml"/>'
+    "</Relationships>"
+)
+
+CONTENT_TYPES_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+    '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+    "</Types>"
+)
+
+CONTENT_TYPES_WITH_TABLE_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+    '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+    '<Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>'
+    "</Types>"
+)
+
+WORKSHEET_TABLE_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<sheetData>"
+    "<row r=\"1\">"
+    "<c r=\"A1\" t=\"inlineStr\"><is><t>Numbers</t></is></c>"
+    "<c r=\"B1\" t=\"inlineStr\"><is><t>Labels</t></is></c>"
+    "</row>"
+    "<row r=\"2\">"
+    "<c r=\"A2\"><v>{{ first_number }}</v></c>"
+    "<c r=\"B2\" t=\"inlineStr\"><is><t>{{ first_label }}</t></is></c>"
+    "</row>"
+    "<row r=\"3\">"
+    "<c r=\"A3\"><v>{{ second_number }}</v></c>"
+    "<c r=\"B3\" t=\"inlineStr\"><is><t>{{ second_label }}</t></is></c>"
+    "</row>"
+    "</sheetData>"
+    "<tableParts count=\"1\"><tablePart r:id=\"rId1\"/></tableParts>"
+    "</worksheet>"
+)
+
+WORKSHEET_TABLE_LOOP_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<sheetData>"
+    "<row r=\"1\">"
+    "<c r=\"A1\" t=\"inlineStr\"><is><t>Numbers</t></is></c>"
+    "<c r=\"B1\" t=\"inlineStr\"><is><t>Labels</t></is></c>"
+    "</row>"
+    "{% for row in rows %}"
+    "<row r=\"{{ loop.index + 1 }}\">"
+    "<c r=\"A{{ loop.index + 1 }}\"><v>{{ row.number }}</v></c>"
+    "<c r=\"B{{ loop.index + 1 }}\" t=\"inlineStr\"><is><t>{{ row.label }}</t></is></c>"
+    "</row>"
+    "{% endfor %}"
+    "</sheetData>"
+    "<tableParts count=\"1\"><tablePart r:id=\"rId1\"/></tableParts>"
+    "</worksheet>"
+)
+
+TABLE_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'id="1" name="Table1" displayName="Table1" ref="A1:B3" headerRowCount="1">'
+    '<tableColumns count="2">'
+    '<tableColumn id="1" name="Numbers"/>'
+    '<tableColumn id="2" name="Labels"/>'
+    '</tableColumns>'
+    '<autoFilter ref="A1:B3"/>'
+    '</table>'
+)
+
+TABLE_SMALL_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'id="1" name="Table1" displayName="Table1" ref="A1:B2" headerRowCount="1">'
+    '<tableColumns count="2">'
+    '<tableColumn id="1" name="Numbers"/>'
+    '<tableColumn id="2" name="Labels"/>'
+    '</tableColumns>'
+    '<autoFilter ref="A1:B2"/>'
+    '</table>'
+)
+
+SHEET_TABLE_RELS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" '
+    'Target="../tables/table1.xml"/>'
+    "</Relationships>"
+)
+
+CHART_TABLE_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<c:chart>"
+    "<c:plotArea>"
+    "<c:lineChart>"
+    "<c:ser>"
+    "<c:val><c:numRef><c:f>Sheet1!Table1[Numbers]</c:f>"
+    "<c:numCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>1</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>2</c:v></c:pt>"
+    "</c:numCache></c:numRef></c:val>"
+    "<c:cat><c:strRef><c:f>Sheet1!Table1[Labels]</c:f>"
+    "<c:strCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>First</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>Second</c:v></c:pt>"
+    "</c:strCache></c:strRef></c:cat>"
+    "</c:ser>"
+    "</c:lineChart>"
+    "</c:plotArea>"
+    "</c:chart>"
+    "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"0\"/></c:externalData>"
+    "</c:chartSpace>"
+)
+
 
 class FakeXmlPart:
     """Minimal XML part used to exercise templating helpers."""
@@ -43,20 +471,83 @@ class FakeXmlPart:
         return self._blob
 
 
-def test_iter_additional_parts_filters_to_smart_art(monkeypatch):
+class FakeXlsxPart:
+    """Embedded Excel part for exercising templating."""
+
+    def __init__(
+        self,
+        partname: str,
+        worksheet_xml: str,
+        shared_xml: str | None = None,
+        *,
+        content_types_xml: str | None = None,
+        extra_files: dict[str, str | bytes] | None = None,
+    ):
+        self.partname = PackURI(partname)
+        self._blob = self._build_blob(
+            worksheet_xml,
+            shared_xml,
+            content_types_xml=content_types_xml,
+            extra_files=extra_files,
+        )
+
+    @staticmethod
+    def _build_blob(
+        worksheet_xml: str,
+        shared_xml: str | None,
+        *,
+        content_types_xml: str | None,
+        extra_files: dict[str, str | bytes] | None,
+    ) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("[Content_Types].xml", content_types_xml or CONTENT_TYPES_XML)
+            archive.writestr("xl/workbook.xml", WORKBOOK_XML)
+            archive.writestr("xl/_rels/workbook.xml.rels", WORKBOOK_RELS_XML)
+            archive.writestr("xl/worksheets/sheet1.xml", worksheet_xml)
+            if shared_xml is not None:
+                archive.writestr("xl/sharedStrings.xml", shared_xml)
+            if extra_files:
+                for name, data in extra_files.items():
+                    archive.writestr(name, data if isinstance(data, bytes) else data.encode("utf-8"))
+        return buffer.getvalue()
+
+    @property
+    def blob(self) -> bytes:
+        return self._blob
+
+
+class FakeRelationship:
+    """Relationship pointing a chart to an embedded workbook."""
+
+    def __init__(self, target_part):
+        self.reltype = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/embeddedPackage"
+        self.target_part = target_part
+
+
+class FakeChartPart(FakeXmlPart):
+    """Chart XML part with a relationship to a workbook."""
+
+    def __init__(self, partname: str, xml: str, target_part):
+        super().__init__(partname, xml)
+        self.rels = {"rId1": FakeRelationship(target_part)}
+
+
+def test_iter_additional_parts_filters_to_known_patterns(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
 
     matching = FakeXmlPart("/word/diagrams/data1.xml", DIAGRAM_XML.format("value"))
-    other = FakeXmlPart("/word/charts/chart1.xml", DIAGRAM_XML.format("value"))
+    chart = FakeXmlPart("/word/charts/chart1.xml", DIAGRAM_XML.format("value"))
+    other = FakeXmlPart("/word/document.xml", DIAGRAM_XML.format("value"))
 
     monkeypatch.setattr(
         template.docx.part.package,
         "iter_parts",
-        lambda: iter([matching, other]),
+        lambda: iter([matching, chart, other]),
     )
 
-    assert list(template._iter_additional_parts()) == [matching]
+    assert list(template._iter_additional_parts()) == [matching, chart]
 
 
 def test_render_additional_parts_updates_diagram_xml(monkeypatch):
@@ -72,6 +563,172 @@ def test_render_additional_parts_updates_diagram_xml(monkeypatch):
     assert "Rendered" in text
 
 
+def test_iter_additional_parts_includes_excel_parts(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_XML,
+        SHARED_STRINGS_XML,
+    )
+
+    monkeypatch.setattr(template.docx.part.package, "iter_parts", lambda: iter([excel]))
+
+    assert list(template._iter_additional_parts()) == [excel]
+
+
+def test_render_additional_parts_updates_excel_data(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_XML,
+        SHARED_STRINGS_XML,
+    )
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    template._render_additional_parts({"number": 7, "chart_value": 21}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        sheet = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        shared = archive.read("xl/sharedStrings.xml").decode("utf-8")
+
+    assert "<c r=\"A1\"><v>7</v></c>" in sheet
+    assert "<c r=\"A2\"><v>21</v></c>" in sheet
+    assert "{{" not in shared
+
+
+def test_render_additional_parts_updates_chart_cache(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_CHART_XML,
+        SHARED_STRINGS_CHART_XML,
+    )
+    chart = FakeChartPart(
+        "/word/charts/chart1.xml",
+        CHART_XML,
+        excel,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel, chart]))
+
+    template._render_additional_parts(
+        {
+            "first_val": 10,
+            "second_val": 20,
+            "first_label": "Alpha",
+            "second_label": "Beta",
+        },
+        None,
+    )
+
+    chart_xml = etree.tostring(chart._element, encoding="unicode")
+    assert "<c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt>" in chart_xml
+    assert "<c:numLit><c:ptCount val=\"2\"/>" in chart_xml
+    assert "<c:numLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt></c:numLit>" in chart_xml
+    assert "<c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt>" in chart_xml
+    assert "<c:strLit><c:ptCount val=\"2\"/>" in chart_xml
+    assert "<c:strLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt></c:strLit>" in chart_xml
+    assert "<c:autoUpdate val=\"0\"/>" in chart_xml
+    assert "{{" not in chart_xml
+
+
+def test_render_additional_parts_updates_chart_cache_structured_ref(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TABLE_XML,
+        None,
+        content_types_xml=CONTENT_TYPES_WITH_TABLE_XML,
+        extra_files={
+            "xl/worksheets/_rels/sheet1.xml.rels": SHEET_TABLE_RELS_XML,
+            "xl/tables/table1.xml": TABLE_XML,
+        },
+    )
+    chart = FakeChartPart(
+        "/word/charts/chart1.xml",
+        CHART_TABLE_XML,
+        excel,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel, chart]))
+
+    template._render_additional_parts(
+        {
+            "first_number": 5,
+            "second_number": 7,
+            "first_label": "One",
+            "second_label": "Two",
+        },
+        None,
+    )
+
+    chart_xml = etree.tostring(chart._element, encoding="unicode")
+    assert "<c:pt idx=\"0\"><c:v>5</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>7</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"0\"><c:v>One</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>Two</c:v></c:pt>" in chart_xml
+    assert "<c:autoUpdate val=\"0\"/>" in chart_xml
+    assert "{{" not in chart_xml
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        table_xml = archive.read("xl/tables/table1.xml").decode("utf-8")
+
+    assert "ref=\"A1:B3\"" in table_xml
+    assert "{{" not in table_xml
+
+
+def test_render_additional_parts_updates_chart_cache_extensions(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_CHART_XML,
+        SHARED_STRINGS_CHART_XML,
+    )
+    chart = FakeChartPart(
+        "/word/charts/chart1.xml",
+        CHART_EXT_XML,
+        excel,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel, chart]))
+
+    template._render_additional_parts(
+        {
+            "first_val": 10,
+            "second_val": 20,
+            "first_label": "Alpha",
+            "second_label": "Beta",
+        },
+        None,
+    )
+
+    chart_xml = etree.tostring(chart._element, encoding="unicode")
+    assert "<c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt>" in chart_xml
+    assert "<x14:pt idx=\"0\"><x14:v>10</x14:v></x14:pt>" in chart_xml
+    assert "<x14:pt idx=\"1\"><x14:v>20</x14:v></x14:pt>" in chart_xml
+    assert "<c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt>" in chart_xml
+    assert "<x14:pt idx=\"0\"><x14:v>Alpha</x14:v></x14:pt>" in chart_xml
+    assert "<x14:pt idx=\"1\"><x14:v>Beta</x14:v></x14:pt>" in chart_xml
+    assert "<c:autoUpdate val=\"0\"/>" in chart_xml
+    assert "{{" not in chart_xml
+
+
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
 
@@ -85,6 +742,25 @@ def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
     assert "missing" in variables
 
 
+def test_get_undeclared_variables_includes_excel_parts(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    worksheet = WORKSHEET_XML.replace("{{ number }}", "{{ missing_excel }}")
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        worksheet,
+        None,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+    monkeypatch.setattr(template, "get_xml", lambda: "")
+    monkeypatch.setattr(template, "get_headers_footers", lambda _uri: [])
+
+    variables = template.get_undeclared_template_variables()
+
+    assert "missing_excel" in variables
+
+
 def test_patch_xml_removes_namespaced_tags_inside_jinja():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
 
@@ -92,4 +768,323 @@ def test_patch_xml_removes_namespaced_tags_inside_jinja():
 
     assert "{{ value }}" in cleaned
     assert "{{<" not in cleaned
+
+
+def test_patch_xml_handles_excel_tc_tr_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TR_TC_XML)
+
+    assert "{% for row in rows %}" in cleaned
+    assert "{% endfor %}" in cleaned
+    assert "{% for for" not in cleaned
+    assert "{{ row.value }}" in cleaned
+    assert "{{tc" not in cleaned
+    assert "{%tc" not in cleaned
+
+
+def test_patch_xml_handles_trimmed_excel_tr_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TR_TC_TRIMMED_XML)
+
+    assert "{%- for row in rows -%}" in cleaned
+    assert "{%- endfor -%}" in cleaned
+    assert "tr for" not in cleaned
+    assert "endtr" not in cleaned
+
+
+def test_patch_xml_handles_excel_tr_endfor_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TR_ENDFOR_XML)
+
+    assert "{% for site in sites %}" in cleaned
+    assert "{% endfor %}" in cleaned
+    assert "tr for" not in cleaned
+    assert "tr endfor" not in cleaned
+
+
+def test_patch_xml_handles_split_excel_tr_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TR_SPLIT_XML)
+
+    assert "{% for site in project.workbook_data.web.sites %}" in cleaned
+    assert "{% endfor %}" in cleaned
+    assert "tr for" not in cleaned
+    assert "tr endfor" not in cleaned
+    assert not re.search(r"<row[^>]*>\\s*{% for", cleaned)
+    assert not re.search(r"{% endfor %}\\s*</row", cleaned)
+
+
+def test_patch_xml_handles_split_excel_tc_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TC_SPLIT_XML)
+
+    assert "tc site.url" not in cleaned
+    assert "tc site.unique_high" not in cleaned
+    assert "{{ site.url }}" in cleaned
+    assert "{{ site.unique_high }}" in cleaned
+
+
+def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TABLE_LOOP_XML,
+        None,
+        content_types_xml=CONTENT_TYPES_WITH_TABLE_XML,
+        extra_files={
+            "xl/worksheets/_rels/sheet1.xml.rels": SHEET_TABLE_RELS_XML,
+            "xl/tables/table1.xml": TABLE_SMALL_XML,
+        },
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    template._render_additional_parts(
+        {
+            "rows": [
+                {"number": 1, "label": "One"},
+                {"number": 2, "label": "Two"},
+                {"number": 3, "label": "Three"},
+            ]
+        },
+        None,
+    )
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        table_xml = archive.read("xl/tables/table1.xml").decode("utf-8")
+
+    assert "ref=\"A1:B4\"" in table_xml
+    assert "{{" not in table_xml
+
+
+def test_render_additional_parts_inserts_rows_for_tr_loop(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TR_LOOP_ROWS_XML,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    sites = [
+        {"url": "https://alpha", "high": 5, "medium": 3, "low": 1},
+        {"url": "https://beta", "high": 4, "medium": 2, "low": 0},
+        {"url": "https://gamma", "high": 6, "medium": 1, "low": 2},
+    ]
+
+    template._render_additional_parts({"sites": sites}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+    tree = etree.fromstring(sheet_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert [row.get("r") for row in rows] == ["1", "2", "3", "4"]
+
+    data_rows = rows[1:]
+    for idx, row in enumerate(data_rows, start=2):
+        cells = row.findall(f"{prefix}c")
+        assert [cell.get("r") for cell in cells] == [
+            f"A{idx}",
+            f"B{idx}",
+            f"C{idx}",
+            f"D{idx}",
+        ]
+
+    dimension = tree.find(f"{prefix}dimension")
+    assert dimension is not None
+    assert dimension.get("ref") == "A1:D4"
+
+    for site in sites:
+        assert site["url"] in sheet_xml
+        assert f">{site['high']}<" in sheet_xml
+        assert f">{site['medium']}<" in sheet_xml
+        assert f">{site['low']}<" in sheet_xml
+
+
+def test_render_additional_parts_reindexes_project_loop_rows(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TR_PROJECT_XML,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    sites = [
+        {"url": "https://alpha", "unique_high": 7, "unique_med": 5, "unique_low": 3},
+        {"url": "https://beta", "unique_high": 4, "unique_med": 2, "unique_low": 1},
+    ]
+
+    template._render_additional_parts({"project": {"workbook_data": {"web": {"sites": sites}}}}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+    tree = etree.fromstring(sheet_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert [row.get("r") for row in rows] == ["1", "2"]
+
+    dimension = tree.find(f"{prefix}dimension")
+    assert dimension is not None
+    assert dimension.get("ref") == "A1:D2"
+
+    first_cells = rows[0].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in first_cells] == ["A1", "B1", "C1", "D1"]
+
+    first_values = {cell.get("r"): cell for cell in first_cells}
+    url = first_values["A1"].find(f"{prefix}is/{prefix}t")
+    assert url is not None and url.text == sites[0]["url"]
+
+    for column, key in zip(("B", "C", "D"), ("unique_high", "unique_med", "unique_low")):
+        value = first_values[f"{column}1"].find(f"{prefix}v")
+        assert value is not None
+        assert value.text == str(sites[0][key])
+
+    second_cells = rows[1].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in second_cells] == ["A2", "B2", "C2", "D2"]
+
+    second_values = {cell.get("r"): cell for cell in second_cells}
+    url = second_values["A2"].find(f"{prefix}is/{prefix}t")
+    assert url is not None and url.text == sites[1]["url"]
+
+    for column, key in zip(("B", "C", "D"), ("unique_high", "unique_med", "unique_low")):
+        value = second_values[f"{column}2"].find(f"{prefix}v")
+        assert value is not None
+        assert value.text == str(sites[1][key])
+
+
+def test_normalise_sheet_rows_removes_empty_rows():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    normalised = template._normalise_sheet_rows(WORKSHEET_TR_RENDERED_GAPS_XML)
+
+    tree = etree.fromstring(normalised.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert [row.get("r") for row in rows] == ["1", "2", "3"]
+
+    header_cells = rows[0].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in header_cells] == ["A1", "B1", "C1", "D1"]
+
+    first_data = rows[1].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in first_data] == ["A2", "B2", "C2", "D2"]
+
+    second_data = rows[2].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in second_data] == ["A3", "B3", "C3", "D3"]
+
+    dimension = tree.find(f"{prefix}dimension")
+    assert dimension is not None
+    assert dimension.get("ref") == "A1:D3"
+
+
+def test_render_additional_parts_handles_tr_loop_shared_strings(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TR_SHARED_STRINGS_XML,
+        SHARED_STRINGS_TR_LOOP_XML,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    sites = [
+        {"url": "alpha", "high": 3, "medium": 2, "low": 1},
+        {"url": "beta", "high": 4, "medium": 3, "low": 2},
+    ]
+
+    template._render_additional_parts({"sites": sites}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        shared_xml = archive.read("xl/sharedStrings.xml").decode("utf-8")
+
+    assert "{{" not in shared_xml
+
+    tree = etree.fromstring(sheet_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert len(rows) == len(sites) + 1
+
+    data_rows = rows[1:]
+    for row, site in zip(data_rows, sites):
+        row_index = int(row.get("r"))
+        cells = {cell.get("r"): cell for cell in row.findall(f"{prefix}c")}
+
+        url_cell = cells[f"A{row_index}"]
+        assert url_cell.get("t") == "inlineStr"
+        url_text = url_cell.find(f"{prefix}is/{prefix}t")
+        assert url_text is not None
+        assert url_text.text == site["url"]
+
+        for column, key in zip(("B", "C", "D"), ("high", "medium", "low")):
+            ref = f"{column}{row_index}"
+            cell = cells[ref]
+            assert cell.get("t") is None
+            value = cell.find(f"{prefix}v")
+            assert value is not None
+            assert value.text == str(site[key])
+
+    dimension = tree.find(f"{prefix}dimension")
+    assert dimension is not None
+    assert dimension.get("ref") == f"A1:D{len(sites) + 1}"
+
+
+def test_get_undeclared_variables_ignores_tr_loop_variables(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TR_PROJECT_XML,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    env = Environment()
+
+    class _AnyFilter(dict):
+        def __contains__(self, key):  # pragma: no cover - behaviour exercised via meta
+            return True
+
+        def __missing__(self, key):  # pragma: no cover - behaviour exercised via meta
+            stub = lambda value, *args, **kwargs: value
+            self[key] = stub
+            return stub
+
+        def get(self, key, default=None):  # pragma: no cover - behaviour exercised via meta
+            try:
+                return super().__getitem__(key)
+            except KeyError:
+                return self.__missing__(key)
+
+    env.filters = _AnyFilter(env.filters)
+
+    undeclared = template.get_undeclared_template_variables(env)
+    assert "project" in undeclared
+    assert "site" not in undeclared
 
