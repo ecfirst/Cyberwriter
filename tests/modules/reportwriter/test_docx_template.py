@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 from importlib import util
 from pathlib import Path
@@ -781,6 +782,8 @@ def test_patch_xml_handles_split_excel_tr_tags():
     assert "{% endfor %}" in cleaned
     assert "tr for" not in cleaned
     assert "tr endfor" not in cleaned
+    assert not re.search(r"<row[^>]*>\\s*{% for", cleaned)
+    assert not re.search(r"{% endfor %}\\s*</row", cleaned)
 
 
 def test_patch_xml_handles_split_excel_tc_tags():
