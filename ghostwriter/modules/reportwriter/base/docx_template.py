@@ -688,6 +688,24 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         rows = filtered_rows
 
+        global_min_col: int | None = None
+        for row in rows:
+            for cell in row.findall(f"{prefix}c"):
+                if not self._cell_has_value(cell, prefix):
+                    continue
+                ref = cell.get("r")
+                if not ref:
+                    continue
+                parsed = self._split_cell(ref)
+                if parsed is None:
+                    continue
+                col_index, _ = parsed
+                if global_min_col is None or col_index < global_min_col:
+                    global_min_col = col_index
+
+        if global_min_col is None:
+            global_min_col = 1
+
         # Determine the smallest referenced row index so we can normalise
         # templated worksheets that introduced leading control rows (for
         # example ``{%tr%}`` markers placed before the first data row).  Word
@@ -721,6 +739,24 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     min_defined_row = row_index
 
         row_offset = max((min_defined_row or 1) - 1, 0)
+        first_min_col_row: int | None = None
+        if global_min_col is not None:
+            for row in rows:
+                for cell in row.findall(f"{prefix}c"):
+                    if not self._cell_has_value(cell, prefix):
+                        continue
+                    ref = cell.get("r")
+                    if not ref:
+                        continue
+                    parsed = self._split_cell(ref)
+                    if parsed is None:
+                        continue
+                    col_index, parsed_row = parsed
+                    parsed_row = max(1, parsed_row - row_offset)
+                    if col_index == global_min_col and (
+                        first_min_col_row is None or parsed_row < first_min_col_row
+                    ):
+                        first_min_col_row = parsed_row
         last_index = 0
         min_col: int | None = None
         max_col: int | None = None
@@ -749,12 +785,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
             defined_cols: list[int] = []
 
             for cell in raw_cells:
-                if not self._cell_has_value(cell, prefix):
-                    row.remove(cell)
-                    continue
-
                 ref = cell.get("r")
                 parsed = self._split_cell(ref) if ref else None
+                has_value = self._cell_has_value(cell, prefix)
+                if not has_value:
+                    row.remove(cell)
+                    continue
                 if parsed is not None:
                     col_index, parsed_row = parsed
                     parsed_row = max(1, parsed_row - row_offset)
@@ -775,7 +811,15 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             row.set("r", str(row_index))
 
-            col_offset = min(defined_cols) - 1 if defined_cols else 0
+            baseline_col = global_min_col or 1
+            if defined_cols:
+                min_defined = min(defined_cols)
+                if first_min_col_row is not None and row_index < first_min_col_row:
+                    col_offset = 0
+                else:
+                    col_offset = max(min_defined - baseline_col, 0)
+            else:
+                col_offset = baseline_col - 1
             col_offset = max(col_offset, 0)
 
             cols: list[int] = []
@@ -783,7 +827,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             next_col = 0
             for cell, parsed in cells:
                 if parsed is None:
-                    col_index = next_col + 1
+                    col_index = max(baseline_col, next_col + 1)
                     cell_row = row_index
                 else:
                     original_col, original_row = parsed

@@ -229,6 +229,35 @@ WORKSHEET_TC_RENDERED_GAPS_XML = (
     '</worksheet>'
 )
 
+WORKSHEET_TC_RENDERED_HEADER_SHIFT_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<dimension ref="B1:C4"/>'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="B1" t="inlineStr"><is><t>Edge-FW01</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>Core-FW02</t></is></c>'
+    '</row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><t>High Risk</t></is></c>'
+    '<c r="B2"><v>2</v></c>'
+    '<c r="C2"><v>0</v></c>'
+    '</row>'
+    '<row r="3">'
+    '<c r="A3" t="inlineStr"><is><t>Medium Risk</t></is></c>'
+    '<c r="B3"><v>5</v></c>'
+    '<c r="C3"><v>3</v></c>'
+    '</row>'
+    '<row r="4">'
+    '<c r="A4" t="inlineStr"><is><t>Low Risk</t></is></c>'
+    '<c r="B4"><v>3</v></c>'
+    '<c r="C4"><v>4</v></c>'
+    '</row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
 WORKSHEET_TR_SHARED_STRINGS_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -1048,6 +1077,30 @@ def test_normalise_sheet_rows_compacts_tc_columns():
     dimension = tree.find(f"{prefix}dimension")
     assert dimension is not None
     assert dimension.get("ref") == "A1:C3"
+
+
+def test_normalise_sheet_rows_preserves_tc_header_alignment():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    normalised = template._normalise_sheet_rows(WORKSHEET_TC_RENDERED_HEADER_SHIFT_XML)
+
+    tree = etree.fromstring(normalised.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert [row.get("r") for row in rows] == ["1", "2", "3", "4"]
+
+    header_cells = rows[0].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in header_cells] == ["B1", "C1"]
+
+    first_data = rows[1].findall(f"{prefix}c")
+    assert [cell.get("r") for cell in first_data] == ["A2", "B2", "C2"]
+
+    dimension = tree.find(f"{prefix}dimension")
+    assert dimension is not None
+    assert dimension.get("ref") == "A1:C4"
 
 
 def test_render_additional_parts_handles_tr_loop_shared_strings(monkeypatch):
