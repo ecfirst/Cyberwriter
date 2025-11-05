@@ -18,6 +18,7 @@ from lxml import etree
 
 _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
+_XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
@@ -181,13 +182,21 @@ class GhostwriterDocxTemplate(DocxTemplate):
             trim = match.group("trim") or ""
             return "{%" + trim + " endfor"
 
-        xml = re.sub(r"\{%(?P<trim>-?)\s*tr\s+for\b", _replace_open_tr, xml)
-        xml = re.sub(
-            r"\{%(?P<trim>-?)\s*(?:endtr|tr\s+endfor)\b",
-            _replace_close_tr,
-            xml,
+        open_tr_pattern = re.compile(
+            r"\{%(?P<trim>-?)" + _XML_TAG_GAP + r"tr" + _XML_TAG_GAP + r"for\b"
         )
-        xml = re.sub(r"(\{[\{%#])\s*tc\b", r"\1", xml)
+        close_tr_pattern = re.compile(
+            r"\{%(?P<trim>-?)"
+            + _XML_TAG_GAP
+            + r"(?:endtr|tr"
+            + _XML_TAG_GAP
+            + r"endfor)\b"
+        )
+        xml = open_tr_pattern.sub(_replace_open_tr, xml)
+        xml = close_tr_pattern.sub(_replace_close_tr, xml)
+
+        tc_pattern = re.compile(r"(\{[\{%#]-?)" + _XML_TAG_GAP + r"tc\b")
+        xml = tc_pattern.sub(r"\1", xml)
         return xml
 
     # ------------------------------------------------------------------
