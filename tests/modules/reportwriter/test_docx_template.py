@@ -154,6 +154,36 @@ WORKSHEET_TR_LOOP_ROWS_XML = (
     '</worksheet>'
 )
 
+WORKSHEET_TC_RENDERED_COLUMNS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>Metric</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>Edge-FW01</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>Edge-FW02</t></is></c>'
+    '</row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><t>High Risk</t></is></c>'
+    '<c r="B2"><v>2</v></c>'
+    '<c r="C2"><v>1</v></c>'
+    '</row>'
+    '<row r="3">'
+    '<c r="A3" t="inlineStr"><is><t>Medium Risk</t></is></c>'
+    '<c r="B3"><v>5</v></c>'
+    '<c r="C3"><v>4</v></c>'
+    '</row>'
+    '<row r="4">'
+    '<c r="A4" t="inlineStr"><is><t>Low Risk</t></is></c>'
+    '<c r="B4"><v>3</v></c>'
+    '<c r="C4"><v>2</v></c>'
+    '</row>'
+    '</sheetData>'
+    '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>'
+    '</worksheet>'
+)
+
 WORKSHEET_TR_PROJECT_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -421,6 +451,18 @@ TABLE_SMALL_XML = (
     '<tableColumn id="2" name="Labels"/>'
     '</tableColumns>'
     '<autoFilter ref="A1:B2"/>'
+    '</table>'
+)
+
+TABLE_TC_NARROW_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'id="1" name="Table1" displayName="Table1" ref="A1:B4" headerRowCount="1">'
+    '<tableColumns count="2">'
+    '<tableColumn id="1" name="Metric"/>'
+    '<tableColumn id="2" name="Placeholder"/>'
+    '</tableColumns>'
+    '<autoFilter ref="A1:B4"/>'
     '</table>'
 )
 
@@ -862,6 +904,42 @@ def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):
 
     assert "ref=\"A1:B4\"" in table_xml
     assert "{{" not in table_xml
+
+
+def test_render_additional_parts_updates_table_columns_for_tc(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TC_RENDERED_COLUMNS_XML,
+        content_types_xml=CONTENT_TYPES_WITH_TABLE_XML,
+        extra_files={
+            "xl/worksheets/_rels/sheet1.xml.rels": SHEET_TABLE_RELS_XML,
+            "xl/tables/table1.xml": TABLE_TC_NARROW_XML,
+        },
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    template._render_additional_parts({}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        table_xml = archive.read("xl/tables/table1.xml").decode("utf-8")
+
+    tree = etree.fromstring(table_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    assert 'ref="A1:C4"' in table_xml
+    assert tree.get("ref") == "A1:C4"
+    columns = tree.findall(f"{prefix}tableColumns/{prefix}tableColumn")
+    assert len(columns) == 3
+    assert [column.get("name") for column in columns] == [
+        "Metric",
+        "Edge-FW01",
+        "Edge-FW02",
+    ]
 
 
 def test_render_additional_parts_inserts_rows_for_tr_loop(monkeypatch):
