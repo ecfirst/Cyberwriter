@@ -195,6 +195,20 @@ class GhostwriterDocxTemplate(DocxTemplate):
         xml = open_tr_pattern.sub(_replace_open_tr, xml)
         xml = close_tr_pattern.sub(_replace_close_tr, xml)
 
+        row_wrapper_pattern = re.compile(
+            r"<row[^>]*>"
+            r"(?:\s|<[^>]+>)*"
+            r"(?P<stmt>\{%-?\s*(?:for\b[^%]*|endfor)\s*-?%})"
+            r"(?:\s|</[^>]+>)*"
+            r"</row>",
+            re.DOTALL,
+        )
+
+        def _unwrap_row(match: re.Match[str]) -> str:
+            return match.group("stmt")
+
+        xml = row_wrapper_pattern.sub(_unwrap_row, xml)
+
         tc_pattern = re.compile(r"(\{[\{%#]-?)" + _XML_TAG_GAP + r"tc\b")
         xml = tc_pattern.sub(r"\1", xml)
         return xml
