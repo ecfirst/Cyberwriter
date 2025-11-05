@@ -797,9 +797,19 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 parsed = self._split_cell(ref) if ref else None
                 has_value = self._cell_has_value(cell, prefix)
                 keep_empty = False
-                if not has_value and parsed is not None:
-                    col_index, parsed_row = parsed
-                    if col_index in columns_with_values:
+                if not has_value:
+                    if parsed is not None:
+                        col_index, parsed_row = parsed
+                        if col_index in columns_with_values:
+                            keep_empty = True
+                    else:
+                        # Preserve blank cells without an explicit reference so
+                        # their implicit column position continues to align with
+                        # neighbouring populated cells.  Excel commonly omits
+                        # the ``r`` attribute for the first cell in a row, and
+                        # dropping those placeholders causes the remaining
+                        # values to shift left which in turn corrupts table
+                        # definitions for ``tc`` loops.
                         keep_empty = True
                 if not has_value and not keep_empty:
                     row.remove(cell)
@@ -832,7 +842,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
             baseline_col = global_min_col or 1
             if defined_cols:
                 min_defined = min(defined_cols)
-                if first_min_col_row is not None and row_index < first_min_col_row:
+                if (
+                    first_min_col_row is not None
+                    and row_index < first_min_col_row
+                ):
+                    # Preserve the original column alignment for header rows
+                    # that precede the first populated baseline column.  This
+                    # avoids shifting ``tc`` loop headers left and inserting
+                    # artificial placeholder columns that Excel later repairs.
                     col_offset = 0
                 else:
                     col_offset = max(min_defined - baseline_col, 0)
