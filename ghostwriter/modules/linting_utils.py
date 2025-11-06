@@ -361,7 +361,13 @@ LINTER_CONTEXT = {
             "cloud_config_risk": "low",
             "system_config_risk": "medium",
             "iot_testing_confirm": "yes",
-            "dns": {"zone_trans": 1},
+            "dns": {
+                "zone_trans": 1,
+                "soa_issues": [
+                    {"domain": "example.com", "issues": ["serial", "retry"]},
+                    {"domain": "test.example.com", "issues": ["minimum"]},
+                ],
+            },
             "osint_squat_concern": "example.com",
             "osint_bucket_risk": "High",
             "osint_leaked_creds_risk": "Medium",
@@ -376,13 +382,18 @@ LINTER_CONTEXT = {
                 "psk_weak_reasons": "to short and not enough entropy",
                 "psk_masterpass": "no",
             },
-            "assessment_scope": ["external", "internal", "firewall"],
-            "assessment_scope_cloud_on_prem": "yes",
-            "scope_string": (
-                "External network and systems, Internal network and systems and "
-                "Firewall configuration(s) & rules"
-            ),
-            "scope_count": 3,
+            "general": {
+                "assessment_scope": ["external", "internal", "firewall"],
+                "assessment_scope_cloud_on_prem": "yes",
+                "scope_string": (
+                    "External network and systems, Internal network and systems and "
+                    "Firewall configuration(s) & rules"
+                ),
+                "scope_count": 3,
+                "first_ca": "no",
+                "first_ca_scope_change": "yes",
+                "anonymous_ephi": "no",
+            },
             "ad": {
                 "entries": [
                     {
@@ -451,6 +462,8 @@ LINTER_CONTEXT = {
                 "generic_logins_string": "3 and 2",
             },
             "password": {
+                "additional_controls": "yes",
+                "enforce_mfa": "yes",
                 "entries": [
                     {"domain": "corp.example.com", "risk": "medium", "bad_pass": True},
                     {"domain": "lab.example.com", "risk": "high", "bad_pass": False},
@@ -486,6 +499,7 @@ LINTER_CONTEXT = {
                 "wifi_risk_string": "Low/High",
             },
             "firewall": {
+                "review_justifications": "yes",
                 "entries": [
                     {"name": "Edge-FW01", "type": "Next-Gen"},
                     {"name": "Core-FW02", "type": "Appliance"},
