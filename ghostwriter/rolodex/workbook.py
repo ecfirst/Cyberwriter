@@ -486,6 +486,32 @@ def build_data_configuration(
     if iot_nexpose_total > 0:
         add_required("iot_nexpose_csv.csv")
 
+    dns_artifacts = data_artifacts or {}
+    for entry in dns_artifacts.get("dns_issues", []) or []:
+        domain = _as_str(entry.get("domain"))
+        if not domain:
+            continue
+        issues = entry.get("issues") or []
+        if not isinstance(issues, list):
+            continue
+        has_soa_issue = any(
+            _as_str(issue.get("issue")) == "One or more SOA fields are outside recommended ranges"
+            for issue in issues
+            if isinstance(issue, dict)
+        )
+        if not has_soa_issue:
+            continue
+        slug = _slugify_identifier("dns", domain) or f"dns_{len(domain)}"
+        add_question(
+            key=f"{slug}_soa_fields",
+            label="Which SOA fields are outside the recommended ranges?",
+            field_class=forms.MultipleChoiceField,
+            section="DNS",
+            subheading=domain,
+            choices=SOA_FIELD_CHOICES,
+            widget=forms.CheckboxSelectMultiple,
+        )
+
     firewall_source = _get_nested(data, ("fierwall",), None)
     if not isinstance(firewall_source, dict):
         firewall_source = _get_nested(data, ("firewall",), {})
@@ -721,32 +747,6 @@ def build_data_configuration(
             section="System Configuration",
             choices=RISK_CHOICES,
             widget=forms.RadioSelect,
-        )
-
-    dns_artifacts = data_artifacts or {}
-    for entry in dns_artifacts.get("dns_issues", []) or []:
-        domain = _as_str(entry.get("domain"))
-        if not domain:
-            continue
-        issues = entry.get("issues") or []
-        if not isinstance(issues, list):
-            continue
-        has_soa_issue = any(
-            _as_str(issue.get("issue")) == "One or more SOA fields are outside recommended ranges"
-            for issue in issues
-            if isinstance(issue, dict)
-        )
-        if not has_soa_issue:
-            continue
-        slug = _slugify_identifier("dns", domain) or f"dns_{len(domain)}"
-        add_question(
-            key=f"{slug}_soa_fields",
-            label="Which SOA fields are outside the recommended ranges?",
-            field_class=forms.MultipleChoiceField,
-            section="DNS",
-            subheading=domain,
-            choices=SOA_FIELD_CHOICES,
-            widget=forms.CheckboxSelectMultiple,
         )
 
     if overall_risk:
