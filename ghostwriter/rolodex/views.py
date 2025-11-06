@@ -4,7 +4,7 @@
 import datetime
 import json
 import logging
-from typing import Dict, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 # Django Imports
 from django import forms
@@ -96,6 +96,82 @@ from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
 # Using __name__ resolves to ghostwriter.rolodex.views
 logger = logging.getLogger(__name__)
+
+
+def _organize_data_responses(
+    responses: Dict[str, Any], question_definitions: Iterable[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Group section-specific responses for consistent storage."""
+
+    structured: Dict[str, Any] = dict(responses or {})
+
+    existing_general = structured.pop("general", None)
+    general_data: Dict[str, Any] = dict(existing_general or {}) if isinstance(existing_general, dict) else {}
+    for key in [
+        "assessment_scope",
+        "assessment_scope_cloud_on_prem",
+        "general_first_ca",
+        "general_first_ca_scope_change",
+        "general_anonymous_ephi",
+        "scope_count",
+        "scope_string",
+    ]:
+        if key in structured:
+            value = structured.pop(key)
+            if key.startswith("general_"):
+                general_data[key[len("general_"):]] = value
+            else:
+                general_data[key] = value
+    if general_data:
+        structured["general"] = general_data
+
+    existing_password = structured.pop("password", None)
+    password_data: Dict[str, Any] = (
+        dict(existing_password)
+        if isinstance(existing_password, dict)
+        else {}
+    )
+    for key in ["password_additional_controls", "password_enforce_mfa"]:
+        if key in structured:
+            password_data[key[len("password_"):]] = structured.pop(key)
+    if password_data:
+        structured["password"] = password_data
+
+    existing_firewall = structured.pop("firewall", None)
+    firewall_data: Dict[str, Any] = (
+        dict(existing_firewall)
+        if isinstance(existing_firewall, dict)
+        else {}
+    )
+    if "firewall_review_justifications" in structured:
+        firewall_data["review_justifications"] = structured.pop("firewall_review_justifications")
+    if firewall_data:
+        structured["firewall"] = firewall_data
+
+    existing_dns = structured.pop("dns", None)
+    dns_data: Dict[str, Any] = dict(existing_dns or {}) if isinstance(existing_dns, dict) else {}
+    soa_entries: List[Dict[str, Any]] = []
+    for definition in question_definitions:
+        if definition.get("section") != "DNS":
+            continue
+        key = definition.get("key")
+        domain = definition.get("subheading")
+        if not isinstance(key, str) or not domain:
+            continue
+        raw_value = structured.pop(key, None)
+        if isinstance(raw_value, (list, tuple, set)):
+            issues = [str(item) for item in raw_value]
+        elif raw_value in (None, ""):
+            issues = []
+        else:
+            issues = [str(raw_value)]
+        soa_entries.append({"domain": domain, "issues": issues})
+    if soa_entries:
+        dns_data["soa_issues"] = soa_entries
+    if dns_data:
+        structured["dns"] = dns_data
+
+    return structured
 
 
 ##################
@@ -2011,7 +2087,8 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
                 responses.pop("scope_count", None)
                 responses.pop("scope_string", None)
 
-            project.data_responses = responses
+            structured_responses = _organize_data_responses(responses, questions)
+            project.data_responses = structured_responses
             project.save(update_fields=["data_responses"])
             messages.success(request, "Project data responses saved.")
         else:

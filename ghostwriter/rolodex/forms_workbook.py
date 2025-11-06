@@ -2,7 +2,7 @@
 
 # Standard Libraries
 import json
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # Django Imports
 from django import forms
@@ -217,15 +217,77 @@ def _format_summary_with_conjunction(parts: List[str]) -> str:
     return f"{leading} and {parts[-1]}"
 
 
-def _flatten_grouped_initial(initial: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a copy of ``initial`` with grouped sections expanded for form fields."""
+def _extract_initial_value(
+    initial: Dict[str, Any], definition: Dict[str, Any]
+) -> Tuple[bool, Any]:
+    """Return the stored value for ``definition`` from ``initial`` if present."""
 
-    flattened = dict(initial or {})
-    wireless_values = flattened.pop("wireless", None)
-    if isinstance(wireless_values, dict):
-        for key, value in wireless_values.items():
-            flattened[f"wireless_{key}"] = value
-    return flattened
+    key = definition.get("key")
+    if not isinstance(key, str):
+        return False, None
+
+    section = definition.get("section")
+    subheading = definition.get("subheading")
+
+    if not isinstance(initial, dict):
+        return False, None
+
+    if section == "Wireless" and key.startswith("wireless_"):
+        wireless_values = initial.get("wireless")
+        if isinstance(wireless_values, dict):
+            stored_key = key[len("wireless_"):]
+            if stored_key in wireless_values:
+                return True, wireless_values.get(stored_key)
+
+    if section == "General":
+        general_values = initial.get("general")
+        if isinstance(general_values, dict):
+            if key.startswith("general_"):
+                stored_key = key[len("general_"):]
+            else:
+                stored_key = key
+            if stored_key in general_values:
+                return True, general_values.get(stored_key)
+
+    if section == "Password Policies" and key.startswith("password_"):
+        password_values = initial.get("password")
+        if isinstance(password_values, dict):
+            stored_key = key[len("password_"):]
+            if stored_key in password_values:
+                return True, password_values.get(stored_key)
+
+    if section == "Firewall":
+        firewall_values = initial.get("firewall")
+        if isinstance(firewall_values, dict):
+            if key == "firewall_review_justifications":
+                if "review_justifications" in firewall_values:
+                    return True, firewall_values.get("review_justifications")
+            elif key.startswith("firewall_"):
+                stored_key = key[len("firewall_"):]
+                if stored_key in firewall_values:
+                    return True, firewall_values.get(stored_key)
+
+    if section == "DNS":
+        dns_values = initial.get("dns")
+        if isinstance(dns_values, dict):
+            soa_entries = dns_values.get("soa_issues")
+            if isinstance(soa_entries, list):
+                for entry in soa_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("domain") != subheading:
+                        continue
+                    issues = entry.get("issues")
+                    if isinstance(issues, list):
+                        return True, issues
+                    if issues in (None, ""):
+                        return True, []
+                    return True, [issues]
+
+    if key in initial:
+        return True, initial.get(key)
+
+    return False, None
 
 
 class SummaryMultipleChoiceField(forms.MultipleChoiceField):
@@ -301,13 +363,13 @@ class ProjectDataResponsesForm(forms.Form):
     def __init__(self, *args, question_definitions: Optional[List[Dict[str, Any]]] = None, **kwargs):
         self.question_definitions = question_definitions or []
         super().__init__(*args, **kwargs)
-        initial_values = _flatten_grouped_initial(self.initial)
         for definition in self.question_definitions:
             field_kwargs = definition.get("field_kwargs", {}).copy()
             key = definition["key"]
             field_class = definition["field_class"]
-            if key in initial_values:
-                field_kwargs["initial"] = initial_values[key]
+            found, value = _extract_initial_value(self.initial, definition)
+            if found:
+                field_kwargs["initial"] = value
             self.fields[key] = field_class(**field_kwargs)
 
     def clean(self):  # type: ignore[override]

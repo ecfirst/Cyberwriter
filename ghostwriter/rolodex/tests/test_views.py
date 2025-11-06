@@ -10,6 +10,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils.encoding import force_str
+from django.utils.text import slugify
 
 # Ghostwriter Libraries
 from ghostwriter.factories import (
@@ -1202,20 +1203,26 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.project.refresh_from_db()
         data = self.project.data_responses
-        self.assertEqual(data.get("assessment_scope"), ["external", "cloud"])
-        self.assertEqual(data.get("scope_count"), 2)
-        self.assertEqual(data.get("assessment_scope_cloud_on_prem"), "yes")
+        self.assertNotIn("assessment_scope", data)
+        general = data.get("general")
+        self.assertIsInstance(general, dict)
+        assert isinstance(general, dict)
+        self.assertEqual(general.get("assessment_scope"), ["external", "cloud"])
+        self.assertEqual(general.get("scope_count"), 2)
+        self.assertEqual(general.get("assessment_scope_cloud_on_prem"), "yes")
         self.assertEqual(
-            data.get("scope_string"),
+            general.get("scope_string"),
             "External network and systems, Cloud/On-Prem network and systems and Cloud management configuration",
         )
 
     def test_followup_removed_when_cloud_unselected(self):
         self.project.data_responses = {
-            "assessment_scope": ["external", "cloud"],
-            "assessment_scope_cloud_on_prem": "yes",
-            "scope_string": "Existing",
-            "scope_count": 2,
+            "general": {
+                "assessment_scope": ["external", "cloud"],
+                "assessment_scope_cloud_on_prem": "yes",
+                "scope_string": "Existing",
+                "scope_count": 2,
+            }
         }
         self.project.save(update_fields=["data_responses"])
 
@@ -1225,10 +1232,99 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.project.refresh_from_db()
         data = self.project.data_responses
-        self.assertEqual(data.get("assessment_scope"), ["external"])
-        self.assertEqual(data.get("scope_count"), 1)
-        self.assertEqual(data.get("scope_string"), "External network and systems")
-        self.assertNotIn("assessment_scope_cloud_on_prem", data)
+        general = data.get("general")
+        self.assertIsInstance(general, dict)
+        assert isinstance(general, dict)
+        self.assertEqual(general.get("assessment_scope"), ["external"])
+        self.assertEqual(general.get("scope_count"), 1)
+        self.assertEqual(general.get("scope_string"), "External network and systems")
+        self.assertNotIn("assessment_scope_cloud_on_prem", general)
+
+    def test_general_section_values_grouped(self):
+        payload = {
+            "assessment_scope": ["external"],
+            "assessment_scope_cloud_on_prem": "no",
+            "general_first_ca": "no",
+            "general_first_ca_scope_change": "yes",
+            "general_anonymous_ephi": "no",
+        }
+
+        response = self.client_mgr.post(self.url, payload)
+
+        self.assertEqual(response.status_code, 302)
+        self.project.refresh_from_db()
+        data = self.project.data_responses
+        general = data.get("general")
+        self.assertIsInstance(general, dict)
+        assert isinstance(general, dict)
+        self.assertEqual(general.get("assessment_scope"), ["external"])
+        self.assertEqual(general.get("assessment_scope_cloud_on_prem"), "no")
+        self.assertEqual(general.get("first_ca"), "no")
+        self.assertEqual(general.get("first_ca_scope_change"), "yes")
+        self.assertEqual(general.get("anonymous_ephi"), "no")
+        self.assertIn("scope_count", general)
+        self.assertIn("scope_string", general)
+        self.assertNotIn("assessment_scope", data)
+
+    def test_password_and_firewall_grouping(self):
+        payload = {
+            "password_additional_controls": "yes",
+            "password_enforce_mfa": "no",
+            "firewall_review_justifications": "yes",
+        }
+
+        response = self.client_mgr.post(self.url, payload)
+
+        self.assertEqual(response.status_code, 302)
+        self.project.refresh_from_db()
+        data = self.project.data_responses
+
+        password = data.get("password")
+        self.assertIsInstance(password, dict)
+        assert isinstance(password, dict)
+        self.assertEqual(password.get("additional_controls"), "yes")
+        self.assertEqual(password.get("enforce_mfa"), "no")
+        self.assertNotIn("password_additional_controls", data)
+        self.assertNotIn("password_enforce_mfa", data)
+
+        firewall = data.get("firewall")
+        self.assertIsInstance(firewall, dict)
+        assert isinstance(firewall, dict)
+        self.assertEqual(firewall.get("review_justifications"), "yes")
+        self.assertNotIn("firewall_review_justifications", data)
+
+    def test_dns_responses_grouped_by_domain(self):
+        self.project.data_artifacts = {
+            "dns_issues": [
+                {
+                    "domain": "example.com",
+                    "issues": [
+                        {"issue": "One or more SOA fields are outside recommended ranges"}
+                    ],
+                }
+            ]
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        domain = "example.com"
+        slug = "_".join(filter(None, [slugify("dns"), slugify(domain)]))
+        payload = {f"{slug}_soa_fields": ["serial", "expire"]}
+
+        response = self.client_mgr.post(self.url, payload)
+
+        self.assertEqual(response.status_code, 302)
+        self.project.refresh_from_db()
+        data = self.project.data_responses
+        dns = data.get("dns")
+        self.assertIsInstance(dns, dict)
+        assert isinstance(dns, dict)
+        entries = dns.get("soa_issues")
+        self.assertIsInstance(entries, list)
+        assert isinstance(entries, list)
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry.get("domain"), domain)
+        self.assertEqual(entry.get("issues"), ["serial", "expire"])
 
     def test_detail_view_displays_uploaded_workbook_sections(self):
         workbook_payload = {
