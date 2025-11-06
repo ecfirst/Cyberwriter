@@ -1300,6 +1300,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         slug_map = {}
         domain_details = {}
 
+        existing_summary = raw_responses.get("endpoint")
+        if isinstance(existing_summary, dict):
+            entry_list = existing_summary.get("entries") if isinstance(existing_summary, dict) else None
+            if isinstance(entry_list, list) and entry_list:
+                return existing_summary
+
         for record in domains:
             if not isinstance(record, dict):
                 continue

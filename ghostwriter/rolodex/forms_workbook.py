@@ -217,11 +217,37 @@ def _format_summary_with_conjunction(parts: List[str]) -> str:
     return f"{leading} and {parts[-1]}"
 
 
-def _flatten_grouped_initial(initial: Dict[str, Any]) -> Dict[str, Any]:
+def _build_entry_slug_lookup(question_definitions: Optional[List[Dict[str, Any]]]) -> Dict[str, Dict[str, str]]:
+    """Create a lookup map from section/subheading pairs to entry slugs."""
+
+    lookup: Dict[str, Dict[str, str]] = {}
+    if not question_definitions:
+        return lookup
+
+    for definition in question_definitions:
+        section_key = str(definition.get("section_key") or "").strip()
+        subheading = str(definition.get("subheading") or "").strip()
+        entry_slug = definition.get("entry_slug")
+
+        if not section_key or not subheading or not entry_slug:
+            continue
+
+        section_lookup = lookup.setdefault(section_key.lower(), {})
+        section_lookup.setdefault(subheading, entry_slug)
+        section_lookup.setdefault(subheading.lower(), entry_slug)
+
+    return lookup
+
+
+def _flatten_grouped_initial(
+    initial: Dict[str, Any], question_definitions: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
     """Return a copy of ``initial`` with grouped sections expanded for form fields."""
 
     source = dict(initial or {})
     flattened: Dict[str, Any] = {}
+
+    slug_lookup = _build_entry_slug_lookup(question_definitions)
 
     wireless_values = source.pop("wireless", None)
     if isinstance(wireless_values, dict):
@@ -233,6 +259,8 @@ def _flatten_grouped_initial(initial: Dict[str, Any]) -> Dict[str, Any]:
             flattened[section_key] = section_value
             continue
 
+        normalized_section_key = str(section_key or "").strip().lower()
+        section_slug_lookup = slug_lookup.get(normalized_section_key, {})
         entries = section_value.get("entries")
         if isinstance(entries, list):
             for entry in entries:
@@ -240,6 +268,11 @@ def _flatten_grouped_initial(initial: Dict[str, Any]) -> Dict[str, Any]:
                     continue
                 slug_value = entry.get("_slug") or entry.get("slug")
                 identifier = entry.get("domain") or entry.get("name")
+                if not slug_value and identifier:
+                    identifier_text = str(identifier).strip()
+                    slug_value = section_slug_lookup.get(identifier_text) or section_slug_lookup.get(
+                        identifier_text.lower()
+                    )
                 for field_key, field_value in entry.items():
                     if field_key in {"domain", "name", "_slug", "slug"}:
                         continue
@@ -332,7 +365,7 @@ class ProjectDataResponsesForm(forms.Form):
     def __init__(self, *args, question_definitions: Optional[List[Dict[str, Any]]] = None, **kwargs):
         self.question_definitions = question_definitions or []
         super().__init__(*args, **kwargs)
-        initial_values = _flatten_grouped_initial(self.initial)
+        initial_values = _flatten_grouped_initial(self.initial, self.question_definitions)
         for definition in self.question_definitions:
             field_kwargs = definition.get("field_kwargs", {}).copy()
             key = definition["key"]

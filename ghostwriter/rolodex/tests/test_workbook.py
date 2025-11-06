@@ -1,10 +1,11 @@
 """Unit tests for workbook helper utilities."""
 
 # Django Imports
+from django import forms
 from django.test import SimpleTestCase
 
 # Ghostwriter Libraries
-from ghostwriter.rolodex.forms_workbook import SummaryMultipleChoiceField
+from ghostwriter.rolodex.forms_workbook import ProjectDataResponsesForm, SummaryMultipleChoiceField
 from ghostwriter.rolodex.workbook import (
     DNS_SOA_FIELD_CHOICES,
     SCOPE_CHOICES,
@@ -255,3 +256,129 @@ class WorkbookHelpersTests(SimpleTestCase):
         ordered = normalize_scope_selection(["cloud", "external", "wireless"])
         self.assertEqual(ordered, ["external", "wireless", "cloud"])
         self.assertEqual(normalize_scope_selection("internal"), ["internal"])
+
+
+class ProjectDataResponsesFormTests(SimpleTestCase):
+    """Ensure workbook form helpers preserve existing grouped responses."""
+
+    def test_existing_endpoint_entries_preserve_initial_values(self):
+        questions = [
+            {
+                "key": "endpoint_corpexamplecom_av_gap",
+                "label": "Endpoint AV Gap",
+                "section": "Endpoint",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Endpoint AV Gap",
+                    "required": False,
+                    "choices": (("low", "Low"), ("medium", "Medium"), ("high", "High")),
+                },
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "av_gap",
+            },
+            {
+                "key": "endpoint_corpexamplecom_open_wifi",
+                "label": "Endpoint Open WiFi",
+                "section": "Endpoint",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Endpoint Open WiFi",
+                    "required": False,
+                    "choices": (("low", "Low"), ("medium", "Medium"), ("high", "High")),
+                },
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "open_wifi",
+            },
+            {
+                "key": "endpoint_labexamplecom_av_gap",
+                "label": "Endpoint AV Gap",
+                "section": "Endpoint",
+                "section_key": "endpoint",
+                "subheading": "lab.example.com",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Endpoint AV Gap",
+                    "required": False,
+                    "choices": (("low", "Low"), ("medium", "Medium"), ("high", "High")),
+                },
+                "entry_slug": "endpoint_labexamplecom",
+                "entry_field_key": "av_gap",
+            },
+            {
+                "key": "endpoint_labexamplecom_open_wifi",
+                "label": "Endpoint Open WiFi",
+                "section": "Endpoint",
+                "section_key": "endpoint",
+                "subheading": "lab.example.com",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Endpoint Open WiFi",
+                    "required": False,
+                    "choices": (("low", "Low"), ("medium", "Medium"), ("high", "High")),
+                },
+                "entry_slug": "endpoint_labexamplecom",
+                "entry_field_key": "open_wifi",
+            },
+        ]
+
+        initial = {
+            "endpoint": {
+                "entries": [
+                    {
+                        "domain": "corp.example.com",
+                        "av_gap": "medium",
+                        "open_wifi": "low",
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "av_gap": "high",
+                        "open_wifi": "high",
+                    },
+                ],
+                "domains_str": "corp.example.com/lab.example.com",
+            }
+        }
+
+        form = ProjectDataResponsesForm(question_definitions=questions, initial=initial)
+
+        self.assertEqual(form.fields["endpoint_corpexamplecom_av_gap"].initial, "medium")
+        self.assertEqual(form.fields["endpoint_corpexamplecom_open_wifi"].initial, "low")
+        self.assertEqual(form.fields["endpoint_labexamplecom_av_gap"].initial, "high")
+        self.assertEqual(form.fields["endpoint_labexamplecom_open_wifi"].initial, "high")
+
+    def test_existing_firewall_entries_preserve_initial_values(self):
+        questions = [
+            {
+                "key": "firewall_edge-fw01_type",
+                "label": "Firewall Type",
+                "section": "Firewall",
+                "section_key": "firewall",
+                "subheading": "Edge-FW01",
+                "field_class": forms.CharField,
+                "field_kwargs": {
+                    "label": "Firewall Type",
+                    "required": False,
+                },
+                "entry_slug": "firewall_edge-fw01",
+                "entry_field_key": "type",
+            }
+        ]
+
+        initial = {
+            "firewall": {
+                "entries": [
+                    {
+                        "name": "Edge-FW01",
+                        "type": "Next-Gen",
+                    }
+                ]
+            }
+        }
+
+        form = ProjectDataResponsesForm(question_definitions=questions, initial=initial)
+
+        self.assertEqual(form.fields["firewall_edge-fw01_type"].initial, "Next-Gen")
