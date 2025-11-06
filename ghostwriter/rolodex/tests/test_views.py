@@ -42,6 +42,7 @@ from ghostwriter.rolodex.data_parsers import (
     normalize_nexpose_artifact_payload,
     normalize_nexpose_artifacts_map,
 )
+from ghostwriter.rolodex.workbook_defaults import WORKBOOK_DATA_SCHEMA
 from ghostwriter.rolodex.ip_artifacts import (
     IP_ARTIFACT_DEFINITIONS,
     IP_ARTIFACT_TYPE_EXTERNAL,
@@ -1054,6 +1055,52 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertIn("client", self.project.workbook_data)
         self.assertEqual(self.project.workbook_data["client"]["name"], "Example Client")
         self.assertTrue(self.project.workbook_file.name.endswith("workbook.json"))
+
+    def test_upload_backfills_missing_sections(self):
+        workbook_payload = {"client": {"name": "Example Client"}}
+        upload = SimpleUploadedFile(
+            "workbook.json",
+            json.dumps(workbook_payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        response = self.client_auth.post(self.upload_url, {"workbook_file": upload})
+
+        self.assertEqual(response.status_code, 302)
+
+        self.project.refresh_from_db()
+        defaults = WORKBOOK_DATA_SCHEMA["iot_iomt_nexpose"]
+        self.assertIn("iot_iomt_nexpose", self.project.workbook_data)
+        self.assertEqual(self.project.workbook_data["iot_iomt_nexpose"], defaults)
+        self.assertEqual(
+            self.project.workbook_data["sql"].get("unsupported_dbs"),
+            WORKBOOK_DATA_SCHEMA["sql"]["unsupported_dbs"],
+        )
+
+    def test_upload_preserves_existing_values_when_backfilling(self):
+        workbook_payload = {
+            "iot_iomt_nexpose": {"total": 5},
+            "sql": {"unsupported_dbs": {"count": 3}},
+        }
+        upload = SimpleUploadedFile(
+            "workbook.json",
+            json.dumps(workbook_payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        response = self.client_auth.post(self.upload_url, {"workbook_file": upload})
+
+        self.assertEqual(response.status_code, 302)
+
+        self.project.refresh_from_db()
+        iot_section = self.project.workbook_data["iot_iomt_nexpose"]
+        self.assertEqual(iot_section["total"], 5)
+        for key in WORKBOOK_DATA_SCHEMA["iot_iomt_nexpose"]:
+            if key != "total":
+                self.assertIsNone(iot_section[key])
+        unsupported = self.project.workbook_data["sql"]["unsupported_dbs"]
+        self.assertEqual(unsupported["count"], 3)
+        self.assertIsNone(unsupported["confirm"])
 
     def test_upload_populates_project_risks(self):
         workbook_payload = {
