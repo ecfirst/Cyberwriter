@@ -219,4 +219,16 @@ class ExportProjectBase(ExportBase):
         for field in ExtraFieldSpec.objects.filter(target_model=StaticServer._meta.label):
             for server in context["infrastructure"]["servers"]:
                 server["extra_fields"][field.internal_name] = field.empty_value()
+
+        project_context = context.get("project", {})
+        general_defaults = (
+            LINTER_CONTEXT.get("project", {})
+            .get("data_responses", {})
+            .get("general", {})
+        )
+        general_context = project_context.setdefault("data_responses", {}).setdefault("general", {})
+        for key in ("scope_count", "scope_string"):
+            if key not in general_context and key in general_defaults:
+                general_context[key] = copy.deepcopy(general_defaults[key])
+
         return context

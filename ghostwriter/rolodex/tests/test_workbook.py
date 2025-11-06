@@ -1,11 +1,14 @@
 """Unit tests for workbook helper utilities."""
 
 # Django Imports
+from django import forms
 from django.test import SimpleTestCase
 
 # Ghostwriter Libraries
-from ghostwriter.rolodex.forms_workbook import SummaryMultipleChoiceField
+from ghostwriter.rolodex.forms_workbook import ProjectDataResponsesForm, SummaryMultipleChoiceField
+from ghostwriter.rolodex.views import _build_grouped_data_responses
 from ghostwriter.rolodex.workbook import (
+    DNS_SOA_FIELD_CHOICES,
     SCOPE_CHOICES,
     WEAK_PSK_SUMMARY_MAP,
     YES_NO_CHOICES,
@@ -118,6 +121,33 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertEqual(iot_question["field_kwargs"].get("choices"), YES_NO_CHOICES)
         self.assertEqual(iot_question["field_kwargs"].get("initial"), "no")
 
+    def test_dns_soa_question_added_when_issue_present(self):
+        data_artifacts = {
+            "dns_issues": [
+                {
+                    "domain": "example.com",
+                    "issues": [
+                        {
+                            "issue": "One or more SOA fields are outside recommended ranges",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        questions, _ = build_data_configuration({}, data_artifacts=data_artifacts)
+
+        dns_question = next(
+            (q for q in questions if q["key"] == "dns_example-com_soa_fields"),
+            None,
+        )
+
+        self.assertIsNotNone(dns_question)
+        assert dns_question is not None  # pragma: no cover - clarify typing
+        self.assertEqual(dns_question["section"], "DNS")
+        self.assertEqual(dns_question["subheading"], "example.com")
+        self.assertEqual(dns_question["field_kwargs"].get("choices"), DNS_SOA_FIELD_CHOICES)
+
     def test_nexpose_csv_requirements_skip_zero_totals(self):
         workbook_data = {
             "external_nexpose": {"total": 0},
@@ -227,3 +257,281 @@ class WorkbookHelpersTests(SimpleTestCase):
         ordered = normalize_scope_selection(["cloud", "external", "wireless"])
         self.assertEqual(ordered, ["external", "wireless", "cloud"])
         self.assertEqual(normalize_scope_selection("internal"), ["internal"])
+
+
+class ProjectDataResponsesFormTests(SimpleTestCase):
+    """Ensure workbook form helpers preserve existing grouped responses."""
+
+    def test_existing_endpoint_entries_preserve_initial_values(self):
+        questions = [
+            {
+                "key": "endpoint_corpexamplecom_av_gap",
+                "label": "Endpoint AV Gap",
+                "section": "Endpoint",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Endpoint AV Gap",
+                    "required": False,
+                    "choices": (("low", "Low"), ("medium", "Medium"), ("high", "High")),
+                },
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "av_gap",
+            },
+            {
+                "key": "endpoint_corpexamplecom_open_wifi",
+                "label": "Endpoint Open WiFi",
+                "section": "Endpoint",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Endpoint Open WiFi",
+                    "required": False,
+                    "choices": (("low", "Low"), ("medium", "Medium"), ("high", "High")),
+                },
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "open_wifi",
+            },
+            {
+                "key": "endpoint_labexamplecom_av_gap",
+                "label": "Endpoint AV Gap",
+                "section": "Endpoint",
+                "section_key": "endpoint",
+                "subheading": "lab.example.com",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Endpoint AV Gap",
+                    "required": False,
+                    "choices": (("low", "Low"), ("medium", "Medium"), ("high", "High")),
+                },
+                "entry_slug": "endpoint_labexamplecom",
+                "entry_field_key": "av_gap",
+            },
+            {
+                "key": "endpoint_labexamplecom_open_wifi",
+                "label": "Endpoint Open WiFi",
+                "section": "Endpoint",
+                "section_key": "endpoint",
+                "subheading": "lab.example.com",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Endpoint Open WiFi",
+                    "required": False,
+                    "choices": (("low", "Low"), ("medium", "Medium"), ("high", "High")),
+                },
+                "entry_slug": "endpoint_labexamplecom",
+                "entry_field_key": "open_wifi",
+            },
+        ]
+
+        initial = {
+            "endpoint": {
+                "entries": [
+                    {
+                        "domain": "corp.example.com",
+                        "av_gap": "medium",
+                        "open_wifi": "low",
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "av_gap": "high",
+                        "open_wifi": "high",
+                    },
+                ],
+                "domains_str": "corp.example.com/lab.example.com",
+            }
+        }
+
+        form = ProjectDataResponsesForm(question_definitions=questions, initial=initial)
+
+        self.assertEqual(form.fields["endpoint_corpexamplecom_av_gap"].initial, "medium")
+        self.assertEqual(form.fields["endpoint_corpexamplecom_open_wifi"].initial, "low")
+        self.assertEqual(form.fields["endpoint_labexamplecom_av_gap"].initial, "high")
+        self.assertEqual(form.fields["endpoint_labexamplecom_open_wifi"].initial, "high")
+
+    def test_existing_firewall_entries_preserve_initial_values(self):
+        questions = [
+            {
+                "key": "firewall_edge-fw01_type",
+                "label": "Firewall Type",
+                "section": "Firewall",
+                "section_key": "firewall",
+                "subheading": "Edge-FW01",
+                "field_class": forms.CharField,
+                "field_kwargs": {
+                    "label": "Firewall Type",
+                    "required": False,
+                },
+                "entry_slug": "firewall_edge-fw01",
+                "entry_field_key": "type",
+            }
+        ]
+
+        initial = {
+            "firewall": {
+                "entries": [
+                    {
+                        "name": "Edge-FW01",
+                        "type": "Next-Gen",
+                    }
+                ]
+            }
+        }
+
+        form = ProjectDataResponsesForm(question_definitions=questions, initial=initial)
+
+        self.assertEqual(form.fields["firewall_edge-fw01_type"].initial, "Next-Gen")
+
+
+class BuildGroupedDataResponsesTests(SimpleTestCase):
+    """Validate grouped response normalization preserves summaries."""
+
+    def test_existing_endpoint_summary_preserved(self):
+        questions = [
+            {
+                "key": "endpoint_corpexamplecom_av_gap",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "av_gap",
+            },
+            {
+                "key": "endpoint_corpexamplecom_open_wifi",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "open_wifi",
+            },
+            {
+                "key": "endpoint_labexamplecom_av_gap",
+                "section_key": "endpoint",
+                "subheading": "lab.example.com",
+                "entry_slug": "endpoint_labexamplecom",
+                "entry_field_key": "av_gap",
+            },
+            {
+                "key": "endpoint_labexamplecom_open_wifi",
+                "section_key": "endpoint",
+                "subheading": "lab.example.com",
+                "entry_slug": "endpoint_labexamplecom",
+                "entry_field_key": "open_wifi",
+            },
+        ]
+
+        responses = {
+            "endpoint_corpexamplecom_av_gap": "high",
+            "endpoint_corpexamplecom_open_wifi": "medium",
+            "endpoint_labexamplecom_av_gap": "low",
+            "endpoint_labexamplecom_open_wifi": "medium",
+        }
+
+        existing = {
+            "endpoint": {
+                "entries": [
+                    {
+                        "domain": "corp.example.com",
+                        "av_gap": "medium",
+                        "open_wifi": "low",
+                        "_slug": "endpoint_corpexamplecom",
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "av_gap": "high",
+                        "open_wifi": "high",
+                        "_slug": "endpoint_labexamplecom",
+                    },
+                ],
+                "domains_str": "corp.example.com/lab.example.com",
+                "ood_count_str": "45/10",
+                "wifi_count_str": "3/1",
+                "ood_risk_string": "Medium/High",
+                "wifi_risk_string": "Low/High",
+            }
+        }
+
+        workbook_data = {
+            "endpoint": {
+                "domains": [
+                    {"domain": "corp.example.com", "systems_ood": 45, "open_wifi": 3},
+                    {"domain": "lab.example.com", "systems_ood": 10, "open_wifi": 1},
+                ]
+            }
+        }
+
+        grouped = _build_grouped_data_responses(
+            responses,
+            questions,
+            existing_grouped=existing,
+            workbook_data=workbook_data,
+        )
+        endpoint = grouped.get("endpoint", {})
+
+        self.assertEqual(endpoint.get("domains_str"), "corp.example.com/lab.example.com")
+        self.assertEqual(endpoint.get("ood_count_str"), "45/10")
+        self.assertEqual(endpoint.get("wifi_count_str"), "3/1")
+        self.assertEqual(endpoint.get("ood_risk_string"), "Medium/High")
+        self.assertEqual(endpoint.get("wifi_risk_string"), "Low/High")
+
+        entries = endpoint.get("entries", [])
+        self.assertEqual(len(entries), 2)
+        corp_entry = next(item for item in entries if item.get("domain") == "corp.example.com")
+        lab_entry = next(item for item in entries if item.get("domain") == "lab.example.com")
+
+        self.assertEqual(corp_entry.get("av_gap"), "high")
+        self.assertEqual(corp_entry.get("open_wifi"), "medium")
+        self.assertEqual(lab_entry.get("av_gap"), "low")
+        self.assertEqual(lab_entry.get("open_wifi"), "medium")
+
+    def test_endpoint_summary_generated_from_workbook_data(self):
+        questions = [
+            {
+                "key": "endpoint_corpexamplecom_av_gap",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "av_gap",
+            },
+            {
+                "key": "endpoint_corpexamplecom_open_wifi",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "open_wifi",
+            },
+        ]
+
+        responses = {
+            "endpoint_corpexamplecom_av_gap": "medium",
+            "endpoint_corpexamplecom_open_wifi": "high",
+        }
+
+        workbook_data = {
+            "endpoint": {
+                "domains": [
+                    {"domain": "corp.example.com", "systems_ood": 7, "open_wifi": 3},
+                ]
+            }
+        }
+
+        grouped = _build_grouped_data_responses(
+            responses,
+            questions,
+            existing_grouped={},
+            workbook_data=workbook_data,
+        )
+
+        endpoint = grouped.get("endpoint", {})
+        self.assertEqual(endpoint.get("domains_str"), "corp.example.com")
+        self.assertEqual(endpoint.get("ood_count_str"), "7")
+        self.assertEqual(endpoint.get("wifi_count_str"), "3")
+        self.assertEqual(endpoint.get("ood_risk_string"), "Medium")
+        self.assertEqual(endpoint.get("wifi_risk_string"), "High")
+
+        entries = endpoint.get("entries", [])
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry.get("domain"), "corp.example.com")
+        self.assertEqual(entry.get("av_gap"), "medium")
+        self.assertEqual(entry.get("open_wifi"), "high")

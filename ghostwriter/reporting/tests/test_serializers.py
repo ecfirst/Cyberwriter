@@ -300,8 +300,9 @@ class ProjectSerializerDataResponsesTests(TestCase):
         responses = project_data["data_responses"]
 
         self.assertEqual(responses["cloud_config_risk"], "low")
-        self.assertEqual(responses["osint_bucket_risk"], "High")
-        self.assertEqual(responses["osint_leaked_creds_risk"], "Medium")
+        intelligence_summary = responses["intelligence"]
+        self.assertEqual(intelligence_summary["osint_bucket_risk"], "High")
+        self.assertEqual(intelligence_summary["osint_leaked_creds_risk"], "Medium")
 
         wireless_summary = responses["wireless"]
         self.assertEqual(wireless_summary["segmentation_ssids"], ["Guest"])

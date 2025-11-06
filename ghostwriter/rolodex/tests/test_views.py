@@ -1202,20 +1202,23 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.project.refresh_from_db()
         data = self.project.data_responses
-        self.assertEqual(data.get("assessment_scope"), ["external", "cloud"])
-        self.assertEqual(data.get("scope_count"), 2)
-        self.assertEqual(data.get("assessment_scope_cloud_on_prem"), "yes")
+        general = data.get("general", {})
+        self.assertEqual(general.get("assessment_scope"), ["external", "cloud"])
+        self.assertEqual(general.get("scope_count"), 2)
+        self.assertEqual(general.get("assessment_scope_cloud_on_prem"), "yes")
         self.assertEqual(
-            data.get("scope_string"),
+            general.get("scope_string"),
             "External network and systems, Cloud/On-Prem network and systems and Cloud management configuration",
         )
 
     def test_followup_removed_when_cloud_unselected(self):
         self.project.data_responses = {
-            "assessment_scope": ["external", "cloud"],
-            "assessment_scope_cloud_on_prem": "yes",
-            "scope_string": "Existing",
-            "scope_count": 2,
+            "general": {
+                "assessment_scope": ["external", "cloud"],
+                "assessment_scope_cloud_on_prem": "yes",
+                "scope_string": "Existing",
+                "scope_count": 2,
+            }
         }
         self.project.save(update_fields=["data_responses"])
 
@@ -1225,10 +1228,11 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.project.refresh_from_db()
         data = self.project.data_responses
-        self.assertEqual(data.get("assessment_scope"), ["external"])
-        self.assertEqual(data.get("scope_count"), 1)
-        self.assertEqual(data.get("scope_string"), "External network and systems")
-        self.assertNotIn("assessment_scope_cloud_on_prem", data)
+        general = data.get("general", {})
+        self.assertEqual(general.get("assessment_scope"), ["external"])
+        self.assertEqual(general.get("scope_count"), 1)
+        self.assertEqual(general.get("scope_string"), "External network and systems")
+        self.assertNotIn("assessment_scope_cloud_on_prem", general)
 
     def test_detail_view_displays_uploaded_workbook_sections(self):
         workbook_payload = {

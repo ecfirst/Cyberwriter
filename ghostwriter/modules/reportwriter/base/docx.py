@@ -1,4 +1,4 @@
-from typing import Tuple, List
+from typing import Any, Tuple, List
 import io
 import logging
 import os
@@ -23,6 +23,77 @@ from ghostwriter.modules.reportwriter.richtext.docx import HtmlToDocxWithEvidenc
 from ghostwriter.modules.reportwriter.base.docx_template import GhostwriterDocxTemplate
 
 logger = logging.getLogger(__name__)
+
+
+def _lint_context_has_variable(context: Any, variable: str) -> bool:
+    """Return ``True`` if ``variable`` can be resolved within ``context``."""
+
+    if not variable:
+        return False
+
+    tokens: list[tuple[str, Any]] = []
+    buffer = ""
+    index = 0
+
+    while index < len(variable):
+        char = variable[index]
+        if char == ".":
+            if buffer:
+                tokens.append(("key", buffer))
+                buffer = ""
+            index += 1
+            continue
+        if char == "[":
+            if buffer:
+                tokens.append(("key", buffer))
+                buffer = ""
+            close_index = variable.find("]", index)
+            if close_index == -1:
+                return False
+            raw_token = variable[index + 1 : close_index].strip()
+            if (raw_token.startswith("'") and raw_token.endswith("'")) or (
+                raw_token.startswith('"') and raw_token.endswith('"')
+            ):
+                tokens.append(("key", raw_token[1:-1]))
+            else:
+                try:
+                    tokens.append(("index", int(raw_token)))
+                except ValueError:
+                    tokens.append(("key", raw_token))
+            index = close_index + 1
+            continue
+        buffer += char
+        index += 1
+
+    if buffer:
+        tokens.append(("key", buffer))
+
+    current = context
+    for token_type, token_value in tokens:
+        if token_type == "index":
+            if isinstance(current, (list, tuple)):
+                if 0 <= token_value < len(current):
+                    current = current[token_value]
+                    continue
+                return False
+            if isinstance(current, dict):
+                str_key = str(token_value)
+                if str_key in current:
+                    current = current[str_key]
+                    continue
+                return False
+            return False
+
+        if isinstance(current, dict):
+            if token_value in current:
+                current = current[token_value]
+                continue
+        if hasattr(current, token_value):
+            current = getattr(current, token_value)
+            continue
+        return False
+
+    return True
 
 EXPECTED_STYLES = [
     "Bullet List",
@@ -298,7 +369,7 @@ class ExportDocxBase(ExportBase):
                 lambda: exporter.word_doc.get_undeclared_template_variables(exporter.jinja_env), "the DOCX template"
             )
             for variable in undeclared_variables:
-                if variable not in lint_data:
+                if not _lint_context_has_variable(lint_data, variable):
                     warnings.append("Potential undefined variable: {!r}".format(variable))
 
             document_styles = exporter.word_doc.styles
