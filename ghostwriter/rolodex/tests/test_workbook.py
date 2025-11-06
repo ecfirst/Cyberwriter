@@ -1,10 +1,15 @@
 """Unit tests for workbook helper utilities."""
 
 # Django Imports
+from django import forms
 from django.test import SimpleTestCase
 
 # Ghostwriter Libraries
-from ghostwriter.rolodex.forms_workbook import MultiValueField, SummaryMultipleChoiceField
+from ghostwriter.rolodex.forms_workbook import (
+    MultiValueField,
+    ProjectDataResponsesForm,
+    SummaryMultipleChoiceField,
+)
 from ghostwriter.rolodex.workbook import (
     SCOPE_CHOICES,
     SOA_FIELD_CHOICES,
@@ -243,6 +248,75 @@ class WorkbookHelpersTests(SimpleTestCase):
         assert enforce_mfa is not None
         self.assertEqual(additional_controls["field_kwargs"].get("choices"), YES_NO_CHOICES)
         self.assertEqual(enforce_mfa["field_kwargs"].get("choices"), YES_NO_CHOICES)
+
+    def test_project_data_form_groups_prefixed_section_values(self):
+        definitions = [
+            {
+                "key": "password_additional_controls",
+                "label": "Additional password controls",
+                "section": "Password Policies",
+                "subheading": None,
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Additional password controls",
+                    "required": False,
+                    "choices": YES_NO_CHOICES,
+                    "widget": forms.RadioSelect,
+                },
+            },
+            {
+                "key": "password_enforce_mfa",
+                "label": "Enforce MFA",
+                "section": "Password Policies",
+                "subheading": None,
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Enforce MFA",
+                    "required": False,
+                    "choices": YES_NO_CHOICES,
+                    "widget": forms.RadioSelect,
+                },
+            },
+            {
+                "key": "firewall_review_justifications",
+                "label": "Firewall reviews",
+                "section": "Firewall",
+                "subheading": None,
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "label": "Firewall reviews",
+                    "required": False,
+                    "choices": YES_NO_CHOICES,
+                    "widget": forms.RadioSelect,
+                },
+            },
+        ]
+
+        form = ProjectDataResponsesForm(
+            data={
+                "password_additional_controls": "yes",
+                "password_enforce_mfa": "no",
+                "firewall_review_justifications": "yes",
+            },
+            question_definitions=definitions,
+        )
+
+        self.assertTrue(form.is_valid())
+        cleaned = form.cleaned_data
+
+        password_values = cleaned.get("password")
+        self.assertIsInstance(password_values, dict)
+        assert isinstance(password_values, dict)
+        self.assertEqual(password_values.get("additional_controls"), "yes")
+        self.assertEqual(password_values.get("enforce_mfa"), "no")
+        self.assertNotIn("password_additional_controls", cleaned)
+        self.assertNotIn("password_enforce_mfa", cleaned)
+
+        firewall_values = cleaned.get("firewall")
+        self.assertIsInstance(firewall_values, dict)
+        assert isinstance(firewall_values, dict)
+        self.assertEqual(firewall_values.get("review_justifications"), "yes")
+        self.assertNotIn("firewall_review_justifications", cleaned)
 
     def test_dns_soa_questions_added_when_issue_present(self):
         data_artifacts = {

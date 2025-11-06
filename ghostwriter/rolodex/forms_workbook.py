@@ -377,23 +377,34 @@ class ProjectDataResponsesForm(forms.Form):
         if not isinstance(cleaned_data, dict):
             return cleaned_data
 
-        wireless_prefix = "wireless_"
-        wireless_values = cleaned_data.get("wireless")
-        if isinstance(wireless_values, dict):
-            grouped = dict(wireless_values)
-        else:
-            grouped = {}
+        def _group_prefixed_values(prefix: str, section_key: str) -> None:
+            existing_values = cleaned_data.get(section_key)
+            grouped: Dict[str, Any]
+            if isinstance(existing_values, dict):
+                grouped = dict(existing_values)
+            else:
+                grouped = {}
 
-        for key in list(cleaned_data.keys()):
-            if isinstance(key, str) and key.startswith(wireless_prefix):
-                value = cleaned_data.pop(key)
-                grouped_key = key[len(wireless_prefix) :]
-                grouped[grouped_key] = value
+            moved = False
+            for key in list(cleaned_data.keys()):
+                if isinstance(key, str) and key.startswith(prefix):
+                    value = cleaned_data.pop(key)
+                    grouped_key = key[len(prefix) :]
+                    grouped[grouped_key] = value
+                    moved = True
 
-        if grouped:
-            cleaned_data["wireless"] = grouped
-        else:
-            cleaned_data.pop("wireless", None)
+            if grouped and (moved or isinstance(existing_values, dict)):
+                cleaned_data[section_key] = grouped
+            elif moved:
+                cleaned_data[section_key] = grouped
+            elif isinstance(existing_values, dict) and existing_values:
+                cleaned_data[section_key] = grouped
+            else:
+                cleaned_data.pop(section_key, None)
+
+        _group_prefixed_values("wireless_", "wireless")
+        _group_prefixed_values("password_", "password")
+        _group_prefixed_values("firewall_", "firewall")
 
         return cleaned_data
 
