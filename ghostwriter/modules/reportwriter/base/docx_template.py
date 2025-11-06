@@ -178,27 +178,28 @@ class GhostwriterDocxTemplate(DocxTemplate):
             xml = _strip_container(xml, "row", "tr")
             xml = _strip_container(xml, "c", "tc")
 
-            def _replace_open_tr(match: re.Match[str]) -> str:
-                trim = match.group("trim") or ""
-                return "{%" + trim + " for"
+        def _replace_open_tr(match: re.Match[str]) -> str:
+            trim = match.group("trim") or ""
+            return "{%" + trim + " for"
 
-            def _replace_close_tr(match: re.Match[str]) -> str:
-                trim = match.group("trim") or ""
-                return "{%" + trim + " endfor"
+        def _replace_close_tr(match: re.Match[str]) -> str:
+            trim = match.group("trim") or ""
+            return "{%" + trim + " endfor"
 
-            open_tr_pattern = re.compile(
-                r"\{%(?P<trim>-?)" + _XML_TAG_GAP + r"tr" + _XML_TAG_GAP + r"for\b"
-            )
-            close_tr_pattern = re.compile(
-                r"\{%(?P<trim>-?)"
-                + _XML_TAG_GAP
-                + r"(?:endtr|tr"
-                + _XML_TAG_GAP
-                + r"endfor)\b"
-            )
-            xml = open_tr_pattern.sub(_replace_open_tr, xml)
-            xml = close_tr_pattern.sub(_replace_close_tr, xml)
+        open_tr_pattern = re.compile(
+            r"\{%(?P<trim>-?)" + _XML_TAG_GAP + r"tr" + _XML_TAG_GAP + r"for\b",
+        )
+        close_tr_pattern = re.compile(
+            r"\{%(?P<trim>-?)"
+            + _XML_TAG_GAP
+            + r"(?:endtr|tr"
+            + _XML_TAG_GAP
+            + r"endfor)\b",
+        )
+        xml = open_tr_pattern.sub(_replace_open_tr, xml)
+        xml = close_tr_pattern.sub(_replace_close_tr, xml)
 
+        if has_spreadsheet_ns:
             row_wrapper_pattern = re.compile(
                 r"<row[^>]*>"
                 r"(?:\s|<[^>]+>)*"

@@ -366,6 +366,17 @@ CHART_TC_XML = (
     "</c:chartSpace>"
 )
 
+CHART_TR_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+    "<c:chart><c:plotArea><c:ser>"
+    "{%tr for device in devices %}"
+    '<c:idx val="{{ loop.index0 }}"/>'
+    "<c:tx><c:v>{{ device.name }}</c:v></c:tx>"
+    "{%tr endfor %}"
+    "</c:ser></c:plotArea></c:chart>"
+    "</c:chartSpace>"
+)
+
 CHART_EXT_XML = (
     '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
     'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
@@ -943,6 +954,17 @@ def test_patch_xml_strips_tc_in_chart_parts():
 
     assert "{%tc" not in cleaned
     assert "for device in devices" in cleaned
+
+
+def test_patch_xml_strips_tr_in_chart_parts():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(CHART_TR_XML)
+
+    assert "{% for device in devices %}" in cleaned
+    assert "{% endfor %}" in cleaned
+    assert "tr for" not in cleaned
+    assert "tr endfor" not in cleaned
 
 
 def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):
