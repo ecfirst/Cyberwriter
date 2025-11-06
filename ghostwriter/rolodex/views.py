@@ -179,6 +179,10 @@ def _organize_data_responses(
         if isinstance(existing_password, dict)
         else {}
     )
+    if "password_additional_controls" in structured:
+        password_data["additional_controls"] = structured.pop("password_additional_controls")
+    if "password_enforce_mfa" in structured:
+        password_data["enforce_mfa"] = structured.pop("password_enforce_mfa")
     if password_data:
         structured["password"] = password_data
 

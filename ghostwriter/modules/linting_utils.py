@@ -361,6 +361,11 @@ LINTER_CONTEXT = {
             "cloud_config_risk": "low",
             "system_config_risk": "medium",
             "iot_testing_confirm": "yes",
+            "overall_risk_major_issues": [
+                "Insecure System Configurations",
+                "Out of Date software in use",
+                "IAM doesn't follow best practice",
+            ],
             "dns": {
                 "zone_trans": 1,
                 "soa_issues": [
