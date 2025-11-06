@@ -357,14 +357,33 @@ LINTER_CONTEXT = {
                 "hank.hooper@example.com",
                 "jack.donaghy@example.com",
             ],
-            "has_internal_lab": "yes",
-            "cloud_config_risk": "low",
-            "system_config_risk": "medium",
-            "iot_testing_confirm": "yes",
-            "dns": {"zone_trans": 1},
-            "osint_squat_concern": "example.com",
-            "osint_bucket_risk": "High",
-            "osint_leaked_creds_risk": "Medium",
+            "general": {
+                "assessment_scope": ["external", "internal", "firewall"],
+                "assessment_scope_cloud_on_prem": "yes",
+                "general_first_ca": "no",
+                "general_scope_changed": "yes",
+                "general_anonymous_ephi": "no",
+                "scope_string": (
+                    "External network and systems, Internal network and systems and "
+                    "Firewall configuration(s) & rules"
+                ),
+                "scope_count": 3,
+            },
+            "intelligence": {
+                "osint_squat_concern": "example.com",
+                "osint_bucket_risk": "High",
+                "osint_leaked_creds_risk": "Medium",
+            },
+            "iot_iomt": {"iot_testing_confirm": "yes"},
+            "dns": {
+                "zone_trans": 1,
+                "entries": [
+                    {
+                        "domain": "example.com",
+                        "soa_fields": ["serial", "refresh"],
+                    }
+                ],
+            },
             "wireless": {
                 "segmentation_ssids": ["Guest", "Corp", "Production"],
                 "psk_risk": "medium",
@@ -376,13 +395,8 @@ LINTER_CONTEXT = {
                 "psk_weak_reasons": "to short and not enough entropy",
                 "psk_masterpass": "no",
             },
-            "assessment_scope": ["external", "internal", "firewall"],
-            "assessment_scope_cloud_on_prem": "yes",
-            "scope_string": (
-                "External network and systems, Internal network and systems and "
-                "Firewall configuration(s) & rules"
-            ),
-            "scope_count": 3,
+            "cloud_config_risk": "low",
+            "system_config_risk": "medium",
             "ad": {
                 "entries": [
                     {
@@ -451,6 +465,8 @@ LINTER_CONTEXT = {
                 "generic_logins_string": "3 and 2",
             },
             "password": {
+                "password_additional_controls": "yes",
+                "password_enforce_mfa_all_accounts": "no",
                 "entries": [
                     {"domain": "corp.example.com", "risk": "medium", "bad_pass": True},
                     {"domain": "lab.example.com", "risk": "high", "bad_pass": False},
@@ -492,7 +508,20 @@ LINTER_CONTEXT = {
                 ],
                 "ood_name_list": "'Edge-FW01'",
                 "ood_count": 1,
+                "firewall_periodic_reviews": "yes",
             },
+            "overall_risk": {
+                "major_issues": [
+                    "Legacy firewall configurations",
+                    "Privileged account sprawl",
+                ]
+            },
+            "executive_summary": "Client is preparing for an acquisition in Q3.",
+            "critical_contacts": [
+                "hank.hooper@example.com",
+                "jack.donaghy@example.com",
+            ],
+            "has_internal_lab": "yes",
         },
         "data_artifacts": {
             "dns_issues": [

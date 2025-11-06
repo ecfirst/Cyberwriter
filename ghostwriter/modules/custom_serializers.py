@@ -80,6 +80,21 @@ def strip_html(value):
     return BeautifulSoup(value, "html.parser").text
 
 
+GENERAL_RESPONSE_KEYS = {
+    "assessment_scope",
+    "assessment_scope_cloud_on_prem",
+    "general_first_ca",
+    "general_scope_changed",
+    "general_anonymous_ephi",
+}
+
+INTELLIGENCE_RESPONSE_KEYS = {
+    "osint_squat_concern",
+    "osint_bucket_risk",
+    "osint_leaked_creds_risk",
+}
+
+
 class CustomModelSerializer(serializers.ModelSerializer):
     """
     Modified version of ``ModelSerializer`` that adds an ``exclude`` argument for
@@ -726,62 +741,118 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if not isinstance(raw_responses, dict):
             return raw_responses or {}
 
-        legacy_prefixes = ("ad_", "password_", "endpoint_", "wireless_")
-        has_legacy_keys = any(
-            isinstance(key, str) and key.startswith(prefix)
-            for key in raw_responses
-            for prefix in legacy_prefixes
-        )
-        def _is_preformatted_section(value):
-            return isinstance(value, dict) and "entries" in value
+        source: Dict[str, Any] = dict(raw_responses)
+        result: Dict[str, Any] = {}
 
-        if not has_legacy_keys:
-            preformatted_sections = []
-            for section_key in ("ad", "endpoint", "password", "wireless"):
-                value = raw_responses.get(section_key)
-                if value is None:
+        def _is_empty(value: Any) -> bool:
+            if value in (None, "", [], (), {}):
+                return True
+            return False
+
+        def _extract_simple_section(section_key: str, keys: Any) -> Dict[str, Any]:
+            section_values: Dict[str, Any] = {}
+            raw_section = source.pop(section_key, None)
+            if isinstance(raw_section, dict):
+                section_values.update(raw_section)
+            for key in keys:
+                if key not in source:
                     continue
-                if _is_preformatted_section(value):
-                    preformatted_sections.append(value)
-                else:
-                    preformatted_sections = None
-                    break
-            if preformatted_sections:
-                return raw_responses
+                value = source.pop(key)
+                if not _is_empty(value):
+                    section_values[key] = value
+            return section_values
 
-        result = {}
-        for key, value in raw_responses.items():
-            if key.startswith(("ad_", "password_", "endpoint_", "wireless_")):
-                continue
-            if key.startswith("firewall_") and key.endswith("_type"):
-                continue
-            result[key] = value
+        general_section = _extract_simple_section("general", GENERAL_RESPONSE_KEYS)
+        scope_count = source.pop("scope_count", None)
+        scope_string = source.pop("scope_string", None)
+        if scope_count is not None:
+            general_section["scope_count"] = scope_count
+        if scope_string not in (None, ""):
+            general_section["scope_string"] = scope_string
+        if general_section:
+            result["general"] = ProjectSerializer._strip_internal_metadata(general_section)
 
-        ad_entries = ProjectSerializer._collect_ad_responses(raw_responses, workbook_data)
+        intelligence_section = _extract_simple_section("intelligence", INTELLIGENCE_RESPONSE_KEYS)
+        if intelligence_section:
+            result["intelligence"] = ProjectSerializer._strip_internal_metadata(intelligence_section)
+
+        iot_section = _extract_simple_section("iot_iomt", set())
+        iot_confirm = source.pop("iot_testing_confirm", None)
+        if iot_confirm not in (None, ""):
+            iot_section["iot_testing_confirm"] = iot_confirm
+        if iot_section:
+            result["iot_iomt"] = ProjectSerializer._strip_internal_metadata(iot_section)
+
+        overall_risk_section = _extract_simple_section("overall_risk", set())
+        major_issues = source.pop("overall_risk_major_issues", None)
+        if major_issues:
+            overall_risk_section["major_issues"] = major_issues
+        if overall_risk_section:
+            result["overall_risk"] = ProjectSerializer._strip_internal_metadata(overall_risk_section)
+
+        ad_entries = ProjectSerializer._collect_ad_responses(source, workbook_data)
         if ad_entries:
-            result["ad"] = ad_entries
+            result["ad"] = ProjectSerializer._strip_internal_metadata(ad_entries)
+        source.pop("ad", None)
 
-        password_entries = ProjectSerializer._collect_password_responses(raw_responses, workbook_data)
+        password_entries = ProjectSerializer._collect_password_responses(source, workbook_data)
         if password_entries:
-            result["password"] = password_entries
+            result["password"] = ProjectSerializer._strip_internal_metadata(password_entries)
+        source.pop("password", None)
 
-        endpoint_entries = ProjectSerializer._collect_endpoint_responses(raw_responses, workbook_data)
+        endpoint_entries = ProjectSerializer._collect_endpoint_responses(source, workbook_data)
         if endpoint_entries:
-            result["endpoint"] = endpoint_entries
+            result["endpoint"] = ProjectSerializer._strip_internal_metadata(endpoint_entries)
+        source.pop("endpoint", None)
 
-        firewall_entries = ProjectSerializer._collect_firewall_responses(raw_responses, workbook_data)
+        firewall_entries = ProjectSerializer._collect_firewall_responses(source, workbook_data)
         if firewall_entries:
-            result["firewall"] = firewall_entries
+            result["firewall"] = ProjectSerializer._strip_internal_metadata(firewall_entries)
+        source.pop("firewall", None)
 
-        dns_entries = ProjectSerializer._collect_dns_responses(raw_responses, workbook_data)
+        dns_entries = ProjectSerializer._collect_dns_responses(source, workbook_data)
         if dns_entries:
-            result["dns"] = dns_entries
+            result["dns"] = ProjectSerializer._strip_internal_metadata(dns_entries)
+        source.pop("dns", None)
 
-        wireless_entries = ProjectSerializer._collect_wireless_responses(raw_responses)
+        wireless_entries = ProjectSerializer._collect_wireless_responses(source)
         if wireless_entries:
-            result["wireless"] = wireless_entries
+            result["wireless"] = ProjectSerializer._strip_internal_metadata(wireless_entries)
+        source.pop("wireless", None)
+
+        legacy_prefixes = ("ad_", "password_", "endpoint_", "wireless_")
+        keys_to_remove = [
+            key
+            for key in list(source.keys())
+            if isinstance(key, str)
+            and (
+                any(key.startswith(prefix) for prefix in legacy_prefixes)
+                or (key.startswith("firewall_") and key.endswith("_type"))
+            )
+        ]
+        for legacy_key in keys_to_remove:
+            source.pop(legacy_key, None)
+
+        for key, value in source.items():
+            if key in result:
+                continue
+            result[key] = ProjectSerializer._strip_internal_metadata(value)
 
         return result
+
+    @staticmethod
+    def _strip_internal_metadata(value: Any) -> Any:
+        if isinstance(value, dict):
+            cleaned: Dict[str, Any] = {}
+            for key, inner in value.items():
+                if key == "_slug":
+                    continue
+                cleaned[key] = ProjectSerializer._strip_internal_metadata(inner)
+            return cleaned
+        if isinstance(value, list):
+            cleaned_list = [ProjectSerializer._strip_internal_metadata(item) for item in value]
+            return [item for item in cleaned_list if item not in (None, {})]
+        return value
 
     @staticmethod
     def _collect_firewall_responses(raw_responses, workbook_data):
@@ -1047,6 +1118,24 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         domain_order = []
         slug_map = {}
 
+        extra_fields: Dict[str, Any] = {}
+        existing_password_section = raw_responses.get("password")
+        candidate_sections = []
+        if isinstance(existing_password_section, dict):
+            candidate_sections.append(existing_password_section)
+        candidate_sections.append(raw_responses)
+        for section in candidate_sections:
+            if not isinstance(section, dict):
+                continue
+            for extra_key in (
+                "password_additional_controls",
+                "password_enforce_mfa_all_accounts",
+            ):
+                value = section.get(extra_key)
+                if value not in (None, ""):
+                    extra_fields[extra_key] = value
+                section.pop(extra_key, None)
+
         for domain_name in workbook_domain_values.keys():
             entry = entries.setdefault(domain_name, {"domain": domain_name})
 
@@ -1102,7 +1191,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         populated_domains = [name for name in domain_order if len(entries[name]) > 1]
         if not populated_domains:
-            return {"bad_pass_count": bad_pass_count}
+            summary = {"bad_pass_count": bad_pass_count}
+            summary.update(extra_fields)
+            return summary
 
         summary_domains = []
         for domain in workbook_domains:
@@ -1196,6 +1287,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if not summary.get("cracked_count_str") and workbook_summary.get("cracked_count_str"):
             summary["cracked_count_str"] = workbook_summary["cracked_count_str"]
 
+        summary.update(extra_fields)
         return summary
 
     @staticmethod

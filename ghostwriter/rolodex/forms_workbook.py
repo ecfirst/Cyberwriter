@@ -220,11 +220,42 @@ def _format_summary_with_conjunction(parts: List[str]) -> str:
 def _flatten_grouped_initial(initial: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy of ``initial`` with grouped sections expanded for form fields."""
 
-    flattened = dict(initial or {})
-    wireless_values = flattened.pop("wireless", None)
+    source = dict(initial or {})
+    flattened: Dict[str, Any] = {}
+
+    wireless_values = source.pop("wireless", None)
     if isinstance(wireless_values, dict):
         for key, value in wireless_values.items():
             flattened[f"wireless_{key}"] = value
+
+    for section_key, section_value in source.items():
+        if not isinstance(section_value, dict):
+            flattened[section_key] = section_value
+            continue
+
+        entries = section_value.get("entries")
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                slug_value = entry.get("_slug") or entry.get("slug")
+                identifier = entry.get("domain") or entry.get("name")
+                for field_key, field_value in entry.items():
+                    if field_key in {"domain", "name", "_slug", "slug"}:
+                        continue
+                    if slug_value:
+                        flattened[f"{slug_value}_{field_key}"] = field_value
+                    elif identifier:
+                        flattened[f"{section_key}_{field_key}"] = field_value
+
+        for field_key, field_value in section_value.items():
+            if field_key == "entries":
+                continue
+            flattened_key = field_key
+            if section_key == "overall_risk" and field_key == "major_issues":
+                flattened_key = "overall_risk_major_issues"
+            flattened[flattened_key] = field_value
+
     return flattened
 
 

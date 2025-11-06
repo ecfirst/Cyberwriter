@@ -6,6 +6,7 @@ from django.test import SimpleTestCase
 # Ghostwriter Libraries
 from ghostwriter.rolodex.forms_workbook import SummaryMultipleChoiceField
 from ghostwriter.rolodex.workbook import (
+    DNS_SOA_FIELD_CHOICES,
     SCOPE_CHOICES,
     WEAK_PSK_SUMMARY_MAP,
     YES_NO_CHOICES,
@@ -117,6 +118,33 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertEqual(iot_question["section"], "IoT/IoMT")
         self.assertEqual(iot_question["field_kwargs"].get("choices"), YES_NO_CHOICES)
         self.assertEqual(iot_question["field_kwargs"].get("initial"), "no")
+
+    def test_dns_soa_question_added_when_issue_present(self):
+        data_artifacts = {
+            "dns_issues": [
+                {
+                    "domain": "example.com",
+                    "issues": [
+                        {
+                            "issue": "One or more SOA fields are outside recommended ranges",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        questions, _ = build_data_configuration({}, data_artifacts=data_artifacts)
+
+        dns_question = next(
+            (q for q in questions if q["key"] == "dns_example-com_soa_fields"),
+            None,
+        )
+
+        self.assertIsNotNone(dns_question)
+        assert dns_question is not None  # pragma: no cover - clarify typing
+        self.assertEqual(dns_question["section"], "DNS")
+        self.assertEqual(dns_question["subheading"], "example.com")
+        self.assertEqual(dns_question["field_kwargs"].get("choices"), DNS_SOA_FIELD_CHOICES)
 
     def test_nexpose_csv_requirements_skip_zero_totals(self):
         workbook_data = {

@@ -4,7 +4,7 @@
 import datetime
 import json
 import logging
-from typing import Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 # Django Imports
 from django import forms
@@ -87,6 +87,7 @@ from ghostwriter.rolodex.models import (
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
 from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
 from ghostwriter.rolodex.workbook import (
+    SECTION_ENTRY_FIELD_MAP,
     build_data_configuration,
     build_scope_summary,
     build_workbook_sections,
@@ -96,6 +97,100 @@ from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
 # Using __name__ resolves to ghostwriter.rolodex.views
 logger = logging.getLogger(__name__)
+
+
+def _is_empty_response(value: Any) -> bool:
+    if value in (None, "", (), []):
+        return True
+    if isinstance(value, dict):
+        return not value
+    return False
+
+
+def _build_grouped_data_responses(
+    responses: Dict[str, Any],
+    question_definitions: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    normalized = dict(responses or {})
+    wireless_values = normalized.pop("wireless", None)
+    scope_count = normalized.pop("scope_count", None)
+    scope_string = normalized.pop("scope_string", None)
+
+    definition_map = {definition["key"]: definition for definition in question_definitions}
+    grouped: Dict[str, Any] = {}
+
+    for key, value in normalized.items():
+        definition = definition_map.get(key)
+        if not definition:
+            if not _is_empty_response(value):
+                grouped[key] = value
+            continue
+
+        section_key = definition.get("section_key") or key
+        subheading = definition.get("subheading")
+        if _is_empty_response(value):
+            continue
+
+        if subheading:
+            section = grouped.setdefault(section_key, {})
+            entries = section.setdefault("entries", [])
+            entry_slug = definition.get("entry_slug") or key
+            field_key = definition.get("entry_field_key") or key
+            identifier_field = SECTION_ENTRY_FIELD_MAP.get(section_key, "name")
+            identifier_value = subheading
+
+            existing = None
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("slug") == entry_slug or item.get(identifier_field) == identifier_value:
+                    existing = item
+                    break
+            if existing is None:
+                existing = {"slug": entry_slug}
+                existing[identifier_field] = identifier_value
+                entries.append(existing)
+            existing[field_key] = value
+        else:
+            section = grouped.setdefault(section_key, {})
+            storage_key = key
+            if section_key == "overall_risk" and key == "overall_risk_major_issues":
+                storage_key = "major_issues"
+            section[storage_key] = value
+
+    if isinstance(wireless_values, dict) and wireless_values:
+        grouped["wireless"] = wireless_values
+
+    if scope_count is not None or scope_string is not None:
+        general_section = grouped.setdefault("general", {})
+        if scope_count is not None:
+            general_section["scope_count"] = scope_count
+        if scope_string is not None and not _is_empty_response(scope_string):
+            general_section["scope_string"] = scope_string
+
+    # Remove slug metadata before returning while preserving ability to rehydrate during form initialisation.
+    for section_key, section_value in list(grouped.items()):
+        if not isinstance(section_value, dict):
+            continue
+        entries = section_value.get("entries")
+        if not isinstance(entries, list):
+            continue
+        cleaned_entries = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            cleaned = dict(item)
+            slug_value = cleaned.pop("slug", None)
+            # Preserve slug metadata internally for form hydration
+            if slug_value:
+                cleaned["_slug"] = slug_value
+            cleaned_entries.append(cleaned)
+        if cleaned_entries:
+            section_value["entries"] = cleaned_entries
+        else:
+            section_value.pop("entries", None)
+
+    return grouped
 
 
 ##################
@@ -1619,7 +1714,12 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             Q(doc_type__doc_type__iexact="project_docx") | Q(doc_type__doc_type__iexact="pptx")
         ).filter(Q(client=object.client) | Q(client__isnull=True))
         project_type_name = getattr(getattr(object, "project_type", None), "project_type", None)
-        questions, required_files = build_data_configuration(object.workbook_data, project_type_name)
+        questions, required_files = build_data_configuration(
+            object.workbook_data,
+            project_type_name,
+            data_artifacts=object.data_artifacts,
+            project_risks=object.risks,
+        )
         ctx["workbook_form"] = ProjectWorkbookForm()
         ctx["workbook_sections"] = build_workbook_sections(object.workbook_data)
         ctx["data_file_form"] = ProjectDataFileForm()
@@ -1960,7 +2060,12 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
     def post(self, request, *args, **kwargs):
         project = self.get_object()
         project_type_name = getattr(getattr(project, "project_type", None), "project_type", None)
-        questions, _ = build_data_configuration(project.workbook_data, project_type_name)
+        questions, _ = build_data_configuration(
+            project.workbook_data,
+            project_type_name,
+            data_artifacts=project.data_artifacts,
+            project_risks=project.risks,
+        )
         form = ProjectDataResponsesForm(request.POST, question_definitions=questions)
         if form.is_valid():
             responses = dict(form.cleaned_data)
@@ -1993,7 +2098,13 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
                 responses.pop("scope_count", None)
                 responses.pop("scope_string", None)
 
-            project.data_responses = responses
+            first_ca_value = responses.get("general_first_ca")
+            if first_ca_value != "no":
+                responses.pop("general_scope_changed", None)
+
+            grouped_responses = _build_grouped_data_responses(responses, questions)
+
+            project.data_responses = grouped_responses
             project.save(update_fields=["data_responses"])
             messages.success(request, "Project data responses saved.")
         else:

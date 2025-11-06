@@ -290,10 +290,14 @@ def build_workbook_sections(workbook_data: Optional[Dict[str, Any]]) -> List[Dic
 def build_data_configuration(
     workbook_data: Optional[Dict[str, Any]],
     project_type: Optional[str] = None,
+    data_artifacts: Optional[Dict[str, Any]] = None,
+    project_risks: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
     """Return dynamic questions and file requirements derived from workbook data."""
 
     data = workbook_data or {}
+    artifacts = data_artifacts or {}
+    risks = project_risks or {}
     questions: List[Dict[str, Any]] = []
     required_files: List[Dict[str, str]] = []
     required_file_index: Set[Tuple[str, Optional[str]]] = set()
@@ -322,6 +326,8 @@ def build_data_configuration(
         widget: Optional[forms.Widget] = None,
         initial: Any = None,
         field_kwargs: Optional[Dict[str, Any]] = None,
+        entry_slug: Optional[str] = None,
+        entry_field_key: Optional[str] = None,
     ) -> None:
         base_field_kwargs: Dict[str, Any] = {
             "label": label,
@@ -337,16 +343,21 @@ def build_data_configuration(
             base_field_kwargs["initial"] = initial
         if field_kwargs:
             base_field_kwargs.update(field_kwargs)
-        questions.append(
-            {
-                "key": key,
-                "label": label,
-                "section": section,
-                "subheading": subheading,
-                "field_class": field_class,
-                "field_kwargs": base_field_kwargs,
-            }
-        )
+        section_key = SECTION_KEY_MAP.get(section, _slugify_identifier(section).replace("-", "_"))
+        question_definition = {
+            "key": key,
+            "label": label,
+            "section": section,
+            "section_key": section_key,
+            "subheading": subheading,
+            "field_class": field_class,
+            "field_kwargs": base_field_kwargs,
+        }
+        if entry_slug:
+            question_definition["entry_slug"] = entry_slug
+        if entry_field_key:
+            question_definition["entry_field_key"] = entry_field_key
+        questions.append(question_definition)
 
     # Project scope confirmation
     scope_initial = get_scope_initial(project_type)
@@ -372,6 +383,45 @@ def build_data_configuration(
         choices=YES_NO_CHOICES,
         widget=forms.RadioSelect,
     )
+
+    add_question(
+        key="general_first_ca",
+        label="Is this the first CA for this client?",
+        field_class=forms.ChoiceField,
+        section="General",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
+
+    add_question(
+        key="general_scope_changed",
+        label="Is the scope of this assessment different than the last one?",
+        field_class=forms.ChoiceField,
+        section="General",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
+
+    add_question(
+        key="general_anonymous_ephi",
+        label="Were you able to identify anonymous access to EPHI?",
+        field_class=forms.ChoiceField,
+        section="General",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
+
+    iot_section = _get_nested(data, ("iot_iomt_nexpose",), None)
+    if isinstance(iot_section, dict):
+        add_question(
+            key="iot_testing_confirm",
+            label="Was Internal IoT/IoMT testing performed?",
+            field_class=forms.ChoiceField,
+            section="IoT/IoMT",
+            choices=YES_NO_CHOICES,
+            widget=forms.RadioSelect,
+            initial="no",
+        )
 
     # Intelligence questions
     osint_data = _get_nested(data, ("osint",), {}) or {}
@@ -413,6 +463,48 @@ def build_data_configuration(
             if domain:
                 add_required("dns_report.csv", domain)
 
+    target_issue = "One or more SOA fields are outside recommended ranges"
+    dns_entries = artifacts.get("dns_issues") if isinstance(artifacts, dict) else None
+    if isinstance(dns_entries, list):
+        seen_domains: Set[str] = set()
+        for entry in dns_entries:
+            if not isinstance(entry, dict):
+                continue
+            domain_name = _as_str(entry.get("domain")) or ""
+            issues = entry.get("issues")
+            if not isinstance(issues, list):
+                continue
+            has_issue = False
+            for issue in issues:
+                if isinstance(issue, dict):
+                    issue_text = issue.get("issue")
+                else:
+                    issue_text = issue
+                if _as_str(issue_text) == target_issue:
+                    has_issue = True
+                    break
+            if not has_issue:
+                continue
+            display_domain = domain_name or "Unknown Domain"
+            normalized_domain = display_domain.lower()
+            if normalized_domain in seen_domains:
+                continue
+            seen_domains.add(normalized_domain)
+            slug = _slugify_identifier("dns", display_domain)
+            if not slug:
+                slug = f"dns_domain_{len(seen_domains)}"
+            add_question(
+                key=f"{slug}_soa_fields",
+                label="Which SOA fields are outside the recommended ranges?",
+                field_class=forms.MultipleChoiceField,
+                section="DNS",
+                subheading=display_domain,
+                choices=DNS_SOA_FIELD_CHOICES,
+                widget=forms.CheckboxSelectMultiple,
+                entry_slug=slug,
+                entry_field_key="soa_fields",
+            )
+
     if _as_int(_get_nested(data, ("web", "combined_unique"), 0)) > 0:
         add_required("burp_csv.csv")
         add_required("burp-cap.csv")
@@ -434,18 +526,6 @@ def build_data_configuration(
 
     if iot_nexpose_total > 0:
         add_required("iot_nexpose_csv.csv")
-
-    iot_section = _get_nested(data, ("iot_iomt_nexpose",), None)
-    if isinstance(iot_section, dict):
-        add_question(
-            key="iot_testing_confirm",
-            label="Was Internal IoT/IoMT testing performed?",
-            field_class=forms.ChoiceField,
-            section="IoT/IoMT",
-            choices=YES_NO_CHOICES,
-            widget=forms.RadioSelect,
-            initial="no",
-        )
 
     firewall_source = _get_nested(data, ("fierwall",), None)
     if not isinstance(firewall_source, dict):
@@ -472,7 +552,18 @@ def build_data_configuration(
                 section="Firewall",
                 subheading=display_name,
                 widget=forms.TextInput(attrs={"class": "form-control"}),
+                entry_slug=base_slug,
+                entry_field_key="type",
             )
+
+    add_question(
+        key="firewall_periodic_reviews",
+        label="Did the client indicate they were performing periodic reviews for firewall rule business justifications?",
+        field_class=forms.ChoiceField,
+        section="Firewall",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
 
     # Active Directory risk questions
     ad_domains = _get_nested(data, ("ad", "domains"), []) or []
@@ -492,10 +583,30 @@ def build_data_configuration(
                     subheading=domain,
                     choices=RISK_CHOICES,
                     widget=forms.RadioSelect,
+                    entry_slug=slug,
+                    entry_field_key=metric_key,
                 )
 
     # Password policy risk
     password_policies = _get_nested(data, ("password", "policies"), []) or []
+    add_question(
+        key="password_additional_controls",
+        label="Did the client indicate they had additional password controls in place (i.e. blacklisting)?",
+        field_class=forms.ChoiceField,
+        section="Password Policies",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
+
+    add_question(
+        key="password_enforce_mfa_all_accounts",
+        label="Did the client indicate they enforce MFA on all accounts?",
+        field_class=forms.ChoiceField,
+        section="Password Policies",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
+
     if isinstance(password_policies, list):
         for policy in password_policies:
             domain_name = None
@@ -511,6 +622,8 @@ def build_data_configuration(
                 subheading=domain_name,
                 choices=RISK_CHOICES,
                 widget=forms.RadioSelect,
+                entry_slug=slug,
+                entry_field_key="risk",
             )
 
     # Endpoint risk questions
@@ -535,6 +648,8 @@ def build_data_configuration(
                 subheading=domain,
                 choices=RISK_CHOICES,
                 widget=forms.RadioSelect,
+                entry_slug=slug,
+                entry_field_key="av_gap",
             )
             add_question(
                 key=f"{slug}_open_wifi",
@@ -547,6 +662,8 @@ def build_data_configuration(
                 subheading=domain,
                 choices=RISK_CHOICES,
                 widget=forms.RadioSelect,
+                entry_slug=slug,
+                entry_field_key="open_wifi",
             )
 
     # Wireless baseline questions
@@ -657,4 +774,46 @@ def build_data_configuration(
             widget=forms.RadioSelect,
         )
 
+    overall_risk_value = _as_str(risks.get("overall_risk")) if isinstance(risks, dict) else ""
+    overall_risk_display = overall_risk_value or "Unknown"
+    add_question(
+        key="overall_risk_major_issues",
+        label=(
+            "What were the 'major' issues associated with the Overall Risk of "
+            f"{overall_risk_display}?"
+        ),
+        field_class=MultiValueField,
+        section="Overall Risk",
+    )
+
     return questions, required_files
+SECTION_KEY_MAP = {
+    "General": "general",
+    "Intelligence": "intelligence",
+    "IoT/IoMT": "iot_iomt",
+    "Firewall": "firewall",
+    "Active Directory": "ad",
+    "Password Policies": "password",
+    "Endpoint": "endpoint",
+    "Wireless": "wireless",
+    "DNS": "dns",
+    "Overall Risk": "overall_risk",
+}
+
+SECTION_ENTRY_FIELD_MAP = {
+    "ad": "domain",
+    "password": "domain",
+    "endpoint": "domain",
+    "dns": "domain",
+    "firewall": "name",
+}
+
+DNS_SOA_FIELD_CHOICES = (
+    ("serial", "serial"),
+    ("expire", "expire"),
+    ("mname", "mname"),
+    ("minimum", "minimum"),
+    ("refresh", "refresh"),
+    ("retry", "retry"),
+)
+

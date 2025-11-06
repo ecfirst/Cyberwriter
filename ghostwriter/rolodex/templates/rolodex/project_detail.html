@@ -305,7 +305,7 @@
                       {% for question in subgroup.list %}
                         {% with field=data_responses_fields|get_item:question.key %}
                           {% if field %}
-                            <div class="form-group dynamic-question-item{% if question.key == 'wireless_psk_masterpass_ssids' or question.key == 'assessment_scope_cloud_on_prem' %} d-none{% endif %}" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}{% if question.key == 'wireless_psk_masterpass_ssids' %} data-masterpass-target{% endif %}{% if question.key == 'assessment_scope' %} data-scope-control{% endif %}{% if question.key == 'assessment_scope_cloud_on_prem' %} data-scope-cloud-followup{% endif %}>
+                            <div class="form-group dynamic-question-item{% if question.key == 'wireless_psk_masterpass_ssids' or question.key == 'assessment_scope_cloud_on_prem' or question.key == 'general_scope_changed' %} d-none{% endif %}" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}{% if question.key == 'wireless_psk_masterpass_ssids' %} data-masterpass-target{% endif %}{% if question.key == 'assessment_scope' %} data-scope-control{% endif %}{% if question.key == 'assessment_scope_cloud_on_prem' %} data-scope-cloud-followup{% endif %}{% if question.key == 'general_first_ca' %} data-first-ca-control{% endif %}{% if question.key == 'general_scope_changed' %} data-first-ca-followup{% endif %}>
                               {% if field.label %}{{ field.label_tag }}{% endif %}
                               {{ field }}
                               {% if field.help_text %}<small class="form-text text-muted">{{ field.help_text }}</small>{% endif %}
@@ -721,12 +721,31 @@
       }
     }
 
+    function toggleFirstCAFollowup() {
+      const control = document.querySelector('[data-first-ca-control]');
+      const followup = document.querySelector('[data-first-ca-followup]');
+      if (!control || !followup) {
+        return;
+      }
+      const selected = control.querySelector('input[name="general_first_ca"]:checked');
+      if (selected && selected.value === 'no') {
+        followup.classList.remove('d-none');
+      } else {
+        followup.classList.add('d-none');
+        const radios = followup.querySelectorAll('input[type="radio"]');
+        radios.forEach(function(radio) {
+          radio.checked = false;
+        });
+      }
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
       initialiseCalendar();
       handleMultipleTextInputs();
       toggleSegmentationDetails();
       toggleMasterpassDetails();
       toggleScopeFollowup();
+      toggleFirstCAFollowup();
     });
 
     document.addEventListener('change', function(event) {
@@ -738,6 +757,9 @@
       }
       if (event.target && event.target.name === 'assessment_scope') {
         toggleScopeFollowup();
+      }
+      if (event.target && event.target.name === 'general_first_ca') {
+        toggleFirstCAFollowup();
       }
     });
   </script>
