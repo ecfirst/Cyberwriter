@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping, MutableMapping
 
 WORKBOOK_DATA_SCHEMA: Mapping[str, Any] = {
-    "ad": {"domains": None},
+    "ad": {"domains": []},
     "client": {
         "name": None,
         "primary_contact": None,
@@ -13,8 +13,8 @@ WORKBOOK_DATA_SCHEMA: Mapping[str, Any] = {
         "short_name": None,
     },
     "cloud_config": {"fail": None, "pass": None},
-    "dns": {"records": None, "unique": None},
-    "endpoint": {"domains": None},
+    "dns": {"records": [], "unique": None},
+    "endpoint": {"domains": []},
     "external_internal_grades": {
         "external": {
             "dns": {"risk": None, "score": None},
@@ -53,7 +53,7 @@ WORKBOOK_DATA_SCHEMA: Mapping[str, Any] = {
     },
     "firewall": {
         "complexity_count": None,
-        "devices": None,
+        "devices": [],
         "majority_count": None,
         "majority_type": None,
         "minority_count": None,
@@ -110,7 +110,7 @@ WORKBOOK_DATA_SCHEMA: Mapping[str, Any] = {
         "total_leaks": None,
         "total_squat": None,
     },
-    "password": {"policies": None},
+    "password": {"policies": []},
     "report_card": {
         "external": None,
         "firewall": None,
@@ -161,11 +161,13 @@ WORKBOOK_DATA_SCHEMA: Mapping[str, Any] = {
 def _build_default_from_schema(schema_value: Any) -> Any:
     if isinstance(schema_value, Mapping):
         return {key: _build_default_from_schema(value) for key, value in schema_value.items()}
+    if isinstance(schema_value, list):
+        return []
     return None
 
 
 def apply_workbook_defaults(workbook_data: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
-    """Ensure ``workbook_data`` contains all schema keys with ``None`` defaults."""
+    """Ensure ``workbook_data`` contains all schema keys with appropriate defaults."""
 
     for key, schema_value in WORKBOOK_DATA_SCHEMA.items():
         current_value = workbook_data.get(key)

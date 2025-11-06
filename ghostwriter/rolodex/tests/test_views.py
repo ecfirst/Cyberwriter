@@ -1076,6 +1076,11 @@ class ProjectWorkbookUploadViewTests(TestCase):
             self.project.workbook_data["sql"].get("unsupported_dbs"),
             WORKBOOK_DATA_SCHEMA["sql"]["unsupported_dbs"],
         )
+        self.assertEqual(self.project.workbook_data["dns"]["records"], [])
+        self.assertEqual(self.project.workbook_data["ad"]["domains"], [])
+        self.assertEqual(self.project.workbook_data["endpoint"]["domains"], [])
+        self.assertEqual(self.project.workbook_data["firewall"]["devices"], [])
+        self.assertEqual(self.project.workbook_data["password"]["policies"], [])
 
     def test_upload_preserves_existing_values_when_backfilling(self):
         workbook_payload = {
