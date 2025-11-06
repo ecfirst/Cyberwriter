@@ -339,6 +339,22 @@ CHART_XML = (
     "</c:chartSpace>"
 )
 
+CHART_RICH_TEXT_SPLIT_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+    "<c:chart>"
+    "<c:title><c:tx><c:rich>"
+    "<a:p><a:pPr><a:defRPr/></a:pPr>"
+    "<a:r><a:rPr lang=\"en-US\"/></a:r>"
+    "<a:r><a:t>{{</a:t></a:r>"
+    "<a:r><a:rPr lang=\"en-US\"/></a:r>"
+    "<a:r><a:t> value }}</a:t></a:r>"
+    "</a:p></c:rich></c:tx></c:title>"
+    "</c:chart>"
+    "</c:chartSpace>"
+)
+
 CHART_EXT_XML = (
     '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
     'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
@@ -897,6 +913,16 @@ def test_patch_xml_handles_split_excel_tc_tags():
     assert "tc site.unique_high" not in cleaned
     assert "{{ site.url }}" in cleaned
     assert "{{ site.unique_high }}" in cleaned
+
+
+def test_patch_xml_preserves_chart_paragraph_markup():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(CHART_RICH_TEXT_SPLIT_XML)
+
+    assert "<a:pPr>" in cleaned
+    assert "</a:pPr>" in cleaned
+    etree.fromstring(cleaned.encode("utf-8"))
 
 
 def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):

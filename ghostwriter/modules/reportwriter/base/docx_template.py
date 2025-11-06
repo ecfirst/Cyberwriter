@@ -144,6 +144,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
     def _strip_excel_table_tags(self, xml: str) -> str:
         """Remove Excel row/cell wrappers around Ghostwriter ``tr``/``tc`` tags."""
 
+        if "http://schemas.openxmlformats.org/spreadsheetml/2006/main" not in xml:
+            return xml
+
         def _strip_container(value: str, container: str, tag: str) -> str:
             open_regex = "<(?:[A-Za-z_][\\w.-]*:)?%s[^>]*>\\s*%s\\s*%s"
             close_regex = "%s.*?%s\\s*</(?:[A-Za-z_][\\w.-]*:)?%s>"
@@ -209,8 +212,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         xml = row_wrapper_pattern.sub(_unwrap_row, xml)
 
-        tc_pattern = re.compile(r"(\{[\{%#]-?)" + _XML_TAG_GAP + r"tc\b")
-        xml = tc_pattern.sub(r"\1", xml)
+        tc_pattern = re.compile(
+            r"(\{[\{%#]-?)(" + _XML_TAG_GAP + r")tc\b",
+        )
+
+        def _strip_tc(match: re.Match[str]) -> str:
+            return match.group(1) + match.group(2)
+
+        xml = tc_pattern.sub(_strip_tc, xml)
         return xml
 
     # ------------------------------------------------------------------
