@@ -355,6 +355,17 @@ CHART_RICH_TEXT_SPLIT_XML = (
     "</c:chartSpace>"
 )
 
+CHART_TC_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+    "<c:chart><c:plotArea><c:ser>"
+    "{%tc for device in devices %}"
+    '<c:idx val="{{ loop.index0 }}"/>'
+    "<c:tx><c:v>{{ device.name }}</c:v></c:tx>"
+    "{%tc endfor %}"
+    "</c:ser></c:plotArea></c:chart>"
+    "</c:chartSpace>"
+)
+
 CHART_EXT_XML = (
     '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
     'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
@@ -923,6 +934,15 @@ def test_patch_xml_preserves_chart_paragraph_markup():
     assert "<a:pPr>" in cleaned
     assert "</a:pPr>" in cleaned
     etree.fromstring(cleaned.encode("utf-8"))
+
+
+def test_patch_xml_strips_tc_in_chart_parts():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(CHART_TC_XML)
+
+    assert "{%tc" not in cleaned
+    assert "for device in devices" in cleaned
 
 
 def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):

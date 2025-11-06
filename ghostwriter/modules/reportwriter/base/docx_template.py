@@ -144,80 +144,85 @@ class GhostwriterDocxTemplate(DocxTemplate):
     def _strip_excel_table_tags(self, xml: str) -> str:
         """Remove Excel row/cell wrappers around Ghostwriter ``tr``/``tc`` tags."""
 
-        if "http://schemas.openxmlformats.org/spreadsheetml/2006/main" not in xml:
-            return xml
+        has_spreadsheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main" in xml
 
-        def _strip_container(value: str, container: str, tag: str) -> str:
-            open_regex = "<(?:[A-Za-z_][\\w.-]*:)?%s[^>]*>\\s*%s\\s*%s"
-            close_regex = "%s.*?%s\\s*</(?:[A-Za-z_][\\w.-]*:)?%s>"
-            for start, end, start_regex in (
-                ("{{", "}}", "\\{\\{"),
-                ("{%", "%}", "\\{%"),
-                ("{#", "#}", "\\{#"),
-            ):
-                open_pattern = re.compile(
-                    open_regex % (container, start_regex, tag),
-                    re.DOTALL,
-                )
-                value = open_pattern.sub(start, value)
-                close_pattern = re.compile(
-                    close_regex % (start_regex, end, container),
-                    re.DOTALL,
-                )
+        if has_spreadsheet_ns:
 
-                def close_replacement(match: re.Match[str]) -> str:
-                    matched = match.group(0)
-                    end_index = matched.rfind(end)
-                    return matched[: end_index + len(end)] if end_index != -1 else matched
+            def _strip_container(value: str, container: str, tag: str) -> str:
+                open_regex = "<(?:[A-Za-z_][\\w.-]*:)?%s[^>]*>\\s*%s\\s*%s"
+                close_regex = "%s.*?%s\\s*</(?:[A-Za-z_][\\w.-]*:)?%s>"
+                for start, end, start_regex in (
+                    ("{{", "}}", "\\{\\{"),
+                    ("{%", "%}", "\\{%"),
+                    ("{#", "#}", "\\{#"),
+                ):
+                    open_pattern = re.compile(
+                        open_regex % (container, start_regex, tag),
+                        re.DOTALL,
+                    )
+                    value = open_pattern.sub(start, value)
+                    close_pattern = re.compile(
+                        close_regex % (start_regex, end, container),
+                        re.DOTALL,
+                    )
 
-                value = close_pattern.sub(close_replacement, value)
+                    def close_replacement(match: re.Match[str]) -> str:
+                        matched = match.group(0)
+                        end_index = matched.rfind(end)
+                        return matched[: end_index + len(end)] if end_index != -1 else matched
 
-            return re.sub(r"(\{\{|\{%|\{#)\s+", lambda m: m.group(1) + " ", value)
+                    value = close_pattern.sub(close_replacement, value)
 
-        xml = _strip_container(xml, "row", "tr")
-        xml = _strip_container(xml, "c", "tc")
+                return re.sub(r"(\{\{|\{%|\{#)\s+", lambda m: m.group(1) + " ", value)
 
-        def _replace_open_tr(match: re.Match[str]) -> str:
-            trim = match.group("trim") or ""
-            return "{%" + trim + " for"
+            xml = _strip_container(xml, "row", "tr")
+            xml = _strip_container(xml, "c", "tc")
 
-        def _replace_close_tr(match: re.Match[str]) -> str:
-            trim = match.group("trim") or ""
-            return "{%" + trim + " endfor"
+            def _replace_open_tr(match: re.Match[str]) -> str:
+                trim = match.group("trim") or ""
+                return "{%" + trim + " for"
 
-        open_tr_pattern = re.compile(
-            r"\{%(?P<trim>-?)" + _XML_TAG_GAP + r"tr" + _XML_TAG_GAP + r"for\b"
-        )
-        close_tr_pattern = re.compile(
-            r"\{%(?P<trim>-?)"
-            + _XML_TAG_GAP
-            + r"(?:endtr|tr"
-            + _XML_TAG_GAP
-            + r"endfor)\b"
-        )
-        xml = open_tr_pattern.sub(_replace_open_tr, xml)
-        xml = close_tr_pattern.sub(_replace_close_tr, xml)
+            def _replace_close_tr(match: re.Match[str]) -> str:
+                trim = match.group("trim") or ""
+                return "{%" + trim + " endfor"
 
-        row_wrapper_pattern = re.compile(
-            r"<row[^>]*>"
-            r"(?:\s|<[^>]+>)*"
-            r"(?P<stmt>\{%-?\s*(?:for\b[^%]*|endfor)\s*-?%})"
-            r"(?:\s|</[^>]+>)*"
-            r"</row>",
-            re.DOTALL,
-        )
+            open_tr_pattern = re.compile(
+                r"\{%(?P<trim>-?)" + _XML_TAG_GAP + r"tr" + _XML_TAG_GAP + r"for\b"
+            )
+            close_tr_pattern = re.compile(
+                r"\{%(?P<trim>-?)"
+                + _XML_TAG_GAP
+                + r"(?:endtr|tr"
+                + _XML_TAG_GAP
+                + r"endfor)\b"
+            )
+            xml = open_tr_pattern.sub(_replace_open_tr, xml)
+            xml = close_tr_pattern.sub(_replace_close_tr, xml)
 
-        def _unwrap_row(match: re.Match[str]) -> str:
-            return match.group("stmt")
+            row_wrapper_pattern = re.compile(
+                r"<row[^>]*>"
+                r"(?:\s|<[^>]+>)*"
+                r"(?P<stmt>\{%-?\s*(?:for\b[^%]*|endfor)\s*-?%})"
+                r"(?:\s|</[^>]+>)*"
+                r"</row>",
+                re.DOTALL,
+            )
 
-        xml = row_wrapper_pattern.sub(_unwrap_row, xml)
+            def _unwrap_row(match: re.Match[str]) -> str:
+                return match.group("stmt")
+
+            xml = row_wrapper_pattern.sub(_unwrap_row, xml)
 
         tc_pattern = re.compile(
             r"(\{[\{%#]-?)(" + _XML_TAG_GAP + r")tc\b",
         )
 
         def _strip_tc(match: re.Match[str]) -> str:
-            return match.group(1) + match.group(2)
+            gap = match.group(2)
+            next_char = match.string[match.end() : match.end() + 1]
+            if gap and gap[-1].isspace() and next_char and next_char.isspace():
+                gap = gap[:-1]
+            return match.group(1) + gap
 
         xml = tc_pattern.sub(_strip_tc, xml)
         return xml
