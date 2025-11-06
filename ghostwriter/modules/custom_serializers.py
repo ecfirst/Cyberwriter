@@ -959,7 +959,11 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
     @staticmethod
     def _collect_ad_responses(raw_responses, workbook_data):
         ad_data = (workbook_data or {}).get("ad", {})
-        domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
+        domains = []
+        if isinstance(ad_data, dict):
+            raw_domains = ad_data.get("domains")
+            if isinstance(raw_domains, list):
+                domains = raw_domains
         domain_entries = {}
         domain_order = []
         domain_details = {}
@@ -1293,7 +1297,11 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
     @staticmethod
     def _collect_endpoint_responses(raw_responses, workbook_data):
         endpoint_data = (workbook_data or {}).get("endpoint", {})
-        domains = endpoint_data.get("domains", []) if isinstance(endpoint_data, dict) else []
+        domains = []
+        if isinstance(endpoint_data, dict):
+            raw_domains = endpoint_data.get("domains")
+            if isinstance(raw_domains, list):
+                domains = raw_domains
         entries = {}
         order = []
         endpoint_metrics = ("av_gap", "open_wifi")
