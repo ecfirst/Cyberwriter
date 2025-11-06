@@ -761,8 +761,15 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if ad_entries:
             result["ad"] = ad_entries
 
-        password_entries = ProjectSerializer._collect_password_responses(raw_responses, workbook_data)
+        password_entries = ProjectSerializer._collect_password_responses(
+            raw_responses, workbook_data
+        )
         if password_entries:
+            existing_password_section = raw_responses.get("password")
+            if isinstance(existing_password_section, dict):
+                merged_password = dict(existing_password_section)
+                merged_password.update(password_entries)
+                password_entries = merged_password
             result["password"] = password_entries
 
         endpoint_entries = ProjectSerializer._collect_endpoint_responses(raw_responses, workbook_data)

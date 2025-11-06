@@ -284,6 +284,10 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "ad_labexamplecom_generic_logins": "medium",
             "firewall_edge-fw01_type": "Next-Gen",
             "firewall_core-fw02_type": "Appliance",
+            "password": {
+                "additional_controls": "yes",
+                "enforce_mfa": "no",
+            },
         }
 
     def setUp(self):
@@ -367,6 +371,8 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(password_summary["lanman_list_string"], "'corp.example.com'")
         self.assertEqual(password_summary["no_fgpp_string"], "'lab.example.com'")
         self.assertEqual(password_summary["bad_pass_count"], 2)
+        self.assertEqual(password_summary.get("additional_controls"), "yes")
+        self.assertEqual(password_summary.get("enforce_mfa"), "no")
 
         endpoint_summary = responses["endpoint"]
         self.assertIn("entries", endpoint_summary)

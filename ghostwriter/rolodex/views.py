@@ -2140,6 +2140,24 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
                 responses, questions
             )
 
+            password_updates: Dict[str, Any] = {}
+            additional_controls = responses.get("password_additional_controls")
+            if additional_controls not in (None, ""):
+                password_updates["additional_controls"] = additional_controls
+
+            enforce_mfa = responses.get("password_enforce_mfa")
+            if enforce_mfa not in (None, ""):
+                password_updates["enforce_mfa"] = enforce_mfa
+
+            if password_updates:
+                password_section = structured_responses.setdefault("password", {})
+                if isinstance(password_section, dict):
+                    password_section.update(password_updates)
+                else:  # pragma: no cover - defensive guard for unexpected data types
+                    password_section = dict(password_updates)
+                    structured_responses["password"] = password_section
+                section_keys.setdefault("password", set()).update(password_updates.keys())
+
             existing_data = dict(project.data_responses or {})
             for root_key in root_keys_to_clear:
                 existing_data.pop(root_key, None)
