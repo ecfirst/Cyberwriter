@@ -1293,6 +1293,34 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(firewall.get("review_justifications"), "yes")
         self.assertNotIn("firewall_review_justifications", data)
 
+    def test_password_workbook_values_preserved(self):
+        existing = {
+            "entries": [{"domain": "corp.example.com", "risk": "medium"}],
+            "domains_str": "corp.example.com",
+            "bad_pass_count": 3,
+        }
+        self.project.data_responses = {"password": existing}
+        self.project.save(update_fields=["data_responses"])
+
+        payload = {
+            "password_additional_controls": "yes",
+            "password_enforce_mfa": "no",
+        }
+
+        response = self.client_mgr.post(self.url, payload)
+
+        self.assertEqual(response.status_code, 302)
+        self.project.refresh_from_db()
+
+        password = self.project.data_responses.get("password")
+        self.assertIsInstance(password, dict)
+        assert isinstance(password, dict)
+        self.assertIn("entries", password)
+        self.assertEqual(password.get("domains_str"), "corp.example.com")
+        self.assertEqual(password.get("bad_pass_count"), 3)
+        self.assertEqual(password.get("additional_controls"), "yes")
+        self.assertEqual(password.get("enforce_mfa"), "no")
+
     def test_dns_responses_grouped_by_domain(self):
         self.project.data_artifacts = {
             "dns_issues": [

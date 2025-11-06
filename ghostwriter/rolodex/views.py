@@ -4,7 +4,7 @@
 import datetime
 import json
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 # Django Imports
 from django import forms
@@ -100,10 +100,58 @@ logger = logging.getLogger(__name__)
 
 def _organize_data_responses(
     responses: Dict[str, Any], question_definitions: Iterable[Dict[str, Any]]
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], Dict[str, Set[str]], Set[str]]:
     """Group section-specific responses for consistent storage."""
 
     structured: Dict[str, Any] = dict(responses or {})
+    section_keys: Dict[str, Set[str]] = {
+        "general": {
+            "assessment_scope",
+            "assessment_scope_cloud_on_prem",
+            "scope_count",
+            "scope_string",
+            "first_ca",
+            "first_ca_scope_change",
+            "anonymous_ephi",
+        },
+        "password": set(),
+        "firewall": {"review_justifications"},
+        "dns": {"soa_issues"},
+    }
+    root_keys_to_clear: Set[str] = {
+        "assessment_scope",
+        "assessment_scope_cloud_on_prem",
+        "general_first_ca",
+        "general_first_ca_scope_change",
+        "general_anonymous_ephi",
+        "scope_count",
+        "scope_string",
+        "password_additional_controls",
+        "password_enforce_mfa",
+        "firewall_review_justifications",
+    }
+
+    for definition in question_definitions:
+        key = definition.get("key")
+        section = definition.get("section")
+        if not isinstance(key, str):
+            continue
+        root_keys_to_clear.add(key)
+        if section == "General":
+            if key.startswith("general_"):
+                section_keys.setdefault("general", set()).add(key[len("general_") :])
+            else:
+                section_keys.setdefault("general", set()).add(key)
+        elif section == "Password Policies":
+            if key.startswith("password_"):
+                section_keys.setdefault("password", set()).add(key[len("password_") :])
+            else:
+                section_keys.setdefault("password", set()).add(key)
+        elif section == "Firewall":
+            if key.startswith("firewall_"):
+                section_keys.setdefault("firewall", set()).add(key[len("firewall_") :])
+            else:
+                section_keys.setdefault("firewall", set()).add(key)
 
     existing_general = structured.pop("general", None)
     general_data: Dict[str, Any] = dict(existing_general or {}) if isinstance(existing_general, dict) else {}
@@ -119,7 +167,7 @@ def _organize_data_responses(
         if key in structured:
             value = structured.pop(key)
             if key.startswith("general_"):
-                general_data[key[len("general_"):]] = value
+                general_data[key[len("general_") :]] = value
             else:
                 general_data[key] = value
     if general_data:
@@ -131,9 +179,6 @@ def _organize_data_responses(
         if isinstance(existing_password, dict)
         else {}
     )
-    for key in ["password_additional_controls", "password_enforce_mfa"]:
-        if key in structured:
-            password_data[key[len("password_"):]] = structured.pop(key)
     if password_data:
         structured["password"] = password_data
 
@@ -171,7 +216,7 @@ def _organize_data_responses(
     if dns_data:
         structured["dns"] = dns_data
 
-    return structured
+    return structured, section_keys, root_keys_to_clear
 
 
 ##################
@@ -2087,8 +2132,44 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
                 responses.pop("scope_count", None)
                 responses.pop("scope_string", None)
 
-            structured_responses = _organize_data_responses(responses, questions)
-            project.data_responses = structured_responses
+            structured_responses, section_keys, root_keys_to_clear = _organize_data_responses(
+                responses, questions
+            )
+
+            existing_data = dict(project.data_responses or {})
+            for root_key in root_keys_to_clear:
+                existing_data.pop(root_key, None)
+
+            for key, value in structured_responses.items():
+                if isinstance(value, dict):
+                    existing_section = existing_data.get(key)
+                    if isinstance(existing_section, dict):
+                        updated_section = dict(existing_section)
+                    else:
+                        updated_section = {}
+
+                    managed_keys = section_keys.get(key, set())
+                    for managed_key in managed_keys:
+                        if managed_key not in value:
+                            updated_section.pop(managed_key, None)
+
+                    for subkey, subvalue in value.items():
+                        if subvalue in (None, "", [], {}):
+                            updated_section.pop(subkey, None)
+                        else:
+                            updated_section[subkey] = subvalue
+
+                    if updated_section:
+                        existing_data[key] = updated_section
+                    else:
+                        existing_data.pop(key, None)
+                else:
+                    if value in (None, "", [], {}):
+                        existing_data.pop(key, None)
+                    else:
+                        existing_data[key] = value
+
+            project.data_responses = existing_data
             project.save(update_fields=["data_responses"])
             messages.success(request, "Project data responses saved.")
         else:
