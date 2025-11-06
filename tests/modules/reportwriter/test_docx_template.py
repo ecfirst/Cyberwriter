@@ -154,6 +154,64 @@ WORKSHEET_TR_LOOP_ROWS_XML = (
     '</worksheet>'
 )
 
+WORKSHEET_TC_LOOP_TEMPLATE_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>Old Passwords</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>{%tc for domain in domains %}</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>{{ domain.name }}</t></is></c>'
+    '<c r="D1" t="inlineStr"><is><t>{%tc endfor %}</t></is></c>'
+    '</row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><t>Compliant</t></is></c>'
+    '<c r="B2" t="inlineStr"><is><t>{%tc for domain in domains %}</t></is></c>'
+    '<c r="C2"><v>{{ domain.compliant }}</v></c>'
+    '<c r="D2" t="inlineStr"><is><t>{%tc endfor %}</t></is></c>'
+    '</row>'
+    '<row r="3">'
+    '<c r="A3" t="inlineStr"><is><t>Stale</t></is></c>'
+    '<c r="B3" t="inlineStr"><is><t>{%tc for domain in domains %}</t></is></c>'
+    '<c r="C3"><v>{{ domain.stale }}</v></c>'
+    '<c r="D3" t="inlineStr"><is><t>{%tc endfor %}</t></is></c>'
+    '</row>'
+    '</sheetData>'
+    '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>'
+    '</worksheet>'
+)
+
+WORKSHEET_TC_RENDERED_COLUMNS_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>Metric</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>Edge-FW01</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>Edge-FW02</t></is></c>'
+    '</row>'
+    '<row r="2">'
+    '<c r="A2" t="inlineStr"><is><t>High Risk</t></is></c>'
+    '<c r="B2"><v>2</v></c>'
+    '<c r="C2"><v>1</v></c>'
+    '</row>'
+    '<row r="3">'
+    '<c r="A3" t="inlineStr"><is><t>Medium Risk</t></is></c>'
+    '<c r="B3"><v>5</v></c>'
+    '<c r="C3"><v>4</v></c>'
+    '</row>'
+    '<row r="4">'
+    '<c r="A4" t="inlineStr"><is><t>Low Risk</t></is></c>'
+    '<c r="B4"><v>3</v></c>'
+    '<c r="C4"><v>2</v></c>'
+    '</row>'
+    '</sheetData>'
+    '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>'
+    '</worksheet>'
+)
+
 WORKSHEET_TR_PROJECT_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -278,6 +336,44 @@ CHART_XML = (
     "</c:plotArea>"
     "</c:chart>"
     "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"0\"/></c:externalData>"
+    "</c:chartSpace>"
+)
+
+CHART_RICH_TEXT_SPLIT_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+    "<c:chart>"
+    "<c:title><c:tx><c:rich>"
+    "<a:p><a:pPr><a:defRPr/></a:pPr>"
+    "<a:r><a:rPr lang=\"en-US\"/></a:r>"
+    "<a:r><a:t>{{</a:t></a:r>"
+    "<a:r><a:rPr lang=\"en-US\"/></a:r>"
+    "<a:r><a:t> value }}</a:t></a:r>"
+    "</a:p></c:rich></c:tx></c:title>"
+    "</c:chart>"
+    "</c:chartSpace>"
+)
+
+CHART_TC_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+    "<c:chart><c:plotArea><c:ser>"
+    "{%tc for device in devices %}"
+    '<c:idx val="{{ loop.index0 }}"/>'
+    "<c:tx><c:v>{{ device.name }}</c:v></c:tx>"
+    "{%tc endfor %}"
+    "</c:ser></c:plotArea></c:chart>"
+    "</c:chartSpace>"
+)
+
+CHART_TR_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+    "<c:chart><c:plotArea><c:ser>"
+    "{%tr for device in devices %}"
+    '<c:idx val="{{ loop.index0 }}"/>'
+    "<c:tx><c:v>{{ device.name }}</c:v></c:tx>"
+    "{%tr endfor %}"
+    "</c:ser></c:plotArea></c:chart>"
     "</c:chartSpace>"
 )
 
@@ -421,6 +517,18 @@ TABLE_SMALL_XML = (
     '<tableColumn id="2" name="Labels"/>'
     '</tableColumns>'
     '<autoFilter ref="A1:B2"/>'
+    '</table>'
+)
+
+TABLE_TC_NARROW_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'id="1" name="Table1" displayName="Table1" ref="A1:B4" headerRowCount="1">'
+    '<tableColumns count="2">'
+    '<tableColumn id="1" name="Metric"/>'
+    '<tableColumn id="2" name="Placeholder"/>'
+    '</tableColumns>'
+    '<autoFilter ref="A1:B4"/>'
     '</table>'
 )
 
@@ -829,6 +937,36 @@ def test_patch_xml_handles_split_excel_tc_tags():
     assert "{{ site.unique_high }}" in cleaned
 
 
+def test_patch_xml_preserves_chart_paragraph_markup():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(CHART_RICH_TEXT_SPLIT_XML)
+
+    assert "<a:pPr>" in cleaned
+    assert "</a:pPr>" in cleaned
+    etree.fromstring(cleaned.encode("utf-8"))
+
+
+def test_patch_xml_strips_tc_in_chart_parts():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(CHART_TC_XML)
+
+    assert "{%tc" not in cleaned
+    assert "for device in devices" in cleaned
+
+
+def test_patch_xml_strips_tr_in_chart_parts():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(CHART_TR_XML)
+
+    assert "{% for device in devices %}" in cleaned
+    assert "{% endfor %}" in cleaned
+    assert "tr for" not in cleaned
+    assert "tr endfor" not in cleaned
+
+
 def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
@@ -862,6 +1000,140 @@ def test_render_additional_parts_expands_table_range_for_loop(monkeypatch):
 
     assert "ref=\"A1:B4\"" in table_xml
     assert "{{" not in table_xml
+
+
+def test_render_additional_parts_updates_table_columns_for_tc(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TC_RENDERED_COLUMNS_XML,
+        content_types_xml=CONTENT_TYPES_WITH_TABLE_XML,
+        extra_files={
+            "xl/worksheets/_rels/sheet1.xml.rels": SHEET_TABLE_RELS_XML,
+            "xl/tables/table1.xml": TABLE_TC_NARROW_XML,
+        },
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    template._render_additional_parts({}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        table_xml = archive.read("xl/tables/table1.xml").decode("utf-8")
+
+    tree = etree.fromstring(table_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    assert 'ref="A1:C4"' in table_xml
+    assert tree.get("ref") == "A1:C4"
+    columns = tree.findall(f"{prefix}tableColumns/{prefix}tableColumn")
+    assert len(columns) == 3
+    assert [column.get("name") for column in columns] == [
+        "Metric",
+        "Edge-FW01",
+        "Edge-FW02",
+    ]
+
+
+def test_render_additional_parts_renders_tc_column_loops(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TC_LOOP_TEMPLATE_XML,
+        content_types_xml=CONTENT_TYPES_WITH_TABLE_XML,
+        extra_files={
+            "xl/worksheets/_rels/sheet1.xml.rels": SHEET_TABLE_RELS_XML,
+            "xl/tables/table1.xml": TABLE_TC_NARROW_XML,
+        },
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    domains = [
+        {"name": "corp.example.com", "compliant": 145, "stale": 30},
+        {"name": "lab.example.com", "compliant": 120, "stale": 25},
+    ]
+
+    template._render_additional_parts({"domains": domains}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        table_xml = archive.read("xl/tables/table1.xml").decode("utf-8")
+
+    sheet_tree = etree.fromstring(sheet_xml.encode("utf-8"))
+    ns = sheet_tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    rows = sheet_tree.findall(f"{prefix}sheetData/{prefix}row")
+    assert len(rows) == 3
+
+    def row_values(row):
+        values = []
+        for cell in row.findall(f"{prefix}c"):
+            value = cell.find(f"{prefix}v")
+            if value is not None and value.text is not None:
+                values.append(value.text)
+                continue
+            inline = cell.find(f"{prefix}is")
+            if inline is None:
+                values.append("")
+                continue
+            text = "".join(
+                node.text or ""
+                for node in inline.findall(f".//{prefix}t")
+            )
+            values.append(text)
+        return values
+
+    assert [cell.get("r") for cell in rows[0].findall(f"{prefix}c")] == [
+        "A1",
+        "B1",
+        "C1",
+    ]
+    assert row_values(rows[0]) == [
+        "Old Passwords",
+        "corp.example.com",
+        "lab.example.com",
+    ]
+
+    assert [cell.get("r") for cell in rows[1].findall(f"{prefix}c")] == [
+        "A2",
+        "B2",
+        "C2",
+    ]
+    assert row_values(rows[1]) == [
+        "Compliant",
+        "145",
+        "120",
+    ]
+
+    assert [cell.get("r") for cell in rows[2].findall(f"{prefix}c")] == [
+        "A3",
+        "B3",
+        "C3",
+    ]
+    assert row_values(rows[2]) == [
+        "Stale",
+        "30",
+        "25",
+    ]
+
+    table_tree = etree.fromstring(table_xml.encode("utf-8"))
+    table_ns = table_tree.nsmap.get(None)
+    table_prefix = f"{{{table_ns}}}" if table_ns else ""
+
+    assert table_tree.get("ref") == "A1:C3"
+    columns = table_tree.findall(f"{table_prefix}tableColumns/{table_prefix}tableColumn")
+    assert [column.get("name") for column in columns] == [
+        "Old Passwords",
+        "corp.example.com",
+        "lab.example.com",
+    ]
 
 
 def test_render_additional_parts_inserts_rows_for_tr_loop(monkeypatch):

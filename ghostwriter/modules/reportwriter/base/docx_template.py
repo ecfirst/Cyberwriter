@@ -144,35 +144,39 @@ class GhostwriterDocxTemplate(DocxTemplate):
     def _strip_excel_table_tags(self, xml: str) -> str:
         """Remove Excel row/cell wrappers around Ghostwriter ``tr``/``tc`` tags."""
 
-        def _strip_container(value: str, container: str, tag: str) -> str:
-            open_regex = "<(?:[A-Za-z_][\\w.-]*:)?%s[^>]*>\\s*%s\\s*%s"
-            close_regex = "%s.*?%s\\s*</(?:[A-Za-z_][\\w.-]*:)?%s>"
-            for start, end, start_regex in (
-                ("{{", "}}", "\\{\\{"),
-                ("{%", "%}", "\\{%"),
-                ("{#", "#}", "\\{#"),
-            ):
-                open_pattern = re.compile(
-                    open_regex % (container, start_regex, tag),
-                    re.DOTALL,
-                )
-                value = open_pattern.sub(start, value)
-                close_pattern = re.compile(
-                    close_regex % (start_regex, end, container),
-                    re.DOTALL,
-                )
+        has_spreadsheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main" in xml
 
-                def close_replacement(match: re.Match[str]) -> str:
-                    matched = match.group(0)
-                    end_index = matched.rfind(end)
-                    return matched[: end_index + len(end)] if end_index != -1 else matched
+        if has_spreadsheet_ns:
 
-                value = close_pattern.sub(close_replacement, value)
+            def _strip_container(value: str, container: str, tag: str) -> str:
+                open_regex = "<(?:[A-Za-z_][\\w.-]*:)?%s[^>]*>\\s*%s\\s*%s"
+                close_regex = "%s.*?%s\\s*</(?:[A-Za-z_][\\w.-]*:)?%s>"
+                for start, end, start_regex in (
+                    ("{{", "}}", "\\{\\{"),
+                    ("{%", "%}", "\\{%"),
+                    ("{#", "#}", "\\{#"),
+                ):
+                    open_pattern = re.compile(
+                        open_regex % (container, start_regex, tag),
+                        re.DOTALL,
+                    )
+                    value = open_pattern.sub(start, value)
+                    close_pattern = re.compile(
+                        close_regex % (start_regex, end, container),
+                        re.DOTALL,
+                    )
 
-            return re.sub(r"(\{\{|\{%|\{#)\s+", lambda m: m.group(1) + " ", value)
+                    def close_replacement(match: re.Match[str]) -> str:
+                        matched = match.group(0)
+                        end_index = matched.rfind(end)
+                        return matched[: end_index + len(end)] if end_index != -1 else matched
 
-        xml = _strip_container(xml, "row", "tr")
-        xml = _strip_container(xml, "c", "tc")
+                    value = close_pattern.sub(close_replacement, value)
+
+                return re.sub(r"(\{\{|\{%|\{#)\s+", lambda m: m.group(1) + " ", value)
+
+            xml = _strip_container(xml, "row", "tr")
+            xml = _strip_container(xml, "c", "tc")
 
         def _replace_open_tr(match: re.Match[str]) -> str:
             trim = match.group("trim") or ""
@@ -183,34 +187,45 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return "{%" + trim + " endfor"
 
         open_tr_pattern = re.compile(
-            r"\{%(?P<trim>-?)" + _XML_TAG_GAP + r"tr" + _XML_TAG_GAP + r"for\b"
+            r"\{%(?P<trim>-?)" + _XML_TAG_GAP + r"tr" + _XML_TAG_GAP + r"for\b",
         )
         close_tr_pattern = re.compile(
             r"\{%(?P<trim>-?)"
             + _XML_TAG_GAP
             + r"(?:endtr|tr"
             + _XML_TAG_GAP
-            + r"endfor)\b"
+            + r"endfor)\b",
         )
         xml = open_tr_pattern.sub(_replace_open_tr, xml)
         xml = close_tr_pattern.sub(_replace_close_tr, xml)
 
-        row_wrapper_pattern = re.compile(
-            r"<row[^>]*>"
-            r"(?:\s|<[^>]+>)*"
-            r"(?P<stmt>\{%-?\s*(?:for\b[^%]*|endfor)\s*-?%})"
-            r"(?:\s|</[^>]+>)*"
-            r"</row>",
-            re.DOTALL,
+        if has_spreadsheet_ns:
+            row_wrapper_pattern = re.compile(
+                r"<row[^>]*>"
+                r"(?:\s|<[^>]+>)*"
+                r"(?P<stmt>\{%-?\s*(?:for\b[^%]*|endfor)\s*-?%})"
+                r"(?:\s|</[^>]+>)*"
+                r"</row>",
+                re.DOTALL,
+            )
+
+            def _unwrap_row(match: re.Match[str]) -> str:
+                return match.group("stmt")
+
+            xml = row_wrapper_pattern.sub(_unwrap_row, xml)
+
+        tc_pattern = re.compile(
+            r"(\{[\{%#]-?)(" + _XML_TAG_GAP + r")tc\b",
         )
 
-        def _unwrap_row(match: re.Match[str]) -> str:
-            return match.group("stmt")
+        def _strip_tc(match: re.Match[str]) -> str:
+            gap = match.group(2)
+            next_char = match.string[match.end() : match.end() + 1]
+            if gap and gap[-1].isspace() and next_char and next_char.isspace():
+                gap = gap[:-1]
+            return match.group(1) + gap
 
-        xml = row_wrapper_pattern.sub(_unwrap_row, xml)
-
-        tc_pattern = re.compile(r"(\{[\{%#]-?)" + _XML_TAG_GAP + r"tc\b")
-        xml = tc_pattern.sub(r"\1", xml)
+        xml = tc_pattern.sub(_strip_tc, xml)
         return xml
 
     # ------------------------------------------------------------------
@@ -612,6 +627,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 table_xml,
                 sheet_name,
                 row_columns,
+                workbook_values,
+                sheet_path,
             )
             if updated_xml is not None:
                 xml_files[table_path] = updated_xml
@@ -745,7 +762,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             cells = []
             parsed_rows: list[int] = []
+            removed_cells = False
             for cell in row.findall(f"{prefix}c"):
+                if not self._cell_has_value(cell, prefix):
+                    row.remove(cell)
+                    removed_cells = True
+                    continue
                 ref = cell.get("r")
                 parsed = self._split_cell(ref) if ref else None
                 if parsed is not None:
@@ -755,6 +777,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 cells.append((cell, parsed))
                 if parsed is not None:
                     parsed_rows.append(parsed[1])
+
+            if not cells:
+                parent = row.getparent()
+                if parent is not None:
+                    parent.remove(row)
+                continue
 
             unique_rows = {value for value in parsed_rows}
             if candidate is None and parsed_rows:
@@ -768,9 +796,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
             row_rows: list[int] = []
             next_col = 0
             for cell, parsed in cells:
-                if parsed is None:
+                if parsed is None or removed_cells:
                     col_index = next_col + 1
                     cell_row = row_index
+                    if parsed is not None:
+                        _, original_row = parsed
+                        if len(unique_rows) > 1:
+                            cell_row = original_row
+                            row_index = max(row_index, cell_row)
                 else:
                     col_index, original_row = parsed
                     if len(unique_rows) <= 1:
@@ -879,6 +912,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
         table_xml: str,
         sheet_name: str,
         row_columns: dict[int, set[int]],
+        workbook_values: dict[str, dict[str, str]],
+        sheet_path: str,
     ) -> tuple[str | None, dict[str, object] | None]:
         try:
             table_tree = etree.fromstring(table_xml.encode("utf-8"))
@@ -911,7 +946,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         data_end_row = end_row - totals_rows if totals_rows else end_row
 
         # Determine actual last data row based on rendered worksheet
-        actual_end_row = data_end_row
+        actual_end_row = data_start_row - 1
         for row_index in sorted(row_columns):
             if row_index < data_start_row:
                 continue
@@ -930,19 +965,94 @@ class GhostwriterDocxTemplate(DocxTemplate):
             new_end_row = data_start_row - 1
 
         if new_end_row != end_row:
-            new_ref = f"{self._column_letters(start_col)}{start_row}:{self._column_letters(end_col)}{new_end_row}"
-            table_tree.set("ref", new_ref)
-            for auto_filter in table_tree.findall(f"{prefix}autoFilter"):
-                auto_filter.set("ref", new_ref)
             end_row = new_end_row
 
+        columns_in_use: set[int] = set()
+        for row_index in range(start_row, end_row + 1):
+            columns = row_columns.get(row_index)
+            if not columns:
+                continue
+            for column_index in columns:
+                if column_index >= start_col:
+                    columns_in_use.add(column_index)
+
+        sheet_values = (
+            workbook_values.get(sheet_name)
+            or workbook_values.get(sheet_path)
+            or {}
+        )
+
+        header_values: dict[int, str] = {}
+        if header_rows:
+            for offset in range(header_rows):
+                header_row = start_row + offset
+                row_cols = row_columns.get(header_row, set())
+                for column_index in row_cols:
+                    if column_index < start_col:
+                        continue
+                    cell_ref = f"{self._column_letters(column_index)}{header_row}"
+                    value = sheet_values.get(cell_ref)
+                    if value is None:
+                        continue
+                    stripped = value.strip()
+                    if not stripped:
+                        continue
+                    header_values.setdefault(column_index, stripped)
+
+        if columns_in_use:
+            actual_end_col = max(columns_in_use)
+        else:
+            actual_end_col = end_col
+
+        if actual_end_col < start_col:
+            actual_end_col = start_col
+
+        if actual_end_col != end_col:
+            end_col = actual_end_col
+
+        new_ref = (
+            f"{self._column_letters(start_col)}{start_row}:"
+            f"{self._column_letters(end_col)}{end_row}"
+        )
+        table_tree.set("ref", new_ref)
+        for auto_filter in table_tree.findall(f"{prefix}autoFilter"):
+            auto_filter.set("ref", new_ref)
+
         table_columns = table_tree.find(f"{prefix}tableColumns")
+        if table_columns is None:
+            tag = f"{prefix}tableColumns" if prefix else "tableColumns"
+            table_columns = etree.SubElement(table_tree, tag)
+
+        existing_columns = list(table_columns.findall(f"{prefix}tableColumn"))
+        desired_count = end_col - start_col + 1
+        max_id = 0
+        for column in existing_columns:
+            try:
+                max_id = max(max_id, int(column.get("id", "0")))
+            except ValueError:
+                continue
+
+        while len(existing_columns) > desired_count:
+            column = existing_columns.pop()
+            table_columns.remove(column)
+
+        while len(existing_columns) < desired_count:
+            max_id += 1
+            column = etree.SubElement(table_columns, f"{prefix}tableColumn")
+            column.set("id", str(max_id))
+            column.set("name", f"Column{max_id}")
+            existing_columns.append(column)
+
         column_names: list[str] = []
-        if table_columns is not None:
-            for column in table_columns.findall(f"{prefix}tableColumn"):
-                name = column.get("name") or column.get("id")
-                if name:
-                    column_names.append(name)
+        for offset, column in enumerate(existing_columns):
+            column_index = start_col + offset
+            header_value = header_values.get(column_index)
+            if header_value is None or not header_value.strip():
+                header_value = column.get("name") or column.get("id") or f"Column{offset + 1}"
+            column.set("name", header_value)
+            column_names.append(header_value)
+
+        table_columns.set("count", str(len(existing_columns)))
 
         if not column_names:
             width = end_col - start_col + 1
