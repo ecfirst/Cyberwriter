@@ -1,6 +1,7 @@
 """This contains all the views used by the Rolodex application."""
 
 # Standard Libraries
+import copy
 import datetime
 import json
 import logging
@@ -110,6 +111,7 @@ def _is_empty_response(value: Any) -> bool:
 def _build_grouped_data_responses(
     responses: Dict[str, Any],
     question_definitions: List[Dict[str, Any]],
+    existing_grouped: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized = dict(responses or {})
     wireless_values = normalized.pop("wireless", None)
@@ -117,7 +119,7 @@ def _build_grouped_data_responses(
     scope_string = normalized.pop("scope_string", None)
 
     definition_map = {definition["key"]: definition for definition in question_definitions}
-    grouped: Dict[str, Any] = {}
+    grouped: Dict[str, Any] = copy.deepcopy(existing_grouped or {})
 
     for key, value in normalized.items():
         definition = definition_map.get(key)
@@ -129,6 +131,40 @@ def _build_grouped_data_responses(
         section_key = definition.get("section_key") or key
         subheading = definition.get("subheading")
         if _is_empty_response(value):
+            section = grouped.get(section_key)
+            if isinstance(section, dict):
+                if subheading:
+                    entry_slug = definition.get("entry_slug") or key
+                    field_key = definition.get("entry_field_key") or key
+                    identifier_field = SECTION_ENTRY_FIELD_MAP.get(section_key, "name")
+                    entries = section.get("entries")
+                    if isinstance(entries, list):
+                        to_remove = None
+                        for item in entries:
+                            if not isinstance(item, dict):
+                                continue
+                            slug_value = item.get("slug") or item.get("_slug")
+                            if slug_value == entry_slug or item.get(identifier_field) == subheading:
+                                item.pop(field_key, None)
+                                significant_keys = {
+                                    key_name
+                                    for key_name in item.keys()
+                                    if key_name not in {identifier_field, "_slug", "slug"}
+                                }
+                                if not significant_keys:
+                                    to_remove = item
+                                break
+                        if to_remove is not None:
+                            entries.remove(to_remove)
+                            if not entries:
+                                section.pop("entries", None)
+                else:
+                    storage_key = key
+                    if section_key == "overall_risk" and key == "overall_risk_major_issues":
+                        storage_key = "major_issues"
+                    section.pop(storage_key, None)
+                    if not section:
+                        grouped.pop(section_key, None)
             continue
 
         if subheading:
@@ -143,7 +179,8 @@ def _build_grouped_data_responses(
             for item in entries:
                 if not isinstance(item, dict):
                     continue
-                if item.get("slug") == entry_slug or item.get(identifier_field) == identifier_value:
+                slug_value = item.get("slug") or item.get("_slug")
+                if slug_value == entry_slug or item.get(identifier_field) == identifier_value:
                     existing = item
                     break
             if existing is None:
@@ -2102,7 +2139,12 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
             if first_ca_value != "no":
                 responses.pop("general_scope_changed", None)
 
-            grouped_responses = _build_grouped_data_responses(responses, questions)
+            existing_grouped = project.data_responses if isinstance(project.data_responses, dict) else {}
+            grouped_responses = _build_grouped_data_responses(
+                responses,
+                questions,
+                existing_grouped=existing_grouped,
+            )
 
             project.data_responses = grouped_responses
             project.save(update_fields=["data_responses"])

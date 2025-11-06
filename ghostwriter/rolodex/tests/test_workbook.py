@@ -6,6 +6,7 @@ from django.test import SimpleTestCase
 
 # Ghostwriter Libraries
 from ghostwriter.rolodex.forms_workbook import ProjectDataResponsesForm, SummaryMultipleChoiceField
+from ghostwriter.rolodex.views import _build_grouped_data_responses
 from ghostwriter.rolodex.workbook import (
     DNS_SOA_FIELD_CHOICES,
     SCOPE_CHOICES,
@@ -382,3 +383,89 @@ class ProjectDataResponsesFormTests(SimpleTestCase):
         form = ProjectDataResponsesForm(question_definitions=questions, initial=initial)
 
         self.assertEqual(form.fields["firewall_edge-fw01_type"].initial, "Next-Gen")
+
+
+class BuildGroupedDataResponsesTests(SimpleTestCase):
+    """Validate grouped response normalization preserves summaries."""
+
+    def test_existing_endpoint_summary_preserved(self):
+        questions = [
+            {
+                "key": "endpoint_corpexamplecom_av_gap",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "av_gap",
+            },
+            {
+                "key": "endpoint_corpexamplecom_open_wifi",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "open_wifi",
+            },
+            {
+                "key": "endpoint_labexamplecom_av_gap",
+                "section_key": "endpoint",
+                "subheading": "lab.example.com",
+                "entry_slug": "endpoint_labexamplecom",
+                "entry_field_key": "av_gap",
+            },
+            {
+                "key": "endpoint_labexamplecom_open_wifi",
+                "section_key": "endpoint",
+                "subheading": "lab.example.com",
+                "entry_slug": "endpoint_labexamplecom",
+                "entry_field_key": "open_wifi",
+            },
+        ]
+
+        responses = {
+            "endpoint_corpexamplecom_av_gap": "high",
+            "endpoint_corpexamplecom_open_wifi": "medium",
+            "endpoint_labexamplecom_av_gap": "low",
+            "endpoint_labexamplecom_open_wifi": "medium",
+        }
+
+        existing = {
+            "endpoint": {
+                "entries": [
+                    {
+                        "domain": "corp.example.com",
+                        "av_gap": "medium",
+                        "open_wifi": "low",
+                        "_slug": "endpoint_corpexamplecom",
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "av_gap": "high",
+                        "open_wifi": "high",
+                        "_slug": "endpoint_labexamplecom",
+                    },
+                ],
+                "domains_str": "corp.example.com/lab.example.com",
+                "ood_count_str": "45/10",
+                "wifi_count_str": "3/1",
+                "ood_risk_string": "Medium/High",
+                "wifi_risk_string": "Low/High",
+            }
+        }
+
+        grouped = _build_grouped_data_responses(responses, questions, existing_grouped=existing)
+        endpoint = grouped.get("endpoint", {})
+
+        self.assertEqual(endpoint.get("domains_str"), "corp.example.com/lab.example.com")
+        self.assertEqual(endpoint.get("ood_count_str"), "45/10")
+        self.assertEqual(endpoint.get("wifi_count_str"), "3/1")
+        self.assertEqual(endpoint.get("ood_risk_string"), "Medium/High")
+        self.assertEqual(endpoint.get("wifi_risk_string"), "Low/High")
+
+        entries = endpoint.get("entries", [])
+        self.assertEqual(len(entries), 2)
+        corp_entry = next(item for item in entries if item.get("domain") == "corp.example.com")
+        lab_entry = next(item for item in entries if item.get("domain") == "lab.example.com")
+
+        self.assertEqual(corp_entry.get("av_gap"), "high")
+        self.assertEqual(corp_entry.get("open_wifi"), "medium")
+        self.assertEqual(lab_entry.get("av_gap"), "low")
+        self.assertEqual(lab_entry.get("open_wifi"), "medium")
