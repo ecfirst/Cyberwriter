@@ -112,6 +112,7 @@ def _build_grouped_data_responses(
     responses: Dict[str, Any],
     question_definitions: List[Dict[str, Any]],
     existing_grouped: Optional[Dict[str, Any]] = None,
+    workbook_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized = dict(responses or {})
     wireless_values = normalized.pop("wireless", None)
@@ -227,7 +228,98 @@ def _build_grouped_data_responses(
         else:
             section_value.pop("entries", None)
 
+    if isinstance(workbook_data, dict):
+        endpoint_section = grouped.get("endpoint")
+        if isinstance(endpoint_section, dict):
+            _merge_endpoint_summary(endpoint_section, workbook_data)
+
     return grouped
+
+
+def _merge_endpoint_summary(section: Dict[str, Any], workbook_data: Dict[str, Any]) -> None:
+    summary_keys = {
+        "domains_str",
+        "ood_count_str",
+        "wifi_count_str",
+        "ood_risk_string",
+        "wifi_risk_string",
+    }
+
+    entries = section.get("entries")
+    if not isinstance(entries, list) or not entries:
+        for key in summary_keys:
+            section.pop(key, None)
+        return
+
+    endpoint_data = workbook_data.get("endpoint", {})
+    domain_records = endpoint_data.get("domains") if isinstance(endpoint_data, dict) else None
+    domain_lookup: Dict[str, Dict[str, Any]] = {}
+
+    if isinstance(domain_records, list):
+        for record in domain_records:
+            if not isinstance(record, dict):
+                continue
+            domain_value = record.get("domain") or record.get("name")
+            domain_text = str(domain_value).strip() if domain_value else ""
+            if domain_text:
+                domain_lookup[domain_text] = record
+
+    domains: List[str] = []
+    ood_counts: List[str] = []
+    wifi_counts: List[str] = []
+    ood_risks: List[str] = []
+    wifi_risks: List[str] = []
+    cleaned_entries: List[Dict[str, Any]] = []
+
+    def _format_count(value: Any) -> str:
+        if value in (None, ""):
+            return "0"
+        return str(value)
+
+    def _format_risk(value: Any) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        return text.capitalize() if text else ""
+
+    for raw_entry in entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        domain_value = raw_entry.get("domain") or raw_entry.get("name")
+        domain_text = str(domain_value).strip() if domain_value else ""
+        if not domain_text:
+            continue
+        entry = dict(raw_entry)
+        entry["domain"] = domain_text
+        cleaned_entries.append(entry)
+
+        domains.append(domain_text)
+        details = domain_lookup.get(domain_text, {})
+
+        if isinstance(details, dict):
+            systems_ood = details.get("systems_ood")
+            open_wifi = details.get("open_wifi")
+        else:
+            systems_ood = None
+            open_wifi = None
+
+        ood_counts.append(_format_count(systems_ood))
+        wifi_counts.append(_format_count(open_wifi))
+        ood_risks.append(_format_risk(entry.get("av_gap")))
+        wifi_risks.append(_format_risk(entry.get("open_wifi")))
+
+    if not cleaned_entries:
+        for key in summary_keys:
+            section.pop(key, None)
+        section.pop("entries", None)
+        return
+
+    section["entries"] = cleaned_entries
+    section["domains_str"] = "/".join(domains)
+    section["ood_count_str"] = "/".join(ood_counts)
+    section["wifi_count_str"] = "/".join(wifi_counts)
+    section["ood_risk_string"] = "/".join(ood_risks)
+    section["wifi_risk_string"] = "/".join(wifi_risks)
 
 
 ##################
@@ -2144,6 +2236,7 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
                 responses,
                 questions,
                 existing_grouped=existing_grouped,
+                workbook_data=project.workbook_data,
             )
 
             project.data_responses = grouped_responses

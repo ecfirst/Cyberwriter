@@ -451,7 +451,21 @@ class BuildGroupedDataResponsesTests(SimpleTestCase):
             }
         }
 
-        grouped = _build_grouped_data_responses(responses, questions, existing_grouped=existing)
+        workbook_data = {
+            "endpoint": {
+                "domains": [
+                    {"domain": "corp.example.com", "systems_ood": 45, "open_wifi": 3},
+                    {"domain": "lab.example.com", "systems_ood": 10, "open_wifi": 1},
+                ]
+            }
+        }
+
+        grouped = _build_grouped_data_responses(
+            responses,
+            questions,
+            existing_grouped=existing,
+            workbook_data=workbook_data,
+        )
         endpoint = grouped.get("endpoint", {})
 
         self.assertEqual(endpoint.get("domains_str"), "corp.example.com/lab.example.com")
@@ -469,3 +483,55 @@ class BuildGroupedDataResponsesTests(SimpleTestCase):
         self.assertEqual(corp_entry.get("open_wifi"), "medium")
         self.assertEqual(lab_entry.get("av_gap"), "low")
         self.assertEqual(lab_entry.get("open_wifi"), "medium")
+
+    def test_endpoint_summary_generated_from_workbook_data(self):
+        questions = [
+            {
+                "key": "endpoint_corpexamplecom_av_gap",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "av_gap",
+            },
+            {
+                "key": "endpoint_corpexamplecom_open_wifi",
+                "section_key": "endpoint",
+                "subheading": "corp.example.com",
+                "entry_slug": "endpoint_corpexamplecom",
+                "entry_field_key": "open_wifi",
+            },
+        ]
+
+        responses = {
+            "endpoint_corpexamplecom_av_gap": "medium",
+            "endpoint_corpexamplecom_open_wifi": "high",
+        }
+
+        workbook_data = {
+            "endpoint": {
+                "domains": [
+                    {"domain": "corp.example.com", "systems_ood": 7, "open_wifi": 3},
+                ]
+            }
+        }
+
+        grouped = _build_grouped_data_responses(
+            responses,
+            questions,
+            existing_grouped={},
+            workbook_data=workbook_data,
+        )
+
+        endpoint = grouped.get("endpoint", {})
+        self.assertEqual(endpoint.get("domains_str"), "corp.example.com")
+        self.assertEqual(endpoint.get("ood_count_str"), "7")
+        self.assertEqual(endpoint.get("wifi_count_str"), "3")
+        self.assertEqual(endpoint.get("ood_risk_string"), "Medium")
+        self.assertEqual(endpoint.get("wifi_risk_string"), "High")
+
+        entries = endpoint.get("entries", [])
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry.get("domain"), "corp.example.com")
+        self.assertEqual(entry.get("av_gap"), "medium")
+        self.assertEqual(entry.get("open_wifi"), "high")
