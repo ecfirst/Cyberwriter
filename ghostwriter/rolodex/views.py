@@ -1619,7 +1619,16 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             Q(doc_type__doc_type__iexact="project_docx") | Q(doc_type__doc_type__iexact="pptx")
         ).filter(Q(client=object.client) | Q(client__isnull=True))
         project_type_name = getattr(getattr(object, "project_type", None), "project_type", None)
-        questions, required_files = build_data_configuration(object.workbook_data, project_type_name)
+        risks = object.risks if isinstance(object.risks, dict) else {}
+        overall_risk_value = risks.get("overall_risk") if isinstance(risks, dict) else None
+        if overall_risk_value is not None:
+            overall_risk_value = str(overall_risk_value)
+        questions, required_files = build_data_configuration(
+            object.workbook_data,
+            project_type_name,
+            data_artifacts=object.data_artifacts,
+            overall_risk=overall_risk_value,
+        )
         ctx["workbook_form"] = ProjectWorkbookForm()
         ctx["workbook_sections"] = build_workbook_sections(object.workbook_data)
         ctx["data_file_form"] = ProjectDataFileForm()
@@ -1960,7 +1969,16 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
     def post(self, request, *args, **kwargs):
         project = self.get_object()
         project_type_name = getattr(getattr(project, "project_type", None), "project_type", None)
-        questions, _ = build_data_configuration(project.workbook_data, project_type_name)
+        risks = project.risks if isinstance(project.risks, dict) else {}
+        overall_risk_value = risks.get("overall_risk") if isinstance(risks, dict) else None
+        if overall_risk_value is not None:
+            overall_risk_value = str(overall_risk_value)
+        questions, _ = build_data_configuration(
+            project.workbook_data,
+            project_type_name,
+            data_artifacts=project.data_artifacts,
+            overall_risk=overall_risk_value,
+        )
         form = ProjectDataResponsesForm(request.POST, question_definitions=questions)
         if form.is_valid():
             responses = dict(form.cleaned_data)

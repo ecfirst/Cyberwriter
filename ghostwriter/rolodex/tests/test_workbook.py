@@ -4,9 +4,10 @@
 from django.test import SimpleTestCase
 
 # Ghostwriter Libraries
-from ghostwriter.rolodex.forms_workbook import SummaryMultipleChoiceField
+from ghostwriter.rolodex.forms_workbook import MultiValueField, SummaryMultipleChoiceField
 from ghostwriter.rolodex.workbook import (
     SCOPE_CHOICES,
+    SOA_FIELD_CHOICES,
     WEAK_PSK_SUMMARY_MAP,
     YES_NO_CHOICES,
     build_data_configuration,
@@ -85,6 +86,23 @@ class WorkbookHelpersTests(SimpleTestCase):
         assert followup is not None  # pragma: no cover - typing aid
         self.assertEqual(followup["field_kwargs"].get("choices"), YES_NO_CHOICES)
 
+    def test_general_followup_questions_included(self):
+        questions, _ = build_data_configuration({})
+
+        first_ca = next((q for q in questions if q["key"] == "general_first_ca"), None)
+        followup = next((q for q in questions if q["key"] == "general_first_ca_scope_change"), None)
+        anonymous = next((q for q in questions if q["key"] == "general_anonymous_ephi"), None)
+
+        self.assertIsNotNone(first_ca)
+        self.assertIsNotNone(followup)
+        self.assertIsNotNone(anonymous)
+        assert first_ca is not None
+        self.assertEqual(first_ca["field_kwargs"].get("choices"), YES_NO_CHOICES)
+        assert followup is not None
+        self.assertEqual(followup["field_kwargs"].get("choices"), YES_NO_CHOICES)
+        assert anonymous is not None
+        self.assertEqual(anonymous["field_kwargs"].get("choices"), YES_NO_CHOICES)
+
     def test_nexpose_csv_requirements_added_for_positive_totals(self):
         workbook_data = {
             "external_nexpose": {"total": 1},
@@ -156,14 +174,23 @@ class WorkbookHelpersTests(SimpleTestCase):
         questions, _ = build_data_configuration(workbook_data)
 
         firewall_questions = [q for q in questions if q["section"] == "Firewall"]
-        self.assertEqual(len(firewall_questions), 3)
+        self.assertEqual(len(firewall_questions), 4)
         first_question = firewall_questions[0]
         self.assertEqual(first_question["label"], "Firewall Type")
         self.assertEqual(first_question["subheading"], "FW-1")
         self.assertTrue(first_question["key"].startswith("firewall_"))
         self.assertTrue(first_question["key"].endswith("_type"))
         last_question = firewall_questions[-1]
-        self.assertEqual(last_question["subheading"], "Unnamed Entry")
+        self.assertEqual(last_question["field_kwargs"].get("choices"), YES_NO_CHOICES)
+
+    def test_firewall_review_question_included_without_devices(self):
+        questions, _ = build_data_configuration({})
+
+        review = next((q for q in questions if q["key"] == "firewall_review_justifications"), None)
+
+        self.assertIsNotNone(review)
+        assert review is not None
+        self.assertEqual(review["field_kwargs"].get("choices"), YES_NO_CHOICES)
 
     def test_osint_risk_questions_added_when_counts_present(self):
         workbook_data = {
@@ -203,6 +230,55 @@ class WorkbookHelpersTests(SimpleTestCase):
         weak_reason = next(q for q in questions if q["key"] == "wireless_psk_weak_reasons")
         self.assertIs(weak_reason["field_class"], SummaryMultipleChoiceField)
         self.assertEqual(weak_reason["field_kwargs"].get("summary_map"), WEAK_PSK_SUMMARY_MAP)
+
+    def test_password_policy_additional_questions_added(self):
+        questions, _ = build_data_configuration({})
+
+        additional_controls = next((q for q in questions if q["key"] == "password_additional_controls"), None)
+        enforce_mfa = next((q for q in questions if q["key"] == "password_enforce_mfa"), None)
+
+        self.assertIsNotNone(additional_controls)
+        self.assertIsNotNone(enforce_mfa)
+        assert additional_controls is not None
+        assert enforce_mfa is not None
+        self.assertEqual(additional_controls["field_kwargs"].get("choices"), YES_NO_CHOICES)
+        self.assertEqual(enforce_mfa["field_kwargs"].get("choices"), YES_NO_CHOICES)
+
+    def test_dns_soa_questions_added_when_issue_present(self):
+        data_artifacts = {
+            "dns_issues": [
+                {
+                    "domain": "example.com",
+                    "issues": [
+                        {"issue": "One or more SOA fields are outside recommended ranges"},
+                        {"issue": "Another issue"},
+                    ],
+                },
+                {
+                    "domain": "example.org",
+                    "issues": [{"issue": "Unrelated"}],
+                },
+            ]
+        }
+
+        questions, _ = build_data_configuration({}, data_artifacts=data_artifacts)
+
+        soa_questions = [q for q in questions if q["section"] == "DNS"]
+
+        self.assertEqual(len(soa_questions), 1)
+        question = soa_questions[0]
+        self.assertEqual(question["subheading"], "example.com")
+        self.assertEqual(question["field_kwargs"].get("choices"), SOA_FIELD_CHOICES)
+
+    def test_overall_risk_question_includes_value(self):
+        questions, _ = build_data_configuration({}, overall_risk="High")
+
+        risk_question = next((q for q in questions if q["key"] == "overall_risk_major_issues"), None)
+
+        self.assertIsNotNone(risk_question)
+        assert risk_question is not None
+        self.assertIn("High", risk_question["label"])
+        self.assertIs(risk_question["field_class"], MultiValueField)
 
     def test_scope_summary_generation(self):
         summary = build_scope_summary(["external", "internal", "firewall"], None)

@@ -13,6 +13,7 @@ from ghostwriter.rolodex.forms_workbook import MultiValueField, SummaryMultipleC
 SECTION_DISPLAY_ORDER = [
     "client",
     "general",
+    "iot-iomt_nexpose",
     "report_card",
     "external_internal_grades",
     "osint",
@@ -23,7 +24,6 @@ SECTION_DISPLAY_ORDER = [
     "ad",
     "password",
     "internal_nexpose",
-    "iot-iomt_nexpose",
     "endpoint",
     "snmp",
     "sql",
@@ -43,6 +43,15 @@ RISK_CHOICES = (
 YES_NO_CHOICES = (
     ("yes", "Yes"),
     ("no", "No"),
+)
+
+SOA_FIELD_CHOICES = (
+    ("serial", "serial"),
+    ("expire", "expire"),
+    ("mname", "mname"),
+    ("minimum", "minimum"),
+    ("refresh", "refresh"),
+    ("retry", "retry"),
 )
 
 SCOPE_CHOICES = (
@@ -290,6 +299,9 @@ def build_workbook_sections(workbook_data: Optional[Dict[str, Any]]) -> List[Dic
 def build_data_configuration(
     workbook_data: Optional[Dict[str, Any]],
     project_type: Optional[str] = None,
+    *,
+    data_artifacts: Optional[Dict[str, Any]] = None,
+    overall_risk: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
     """Return dynamic questions and file requirements derived from workbook data."""
 
@@ -373,6 +385,45 @@ def build_data_configuration(
         widget=forms.RadioSelect,
     )
 
+    add_question(
+        key="general_first_ca",
+        label="Is this the first CA for this client?",
+        field_class=forms.ChoiceField,
+        section="General",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
+
+    add_question(
+        key="general_first_ca_scope_change",
+        label="Is the scope of this assessment different than the last one?",
+        field_class=forms.ChoiceField,
+        section="General",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
+
+    add_question(
+        key="general_anonymous_ephi",
+        label="Were you able to identify anonymous access to EPHI?",
+        field_class=forms.ChoiceField,
+        section="General",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
+
+    iot_section = _get_nested(data, ("iot_iomt_nexpose",), None)
+    if isinstance(iot_section, dict):
+        add_question(
+            key="iot_testing_confirm",
+            label="Was Internal IoT/IoMT testing performed?",
+            field_class=forms.ChoiceField,
+            section="IoT/IoMT",
+            choices=YES_NO_CHOICES,
+            widget=forms.RadioSelect,
+            initial="no",
+        )
+
     # Intelligence questions
     osint_data = _get_nested(data, ("osint",), {}) or {}
 
@@ -435,18 +486,6 @@ def build_data_configuration(
     if iot_nexpose_total > 0:
         add_required("iot_nexpose_csv.csv")
 
-    iot_section = _get_nested(data, ("iot_iomt_nexpose",), None)
-    if isinstance(iot_section, dict):
-        add_question(
-            key="iot_testing_confirm",
-            label="Was Internal IoT/IoMT testing performed?",
-            field_class=forms.ChoiceField,
-            section="IoT/IoMT",
-            choices=YES_NO_CHOICES,
-            widget=forms.RadioSelect,
-            initial="no",
-        )
-
     firewall_source = _get_nested(data, ("fierwall",), None)
     if not isinstance(firewall_source, dict):
         firewall_source = _get_nested(data, ("firewall",), {})
@@ -473,6 +512,15 @@ def build_data_configuration(
                 subheading=display_name,
                 widget=forms.TextInput(attrs={"class": "form-control"}),
             )
+
+    add_question(
+        key="firewall_review_justifications",
+        label="Did the client indicate they were performing periodic reviews for firewall rule business justifications?",
+        field_class=forms.ChoiceField,
+        section="Firewall",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
 
     # Active Directory risk questions
     ad_domains = _get_nested(data, ("ad", "domains"), []) or []
@@ -512,6 +560,24 @@ def build_data_configuration(
                 choices=RISK_CHOICES,
                 widget=forms.RadioSelect,
             )
+
+    add_question(
+        key="password_additional_controls",
+        label="Did the client indicate they had additional password controls in place (i.e. blacklisting)?",
+        field_class=forms.ChoiceField,
+        section="Password Policies",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
+
+    add_question(
+        key="password_enforce_mfa",
+        label="Did the client indicate they enforce MFA on all accounts?",
+        field_class=forms.ChoiceField,
+        section="Password Policies",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+    )
 
     # Endpoint risk questions
     endpoint_domains = _get_nested(data, ("endpoint", "domains"), []) or []
@@ -656,5 +722,46 @@ def build_data_configuration(
             choices=RISK_CHOICES,
             widget=forms.RadioSelect,
         )
+
+    dns_artifacts = data_artifacts or {}
+    for entry in dns_artifacts.get("dns_issues", []) or []:
+        domain = _as_str(entry.get("domain"))
+        if not domain:
+            continue
+        issues = entry.get("issues") or []
+        if not isinstance(issues, list):
+            continue
+        has_soa_issue = any(
+            _as_str(issue.get("issue")) == "One or more SOA fields are outside recommended ranges"
+            for issue in issues
+            if isinstance(issue, dict)
+        )
+        if not has_soa_issue:
+            continue
+        slug = _slugify_identifier("dns", domain) or f"dns_{len(domain)}"
+        add_question(
+            key=f"{slug}_soa_fields",
+            label="Which SOA fields are outside the recommended ranges?",
+            field_class=forms.MultipleChoiceField,
+            section="DNS",
+            subheading=domain,
+            choices=SOA_FIELD_CHOICES,
+            widget=forms.CheckboxSelectMultiple,
+        )
+
+    if overall_risk:
+        risk_label = (
+            "What were the 'major' issues associated with the Overall Risk of "
+            f"{overall_risk}?"
+        )
+    else:
+        risk_label = "What were the 'major' issues associated with the Overall Risk?"
+
+    add_question(
+        key="overall_risk_major_issues",
+        label=risk_label,
+        field_class=MultiValueField,
+        section="Overall Risk",
+    )
 
     return questions, required_files
