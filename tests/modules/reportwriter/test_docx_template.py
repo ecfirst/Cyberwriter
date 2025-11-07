@@ -7,6 +7,7 @@ import re
 import zipfile
 from importlib import util
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from docx.opc.packuri import PackURI
 from docx.oxml import parse_xml
@@ -1406,4 +1407,46 @@ def test_get_undeclared_variables_ignores_tr_loop_variables(monkeypatch):
     undeclared = template.get_undeclared_template_variables(env)
     assert "project" in undeclared
     assert "site" not in undeclared
+
+
+def test_render_prunes_orphan_relationships(tmp_path):
+    base_template = Path("DOCS/sample_reports/template.docx")
+    original = base_template.read_bytes()
+
+    buffer = io.BytesIO()
+    rels_path = "word/_rels/header2.xml.rels"
+    relationships_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+    with zipfile.ZipFile(io.BytesIO(original)) as src, zipfile.ZipFile(buffer, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == rels_path:
+                tree = ET.fromstring(data)
+                ET.SubElement(
+                    tree,
+                    f"{{{relationships_ns}}}Relationship",
+                    {
+                        "Id": "rId999",
+                        "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+                        "Target": "media/missing.png",
+                    },
+                )
+                data = ET.tostring(tree, encoding="utf-8", xml_declaration=True)
+
+            dst.writestr(info, data)
+
+    modified_template = tmp_path / "broken_template.docx"
+    modified_template.write_bytes(buffer.getvalue())
+
+    template = GhostwriterDocxTemplate(str(modified_template))
+    template.render({}, Environment())
+
+    output_doc = tmp_path / "rendered.docx"
+    template.save(output_doc)
+
+    with zipfile.ZipFile(output_doc) as archive:
+        rels_xml = archive.read(rels_path).decode("utf-8")
+
+    assert "media/image1.png" in rels_xml
+    assert "media/missing.png" not in rels_xml
 

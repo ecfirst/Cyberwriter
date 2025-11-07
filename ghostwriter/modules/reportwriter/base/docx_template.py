@@ -69,6 +69,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self._render_additional_parts(context, jinja_env)
 
+        self._prune_orphan_relationships()
+
         self.is_rendered = True
 
     def get_undeclared_template_variables(self, jinja_env=None):  # type: ignore[override]
@@ -291,6 +293,88 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 part._element = parse_xml(rendered_bytes)
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
+
+    def _prune_orphan_relationships(self) -> None:
+        """Remove relationships that target parts removed during templating."""
+
+        docx = getattr(self, "docx", None)
+        if docx is None:
+            return
+
+        doc_part = getattr(docx, "part", None)
+        if doc_part is None:
+            return
+
+        package = getattr(doc_part, "package", None)
+        if package is None:
+            return
+
+        parts = list(package.iter_parts())
+        partnames = {
+            self._normalise_partname(part)
+            for part in parts
+        }
+
+        for part in parts:
+            rels = getattr(part, "rels", None)
+            if not rels:
+                continue
+
+            base_name = self._normalise_partname(part)
+            rel_items = rels.items() if hasattr(rels, "items") else []
+            for rel_id, rel in list(rel_items):
+                if getattr(rel, "is_external", False):
+                    continue
+
+                target = self._resolve_relationship_target(base_name, rel)
+                if target is None:
+                    continue
+
+                if target in partnames or (
+                    not target.startswith("word/") and f"word/{target}" in partnames
+                ):
+                    continue
+
+                try:
+                    del rels[rel_id]
+                except Exception:  # pragma: no cover - defensive cleanup
+                    continue
+
+    def _resolve_relationship_target(self, base_name: str, rel) -> str | None:
+        target_part = getattr(rel, "target_part", None)
+        if target_part is not None:
+            return self._normalise_partname(target_part)
+
+        target_ref = getattr(rel, "target_ref", None) or getattr(rel, "target", None)
+        if not target_ref:
+            return None
+
+        return self._absolutise_part_target(base_name, str(target_ref))
+
+    def _absolutise_part_target(self, base_name: str, target: str) -> str | None:
+        cleaned = target.strip()
+        if not cleaned:
+            return None
+
+        if cleaned.startswith(('#', 'mailto:')):
+            return None
+
+        if '://' in cleaned.split('#', 1)[0]:
+            return None
+
+        cleaned = cleaned.split('#', 1)[0]
+
+        if cleaned.startswith("/"):
+            candidate = cleaned.lstrip("/")
+        else:
+            base_dir = posixpath.dirname(base_name)
+            candidate = posixpath.normpath(posixpath.join(base_dir, cleaned))
+
+        candidate = candidate.lstrip("./")
+        if not candidate:
+            return None
+
+        return candidate
 
     def _read_excel_part(self, part) -> tuple[list[zipfile.ZipInfo], dict[str, bytes]] | None:
         blob = getattr(part, "_blob", None)
