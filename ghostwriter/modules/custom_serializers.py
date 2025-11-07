@@ -777,9 +777,20 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             result["intelligence"] = ProjectSerializer._strip_internal_metadata(intelligence_section)
 
         iot_section = _extract_simple_section("iot_iomt", set())
-        iot_confirm = source.pop("iot_testing_confirm", None)
-        if iot_confirm not in (None, ""):
-            iot_section["iot_testing_confirm"] = iot_confirm
+        iot_section.setdefault("iot_testing_confirm", "no")
+        iot_confirm_raw = source.pop("iot_testing_confirm", None)
+        if isinstance(iot_confirm_raw, str):
+            normalized_confirm = iot_confirm_raw.strip().lower()
+            if normalized_confirm == "yes":
+                iot_section["iot_testing_confirm"] = "yes"
+            elif normalized_confirm == "no":
+                iot_section["iot_testing_confirm"] = "no"
+            elif normalized_confirm:
+                iot_section["iot_testing_confirm"] = iot_confirm_raw
+        elif isinstance(iot_confirm_raw, bool):
+            iot_section["iot_testing_confirm"] = "yes" if iot_confirm_raw else "no"
+        elif iot_confirm_raw is not None:
+            iot_section["iot_testing_confirm"] = iot_confirm_raw
         if iot_section:
             result["iot_iomt"] = ProjectSerializer._strip_internal_metadata(iot_section)
 

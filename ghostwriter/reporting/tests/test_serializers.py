@@ -719,6 +719,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
             self.assertIn(key, intelligence_section)
             self.assertIsNone(intelligence_section[key])
 
+        self.assertEqual(responses["iot_iomt"].get("iot_testing_confirm"), "no")
         self.assertEqual(responses["endpoint"].get("entries"), [])
         self.assertEqual(responses["ad"].get("entries"), [])
         self.assertEqual(responses["firewall"].get("entries"), [])
@@ -726,3 +727,24 @@ class ProjectSerializerDataResponsesTests(TestCase):
         password_section = responses["password"]
         self.assertEqual(password_section.get("entries"), [])
         self.assertEqual(password_section.get("bad_pass_count"), 0)
+
+    def test_iot_testing_confirm_defaults_to_no(self):
+        self.project.data_responses = {}
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+
+        self.assertIn("iot_iomt", responses)
+        self.assertEqual(responses["iot_iomt"].get("iot_testing_confirm"), "no")
+
+    def test_iot_testing_confirm_reflects_yes_response(self):
+        self.project.data_responses = {"iot_testing_confirm": "yes"}
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+
+        self.assertEqual(responses["iot_iomt"].get("iot_testing_confirm"), "yes")
