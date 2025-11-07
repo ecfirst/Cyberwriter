@@ -777,9 +777,20 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             result["intelligence"] = ProjectSerializer._strip_internal_metadata(intelligence_section)
 
         iot_section = _extract_simple_section("iot_iomt", set())
-        iot_confirm = source.pop("iot_testing_confirm", None)
-        if iot_confirm not in (None, ""):
-            iot_section["iot_testing_confirm"] = iot_confirm
+        iot_section.setdefault("iot_testing_confirm", "no")
+        iot_confirm_raw = source.pop("iot_testing_confirm", None)
+        if isinstance(iot_confirm_raw, str):
+            normalized_confirm = iot_confirm_raw.strip().lower()
+            if normalized_confirm == "yes":
+                iot_section["iot_testing_confirm"] = "yes"
+            elif normalized_confirm == "no":
+                iot_section["iot_testing_confirm"] = "no"
+            elif normalized_confirm:
+                iot_section["iot_testing_confirm"] = iot_confirm_raw
+        elif isinstance(iot_confirm_raw, bool):
+            iot_section["iot_testing_confirm"] = "yes" if iot_confirm_raw else "no"
+        elif iot_confirm_raw is not None:
+            iot_section["iot_testing_confirm"] = iot_confirm_raw
         if iot_section:
             result["iot_iomt"] = ProjectSerializer._strip_internal_metadata(iot_section)
 
@@ -837,6 +848,48 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             if key in result:
                 continue
             result[key] = ProjectSerializer._strip_internal_metadata(value)
+
+        intelligence_defaults = {key: None for key in INTELLIGENCE_RESPONSE_KEYS}
+        intelligence_section = result.get("intelligence")
+        if isinstance(intelligence_section, dict):
+            for key, default in intelligence_defaults.items():
+                intelligence_section.setdefault(key, default)
+        else:
+            result["intelligence"] = dict(intelligence_defaults)
+
+        for key in ("general", "iot_iomt", "overall_risk", "dns", "wireless"):
+            section_value = result.get(key)
+            if not isinstance(section_value, dict):
+                result[key] = {}
+
+        ad_section = result.get("ad")
+        if not isinstance(ad_section, dict):
+            ad_section = {"entries": []}
+            result["ad"] = ad_section
+        else:
+            ad_section.setdefault("entries", [])
+
+        password_section = result.get("password")
+        if not isinstance(password_section, dict):
+            password_section = {"entries": [], "bad_pass_count": 0}
+            result["password"] = password_section
+        else:
+            password_section.setdefault("entries", [])
+            password_section.setdefault("bad_pass_count", 0)
+
+        endpoint_section = result.get("endpoint")
+        if not isinstance(endpoint_section, dict):
+            endpoint_section = {"entries": []}
+            result["endpoint"] = endpoint_section
+        else:
+            endpoint_section.setdefault("entries", [])
+
+        firewall_section = result.get("firewall")
+        if not isinstance(firewall_section, dict):
+            firewall_section = {"entries": []}
+            result["firewall"] = firewall_section
+        else:
+            firewall_section.setdefault("entries", [])
 
         return result
 

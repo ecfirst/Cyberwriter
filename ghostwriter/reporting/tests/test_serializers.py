@@ -13,7 +13,11 @@ from rest_framework.renderers import JSONRenderer
 
 # Ghostwriter Libraries
 from ghostwriter.factories import GenerateMockProject, OplogEntryFactory, OplogFactory
-from ghostwriter.modules.custom_serializers import FullProjectSerializer, ReportDataSerializer
+from ghostwriter.modules.custom_serializers import (
+    FullProjectSerializer,
+    INTELLIGENCE_RESPONSE_KEYS,
+    ReportDataSerializer,
+)
 
 logging.disable(logging.CRITICAL)
 
@@ -657,4 +661,90 @@ class ProjectSerializerDataResponsesTests(TestCase):
 
         serializer = FullProjectSerializer(self.project)
         responses = serializer.data["project"]["data_responses"]
-        self.assertEqual(responses, structured)
+
+        for key, value in structured.items():
+            self.assertIn(key, responses)
+            self.assertEqual(responses[key], value)
+
+        self.assertIn("endpoint", responses)
+        self.assertIn("intelligence", responses)
+
+    def test_intelligence_section_defaults_present(self):
+        self.project.data_responses = {}
+        self.project.workbook_data = {
+            "osint": {
+                "total_squat": 0,
+                "total_buckets": 0,
+                "total_leaks": 0,
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+
+        intelligence_section = responses.get("intelligence")
+        self.assertIsInstance(intelligence_section, dict)
+        for key in INTELLIGENCE_RESPONSE_KEYS:
+            self.assertIn(key, intelligence_section)
+            self.assertIsNone(intelligence_section[key])
+
+    def test_standard_sections_are_always_present(self):
+        self.project.data_responses = {}
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+
+        expected_sections = [
+            "general",
+            "intelligence",
+            "iot_iomt",
+            "overall_risk",
+            "ad",
+            "password",
+            "endpoint",
+            "firewall",
+            "dns",
+            "wireless",
+        ]
+
+        for section in expected_sections:
+            self.assertIn(section, responses)
+            self.assertIsInstance(responses[section], dict)
+
+        intelligence_section = responses["intelligence"]
+        for key in INTELLIGENCE_RESPONSE_KEYS:
+            self.assertIn(key, intelligence_section)
+            self.assertIsNone(intelligence_section[key])
+
+        self.assertEqual(responses["iot_iomt"].get("iot_testing_confirm"), "no")
+        self.assertEqual(responses["endpoint"].get("entries"), [])
+        self.assertEqual(responses["ad"].get("entries"), [])
+        self.assertEqual(responses["firewall"].get("entries"), [])
+
+        password_section = responses["password"]
+        self.assertEqual(password_section.get("entries"), [])
+        self.assertEqual(password_section.get("bad_pass_count"), 0)
+
+    def test_iot_testing_confirm_defaults_to_no(self):
+        self.project.data_responses = {}
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+
+        self.assertIn("iot_iomt", responses)
+        self.assertEqual(responses["iot_iomt"].get("iot_testing_confirm"), "no")
+
+    def test_iot_testing_confirm_reflects_yes_response(self):
+        self.project.data_responses = {"iot_testing_confirm": "yes"}
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+
+        self.assertEqual(responses["iot_iomt"].get("iot_testing_confirm"), "yes")
