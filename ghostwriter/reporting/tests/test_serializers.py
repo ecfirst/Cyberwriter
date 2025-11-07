@@ -781,3 +781,25 @@ class ProjectSerializerWorkbookDefaultsTests(TestCase):
         self.assertEqual(workbook["password"].get("policies"), [])
         self.assertIn("general", workbook)
         self.assertIsInstance(workbook["general"], dict)
+
+    def test_full_project_serializer_includes_workbook_defaults(self):
+        client, project, _ = GenerateMockProject()
+        project.workbook_data = {}
+        project.save(update_fields=["workbook_data"])
+
+        serialized = FullProjectSerializer(project).data
+        workbook = serialized["project"]["workbook_data"]
+
+        self.assertEqual(workbook["endpoint"].get("domains"), [])
+        self.assertEqual(workbook["firewall"].get("devices"), [])
+
+    def test_report_serializer_includes_workbook_defaults(self):
+        client, project, report = GenerateMockProject()
+        project.workbook_data = None
+        project.save(update_fields=["workbook_data"])
+
+        serialized = ReportDataSerializer(report).data
+        workbook = serialized["project"]["workbook_data"]
+
+        self.assertEqual(workbook["endpoint"].get("domains"), [])
+        self.assertEqual(workbook["password"].get("policies"), [])

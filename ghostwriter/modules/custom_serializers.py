@@ -1643,6 +1643,15 @@ class FullProjectSerializer(serializers.Serializer):
     tools = SerializerMethodField("get_tools")
     recipient = SerializerMethodField("get_recipient")
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        project_data = data.get("project")
+        if isinstance(project_data, dict):
+            project_data["workbook_data"] = ProjectSerializer._prepare_workbook_data(
+                project_data.get("workbook_data")
+            )
+        return data
+
     def get_report_date(self, obj):
         return dateformat.format(datetime.now(), settings.DATE_FORMAT)
 
@@ -1790,6 +1799,12 @@ class ReportDataSerializer(CustomModelSerializer):
     def to_representation(self, instance):
         # Get the standard JSON from ``super()``
         rep = super().to_representation(instance)
+
+        project_data = rep.get("project")
+        if isinstance(project_data, dict):
+            project_data["workbook_data"] = ProjectSerializer._prepare_workbook_data(
+                project_data.get("workbook_data")
+            )
 
         # Calculate totals for various values
         total_findings = len(rep["findings"])
