@@ -1592,3 +1592,122 @@ def test_render_merges_duplicate_body_elements(tmp_path):
     assert len(bodies) == 1
     assert b"Extra Section" in document_xml
 
+
+def test_render_preserves_primary_section_properties(tmp_path):
+    base_template = Path("DOCS/sample_reports/template.docx")
+    original = base_template.read_bytes()
+
+    with zipfile.ZipFile(io.BytesIO(original)) as src:
+        document_xml = src.read("word/document.xml")
+
+    namespaces = {
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    }
+
+    original_tree = etree.fromstring(document_xml)
+    original_sectpr = original_tree.xpath("./w:body/w:sectPr", namespaces=namespaces)[0]
+    original_refs = {
+        child.tag: child.get(f"{{{namespaces['r']}}}id")
+        for child in original_sectpr
+        if child.get(f"{{{namespaces['r']}}}id") is not None
+    }
+
+    duplicate_body = (
+        '<w:body xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<w:p><w:r><w:t>Legacy Section</w:t></w:r></w:p>'
+        '<w:sectPr>'
+        '<w:headerReference w:type="default" r:id="rId999"/>'
+        '<w:footerReference w:type="default" r:id="rId998"/>'
+        '</w:sectPr>'
+        '</w:body>'
+    )
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(original)) as src, zipfile.ZipFile(buffer, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == "word/document.xml":
+                data = data.replace(b"</w:body>", b"</w:body>" + duplicate_body.encode("utf-8"), 1)
+            dst.writestr(info, data)
+
+    modified_template = tmp_path / "section_template.docx"
+    modified_template.write_bytes(buffer.getvalue())
+
+    template = GhostwriterDocxTemplate(str(modified_template))
+    template.render({}, Environment())
+
+    output_doc = tmp_path / "rendered.docx"
+    template.save(output_doc)
+
+    with zipfile.ZipFile(output_doc) as archive:
+        rendered_xml = archive.read("word/document.xml")
+
+    rendered_tree = etree.fromstring(rendered_xml)
+    rendered_sectpr = rendered_tree.xpath("./w:body/w:sectPr", namespaces=namespaces)[0]
+    rendered_refs = {
+        child.tag: child.get(f"{{{namespaces['r']}}}id")
+        for child in rendered_sectpr
+        if child.get(f"{{{namespaces['r']}}}id") is not None
+    }
+
+    rendered_text = rendered_xml.decode("utf-8")
+    assert "rId999" not in rendered_text
+    assert "rId998" not in rendered_text
+    assert rendered_refs == original_refs
+
+
+def test_render_removes_attached_template_reference(tmp_path):
+    base_template = Path("DOCS/sample_reports/template.docx")
+    original = base_template.read_bytes()
+
+    relationships_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    rel_type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate"
+
+    buffer = io.BytesIO()
+
+    with zipfile.ZipFile(io.BytesIO(original)) as src, zipfile.ZipFile(buffer, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == "word/settings.xml":
+                tree = ET.fromstring(data)
+                attached = ET.SubElement(tree, f"{{{word_ns}}}attachedTemplate")
+                attached.set(
+                    f"{{http://schemas.openxmlformats.org/officeDocument/2006/relationships}}id",
+                    "rId555",
+                )
+                data = ET.tostring(tree, encoding="utf-8", xml_declaration=True)
+            elif info.filename == "word/_rels/settings.xml.rels":
+                tree = ET.fromstring(data)
+                ET.SubElement(
+                    tree,
+                    f"{{{relationships_ns}}}Relationship",
+                    {
+                        "Id": "rId555",
+                        "Type": rel_type,
+                        "Target": "file:///C:/Templates/Legacy.dotx",
+                        "TargetMode": "External",
+                    },
+                )
+                data = ET.tostring(tree, encoding="utf-8", xml_declaration=True)
+
+            dst.writestr(info, data)
+
+    modified_template = tmp_path / "attached_template.docx"
+    modified_template.write_bytes(buffer.getvalue())
+
+    template = GhostwriterDocxTemplate(str(modified_template))
+    template.render({}, Environment())
+
+    output_doc = tmp_path / "rendered.docx"
+    template.save(output_doc)
+
+    with zipfile.ZipFile(output_doc) as archive:
+        settings_xml = archive.read("word/settings.xml").decode("utf-8")
+        rels_xml = archive.read("word/_rels/settings.xml.rels").decode("utf-8")
+
+    assert "attachedTemplate" not in settings_xml
+    assert "rId555" not in rels_xml
+

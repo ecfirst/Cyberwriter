@@ -73,6 +73,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self._prune_orphan_relationships()
         self._normalise_document_structure()
+        self._remove_attached_template_reference()
 
         self.is_rendered = True
 
@@ -412,6 +413,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         bodies = self._xpath(document_element, "./w:body", namespaces)
 
+        if not bodies:
+            bodies = [
+                child
+                for child in document_element.iterchildren()
+                if self._tag_equals(child, qn("w:body"))
+            ]
+
         if len(bodies) <= 1:
             return
 
@@ -425,8 +433,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
         for extra_body in bodies[1:]:
             for child in list(extra_body):
                 extra_body.remove(child)
-                if child.tag == qn("w:sectPr"):
-                    default_sectpr = child
+                if self._tag_equals(child, qn("w:sectPr")):
+                    if default_sectpr is None:
+                        default_sectpr = child
                 else:
                     primary_body.append(child)
 
@@ -438,6 +447,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
             for existing in list(self._xpath(primary_body, "./w:sectPr", namespaces)):
                 primary_body.remove(existing)
             primary_body.append(default_sectpr)
+
+    def _tag_equals(self, element, target: str) -> bool:
+        try:
+            return element.tag == target
+        except AttributeError:
+            return False
 
     def _remove_relationship_references(self, part, rel_ids: set[str]) -> None:
         element = getattr(part, "element", None)
@@ -515,6 +530,82 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return tree.xpath(query)
         except (etree.Error, TypeError, ValueError):
             return []
+
+    def _remove_attached_template_reference(self) -> None:
+        docx = getattr(self, "docx", None)
+        if docx is None:
+            return
+
+        doc_part = getattr(docx, "part", None)
+        if doc_part is None:
+            return
+
+        package = getattr(doc_part, "package", None)
+        if package is None:
+            return
+
+        settings_part = None
+        for part in package.iter_parts():
+            if self._normalise_partname(part) == "word/settings.xml":
+                settings_part = part
+                break
+
+        if settings_part is None:
+            return
+
+        element = getattr(settings_part, "element", None)
+        if element is None:
+            element = getattr(settings_part, "_element", None)
+        if element is None:
+            blob = getattr(settings_part, "_blob", None)
+            if blob:
+                try:
+                    element = parse_xml(blob)
+                except Exception:  # pragma: no cover - defensive
+                    element = None
+                else:
+                    settings_part._element = element
+
+        if element is None:
+            return
+
+        namespaces = {key or "ns": value for key, value in element.nsmap.items() if value}
+        namespaces.setdefault("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+        namespaces.setdefault("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
+
+        attached_nodes = self._xpath(element, ".//w:attachedTemplate", namespaces)
+        if not attached_nodes:
+            return
+
+        rels = getattr(settings_part, "rels", None)
+        removed = False
+        relationship_attr = f"{{{namespaces['r']}}}id"
+
+        for node in list(attached_nodes):
+            rid = node.get(relationship_attr)
+            if rid and rels and rid in rels:
+                try:
+                    del rels[rid]
+                except Exception:  # pragma: no cover - defensive cleanup
+                    pass
+                else:
+                    removed = True
+
+            parent = node.getparent()
+            if parent is not None:
+                parent.remove(node)
+
+        if removed and hasattr(settings_part, "drop_rel"):
+            # Some relationship containers cache dropped IDs; ensure they're removed.
+            cached = getattr(settings_part, "_rels", {})
+            current = getattr(settings_part, "rels", {}) or {}
+            for rid in list(cached):
+                if rid in current:
+                    continue
+                try:
+                    settings_part.drop_rel(rid)
+                except Exception:  # pragma: no cover - defensive cleanup
+                    continue
 
     def _absolutise_part_target(self, base_name: str, target: str) -> str | None:
         cleaned = target.strip()
