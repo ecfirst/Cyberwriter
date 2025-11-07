@@ -52,8 +52,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
             else:
                 jinja_env.autoescape = autoescape
 
-        self._render_additional_parts(context, jinja_env)
-
         xml_src = self.build_xml(context, jinja_env)
         tree = self.fix_tables(xml_src)
         self.fix_docpr_ids(tree)
@@ -68,6 +66,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
             self.map_headers_footers_xml(rel_key, xml)
 
         self.render_properties(context, jinja_env)
+
+        self._render_additional_parts(context, jinja_env)
 
         self.is_rendered = True
 

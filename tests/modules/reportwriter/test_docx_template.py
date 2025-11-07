@@ -641,6 +641,53 @@ class FakeChartPart(FakeXmlPart):
         self.rels = {"rId1": FakeRelationship(target_part)}
 
 
+def test_render_renders_main_document_before_additional_parts(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        template,
+        "build_xml",
+        lambda context, env: (calls.append("build_xml") or "<document/>"),
+    )
+    monkeypatch.setattr(
+        template,
+        "fix_tables",
+        lambda xml: (calls.append("fix_tables") or xml),
+    )
+    monkeypatch.setattr(template, "fix_docpr_ids", lambda tree: calls.append("fix_docpr_ids"))
+    monkeypatch.setattr(template, "map_tree", lambda tree: calls.append("map_tree"))
+    monkeypatch.setattr(
+        template,
+        "build_headers_footers_xml",
+        lambda context, uri, env: [],
+    )
+    monkeypatch.setattr(
+        template,
+        "map_headers_footers_xml",
+        lambda rel_key, xml: calls.append("map_headers_footers"),
+    )
+    monkeypatch.setattr(
+        template,
+        "render_properties",
+        lambda context, env: calls.append("render_properties"),
+    )
+    monkeypatch.setattr(
+        template,
+        "_render_additional_parts",
+        lambda context, env: calls.append("additional_parts"),
+    )
+
+    template.render({}, Environment())
+
+    assert "build_xml" in calls
+    assert "additional_parts" in calls
+    assert calls.index("build_xml") < calls.index("additional_parts")
+    assert calls.index("render_properties") < calls.index("additional_parts")
+
+
 def test_iter_additional_parts_filters_to_known_patterns(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
