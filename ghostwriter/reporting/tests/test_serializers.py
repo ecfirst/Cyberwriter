@@ -16,6 +16,7 @@ from ghostwriter.factories import GenerateMockProject, OplogEntryFactory, OplogF
 from ghostwriter.modules.custom_serializers import (
     FullProjectSerializer,
     INTELLIGENCE_RESPONSE_KEYS,
+    ProjectSerializer,
     ReportDataSerializer,
 )
 
@@ -748,3 +749,35 @@ class ProjectSerializerDataResponsesTests(TestCase):
         responses = serializer.data["project"]["data_responses"]
 
         self.assertEqual(responses["iot_iomt"].get("iot_testing_confirm"), "yes")
+
+
+class ProjectSerializerWorkbookDefaultsTests(TestCase):
+    """Ensure workbook data provides safe defaults for templating."""
+
+    def test_missing_sections_populate_empty_structures(self):
+        client, project, _ = GenerateMockProject()
+        project.workbook_data = {"general": {"external_start": "2025-01-01"}}
+        project.save(update_fields=["workbook_data"])
+
+        serialized = ProjectSerializer(project).data
+        workbook = serialized.get("workbook_data")
+
+        self.assertIsInstance(workbook, dict)
+        self.assertEqual(workbook["general"].get("external_start"), "2025-01-01")
+        self.assertEqual(workbook["endpoint"].get("domains"), [])
+        self.assertEqual(workbook["firewall"].get("devices"), [])
+        self.assertEqual(workbook["web"].get("sites"), [])
+
+    def test_none_workbook_data_returns_default_sections(self):
+        client, project, _ = GenerateMockProject()
+        project.workbook_data = None
+        project.save(update_fields=["workbook_data"])
+
+        serialized = ProjectSerializer(project).data
+        workbook = serialized.get("workbook_data")
+
+        self.assertIsInstance(workbook, dict)
+        self.assertEqual(workbook["ad"].get("domains"), [])
+        self.assertEqual(workbook["password"].get("policies"), [])
+        self.assertIn("general", workbook)
+        self.assertIsInstance(workbook["general"], dict)

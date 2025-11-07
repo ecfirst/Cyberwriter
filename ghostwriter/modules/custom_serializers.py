@@ -7,7 +7,7 @@ from datetime import datetime
 import zoneinfo
 
 # Standard Libraries
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Django Imports
 from django.conf import settings
@@ -676,6 +676,37 @@ class ProjectContactSerializer(CustomModelSerializer):
 class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
     """Serialize :model:`rolodex:Project` entries."""
 
+    _WORKBOOK_SECTION_KEYS: Tuple[str, ...] = (
+        "client",
+        "general",
+        "ad",
+        "dns",
+        "sql",
+        "web",
+        "snmp",
+        "osint",
+        "endpoint",
+        "firewall",
+        "password",
+        "wireless",
+        "report_card",
+        "cloud_config",
+        "system_config",
+        "external_nexpose",
+        "internal_nexpose",
+        "iot_iomt_nexpose",
+        "external_internal_grades",
+    )
+
+    _WORKBOOK_LIST_PATHS: Tuple[Tuple[str, ...], ...] = (
+        ("ad", "domains"),
+        ("dns", "records"),
+        ("web", "sites"),
+        ("endpoint", "domains"),
+        ("firewall", "devices"),
+        ("password", "policies"),
+    )
+
     name = SerializerMethodField("get_name")
     type = serializers.CharField(source="project_type")
     start_date = SerializerMethodField("get_start_date")
@@ -732,7 +763,8 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if isinstance(data.get("data_artifacts"), dict):
             data["data_artifacts"] = normalize_nexpose_artifacts_map(data["data_artifacts"])
         raw_responses = instance.data_responses or {}
-        workbook_data = instance.workbook_data or {}
+        workbook_data = self._prepare_workbook_data(getattr(instance, "workbook_data", None))
+        data["workbook_data"] = workbook_data
         data["data_responses"] = self._format_data_responses(raw_responses, workbook_data)
         return data
 
@@ -906,6 +938,48 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             cleaned_list = [ProjectSerializer._strip_internal_metadata(item) for item in value]
             return [item for item in cleaned_list if item not in (None, {})]
         return value
+
+    @staticmethod
+    def _prepare_workbook_data(workbook_data: Any) -> Dict[str, Any]:
+        def _deep_copy(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {key: _deep_copy(inner) for key, inner in value.items()}
+            if isinstance(value, list):
+                return [_deep_copy(item) for item in value]
+            return value
+
+        if isinstance(workbook_data, dict):
+            sanitized: Dict[str, Any] = _deep_copy(workbook_data)
+        else:
+            sanitized = {}
+
+        for key in ProjectSerializer._WORKBOOK_SECTION_KEYS:
+            section = sanitized.get(key)
+            if not isinstance(section, dict):
+                sanitized[key] = {}
+
+        for path in ProjectSerializer._WORKBOOK_LIST_PATHS:
+            ProjectSerializer._ensure_list_path(sanitized, path)
+
+        return sanitized
+
+    @staticmethod
+    def _ensure_list_path(data: Dict[str, Any], path: Sequence[str]) -> None:
+        if not path:
+            return
+
+        current: Dict[str, Any] = data
+        for key in path[:-1]:
+            next_value = current.get(key)
+            if not isinstance(next_value, dict):
+                next_value = {}
+            current[key] = next_value
+            current = next_value
+
+        leaf_key = path[-1]
+        leaf_value = current.get(leaf_key)
+        if not isinstance(leaf_value, list):
+            current[leaf_key] = []
 
     @staticmethod
     def _collect_firewall_responses(raw_responses, workbook_data):
