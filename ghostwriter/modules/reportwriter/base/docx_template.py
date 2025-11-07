@@ -410,10 +410,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             "w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
         )
 
-        try:
-            bodies = document_element.xpath("./w:body", namespaces=namespaces)
-        except etree.Error:
-            return
+        bodies = self._xpath(document_element, "./w:body", namespaces)
 
         if len(bodies) <= 1:
             return
@@ -421,7 +418,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         primary_body = bodies[0]
         default_sectpr = None
 
-        for existing in list(primary_body.xpath("./w:sectPr", namespaces=namespaces)):
+        for existing in list(self._xpath(primary_body, "./w:sectPr", namespaces)):
             primary_body.remove(existing)
             default_sectpr = existing
 
@@ -438,7 +435,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 parent.remove(extra_body)
 
         if default_sectpr is not None:
-            for existing in list(primary_body.xpath("./w:sectPr", namespaces=namespaces)):
+            for existing in list(self._xpath(primary_body, "./w:sectPr", namespaces)):
                 primary_body.remove(existing)
             primary_body.append(default_sectpr)
 
@@ -459,12 +456,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             f"{{{namespaces['r']}}}link",
         }
 
-        try:
-            candidates = element.xpath(
-                ".//*[@r:id or @r:embed or @r:link]", namespaces=namespaces
-            )
-        except etree.Error:
-            return
+        candidates = self._xpath(element, ".//*[@r:id or @r:embed or @r:link]", namespaces)
 
         for node in list(candidates):
             values = {
@@ -512,6 +504,17 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return None
 
         return self._absolutise_part_target(base_name, str(target_ref))
+
+    def _xpath(
+        self, element, query: str, namespaces: dict[str, str] | None = None
+    ) -> list:
+        try:
+            tree = etree.ElementTree(element)
+            if namespaces is not None:
+                return tree.xpath(query, namespaces=namespaces)
+            return tree.xpath(query)
+        except (etree.Error, TypeError, ValueError):
+            return []
 
     def _absolutise_part_target(self, base_name: str, target: str) -> str | None:
         cleaned = target.strip()
