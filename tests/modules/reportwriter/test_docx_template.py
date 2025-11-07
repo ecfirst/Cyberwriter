@@ -245,6 +245,27 @@ ORPHANED_HYPERLINK_PARAGRAPH = (
     '<w:r><w:t>See appendix</w:t></w:r>'
     '</w:hyperlink>'
     '</w:p>'
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<w:hyperlink r:id="rId902">'
+    '<w:r><w:t>Local appendix</w:t></w:r>'
+    '</w:hyperlink>'
+    '</w:p>'
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<w:hyperlink r:id="rId903">'
+    '<w:r><w:t>Helpful link</w:t></w:r>'
+    '</w:hyperlink>'
+    '</w:p>'
+)
+
+DUPLICATE_BODY_BLOCK = (
+    '<w:body>'
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:r><w:t>Extra Section</w:t></w:r>'
+    '</w:p>'
+    '<w:sectPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>'
+    '</w:body>'
 )
 
 WORKSHEET_TR_PROJECT_XML = (
@@ -1481,6 +1502,26 @@ def test_render_prunes_orphan_relationships(tmp_path):
                         "TargetMode": "External",
                     },
                 )
+                ET.SubElement(
+                    tree,
+                    f"{{{relationships_ns}}}Relationship",
+                    {
+                        "Id": "rId902",
+                        "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+                        "Target": "file:///C:/Temp/Missing.xlsx",
+                        "TargetMode": "External",
+                    },
+                )
+                ET.SubElement(
+                    tree,
+                    f"{{{relationships_ns}}}Relationship",
+                    {
+                        "Id": "rId903",
+                        "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+                        "Target": "https://example.com/report",
+                        "TargetMode": "External",
+                    },
+                )
                 data = ET.tostring(tree, encoding="utf-8", xml_declaration=True)
             elif info.filename == "word/document.xml":
                 data = data.replace(b"</w:body>", ORPHANED_HYPERLINK_PARAGRAPH.encode("utf-8") + b"</w:body>")
@@ -1507,5 +1548,47 @@ def test_render_prunes_orphan_relationships(tmp_path):
     assert "rId999" not in header_xml
     assert "See appendix" in document_xml
     assert "rId901" not in document_xml
+    assert "rId902" not in document_xml
+    assert "rId903" in document_xml
     assert "Cybersecurity Assessment Report Appendices 2025.docx" not in doc_rels_xml
+    assert "file:///c:/temp/missing.xlsx" not in doc_rels_xml.lower()
+    assert "https://example.com/report" in doc_rels_xml
+
+
+def test_render_merges_duplicate_body_elements(tmp_path):
+    base_template = Path("DOCS/sample_reports/template.docx")
+    original = base_template.read_bytes()
+
+    buffer = io.BytesIO()
+
+    with zipfile.ZipFile(io.BytesIO(original)) as src, zipfile.ZipFile(buffer, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == "word/document.xml":
+                data = data.replace(
+                    b"</w:body>",
+                    b"</w:body>" + DUPLICATE_BODY_BLOCK.encode("utf-8"),
+                    1,
+                )
+
+            dst.writestr(info, data)
+
+    modified_template = tmp_path / "duplicate_body_template.docx"
+    modified_template.write_bytes(buffer.getvalue())
+
+    template = GhostwriterDocxTemplate(str(modified_template))
+    template.render({}, Environment())
+
+    output_doc = tmp_path / "rendered.docx"
+    template.save(output_doc)
+
+    with zipfile.ZipFile(output_doc) as archive:
+        document_xml = archive.read("word/document.xml")
+
+    tree = etree.fromstring(document_xml)
+    namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    bodies = tree.xpath("./w:body", namespaces=namespaces)
+
+    assert len(bodies) == 1
+    assert b"Extra Section" in document_xml
 

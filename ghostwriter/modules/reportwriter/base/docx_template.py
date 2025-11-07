@@ -72,6 +72,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         self._render_additional_parts(context, jinja_env)
 
         self._prune_orphan_relationships()
+        self._normalise_document_structure()
 
         self.is_rendered = True
 
@@ -369,17 +370,77 @@ class GhostwriterDocxTemplate(DocxTemplate):
         lowered = target.lower()
         if lowered.startswith("mailto:"):
             return False
-        if "://" in lowered.split("#", 1)[0]:
+        if lowered.startswith("http://") or lowered.startswith("https://"):
+            return False
+        if lowered.startswith("//"):
             return False
         if lowered.startswith("file:"):
             return True
         if any(lowered.startswith(prefix) for prefix in ("./", "../", "/")):
             return True
-        if ":" in lowered.split("/", 1)[0]:
+
+        scheme_split = lowered.split(":", 1)
+        if len(scheme_split) > 1 and scheme_split[0].isalpha():
             return True
-        if not any(sep in lowered for sep in ("/", "\\")):
+
+        if any(sep in lowered for sep in ("/", "\\")):
             return True
-        return False
+
+        return True
+
+    def _normalise_document_structure(self) -> None:
+        docx = getattr(self, "docx", None)
+        if docx is None:
+            return
+
+        doc_part = getattr(docx, "part", None)
+        if doc_part is None:
+            return
+
+        document_element = getattr(doc_part, "element", None)
+        if document_element is None:
+            return
+
+        namespaces = {
+            key or "ns": value
+            for key, value in document_element.nsmap.items()
+            if value
+        }
+        namespaces.setdefault(
+            "w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        )
+
+        try:
+            bodies = document_element.xpath("./w:body", namespaces=namespaces)
+        except etree.Error:
+            return
+
+        if len(bodies) <= 1:
+            return
+
+        primary_body = bodies[0]
+        default_sectpr = None
+
+        for existing in list(primary_body.xpath("./w:sectPr", namespaces=namespaces)):
+            primary_body.remove(existing)
+            default_sectpr = existing
+
+        for extra_body in bodies[1:]:
+            for child in list(extra_body):
+                extra_body.remove(child)
+                if child.tag == qn("w:sectPr"):
+                    default_sectpr = child
+                else:
+                    primary_body.append(child)
+
+            parent = extra_body.getparent()
+            if parent is not None:
+                parent.remove(extra_body)
+
+        if default_sectpr is not None:
+            for existing in list(primary_body.xpath("./w:sectPr", namespaces=namespaces)):
+                primary_body.remove(existing)
+            primary_body.append(default_sectpr)
 
     def _remove_relationship_references(self, part, rel_ids: set[str]) -> None:
         element = getattr(part, "element", None)
