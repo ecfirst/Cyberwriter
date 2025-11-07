@@ -838,6 +838,48 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 continue
             result[key] = ProjectSerializer._strip_internal_metadata(value)
 
+        intelligence_defaults = {key: None for key in INTELLIGENCE_RESPONSE_KEYS}
+        intelligence_section = result.get("intelligence")
+        if isinstance(intelligence_section, dict):
+            for key, default in intelligence_defaults.items():
+                intelligence_section.setdefault(key, default)
+        else:
+            result["intelligence"] = dict(intelligence_defaults)
+
+        for key in ("general", "iot_iomt", "overall_risk", "dns", "wireless"):
+            section_value = result.get(key)
+            if not isinstance(section_value, dict):
+                result[key] = {}
+
+        ad_section = result.get("ad")
+        if not isinstance(ad_section, dict):
+            ad_section = {"entries": []}
+            result["ad"] = ad_section
+        else:
+            ad_section.setdefault("entries", [])
+
+        password_section = result.get("password")
+        if not isinstance(password_section, dict):
+            password_section = {"entries": [], "bad_pass_count": 0}
+            result["password"] = password_section
+        else:
+            password_section.setdefault("entries", [])
+            password_section.setdefault("bad_pass_count", 0)
+
+        endpoint_section = result.get("endpoint")
+        if not isinstance(endpoint_section, dict):
+            endpoint_section = {"entries": []}
+            result["endpoint"] = endpoint_section
+        else:
+            endpoint_section.setdefault("entries", [])
+
+        firewall_section = result.get("firewall")
+        if not isinstance(firewall_section, dict):
+            firewall_section = {"entries": []}
+            result["firewall"] = firewall_section
+        else:
+            firewall_section.setdefault("entries", [])
+
         return result
 
     @staticmethod
