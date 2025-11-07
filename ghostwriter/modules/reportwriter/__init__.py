@@ -9,6 +9,7 @@ import logging
 # 3rd Party Libraries
 import jinja2
 import jinja2.sandbox
+from jinja2 import tests as jinja_tests
 
 from ghostwriter.modules.reportwriter import jinja_funcs
 
@@ -47,6 +48,15 @@ def prepare_jinja2_env(debug=False):
         undefined = jinja2.make_logging_undefined(logger=logger, base=jinja2.Undefined)
 
     env = jinja2.sandbox.SandboxedEnvironment(undefined=undefined, extensions=["jinja2.ext.debug"], autoescape=True)
+    
+    def _defined(value, *args, **kwargs):
+        """Gracefully evaluate ``is defined`` even when templates pass spurious args."""
+
+        if hasattr(value, "_record"):
+            value._record()
+        return jinja_tests.test_defined(value)
+
+    env.tests["defined"] = _defined
     env.filters["filter_severity"] = jinja_funcs.filter_severity
     env.filters["filter_type"] = jinja_funcs.filter_type
     env.filters["strip_html"] = jinja_funcs.strip_html

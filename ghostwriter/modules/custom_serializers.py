@@ -1019,6 +1019,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 details.setdefault("risk", None)
                 details.setdefault("score", None)
 
+            bucket.setdefault("grade", None)
+            bucket.setdefault("total", None)
+
     @staticmethod
     def _collect_firewall_responses(raw_responses, workbook_data):
         firewall_data = (workbook_data or {}).get("firewall", {})

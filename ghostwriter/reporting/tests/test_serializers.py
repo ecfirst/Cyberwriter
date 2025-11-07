@@ -835,6 +835,19 @@ class ProjectSerializerWorkbookDefaultsTests(TestCase):
                 self.assertEqual(section[metric].get("risk"), None)
                 self.assertEqual(section[metric].get("score"), None)
 
+    def test_external_internal_grade_sections_include_grade_and_totals(self):
+        client, project, _ = GenerateMockProject()
+        project.workbook_data = {}
+        project.save(update_fields=["workbook_data"])
+
+        workbook = ProjectSerializer(project).data["workbook_data"]
+        grades = workbook["external_internal_grades"]
+
+        self.assertIsNone(grades["external"].get("grade"))
+        self.assertIsNone(grades["external"].get("total"))
+        self.assertIsNone(grades["internal"].get("grade"))
+        self.assertIsNone(grades["internal"].get("total"))
+
     def test_external_internal_grade_sections_preserve_existing_values(self):
         client, project, _ = GenerateMockProject()
         project.workbook_data = {
