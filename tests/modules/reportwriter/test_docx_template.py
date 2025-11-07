@@ -213,6 +213,40 @@ WORKSHEET_TC_RENDERED_COLUMNS_XML = (
     '</worksheet>'
 )
 
+ORPHANED_DRAWING_PARAGRAPH = (
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+    'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+    'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+    '<w:r>'
+    '<w:drawing>'
+    '<wp:inline>'
+    '<wp:docPr id="42" name="Picture"/>'
+    '<a:graphic>'
+    '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+    '<pic:pic>'
+    '<pic:nvPicPr><pic:cNvPr id="1" name="Orphaned"/><pic:cNvPicPr/></pic:nvPicPr>'
+    '<pic:blipFill><a:blip r:embed="rId999"/></pic:blipFill>'
+    '<pic:spPr/>'
+    '</pic:pic>'
+    '</a:graphicData>'
+    '</a:graphic>'
+    '</wp:inline>'
+    '</w:drawing>'
+    '</w:r>'
+    '</w:p>'
+)
+
+ORPHANED_HYPERLINK_PARAGRAPH = (
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<w:hyperlink r:id="rId901">'
+    '<w:r><w:t>See appendix</w:t></w:r>'
+    '</w:hyperlink>'
+    '</w:p>'
+)
+
 WORKSHEET_TR_PROJECT_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -1416,6 +1450,7 @@ def test_render_prunes_orphan_relationships(tmp_path):
     buffer = io.BytesIO()
     rels_path = "word/_rels/header2.xml.rels"
     relationships_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    doc_relationships_path = "word/_rels/document.xml.rels"
 
     with zipfile.ZipFile(io.BytesIO(original)) as src, zipfile.ZipFile(buffer, "w") as dst:
         for info in src.infolist():
@@ -1432,6 +1467,23 @@ def test_render_prunes_orphan_relationships(tmp_path):
                     },
                 )
                 data = ET.tostring(tree, encoding="utf-8", xml_declaration=True)
+            elif info.filename == "word/header2.xml":
+                data = data.replace(b"</w:hdr>", ORPHANED_DRAWING_PARAGRAPH.encode("utf-8") + b"</w:hdr>")
+            elif info.filename == doc_relationships_path:
+                tree = ET.fromstring(data)
+                ET.SubElement(
+                    tree,
+                    f"{{{relationships_ns}}}Relationship",
+                    {
+                        "Id": "rId901",
+                        "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+                        "Target": "Cybersecurity Assessment Report Appendices 2025.docx",
+                        "TargetMode": "External",
+                    },
+                )
+                data = ET.tostring(tree, encoding="utf-8", xml_declaration=True)
+            elif info.filename == "word/document.xml":
+                data = data.replace(b"</w:body>", ORPHANED_HYPERLINK_PARAGRAPH.encode("utf-8") + b"</w:body>")
 
             dst.writestr(info, data)
 
@@ -1446,7 +1498,14 @@ def test_render_prunes_orphan_relationships(tmp_path):
 
     with zipfile.ZipFile(output_doc) as archive:
         rels_xml = archive.read(rels_path).decode("utf-8")
+        header_xml = archive.read("word/header2.xml").decode("utf-8")
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        doc_rels_xml = archive.read(doc_relationships_path).decode("utf-8")
 
     assert "media/image1.png" in rels_xml
     assert "media/missing.png" not in rels_xml
+    assert "rId999" not in header_xml
+    assert "See appendix" in document_xml
+    assert "rId901" not in document_xml
+    assert "Cybersecurity Assessment Report Appendices 2025.docx" not in doc_rels_xml
 

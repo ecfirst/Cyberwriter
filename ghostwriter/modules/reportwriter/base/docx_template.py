@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import fnmatch
+import posixpath
 import io
 import re
 import zipfile
-import posixpath
+from collections import defaultdict
 from copy import deepcopy
 from typing import Iterator
 
 from docx.oxml import parse_xml
+from docx.oxml.ns import qn
 from docxtpl.template import DocxTemplate
 from jinja2 import Environment, meta
 from lxml import etree
@@ -315,6 +317,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
             for part in parts
         }
 
+        removed_ids: dict[object, set[str]] = defaultdict(set)
+
         for part in parts:
             rels = getattr(part, "rels", None)
             if not rels:
@@ -323,22 +327,119 @@ class GhostwriterDocxTemplate(DocxTemplate):
             base_name = self._normalise_partname(part)
             rel_items = rels.items() if hasattr(rels, "items") else []
             for rel_id, rel in list(rel_items):
+                remove = False
+
                 if getattr(rel, "is_external", False):
-                    continue
+                    remove = self._should_remove_external_relationship(rel)
+                    target = None
+                else:
+                    target = self._resolve_relationship_target(base_name, rel)
+                    if target is None:
+                        continue
 
-                target = self._resolve_relationship_target(base_name, rel)
-                if target is None:
-                    continue
+                    if target not in partnames and (
+                        target.startswith("word/")
+                        or f"word/{target}" not in partnames
+                    ):
+                        remove = True
 
-                if target in partnames or (
-                    not target.startswith("word/") and f"word/{target}" in partnames
-                ):
+                if not remove:
                     continue
 
                 try:
                     del rels[rel_id]
                 except Exception:  # pragma: no cover - defensive cleanup
                     continue
+
+                removed_ids[part].add(rel_id)
+
+        for part, rel_ids in removed_ids.items():
+            if rel_ids:
+                self._remove_relationship_references(part, rel_ids)
+
+    def _should_remove_external_relationship(self, rel) -> bool:
+        target_ref = getattr(rel, "target_ref", None) or getattr(rel, "target", None)
+        if not target_ref:
+            return True
+
+        target = str(target_ref).strip()
+        if not target:
+            return True
+
+        lowered = target.lower()
+        if lowered.startswith("mailto:"):
+            return False
+        if "://" in lowered.split("#", 1)[0]:
+            return False
+        if lowered.startswith("file:"):
+            return True
+        if any(lowered.startswith(prefix) for prefix in ("./", "../", "/")):
+            return True
+        if ":" in lowered.split("/", 1)[0]:
+            return True
+        if not any(sep in lowered for sep in ("/", "\\")):
+            return True
+        return False
+
+    def _remove_relationship_references(self, part, rel_ids: set[str]) -> None:
+        element = getattr(part, "element", None)
+        if element is None:
+            element = getattr(part, "_element", None)
+        if element is None:
+            return
+
+        namespaces = {key or "ns": value for key, value in element.nsmap.items() if value}
+        namespaces.setdefault("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+        namespaces.setdefault("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
+
+        relationship_attrs = {
+            f"{{{namespaces['r']}}}id",
+            f"{{{namespaces['r']}}}embed",
+            f"{{{namespaces['r']}}}link",
+        }
+
+        try:
+            candidates = element.xpath(
+                ".//*[@r:id or @r:embed or @r:link]", namespaces=namespaces
+            )
+        except etree.Error:
+            return
+
+        for node in list(candidates):
+            values = {
+                node.get(attr) for attr in relationship_attrs if node.get(attr) is not None
+            }
+            if not values.intersection(rel_ids):
+                continue
+
+            if node.tag == qn("w:hyperlink"):
+                self._unwrap_element(node)
+                continue
+
+            self._remove_run_ancestor(node)
+
+    def _unwrap_element(self, node):
+        parent = node.getparent()
+        if parent is None:
+            return
+
+        index = parent.index(node)
+        for child in list(node):
+            parent.insert(index, child)
+            index += 1
+        parent.remove(node)
+
+    def _remove_run_ancestor(self, node) -> None:
+        current = node
+        run_tag = qn("w:r")
+        while current is not None and current.tag != run_tag:
+            current = current.getparent()
+
+        target = current if current is not None else node
+        parent = target.getparent()
+        if parent is None:
+            return
+        parent.remove(target)
 
     def _resolve_relationship_target(self, base_name: str, rel) -> str | None:
         target_part = getattr(rel, "target_part", None)
