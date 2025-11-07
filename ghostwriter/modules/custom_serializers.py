@@ -707,6 +707,20 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         ("password", "policies"),
     )
 
+    _WORKBOOK_GRADE_METRICS: Dict[str, Tuple[str, ...]] = {
+        "external": ("dns", "osint", "nexpose", "web"),
+        "internal": (
+            "iam",
+            "password",
+            "nexpose",
+            "endpoint",
+            "snmp",
+            "sql",
+            "cloud",
+            "configuration",
+        ),
+    }
+
     name = SerializerMethodField("get_name")
     type = serializers.CharField(source="project_type")
     start_date = SerializerMethodField("get_start_date")
@@ -961,6 +975,8 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         for path in ProjectSerializer._WORKBOOK_LIST_PATHS:
             ProjectSerializer._ensure_list_path(sanitized, path)
 
+        ProjectSerializer._ensure_grade_metric_defaults(sanitized)
+
         return sanitized
 
     @staticmethod
@@ -980,6 +996,28 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         leaf_value = current.get(leaf_key)
         if not isinstance(leaf_value, list):
             current[leaf_key] = []
+
+    @staticmethod
+    def _ensure_grade_metric_defaults(data: Dict[str, Any]) -> None:
+        grades_section = data.get("external_internal_grades")
+        if not isinstance(grades_section, dict):
+            grades_section = {}
+            data["external_internal_grades"] = grades_section
+
+        for category, metrics in ProjectSerializer._WORKBOOK_GRADE_METRICS.items():
+            bucket = grades_section.get(category)
+            if not isinstance(bucket, dict):
+                bucket = {}
+                grades_section[category] = bucket
+
+            for metric in metrics:
+                details = bucket.get(metric)
+                if not isinstance(details, dict):
+                    bucket[metric] = {"risk": None, "score": None}
+                    continue
+
+                details.setdefault("risk", None)
+                details.setdefault("score", None)
 
     @staticmethod
     def _collect_firewall_responses(raw_responses, workbook_data):

@@ -803,3 +803,52 @@ class ProjectSerializerWorkbookDefaultsTests(TestCase):
 
         self.assertEqual(workbook["endpoint"].get("domains"), [])
         self.assertEqual(workbook["password"].get("policies"), [])
+
+    def test_external_internal_grade_sections_default_to_null_risk_and_score(self):
+        client, project, _ = GenerateMockProject()
+        project.workbook_data = {}
+        project.save(update_fields=["workbook_data"])
+
+        workbook = ProjectSerializer(project).data["workbook_data"]
+        grades = workbook["external_internal_grades"]
+
+        for category, metrics in (
+            ("external", ("dns", "osint", "nexpose", "web")),
+            (
+                "internal",
+                (
+                    "iam",
+                    "password",
+                    "nexpose",
+                    "endpoint",
+                    "snmp",
+                    "sql",
+                    "cloud",
+                    "configuration",
+                ),
+            ),
+        ):
+            self.assertIn(category, grades)
+            section = grades[category]
+            for metric in metrics:
+                self.assertIn(metric, section)
+                self.assertEqual(section[metric].get("risk"), None)
+                self.assertEqual(section[metric].get("score"), None)
+
+    def test_external_internal_grade_sections_preserve_existing_values(self):
+        client, project, _ = GenerateMockProject()
+        project.workbook_data = {
+            "external_internal_grades": {
+                "external": {"dns": {"risk": "Low", "score": 1}},
+                "internal": {"password": {"risk": "High"}},
+            }
+        }
+        project.save(update_fields=["workbook_data"])
+
+        workbook = ProjectSerializer(project).data["workbook_data"]
+        grades = workbook["external_internal_grades"]
+
+        self.assertEqual(grades["external"]["dns"]["risk"], "Low")
+        self.assertEqual(grades["external"]["dns"].get("score"), 1)
+        self.assertEqual(grades["internal"]["password"]["risk"], "High")
+        self.assertIsNone(grades["internal"]["password"].get("score"))
