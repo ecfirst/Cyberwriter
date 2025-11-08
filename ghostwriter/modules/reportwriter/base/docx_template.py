@@ -452,18 +452,36 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 parent.remove(removal)
 
     def _find_removal_ancestor(self, node: etree._Element) -> etree._Element:
+        """Return the highest ancestor that should be removed for ``node``.
+
+        Many WordprocessingML elements reference relationships from deeply
+        nested nodes (for example ``a:blip`` inside ``w:drawing``).  When a
+        relationship target disappears we need to delete the entire drawing or
+        embedded object rather than just the leaf node; removing only the leaf
+        leaves behind half of the XML tree which corrupts the document
+        structure.  This helper therefore walks up the tree until it encounters
+        a container element that should be removed wholesale, falling back to
+        the original node if no such element exists.
+        """
+
         current = node
-        while current.getparent() is not None:
+        while current is not None:
             local = etree.QName(current).localname
             if local in {"drawing", "object", "pict", "oleObject"}:
                 return current
+
             parent = current.getparent()
+            if parent is None:
+                break
+
             parent_local = etree.QName(parent).localname
             if parent_local in {"r", "p"}:
                 current = parent
                 continue
-            break
-        return current
+
+            current = parent
+
+        return node
 
     def _read_excel_part(self, part) -> tuple[list[zipfile.ZipInfo], dict[str, bytes]] | None:
         blob = getattr(part, "_blob", None)
