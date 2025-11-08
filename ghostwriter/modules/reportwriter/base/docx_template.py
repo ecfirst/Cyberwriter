@@ -73,6 +73,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         self._prepare_additional_parts()
         self._render_additional_parts(context, jinja_env)
 
+        self._remove_unused_relationships()
         self._prune_orphan_relationships()
         self._renumber_chart_assets()
         self._normalise_document_structure()
@@ -360,6 +361,105 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 queue.append(target_part)
 
         self._active_additional_partnames = active
+
+    def _remove_unused_relationships(self) -> None:
+        """Drop internal relationships that are no longer referenced in XML markup."""
+
+        docx = getattr(self, "docx", None)
+        if docx is None:
+            return
+
+        doc_part = getattr(docx, "part", None)
+        if doc_part is None:
+            return
+
+        package = getattr(doc_part, "package", None)
+        if package is None:
+            return
+
+        try:
+            iterated_parts = list(package.iter_parts())
+        except Exception:
+            iterated_parts = []
+
+        parts = []
+        seen: set[int] = set()
+        for candidate in [doc_part, *iterated_parts]:
+            if candidate is None:
+                continue
+            marker = id(candidate)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            parts.append(candidate)
+
+        tracked_prefixes = (
+            "word/media/",
+            "media/",
+            "word/charts/",
+            "word/diagrams/",
+            "word/embeddings/",
+        )
+
+        for part in parts:
+            rels = getattr(part, "rels", None)
+            if not rels:
+                continue
+
+            base_name = self._normalise_partname(part)
+            used_ids = self._collect_relationship_ids(part)
+            removed_ids: set[str] = set()
+
+            rel_items = rels.items() if hasattr(rels, "items") else []
+            for rel_id, rel in list(rel_items):
+                if getattr(rel, "is_external", False):
+                    continue
+
+                if rel_id in used_ids:
+                    continue
+
+                target_name = self._resolve_relationship_target(base_name, rel)
+                if target_name is None:
+                    continue
+
+                normalised = target_name
+                if not normalised.startswith("word/") and normalised.startswith("media/"):
+                    normalised = f"word/{normalised}"
+
+                if not normalised.startswith(tracked_prefixes):
+                    continue
+
+                removed = False
+                if hasattr(part, "drop_rel"):
+                    try:
+                        part.drop_rel(rel_id)
+                    except Exception:  # pragma: no cover - defensive cleanup
+                        pass
+                    else:
+                        removed = True
+
+                if not removed:
+                    try:
+                        del rels[rel_id]
+                    except Exception:  # pragma: no cover - defensive cleanup
+                        continue
+                    else:
+                        removed = True
+
+                if not removed:
+                    continue
+
+                removed_ids.add(rel_id)
+
+                target_part = getattr(rel, "target_part", None)
+                if target_part is not None:
+                    self._remove_part_branch(target_part)
+
+                if hasattr(part, "_blob"):
+                    part._blob = None
+
+            if removed_ids:
+                self._remove_relationship_references(part, removed_ids)
 
     def _remove_part_branch(self, part) -> None:
         rels = getattr(part, "rels", None)

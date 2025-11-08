@@ -1652,6 +1652,59 @@ def test_render_prunes_missing_image_relationships(tmp_path):
     assert image_rel_id not in document_xml
 
 
+def test_render_removes_unused_media_relationships(tmp_path):
+    base_template = Path("DOCS/sample_reports/template.docx")
+    original = base_template.read_bytes()
+
+    buffer = io.BytesIO()
+    doc_relationships_path = "word/_rels/document.xml.rels"
+    relationships_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    unused_rel_id = "rId952"
+    unused_target = "media/unused.png"
+    image_clone: bytes | None = None
+
+    with zipfile.ZipFile(io.BytesIO(original)) as src, zipfile.ZipFile(buffer, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == doc_relationships_path:
+                tree = ET.fromstring(data)
+                ET.SubElement(
+                    tree,
+                    f"{{{relationships_ns}}}Relationship",
+                    {
+                        "Id": unused_rel_id,
+                        "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+                        "Target": unused_target,
+                    },
+                )
+                data = ET.tostring(tree, encoding="utf-8", xml_declaration=True)
+            elif info.filename == "word/media/image1.png":
+                image_clone = data
+
+            dst.writestr(info, data)
+
+        if image_clone is None:
+            raise AssertionError("sample template missing base image")
+
+        dst.writestr("word/media/unused.png", image_clone)
+
+    modified_template = tmp_path / "unused_media.docx"
+    modified_template.write_bytes(buffer.getvalue())
+
+    template = GhostwriterDocxTemplate(str(modified_template))
+    template.render({}, Environment())
+
+    output_doc = tmp_path / "rendered.docx"
+    template.save(output_doc)
+
+    with zipfile.ZipFile(output_doc) as archive:
+        doc_rels_xml = archive.read(doc_relationships_path).decode("utf-8")
+        media_files = archive.namelist()
+
+    assert unused_rel_id not in doc_rels_xml
+    assert "word/media/unused.png" not in media_files
+
+
 def test_render_removes_unreferenced_chart_parts(tmp_path):
     base_template = Path("DOCS/sample_reports/template.docx")
     original = base_template.read_bytes()
