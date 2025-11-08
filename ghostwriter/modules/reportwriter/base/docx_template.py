@@ -67,6 +67,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self.render_properties(context, jinja_env)
 
+        self._prune_missing_relationship_targets()
+
         active_parts = self._determine_active_additional_parts()
 
         self._render_additional_parts(context, jinja_env, active_parts)
@@ -316,23 +318,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         active_partnames: set[str] = set()
 
         for part in package.iter_parts():
-            element = getattr(part, "element", None)
-            if element is None and hasattr(part, "_element"):
-                element = part._element  # type: ignore[attr-defined]
-
-            if element is None:
-                blob = getattr(part, "_blob", None)
-                if isinstance(blob, (bytes, bytearray)):
-                    try:
-                        element = parse_xml(blob)
-                    except Exception:  # pragma: no cover - defensive parse
-                        element = None
-                    else:
-                        try:
-                            setattr(part, "_element", element)
-                        except Exception:  # pragma: no cover - cache best effort
-                            pass
-
+            element = self._get_part_element(part)
             if element is None:
                 continue
 
@@ -365,6 +351,26 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         return active_partnames
 
+    def _get_part_element(self, part):
+        element = getattr(part, "element", None)
+        if element is None and hasattr(part, "_element"):
+            element = part._element  # type: ignore[attr-defined]
+
+        if element is None:
+            blob = getattr(part, "_blob", None)
+            if isinstance(blob, (bytes, bytearray)):
+                try:
+                    element = parse_xml(blob)
+                except Exception:  # pragma: no cover - defensive parse
+                    element = None
+                else:
+                    try:
+                        setattr(part, "_element", element)
+                    except Exception:  # pragma: no cover - cache best effort
+                        pass
+
+        return element
+
     def _collect_used_relationship_ids(self, element) -> set[str]:
         relationship_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
         prefix = f"{{{relationship_ns}}}"
@@ -379,6 +385,85 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     used.add(value)
 
         return used
+
+    def _prune_missing_relationship_targets(self) -> None:
+        docx = getattr(self, "docx", None)
+        if docx is None:
+            return
+
+        package = docx.part.package
+        available_parts = {
+            self._normalise_partname(part): part for part in package.iter_parts()
+        }
+
+        for part in package.iter_parts():
+            element = self._get_part_element(part)
+            if element is None:
+                continue
+
+            rels = getattr(part, "rels", None)
+            if not rels:
+                continue
+
+            part_changed = False
+
+            for rel_id, rel in list(rels.items()):
+                if rel.is_external:
+                    continue
+
+                try:
+                    target_part = rel.target_part
+                except (KeyError, ValueError):
+                    target_part = None
+
+                target_name = self._normalise_partname(target_part) if target_part else None
+
+                if target_name and target_name in available_parts:
+                    continue
+
+                self._remove_relationship_references(element, rel_id)
+                try:
+                    part.drop_rel(rel_id)
+                except KeyError:
+                    pass
+                part_changed = True
+
+            if part_changed:
+                try:
+                    blob = etree.tostring(element, encoding="utf-8")
+                except Exception:  # pragma: no cover - defensive serialisation
+                    continue
+                if hasattr(part, "_element"):
+                    part._element = element
+                if hasattr(part, "_blob"):
+                    part._blob = blob
+
+    def _remove_relationship_references(self, element, rel_id: str) -> None:
+        to_remove: list[etree._Element] = []
+
+        for node in element.iter():
+            if rel_id in node.attrib.values():
+                to_remove.append(node)
+
+        for node in to_remove:
+            removal = self._find_removal_ancestor(node)
+            parent = removal.getparent()
+            if parent is not None:
+                parent.remove(removal)
+
+    def _find_removal_ancestor(self, node: etree._Element) -> etree._Element:
+        current = node
+        while current.getparent() is not None:
+            local = etree.QName(current).localname
+            if local in {"drawing", "object", "pict", "oleObject"}:
+                return current
+            parent = current.getparent()
+            parent_local = etree.QName(parent).localname
+            if parent_local in {"r", "p"}:
+                current = parent
+                continue
+            break
+        return current
 
     def _read_excel_part(self, part) -> tuple[list[zipfile.ZipInfo], dict[str, bytes]] | None:
         blob = getattr(part, "_blob", None)
