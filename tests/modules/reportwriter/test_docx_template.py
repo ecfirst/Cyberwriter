@@ -1727,6 +1727,99 @@ def test_renumber_chart_assets_assigns_sequential_names():
         "word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
     }
 
+
+def test_renumber_chart_assets_handles_shared_color_parts():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    class DummyRelationship:
+        def __init__(self, target_part):
+            self.target_part = target_part
+            self.is_external = False
+
+    class DummyPart:
+        def __init__(self, name: str):
+            self.partname = PackURI(f"/{name}")
+            self.rels: dict[str, DummyRelationship] = {}
+
+    class DummyPackage:
+        def __init__(self, parts: list[DummyPart]):
+            self._parts = parts
+
+        def iter_parts(self):
+            return iter(self._parts)
+
+    class DummyDocPart:
+        def __init__(self, package: DummyPackage):
+            self.package = package
+
+    class DummyDocx:
+        def __init__(self, package: DummyPackage):
+            self.part = DummyDocPart(package)
+
+    shared_color = DummyPart("word/charts/colors9.xml")
+    shared_style = DummyPart("word/charts/style9.xml")
+
+    chart_one = DummyPart("word/charts/chart4.xml")
+    chart_one.rels = {
+        "rIdColor": DummyRelationship(shared_color),
+        "rIdStyle": DummyRelationship(shared_style),
+    }
+
+    chart_two = DummyPart("word/charts/chart7.xml")
+    chart_two.rels = {
+        "rIdColor": DummyRelationship(shared_color),
+        "rIdStyle": DummyRelationship(shared_style),
+    }
+
+    chart_three = DummyPart("word/charts/chart9.xml")
+    color_three = DummyPart("word/charts/colors15.xml")
+    style_three = DummyPart("word/charts/style17.xml")
+    chart_three.rels = {
+        "rIdColor": DummyRelationship(color_three),
+        "rIdStyle": DummyRelationship(style_three),
+    }
+
+    parts = [
+        chart_one,
+        shared_color,
+        shared_style,
+        chart_two,
+        chart_three,
+        color_three,
+        style_three,
+    ]
+
+    package = DummyPackage(parts)
+    template.docx = DummyDocx(package)
+
+    template._active_additional_partnames = {
+        "word/charts/chart4.xml",
+        "word/charts/chart7.xml",
+        "word/charts/chart9.xml",
+        "word/charts/colors9.xml",
+        "word/charts/colors15.xml",
+        "word/charts/style9.xml",
+        "word/charts/style17.xml",
+    }
+
+    template._renumber_chart_assets()
+
+    assert template._normalise_partname(shared_color) == "word/charts/colors1.xml"
+    assert template._normalise_partname(color_three) == "word/charts/colors2.xml"
+    assert template._normalise_partname(shared_style) == "word/charts/style1.xml"
+    assert template._normalise_partname(style_three) == "word/charts/style2.xml"
+
+    assert template._active_additional_partnames == {
+        "word/charts/chart1.xml",
+        "word/charts/chart2.xml",
+        "word/charts/chart3.xml",
+        "word/charts/colors1.xml",
+        "word/charts/colors2.xml",
+        "word/charts/style1.xml",
+        "word/charts/style2.xml",
+    }
+
 def test_render_merges_duplicate_body_elements(tmp_path):
     base_template = Path("DOCS/sample_reports/template.docx")
     original = base_template.read_bytes()

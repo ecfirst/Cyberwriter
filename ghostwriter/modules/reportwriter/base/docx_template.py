@@ -459,6 +459,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
         chart_infos: list[dict[str, object | None]] = []
         rename_targets: dict[object, str] = {}
         workbook_targets: dict[object, str] = {}
+        color_targets: dict[object, str] = {}
+        style_targets: dict[object, str] = {}
 
         for part in parts:
             partname = self._normalise_partname(part)
@@ -549,16 +551,20 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 self._update_active_partname(old_chart_name, new_chart_name)
 
             color_part = info.get("color")
-            if color_part is not None:
+            if color_part is not None and color_part not in color_targets:
                 old_color_name = self._normalise_partname(color_part)
-                new_color_name = f"word/charts/colors{position}.xml"
+                new_color_index = len(color_targets) + 1
+                new_color_name = f"word/charts/colors{new_color_index}.xml"
+                color_targets[color_part] = new_color_name
                 rename_targets[color_part] = new_color_name
                 self._update_active_partname(old_color_name, new_color_name)
 
             style_part = info.get("style")
-            if style_part is not None:
+            if style_part is not None and style_part not in style_targets:
                 old_style_name = self._normalise_partname(style_part)
-                new_style_name = f"word/charts/style{position}.xml"
+                new_style_index = len(style_targets) + 1
+                new_style_name = f"word/charts/style{new_style_index}.xml"
+                style_targets[style_part] = new_style_name
                 rename_targets[style_part] = new_style_name
                 self._update_active_partname(old_style_name, new_style_name)
 
