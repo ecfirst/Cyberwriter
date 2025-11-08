@@ -12,6 +12,7 @@ from copy import deepcopy
 from typing import Iterator
 
 from docx.oxml import parse_xml
+from docx.opc.packuri import PackURI
 from docx.oxml.ns import qn
 from docxtpl.template import DocxTemplate
 from jinja2 import Environment, meta
@@ -73,6 +74,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         self._render_additional_parts(context, jinja_env)
 
         self._prune_orphan_relationships()
+        self._renumber_chart_assets()
         self._normalise_document_structure()
         self._remove_attached_template_reference()
 
@@ -436,6 +438,144 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if rel_ids:
                 self._remove_relationship_references(part, rel_ids)
 
+    def _renumber_chart_assets(self) -> None:
+        docx = getattr(self, "docx", None)
+        if docx is None:
+            return
+
+        doc_part = getattr(docx, "part", None)
+        if doc_part is None:
+            return
+
+        package = getattr(doc_part, "package", None)
+        if package is None:
+            return
+
+        try:
+            parts = list(package.iter_parts())
+        except Exception:
+            return
+
+        chart_infos: list[dict[str, object | None]] = []
+        rename_targets: dict[object, str] = {}
+        workbook_targets: dict[object, str] = {}
+
+        for part in parts:
+            partname = self._normalise_partname(part)
+            chart_index = self._extract_part_index(
+                partname,
+                prefix="word/charts/chart",
+                suffix=".xml",
+            )
+            if chart_index is None:
+                continue
+
+            rels = getattr(part, "rels", None)
+            relationships = []
+            if isinstance(rels, dict):
+                relationships = list(rels.values())
+            elif hasattr(rels, "items"):
+                try:
+                    relationships = [rel for _, rel in rels.items()]
+                except Exception:
+                    relationships = []
+            elif hasattr(rels, "values"):
+                try:
+                    relationships = list(rels.values())
+                except Exception:
+                    relationships = []
+
+            color_part = None
+            style_part = None
+            workbook_part = None
+
+            for rel in relationships:
+                if getattr(rel, "is_external", False):
+                    continue
+
+                target_part = getattr(rel, "target_part", None)
+                if target_part is None:
+                    continue
+
+                target_name = self._normalise_partname(target_part)
+                if (
+                    color_part is None
+                    and target_name.startswith("word/charts/colors")
+                ):
+                    color_part = target_part
+                elif (
+                    style_part is None
+                    and target_name.startswith("word/charts/style")
+                ):
+                    style_part = target_part
+                elif (
+                    workbook_part is None
+                    and target_name.startswith(
+                        "word/embeddings/Microsoft_Excel_Worksheet"
+                    )
+                ):
+                    workbook_part = target_part
+
+            chart_infos.append(
+                {
+                    "index": chart_index,
+                    "name": partname,
+                    "part": part,
+                    "color": color_part,
+                    "style": style_part,
+                    "workbook": workbook_part,
+                }
+            )
+
+        if not chart_infos:
+            return
+
+        chart_infos.sort(
+            key=lambda info: (
+                info["index"] if info["index"] is not None else float("inf"),
+                info["name"],
+            )
+        )
+
+        for position, info in enumerate(chart_infos, start=1):
+            chart_part = info.get("part")
+            if chart_part is None:
+                continue
+
+            old_chart_name = info.get("name")
+            new_chart_name = f"word/charts/chart{position}.xml"
+            rename_targets[chart_part] = new_chart_name
+            if isinstance(old_chart_name, str):
+                self._update_active_partname(old_chart_name, new_chart_name)
+
+            color_part = info.get("color")
+            if color_part is not None:
+                old_color_name = self._normalise_partname(color_part)
+                new_color_name = f"word/charts/colors{position}.xml"
+                rename_targets[color_part] = new_color_name
+                self._update_active_partname(old_color_name, new_color_name)
+
+            style_part = info.get("style")
+            if style_part is not None:
+                old_style_name = self._normalise_partname(style_part)
+                new_style_name = f"word/charts/style{position}.xml"
+                rename_targets[style_part] = new_style_name
+                self._update_active_partname(old_style_name, new_style_name)
+
+            workbook_part = info.get("workbook")
+            if workbook_part is not None and workbook_part not in workbook_targets:
+                workbook_targets[workbook_part] = self._build_workbook_partname(
+                    len(workbook_targets)
+                )
+
+        for workbook_part, new_name in workbook_targets.items():
+            old_name = self._normalise_partname(workbook_part)
+            if new_name != old_name:
+                rename_targets[workbook_part] = new_name
+                self._update_active_partname(old_name, new_name)
+
+        self._apply_part_renames(package, rename_targets)
+
     def _should_remove_external_relationship(self, rel) -> bool:
         target_ref = getattr(rel, "target_ref", None) or getattr(rel, "target", None)
         if not target_ref:
@@ -652,6 +792,97 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 used.add(match.group(1))
 
         return used
+
+    def _extract_part_index(
+        self, partname: str, *, prefix: str, suffix: str
+    ) -> int | None:
+        pattern = re.escape(prefix) + r"(\d+)" + re.escape(suffix) + r"$"
+        match = re.match(pattern, partname)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+        return None
+
+    def _build_workbook_partname(self, index: int) -> str:
+        if index <= 0:
+            return "word/embeddings/Microsoft_Excel_Worksheet.xlsx"
+        return f"word/embeddings/Microsoft_Excel_Worksheet{index}.xlsx"
+
+    def _update_active_partname(self, old_name: str, new_name: str) -> None:
+        if not old_name or old_name == new_name:
+            return
+
+        active = getattr(self, "_active_additional_partnames", None)
+        if not isinstance(active, set):
+            return
+
+        if old_name in active:
+            active.remove(old_name)
+            active.add(new_name)
+
+    def _apply_part_renames(self, package, rename_targets: dict[object, str]) -> None:
+        if not rename_targets:
+            return
+
+        try:
+            parts = list(package.iter_parts())
+        except Exception:
+            parts = []
+
+        used_names = {self._normalise_partname(part) for part in parts}
+
+        pending = [
+            (part, new_name)
+            for part, new_name in rename_targets.items()
+            if self._normalise_partname(part) != new_name
+        ]
+
+        if not pending:
+            return
+
+        temp_records: list[tuple[object, str]] = []
+        for idx, (part, new_name) in enumerate(pending):
+            temp_name = self._make_temp_partname(new_name, idx, used_names)
+            try:
+                part.partname = PackURI(f"/{temp_name}")
+            except Exception:
+                continue
+            used_names.add(temp_name)
+            temp_records.append((part, new_name))
+
+        for part, final_name in temp_records:
+            try:
+                part.partname = PackURI(f"/{final_name}")
+            except Exception:
+                continue
+            used_names.add(final_name)
+
+    def _make_temp_partname(
+        self, target_name: str, counter: int, used_names: set[str]
+    ) -> str:
+        if "/" in target_name:
+            directory, filename = target_name.rsplit("/", 1)
+        else:
+            directory, filename = "", target_name
+
+        if "." in filename:
+            stem, ext = filename.rsplit(".", 1)
+            extension = f".{ext}"
+        else:
+            stem = filename
+            extension = ""
+
+        candidate = f"{directory}/__tmp__{stem}_{counter}{extension}" if directory else f"__tmp__{stem}_{counter}{extension}"
+        while candidate in used_names:
+            counter += 1
+            candidate = (
+                f"{directory}/__tmp__{stem}_{counter}{extension}"
+                if directory
+                else f"__tmp__{stem}_{counter}{extension}"
+            )
+        return candidate
 
     def _unwrap_element(self, node):
         parent = node.getparent()

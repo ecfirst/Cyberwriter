@@ -1625,6 +1625,108 @@ def test_render_removes_unreferenced_chart_parts(tmp_path):
         doc_rels_xml = archive.read(doc_relationships_path).decode("utf-8")
         assert "rId999" not in doc_rels_xml
 
+
+def test_renumber_chart_assets_assigns_sequential_names():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    class DummyRelationship:
+        def __init__(self, target_part):
+            self.target_part = target_part
+            self.is_external = False
+
+    class DummyPart:
+        def __init__(self, name: str):
+            self.partname = PackURI(f"/{name}")
+            self.rels: dict[str, DummyRelationship] = {}
+
+    class DummyPackage:
+        def __init__(self, parts: list[DummyPart]):
+            self._parts = parts
+
+        def iter_parts(self):
+            return iter(self._parts)
+
+    class DummyDocPart:
+        def __init__(self, package: DummyPackage):
+            self.package = package
+
+    class DummyDocx:
+        def __init__(self, package: DummyPackage):
+            self.part = DummyDocPart(package)
+
+    chart_a = DummyPart("word/charts/chart3.xml")
+    color_a = DummyPart("word/charts/colors9.xml")
+    style_a = DummyPart("word/charts/style4.xml")
+    workbook_a = DummyPart("word/embeddings/Microsoft_Excel_Worksheet7.xlsx")
+    chart_a.rels = {
+        "rIdColor": DummyRelationship(color_a),
+        "rIdStyle": DummyRelationship(style_a),
+        "rIdWorkbook": DummyRelationship(workbook_a),
+    }
+
+    chart_b = DummyPart("word/charts/chart10.xml")
+    color_b = DummyPart("word/charts/colors3.xml")
+    style_b = DummyPart("word/charts/style12.xml")
+    workbook_b = DummyPart("word/embeddings/Microsoft_Excel_Worksheet12.xlsx")
+    chart_b.rels = {
+        "rIdColor": DummyRelationship(color_b),
+        "rIdStyle": DummyRelationship(style_b),
+        "rIdWorkbook": DummyRelationship(workbook_b),
+    }
+
+    parts = [
+        chart_a,
+        color_a,
+        style_a,
+        workbook_a,
+        chart_b,
+        color_b,
+        style_b,
+        workbook_b,
+    ]
+    package = DummyPackage(parts)
+    template.docx = DummyDocx(package)
+
+    template._active_additional_partnames = {
+        "word/charts/chart3.xml",
+        "word/charts/colors9.xml",
+        "word/charts/style4.xml",
+        "word/embeddings/Microsoft_Excel_Worksheet7.xlsx",
+        "word/charts/chart10.xml",
+        "word/charts/colors3.xml",
+        "word/charts/style12.xml",
+        "word/embeddings/Microsoft_Excel_Worksheet12.xlsx",
+    }
+
+    template._renumber_chart_assets()
+
+    assert template._normalise_partname(chart_a) == "word/charts/chart1.xml"
+    assert template._normalise_partname(chart_b) == "word/charts/chart2.xml"
+    assert template._normalise_partname(color_a) == "word/charts/colors1.xml"
+    assert template._normalise_partname(color_b) == "word/charts/colors2.xml"
+    assert template._normalise_partname(style_a) == "word/charts/style1.xml"
+    assert template._normalise_partname(style_b) == "word/charts/style2.xml"
+    assert (
+        template._normalise_partname(workbook_a)
+        == "word/embeddings/Microsoft_Excel_Worksheet.xlsx"
+    )
+    assert (
+        template._normalise_partname(workbook_b)
+        == "word/embeddings/Microsoft_Excel_Worksheet1.xlsx"
+    )
+
+    assert template._active_additional_partnames == {
+        "word/charts/chart1.xml",
+        "word/charts/chart2.xml",
+        "word/charts/colors1.xml",
+        "word/charts/colors2.xml",
+        "word/charts/style1.xml",
+        "word/charts/style2.xml",
+        "word/embeddings/Microsoft_Excel_Worksheet.xlsx",
+        "word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+    }
+
 def test_render_merges_duplicate_body_elements(tmp_path):
     base_template = Path("DOCS/sample_reports/template.docx")
     original = base_template.read_bytes()
