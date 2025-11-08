@@ -774,12 +774,28 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if element is not None:
             for node in element.iter():
                 for attr, value in node.attrib.items():
-                    if attr.startswith(attr_prefix) and value:
+                    if not value:
+                        continue
+
+                    if attr.startswith(attr_prefix):
+                        used.add(value)
+                        continue
+
+                    if attr.startswith("{"):
+                        local_name = attr.split("}", 1)[1]
+                    else:
+                        local_name = attr
+
+                    if local_name.lower() == "relid":
                         used.add(value)
 
         if xml:
             pattern = re.compile(r"r:[A-Za-z_][\\w.-]*\s*=\s*[\"']([^\"']+)[\"']")
             for match in pattern.finditer(xml):
+                used.add(match.group(1))
+
+            relid_pattern = re.compile(r"(?i)\brelid\s*=\s*[\"']([^\"']+)[\"']")
+            for match in relid_pattern.finditer(xml):
                 used.add(match.group(1))
 
         return used

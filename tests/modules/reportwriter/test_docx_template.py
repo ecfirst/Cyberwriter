@@ -1816,6 +1816,74 @@ def test_prepare_additional_parts_keeps_diagram_dependencies_without_relids():
     assert set(data_part.rels.keys()) == {"rIdDrawing"}
 
 
+def test_prepare_additional_parts_detects_relid_attributes_on_non_extra_parts():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    class DummyRelationship:
+        def __init__(self, target_part):
+            self.target_part = target_part
+            self.is_external = False
+
+    class DummyPart:
+        def __init__(self, name: str, element=None):
+            self.partname = PackURI(f"/{name}")
+            self._element = element
+            self._blob = None
+            self.rels: dict[str, DummyRelationship] = {}
+
+        def drop_rel(self, rel_id: str) -> None:
+            self.rels.pop(rel_id, None)
+
+    class DummyPackage:
+        def __init__(self, parts: list[DummyPart]):
+            self._parts = parts
+
+        def iter_parts(self):
+            return iter(self._parts)
+
+    class DummyDocx:
+        def __init__(self, part: DummyPart):
+            self.part = part
+
+    document_element = parse_xml(
+        (
+            '<w:document '
+            'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            "<w:body/>"
+            "</w:document>"
+        ).encode("utf-8")
+    )
+
+    header_element = parse_xml(
+        (
+            '<w:hdr '
+            'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            'xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram">'
+            '<w:p><w:r><dgm:relIds relId="rIdDrawing"/></w:r></w:p>'
+            "</w:hdr>"
+        ).encode("utf-8")
+    )
+
+    doc_part = DummyPart("word/document.xml", document_element)
+    header_part = DummyPart("word/header1.xml", header_element)
+    drawing_part = DummyPart("word/diagrams/drawing5.xml")
+
+    doc_part.rels = {"rIdHeader": DummyRelationship(header_part)}
+    header_part.rels = {"rIdDrawing": DummyRelationship(drawing_part)}
+
+    package = DummyPackage([doc_part, header_part, drawing_part])
+    doc_part.package = package
+
+    template.docx = DummyDocx(doc_part)
+
+    template._prepare_additional_parts()
+
+    assert template._active_additional_partnames == {"word/diagrams/drawing5.xml"}
+    assert set(header_part.rels.keys()) == {"rIdDrawing"}
+
+
 def test_renumber_chart_assets_assigns_sequential_names():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
