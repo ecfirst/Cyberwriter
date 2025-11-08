@@ -69,6 +69,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self.render_properties(context, jinja_env)
 
+        self._remove_unreferenced_additional_parts()
         self._render_additional_parts(context, jinja_env)
 
         self._prune_orphan_relationships()
@@ -298,6 +299,61 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
 
+    def _remove_unreferenced_additional_parts(self) -> None:
+        docx = getattr(self, "docx", None)
+        if docx is None:
+            return
+
+        doc_part = getattr(docx, "part", None)
+        if doc_part is None:
+            return
+
+        package = getattr(doc_part, "package", None)
+        if package is None:
+            return
+
+        parts = []
+        if doc_part is not None:
+            parts.append(doc_part)
+        parts.extend(package.iter_parts())
+
+        seen: set[object] = set()
+
+        for part in parts:
+            if part in seen:
+                continue
+            seen.add(part)
+
+            rels = getattr(part, "rels", None)
+            if not rels:
+                continue
+
+            used_ids = None
+
+            for rel_id, rel in list(rels.items()):
+                if getattr(rel, "is_external", False):
+                    continue
+
+                target_part = getattr(rel, "target_part", None)
+                if target_part is None:
+                    continue
+
+                target_name = self._normalise_partname(target_part)
+                if not self._matches_extra_template(target_name):
+                    continue
+
+                if used_ids is None:
+                    used_ids = self._collect_relationship_ids(part)
+
+                if rel_id in used_ids:
+                    continue
+
+                if hasattr(part, "drop_rel"):
+                    try:
+                        part.drop_rel(rel_id)
+                    except Exception:  # pragma: no cover - defensive cleanup
+                        continue
+
     def _prune_orphan_relationships(self) -> None:
         """Remove relationships that target parts removed during templating."""
 
@@ -502,6 +558,79 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         if modified and hasattr(part, "_blob"):
             part._blob = None
+
+    def _collect_relationship_ids(self, part) -> set[str]:
+        element = getattr(part, "element", None)
+        if element is None:
+            element = getattr(part, "_element", None)
+
+        if element is None:
+            blob = getattr(part, "_blob", None)
+            if blob:
+                try:
+                    element = parse_xml(blob)
+                except Exception:  # pragma: no cover - defensive parsing guard
+                    element = None
+                else:
+                    try:
+                        setattr(part, "_element", element)
+                    except Exception:  # pragma: no cover - cache assignment best-effort
+                        pass
+
+        xml: str | None = None
+        xml_blob = getattr(part, "_blob", None)
+        if isinstance(xml_blob, (bytes, bytearray)):
+            xml = xml_blob.decode("utf-8", errors="ignore")
+        elif element is not None:
+            try:
+                xml = etree.tostring(element, encoding="unicode")
+            except Exception:  # pragma: no cover - serialization guard
+                xml = None
+
+        namespaces: dict[str, str]
+        if element is not None:
+            namespaces = {
+                key or "ns": value
+                for key, value in element.nsmap.items()
+                if value
+            }
+        else:
+            namespaces = {}
+
+        namespaces.setdefault(
+            "r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        )
+
+        attrs = {
+            f"{{{namespaces['r']}}}id",
+            f"{{{namespaces['r']}}}embed",
+            f"{{{namespaces['r']}}}link",
+        }
+
+        used: set[str] = set()
+
+        if element is not None:
+            candidates = self._xpath(
+                element,
+                ".//*[@r:id or @r:embed or @r:link]",
+                namespaces,
+            )
+
+            for node in candidates:
+                for attr in attrs:
+                    value = node.get(attr)
+                    if value:
+                        used.add(value)
+
+        if xml and used:
+            return used
+
+        if xml:
+            pattern = re.compile(r"r:(?:id|embed|link)\s*=\s*[\"']([^\"']+)[\"']")
+            for match in pattern.finditer(xml):
+                used.add(match.group(1))
+
+        return used
 
     def _unwrap_element(self, node):
         parent = node.getparent()

@@ -1555,6 +1555,76 @@ def test_render_prunes_orphan_relationships(tmp_path):
     assert "https://example.com/report" in doc_rels_xml
 
 
+def test_render_removes_unreferenced_chart_parts(tmp_path):
+    base_template = Path("DOCS/sample_reports/template.docx")
+    original = base_template.read_bytes()
+
+    buffer = io.BytesIO()
+    doc_relationships_path = "word/_rels/document.xml.rels"
+    chart_part = "word/charts/chart999.xml"
+    relationships_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    content_types_ns = "http://schemas.openxmlformats.org/package/2006/content-types"
+    chart_reltype = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+    chart_content_type = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml"
+    chart_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+        "<c:lang val=\"en-US\"/>"
+        "</c:chartSpace>"
+    )
+
+    with zipfile.ZipFile(io.BytesIO(original)) as src, zipfile.ZipFile(buffer, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == doc_relationships_path:
+                tree = ET.fromstring(data)
+                ET.SubElement(
+                    tree,
+                    f"{{{relationships_ns}}}Relationship",
+                    {
+                        "Id": "rId999",
+                        "Type": chart_reltype,
+                        "Target": "charts/chart999.xml",
+                    },
+                )
+                data = ET.tostring(tree, encoding="utf-8", xml_declaration=True)
+            elif info.filename == "[Content_Types].xml":
+                tree = ET.fromstring(data)
+                override_tag = f"{{{content_types_ns}}}Override"
+                has_override = any(
+                    element.get("PartName") == f"/{chart_part}"
+                    for element in tree.findall(override_tag)
+                )
+                if not has_override:
+                    ET.SubElement(
+                        tree,
+                        override_tag,
+                        {
+                            "PartName": f"/{chart_part}",
+                            "ContentType": chart_content_type,
+                        },
+                    )
+                data = ET.tostring(tree, encoding="utf-8", xml_declaration=True)
+
+            dst.writestr(info, data)
+
+        dst.writestr(chart_part, chart_xml)
+
+    modified_template = tmp_path / "chart_template.docx"
+    modified_template.write_bytes(buffer.getvalue())
+
+    template = GhostwriterDocxTemplate(str(modified_template))
+    template.render({}, Environment())
+
+    output_doc = tmp_path / "rendered.docx"
+    template.save(output_doc)
+
+    with zipfile.ZipFile(output_doc) as archive:
+        names = archive.namelist()
+        assert chart_part not in names
+        doc_rels_xml = archive.read(doc_relationships_path).decode("utf-8")
+        assert "rId999" not in doc_rels_xml
+
 def test_render_merges_duplicate_body_elements(tmp_path):
     base_template = Path("DOCS/sample_reports/template.docx")
     original = base_template.read_bytes()
