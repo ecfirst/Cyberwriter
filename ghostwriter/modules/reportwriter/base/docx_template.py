@@ -67,8 +67,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self.render_properties(context, jinja_env)
 
-        self._prune_missing_relationship_targets()
-
         active_parts = self._determine_active_additional_parts()
 
         self._render_additional_parts(context, jinja_env, active_parts)
@@ -323,12 +321,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
 
             used_rel_ids = self._collect_used_relationship_ids(element)
-
             if not used_rel_ids:
                 continue
 
-            for rel_id, rel in list(part.rels.items()):
-                if rel.is_external:
+            rels = getattr(part, "rels", None) or {}
+
+            for rel_id in used_rel_ids:
+                rel = rels.get(rel_id)
+                if rel is None or rel.is_external:
                     continue
 
                 try:
@@ -340,12 +340,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     continue
 
                 target_name = self._normalise_partname(target_part)
-
-                if rel_id not in used_rel_ids:
-                    if self._matches_extra_template(target_name):
-                        part.drop_rel(rel_id)
-                    continue
-
                 if self._matches_extra_template(target_name):
                     active_partnames.add(target_name)
 
@@ -385,103 +379,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     used.add(value)
 
         return used
-
-    def _prune_missing_relationship_targets(self) -> None:
-        docx = getattr(self, "docx", None)
-        if docx is None:
-            return
-
-        package = docx.part.package
-        available_parts = {
-            self._normalise_partname(part): part for part in package.iter_parts()
-        }
-
-        for part in package.iter_parts():
-            element = self._get_part_element(part)
-            if element is None:
-                continue
-
-            rels = getattr(part, "rels", None)
-            if not rels:
-                continue
-
-            part_changed = False
-
-            for rel_id, rel in list(rels.items()):
-                if rel.is_external:
-                    continue
-
-                try:
-                    target_part = rel.target_part
-                except (KeyError, ValueError):
-                    target_part = None
-
-                target_name = self._normalise_partname(target_part) if target_part else None
-
-                if target_name and target_name in available_parts:
-                    continue
-
-                self._remove_relationship_references(element, rel_id)
-                try:
-                    part.drop_rel(rel_id)
-                except KeyError:
-                    pass
-                part_changed = True
-
-            if part_changed:
-                try:
-                    blob = etree.tostring(element, encoding="utf-8")
-                except Exception:  # pragma: no cover - defensive serialisation
-                    continue
-                if hasattr(part, "_element"):
-                    part._element = element
-                if hasattr(part, "_blob"):
-                    part._blob = blob
-
-    def _remove_relationship_references(self, element, rel_id: str) -> None:
-        to_remove: list[etree._Element] = []
-
-        for node in element.iter():
-            if rel_id in node.attrib.values():
-                to_remove.append(node)
-
-        for node in to_remove:
-            removal = self._find_removal_ancestor(node)
-            parent = removal.getparent()
-            if parent is not None:
-                parent.remove(removal)
-
-    def _find_removal_ancestor(self, node: etree._Element) -> etree._Element:
-        """Return the highest ancestor that should be removed for ``node``.
-
-        Many WordprocessingML elements reference relationships from deeply
-        nested nodes (for example ``a:blip`` inside ``w:drawing``).  When a
-        relationship target disappears we need to delete the entire drawing or
-        embedded object rather than just the leaf node; removing only the leaf
-        leaves behind half of the XML tree which corrupts the document
-        structure.  This helper therefore walks up the tree until it encounters
-        a container element that should be removed wholesale, falling back to
-        the original node if no such element exists.
-        """
-
-        current = node
-        while current is not None:
-            local = etree.QName(current).localname
-            if local in {"drawing", "object", "pict", "oleObject"}:
-                return current
-
-            parent = current.getparent()
-            if parent is None:
-                break
-
-            parent_local = etree.QName(parent).localname
-            if parent_local in {"r", "p"}:
-                current = parent
-                continue
-
-            current = parent
-
-        return node
 
     def _read_excel_part(self, part) -> tuple[list[zipfile.ZipInfo], dict[str, bytes]] | None:
         blob = getattr(part, "_blob", None)
