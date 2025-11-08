@@ -1816,6 +1816,71 @@ def test_prepare_additional_parts_keeps_diagram_dependencies_without_relids():
     assert set(data_part.rels.keys()) == {"rIdDrawing"}
 
 
+def test_prepare_additional_parts_retains_diagram_drawings_without_doc_reference():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    class DummyRelationship:
+        def __init__(self, target_part):
+            self.target_part = target_part
+            self.is_external = False
+
+    class DummyPart:
+        def __init__(self, name: str, element=None):
+            self.partname = PackURI(f"/{name}")
+            self._element = element
+            self._blob = None
+            self.rels: dict[str, DummyRelationship] = {}
+
+        @property
+        def element(self):
+            return self._element
+
+        def drop_rel(self, rel_id: str) -> None:
+            self.rels.pop(rel_id, None)
+
+    class DummyPackage:
+        def __init__(self, parts: list[DummyPart]):
+            self._parts = parts
+
+        def iter_parts(self):
+            return iter(self._parts)
+
+    class DummyDocx:
+        def __init__(self, part: DummyPart):
+            self.part = part
+
+    document_element = parse_xml(
+        SMARTART_DOCUMENT_DATA_ONLY_XML.encode("utf-8")
+    )
+    data_element = parse_xml(
+        '<dgm:data xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"/>'
+        .encode("utf-8")
+    )
+
+    doc_part = DummyPart("word/document.xml", document_element)
+    data_part = DummyPart("word/diagrams/data5.xml", data_element)
+    drawing_part = DummyPart("word/diagrams/drawing5.xml")
+
+    doc_part.rels = {
+        "rIdData": DummyRelationship(data_part),
+        "rIdDrawing": DummyRelationship(drawing_part),
+    }
+
+    package = DummyPackage([doc_part, data_part, drawing_part])
+    doc_part.package = package
+
+    template.docx = DummyDocx(doc_part)
+
+    template._prepare_additional_parts()
+
+    assert template._active_additional_partnames == {
+        "word/diagrams/data5.xml",
+        "word/diagrams/drawing5.xml",
+    }
+    assert set(doc_part.rels.keys()) == {"rIdData", "rIdDrawing"}
+
+
 def test_prepare_additional_parts_detects_relid_attributes_on_non_extra_parts():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()

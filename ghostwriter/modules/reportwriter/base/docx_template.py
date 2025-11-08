@@ -344,7 +344,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
                 target_name = self._normalise_partname(target_part)
                 if self._matches_extra_template(target_name):
-                    if rel_id in used_ids or self._matches_extra_template(partname):
+                    keep = rel_id in used_ids or self._matches_extra_template(partname)
+                    if target_name.startswith("word/diagrams/drawing"):
+                        keep = True
+                    if keep:
                         active.add(target_name)
                     else:
                         try:
