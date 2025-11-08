@@ -699,20 +699,17 @@ class GhostwriterDocxTemplate(DocxTemplate):
         namespaces.setdefault("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
         namespaces.setdefault("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
 
-        relationship_attrs = {
-            f"{{{namespaces['r']}}}id",
-            f"{{{namespaces['r']}}}embed",
-            f"{{{namespaces['r']}}}link",
-        }
-
-        candidates = self._xpath(element, ".//*[@r:id or @r:embed or @r:link]", namespaces)
+        relationship_namespace = namespaces["r"]
+        attr_prefix = f"{{{relationship_namespace}}}"
 
         modified = False
-        for node in list(candidates):
+        for node in list(element.iter()):
             values = {
-                node.get(attr) for attr in relationship_attrs if node.get(attr) is not None
+                value
+                for attr, value in node.attrib.items()
+                if attr.startswith(attr_prefix) and value is not None
             }
-            if not values.intersection(rel_ids):
+            if not values or not values.intersection(rel_ids):
                 continue
 
             if node.tag == qn("w:hyperlink"):
@@ -768,32 +765,19 @@ class GhostwriterDocxTemplate(DocxTemplate):
             "r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
         )
 
-        attrs = {
-            f"{{{namespaces['r']}}}id",
-            f"{{{namespaces['r']}}}embed",
-            f"{{{namespaces['r']}}}link",
-        }
+        relationship_namespace = namespaces["r"]
+        attr_prefix = f"{{{relationship_namespace}}}"
 
         used: set[str] = set()
 
         if element is not None:
-            candidates = self._xpath(
-                element,
-                ".//*[@r:id or @r:embed or @r:link]",
-                namespaces,
-            )
-
-            for node in candidates:
-                for attr in attrs:
-                    value = node.get(attr)
-                    if value:
+            for node in element.iter():
+                for attr, value in node.attrib.items():
+                    if attr.startswith(attr_prefix) and value:
                         used.add(value)
 
-        if xml and used:
-            return used
-
         if xml:
-            pattern = re.compile(r"r:(?:id|embed|link)\s*=\s*[\"']([^\"']+)[\"']")
+            pattern = re.compile(r"r:[A-Za-z_][\\w.-]*\s*=\s*[\"']([^\"']+)[\"']")
             for match in pattern.finditer(xml):
                 used.add(match.group(1))
 

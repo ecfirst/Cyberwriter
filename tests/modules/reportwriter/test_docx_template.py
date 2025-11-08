@@ -155,6 +155,32 @@ WORKSHEET_TR_LOOP_ROWS_XML = (
     '</worksheet>'
 )
 
+SMARTART_DOCUMENT_XML = (
+    '<w:document '
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+    'xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" '
+    'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+    '<w:body>'
+    '<w:p>'
+    '<w:r>'
+    '<w:drawing>'
+    '<wp:inline>'
+    '<a:graphic>'
+    '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram">'
+    '<dgm:relIds r:dm="rIdData" r:lo="rIdLayout" r:qs="rIdQuick" r:cs="rIdColor"/>'
+    '</a:graphicData>'
+    '</a:graphic>'
+    '</wp:inline>'
+    '</w:drawing>'
+    '</w:r>'
+    '</w:p>'
+    '<w:p><w:r><w:object r:id="rIdDrawing"/></w:r></w:p>'
+    '</w:body>'
+    '</w:document>'
+)
+
 WORKSHEET_TC_LOOP_TEMPLATE_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -1624,6 +1650,75 @@ def test_render_removes_unreferenced_chart_parts(tmp_path):
         assert chart_part not in names
         doc_rels_xml = archive.read(doc_relationships_path).decode("utf-8")
         assert "rId999" not in doc_rels_xml
+
+
+def test_prepare_additional_parts_detects_smartart_relationship_attributes():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    class DummyRelationship:
+        def __init__(self, target_part):
+            self.target_part = target_part
+            self.is_external = False
+
+    class DummyPart:
+        def __init__(self, name: str):
+            self.partname = PackURI(f"/{name}")
+            self.rels: dict[str, DummyRelationship] = {}
+
+        def drop_rel(self, rel_id: str) -> None:
+            self.rels.pop(rel_id, None)
+
+    class DummyPackage:
+        def __init__(self, parts: list[DummyPart]):
+            self._parts = parts
+
+        def iter_parts(self):
+            return iter(self._parts)
+
+    class DummyDocx:
+        def __init__(self, part: DummyPart):
+            self.part = part
+
+    document_element = parse_xml(SMARTART_DOCUMENT_XML.encode("utf-8"))
+
+    doc_part = DummyPart("word/document.xml")
+    doc_part.element = document_element
+
+    data_part = DummyPart("word/diagrams/data5.xml")
+    drawing_part = DummyPart("word/diagrams/drawing5.xml")
+    layout_part = DummyPart("word/diagrams/layout5.xml")
+    quick_part = DummyPart("word/diagrams/quickStyle5.xml")
+    color_part = DummyPart("word/diagrams/colors5.xml")
+
+    doc_part.rels = {
+        "rIdDrawing": DummyRelationship(drawing_part),
+        "rIdData": DummyRelationship(data_part),
+        "rIdLayout": DummyRelationship(layout_part),
+        "rIdQuick": DummyRelationship(quick_part),
+        "rIdColor": DummyRelationship(color_part),
+    }
+
+    package = DummyPackage(
+        [doc_part, data_part, drawing_part, layout_part, quick_part, color_part]
+    )
+    doc_part.package = package
+
+    template.docx = DummyDocx(doc_part)
+
+    template._prepare_additional_parts()
+
+    assert template._active_additional_partnames == {
+        "word/diagrams/data5.xml",
+        "word/diagrams/drawing5.xml",
+    }
+    assert set(doc_part.rels.keys()) == {
+        "rIdDrawing",
+        "rIdData",
+        "rIdLayout",
+        "rIdQuick",
+        "rIdColor",
+    }
 
 
 def test_renumber_chart_assets_assigns_sequential_names():
