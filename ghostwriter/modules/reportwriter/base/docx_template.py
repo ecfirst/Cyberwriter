@@ -342,8 +342,15 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
 
             for rel_id, rel in list(part.rels.items()):
-                target_part = getattr(rel, "target_part", None)
-                if target_part is None or rel.is_external:
+                if rel.is_external:
+                    continue
+
+                try:
+                    target_part = rel.target_part
+                except ValueError:
+                    continue
+
+                if target_part is None:
                     continue
 
                 target_name = self._normalise_partname(target_part)
