@@ -181,6 +181,28 @@ SMARTART_DOCUMENT_XML = (
     '</w:document>'
 )
 
+SMARTART_DOCUMENT_DATA_ONLY_XML = (
+    '<w:document '
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+    'xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+    '<w:body>'
+    '<w:p>'
+    '<w:r>'
+    '<w:drawing>'
+    '<a:graphic>'
+    '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram">'
+    '<dgm:relIds r:dm="rIdData"/>'
+    '</a:graphicData>'
+    '</a:graphic>'
+    '</w:drawing>'
+    '</w:r>'
+    '</w:p>'
+    '</w:body>'
+    '</w:document>'
+)
+
 WORKSHEET_TC_LOOP_TEMPLATE_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -1719,6 +1741,79 @@ def test_prepare_additional_parts_detects_smartart_relationship_attributes():
         "rIdQuick",
         "rIdColor",
     }
+
+
+def test_prepare_additional_parts_keeps_diagram_dependencies_without_relids():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    class DummyRelationship:
+        def __init__(self, target_part):
+            self.target_part = target_part
+            self.is_external = False
+
+    class DummyPart:
+        def __init__(self, name: str, element=None):
+            self.partname = PackURI(f"/{name}")
+            self._partname = name
+            self._element = element
+            self._blob = None
+            self.rels: dict[str, DummyRelationship] = {}
+
+        @property
+        def element(self):
+            return self._element
+
+        @element.setter
+        def element(self, value):
+            self._element = value
+
+        def drop_rel(self, rel_id: str) -> None:
+            self.rels.pop(rel_id, None)
+
+    class DummyPackage:
+        def __init__(self, parts: list[DummyPart]):
+            self._parts = parts
+
+        def iter_parts(self):
+            return iter(self._parts)
+
+    class DummyDocx:
+        def __init__(self, part: DummyPart):
+            self.part = part
+
+    document_element = parse_xml(
+        SMARTART_DOCUMENT_DATA_ONLY_XML.encode("utf-8")
+    )
+    data_element = parse_xml(
+        '<dgm:data xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"/>'
+        .encode("utf-8")
+    )
+
+    doc_part = DummyPart("word/document.xml", document_element)
+    data_part = DummyPart("word/diagrams/data5.xml", data_element)
+    drawing_part = DummyPart("word/diagrams/drawing5.xml")
+
+    doc_part.rels = {
+        "rIdData": DummyRelationship(data_part),
+    }
+
+    data_part.rels = {
+        "rIdDrawing": DummyRelationship(drawing_part),
+    }
+
+    package = DummyPackage([doc_part, data_part, drawing_part])
+    doc_part.package = package
+
+    template.docx = DummyDocx(doc_part)
+
+    template._prepare_additional_parts()
+
+    assert template._active_additional_partnames == {
+        "word/diagrams/data5.xml",
+        "word/diagrams/drawing5.xml",
+    }
+    assert set(data_part.rels.keys()) == {"rIdDrawing"}
 
 
 def test_renumber_chart_assets_assigns_sequential_names():

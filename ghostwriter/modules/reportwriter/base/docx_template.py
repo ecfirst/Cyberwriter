@@ -331,6 +331,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if not rels:
                 continue
 
+            partname = self._normalise_partname(part)
             used_ids = self._collect_relationship_ids(part)
 
             for rel_id, rel in list(rels.items()):
@@ -343,7 +344,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
                 target_name = self._normalise_partname(target_part)
                 if self._matches_extra_template(target_name):
-                    if rel_id in used_ids:
+                    if rel_id in used_ids or self._matches_extra_template(partname):
                         active.add(target_name)
                     else:
                         try:
