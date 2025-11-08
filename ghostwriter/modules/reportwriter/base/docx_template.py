@@ -69,7 +69,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self.render_properties(context, jinja_env)
 
-        self._remove_unreferenced_additional_parts()
+        self._prepare_additional_parts()
         self._render_additional_parts(context, jinja_env)
 
         self._prune_orphan_relationships()
@@ -246,11 +246,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         package = self.docx.part.package
         seen: set[str] = set()
+        active_partnames = getattr(self, "_active_additional_partnames", None)
         for part in package.iter_parts():
             partname = self._normalise_partname(part)
             if partname in seen:
                 continue
             if self._matches_extra_template(partname):
+                if active_partnames is not None and partname not in active_partnames:
+                    continue
                 seen.add(partname)
                 yield part
 
@@ -299,46 +302,29 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
 
-    def _remove_unreferenced_additional_parts(self) -> None:
-        """Detach SmartArt, chart, and workbook parts no longer referenced.
-
-        The main document templating step can remove sections containing charts or
-        SmartArt. When that happens the relationships that previously linked the
-        document to those parts should be removed so we don't attempt to render
-        their XML later in the pipeline. We restrict the cleanup to the main
-        document and its header/footer parts to avoid disturbing relationships
-        between chart and workbook parts that remain in use elsewhere.
-        """
+    def _prepare_additional_parts(self) -> None:
+        """Identify active SmartArt, chart, and workbook parts and drop unused ones."""
 
         docx = getattr(self, "docx", None)
         if docx is None:
+            self._active_additional_partnames = set()
             return
 
         doc_part = getattr(docx, "part", None)
         if doc_part is None:
+            self._active_additional_partnames = set()
             return
 
-        parts_to_scan = [doc_part]
+        active: set[str] = set()
+        queue: list = [doc_part]
+        visited: set = set()
 
-        # Include header and footer parts since they can also contain charts.
-        header_footer_parts: list = []
-        rels = getattr(doc_part, "rels", None)
-        if rels:
-            for rel in rels.values():
-                if getattr(rel, "is_external", False):
-                    continue
-                target_part = getattr(rel, "target_part", None)
-                if target_part is None:
-                    continue
-                partname = self._normalise_partname(target_part)
-                if not partname.startswith("word/header") and not partname.startswith("word/footer"):
-                    continue
-                if target_part not in header_footer_parts:
-                    header_footer_parts.append(target_part)
+        while queue:
+            part = queue.pop()
+            if part in visited:
+                continue
+            visited.add(part)
 
-        parts_to_scan.extend(header_footer_parts)
-
-        for part in parts_to_scan:
             rels = getattr(part, "rels", None)
             if not rels:
                 continue
@@ -354,16 +340,40 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     continue
 
                 target_name = self._normalise_partname(target_part)
-                if not self._matches_extra_template(target_name):
-                    continue
+                if self._matches_extra_template(target_name):
+                    if rel_id in used_ids:
+                        active.add(target_name)
+                    else:
+                        try:
+                            part.drop_rel(rel_id)
+                        except Exception:  # pragma: no cover - defensive cleanup
+                            continue
+                        self._remove_part_branch(target_part)
+                        continue
 
-                if rel_id in used_ids:
-                    continue
+                queue.append(target_part)
 
-                try:
-                    part.drop_rel(rel_id)
-                except Exception:  # pragma: no cover - defensive cleanup
-                    continue
+        self._active_additional_partnames = active
+
+    def _remove_part_branch(self, part) -> None:
+        rels = getattr(part, "rels", None)
+        if not rels:
+            return
+
+        for rel_id, rel in list(rels.items()):
+            if getattr(rel, "is_external", False):
+                continue
+
+            target_part = getattr(rel, "target_part", None)
+            if target_part is None:
+                continue
+
+            try:
+                part.drop_rel(rel_id)
+            except Exception:  # pragma: no cover - defensive cleanup
+                continue
+
+            self._remove_part_branch(target_part)
 
     def _prune_orphan_relationships(self) -> None:
         """Remove relationships that target parts removed during templating."""
