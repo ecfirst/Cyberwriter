@@ -393,6 +393,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
             seen.add(marker)
             parts.append(candidate)
 
+        available_partnames = {
+            self._normalise_partname(part)
+            for part in parts
+        }
+
         tracked_prefixes = (
             "word/media/",
             "media/",
@@ -415,9 +420,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 if getattr(rel, "is_external", False):
                     continue
 
-                if rel_id in used_ids:
-                    continue
-
                 target_name = self._resolve_relationship_target(base_name, rel)
                 if target_name is None:
                     continue
@@ -427,6 +429,18 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     normalised = f"word/{normalised}"
 
                 if not normalised.startswith(tracked_prefixes):
+                    continue
+
+                target_part = getattr(rel, "target_part", None)
+                target_missing = False
+                if target_part is None:
+                    candidate_names = {normalised, target_name}
+                    if not target_name.startswith("word/"):
+                        candidate_names.add(f"word/{target_name}")
+                    if not candidate_names.intersection(available_partnames):
+                        target_missing = True
+
+                if not target_missing and rel_id in used_ids:
                     continue
 
                 removed = False
@@ -451,7 +465,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
                 removed_ids.add(rel_id)
 
-                target_part = getattr(rel, "target_part", None)
                 if target_part is not None:
                     self._remove_part_branch(target_part)
 
