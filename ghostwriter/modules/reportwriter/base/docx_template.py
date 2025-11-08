@@ -426,11 +426,17 @@ class GhostwriterDocxTemplate(DocxTemplate):
         primary_body = bodies[0]
         default_sectpr = None
 
+        modified = False
+
         for existing in list(self._xpath(primary_body, "./w:sectPr", namespaces)):
             primary_body.remove(existing)
             default_sectpr = existing
+            modified = True
 
         for extra_body in bodies[1:]:
+            if list(extra_body):
+                modified = True
+
             for child in list(extra_body):
                 extra_body.remove(child)
                 if self._tag_equals(child, qn("w:sectPr")):
@@ -442,11 +448,16 @@ class GhostwriterDocxTemplate(DocxTemplate):
             parent = extra_body.getparent()
             if parent is not None:
                 parent.remove(extra_body)
+                modified = True
 
         if default_sectpr is not None:
             for existing in list(self._xpath(primary_body, "./w:sectPr", namespaces)):
                 primary_body.remove(existing)
             primary_body.append(default_sectpr)
+            modified = True
+
+        if modified and hasattr(doc_part, "_blob"):
+            doc_part._blob = None
 
     def _tag_equals(self, element, target: str) -> bool:
         try:
@@ -473,6 +484,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         candidates = self._xpath(element, ".//*[@r:id or @r:embed or @r:link]", namespaces)
 
+        modified = False
         for node in list(candidates):
             values = {
                 node.get(attr) for attr in relationship_attrs if node.get(attr) is not None
@@ -482,9 +494,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             if node.tag == qn("w:hyperlink"):
                 self._unwrap_element(node)
+                modified = True
                 continue
 
             self._remove_run_ancestor(node)
+            modified = True
+
+        if modified and hasattr(part, "_blob"):
+            part._blob = None
 
     def _unwrap_element(self, node):
         parent = node.getparent()
@@ -581,6 +598,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
         removed = False
         relationship_attr = f"{{{namespaces['r']}}}id"
 
+        modified = False
+
         for node in list(attached_nodes):
             rid = node.get(relationship_attr)
             if rid and rels and rid in rels:
@@ -594,6 +613,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             parent = node.getparent()
             if parent is not None:
                 parent.remove(node)
+                modified = True
 
         if removed and hasattr(settings_part, "drop_rel"):
             # Some relationship containers cache dropped IDs; ensure they're removed.
@@ -606,6 +626,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     settings_part.drop_rel(rid)
                 except Exception:  # pragma: no cover - defensive cleanup
                     continue
+
+        if (removed or modified) and hasattr(settings_part, "_blob"):
+            settings_part._blob = None
 
     def _absolutise_part_target(self, base_name: str, target: str) -> str | None:
         cleaned = target.strip()
