@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import fnmatch
-import posixpath
 import io
 import re
 import zipfile
-from collections import defaultdict
+import posixpath
 from copy import deepcopy
 from typing import Iterator
 
 from docx.oxml import parse_xml
-from docx.opc.packuri import PackURI
-from docx.oxml.ns import qn
 from docxtpl.template import DocxTemplate
 from jinja2 import Environment, meta
 from lxml import etree
@@ -70,14 +67,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self.render_properties(context, jinja_env)
 
-        self._prepare_additional_parts()
-        self._render_additional_parts(context, jinja_env)
+        active_parts = self._determine_active_additional_parts()
 
-        self._remove_unused_relationships()
-        self._prune_orphan_relationships()
-        self._renumber_chart_assets()
-        self._normalise_document_structure()
-        self._remove_attached_template_reference()
+        self._render_additional_parts(context, jinja_env, active_parts)
 
         self.is_rendered = True
 
@@ -249,14 +241,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         package = self.docx.part.package
         seen: set[str] = set()
-        active_partnames = getattr(self, "_active_additional_partnames", None)
         for part in package.iter_parts():
             partname = self._normalise_partname(part)
             if partname in seen:
                 continue
             if self._matches_extra_template(partname):
-                if active_partnames is not None and partname not in active_partnames:
-                    continue
                 seen.add(partname)
                 yield part
 
@@ -269,8 +258,21 @@ class GhostwriterDocxTemplate(DocxTemplate):
     def _is_excel_part(self, partname: str) -> bool:
         return partname.endswith(".xlsx")
 
-    def _render_additional_parts(self, context, jinja_env) -> None:
+    def _render_additional_parts(
+        self,
+        context,
+        jinja_env,
+        active_partnames: set[str] | None = None,
+    ) -> None:
         parts = list(self._iter_additional_parts())
+
+        if active_partnames is not None:
+            parts = [
+                part
+                for part in parts
+                if self._normalise_partname(part) in active_partnames
+            ]
+
         excel_values: dict[str, dict[str, dict[str, str]]] = {}
 
         for part in parts:
@@ -305,876 +307,71 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
 
-    def _prepare_additional_parts(self) -> None:
-        """Identify active SmartArt, chart, and workbook parts and drop unused ones."""
-
+    def _determine_active_additional_parts(self) -> set[str] | None:
         docx = getattr(self, "docx", None)
         if docx is None:
-            self._active_additional_partnames = set()
-            return
+            return None
 
-        doc_part = getattr(docx, "part", None)
-        if doc_part is None:
-            self._active_additional_partnames = set()
-            return
+        package = docx.part.package
+        active_partnames: set[str] = set()
 
-        active: set[str] = set()
-        queue: list = [doc_part]
-        visited: set = set()
+        for part in package.iter_parts():
+            element = getattr(part, "element", None)
+            if element is None and hasattr(part, "_element"):
+                element = part._element  # type: ignore[attr-defined]
 
-        while queue:
-            part = queue.pop()
-            if part in visited:
-                continue
-            visited.add(part)
-
-            rels = getattr(part, "rels", None)
-            if not rels:
-                continue
-
-            partname = self._normalise_partname(part)
-            used_ids = self._collect_relationship_ids(part)
-
-            for rel_id, rel in list(rels.items()):
-                if getattr(rel, "is_external", False):
-                    continue
-
-                target_part = getattr(rel, "target_part", None)
-                if target_part is None:
-                    continue
-
-                target_name = self._normalise_partname(target_part)
-                if self._matches_extra_template(target_name):
-                    keep = rel_id in used_ids or self._matches_extra_template(partname)
-                    if target_name.startswith("word/diagrams/drawing"):
-                        keep = True
-                    if keep:
-                        active.add(target_name)
+            if element is None:
+                blob = getattr(part, "_blob", None)
+                if isinstance(blob, (bytes, bytearray)):
+                    try:
+                        element = parse_xml(blob)
+                    except Exception:  # pragma: no cover - defensive parse
+                        element = None
                     else:
                         try:
-                            part.drop_rel(rel_id)
-                        except Exception:  # pragma: no cover - defensive cleanup
-                            continue
-                        self._remove_part_branch(target_part)
-                        continue
+                            setattr(part, "_element", element)
+                        except Exception:  # pragma: no cover - cache best effort
+                            pass
 
-                queue.append(target_part)
-
-        self._active_additional_partnames = active
-
-    def _remove_unused_relationships(self) -> None:
-        """Drop internal relationships that are no longer referenced in XML markup."""
-
-        docx = getattr(self, "docx", None)
-        if docx is None:
-            return
-
-        doc_part = getattr(docx, "part", None)
-        if doc_part is None:
-            return
-
-        package = getattr(doc_part, "package", None)
-        if package is None:
-            return
-
-        try:
-            iterated_parts = list(package.iter_parts())
-        except Exception:
-            iterated_parts = []
-
-        parts = []
-        seen: set[int] = set()
-        for candidate in [doc_part, *iterated_parts]:
-            if candidate is None:
-                continue
-            marker = id(candidate)
-            if marker in seen:
-                continue
-            seen.add(marker)
-            parts.append(candidate)
-
-        available_partnames = {
-            self._normalise_partname(part)
-            for part in parts
-        }
-
-        tracked_prefixes = (
-            "word/media/",
-            "media/",
-            "word/charts/",
-            "word/diagrams/",
-            "word/embeddings/",
-        )
-
-        for part in parts:
-            rels = getattr(part, "rels", None)
-            if not rels:
+            if element is None:
                 continue
 
-            base_name = self._normalise_partname(part)
-            used_ids = self._collect_relationship_ids(part)
-            removed_ids: set[str] = set()
+            used_rel_ids = self._collect_used_relationship_ids(element)
 
-            rel_items = rels.items() if hasattr(rels, "items") else []
-            for rel_id, rel in list(rel_items):
-                if getattr(rel, "is_external", False):
-                    continue
+            if not used_rel_ids:
+                continue
 
-                target_name = self._resolve_relationship_target(base_name, rel)
-                if target_name is None:
-                    continue
-
-                normalised = target_name
-                if not normalised.startswith("word/") and normalised.startswith("media/"):
-                    normalised = f"word/{normalised}"
-
-                if not normalised.startswith(tracked_prefixes):
-                    continue
-
+            for rel_id, rel in list(part.rels.items()):
                 target_part = getattr(rel, "target_part", None)
-                target_missing = False
-                if target_part is None:
-                    candidate_names = {normalised, target_name}
-                    if not target_name.startswith("word/"):
-                        candidate_names.add(f"word/{target_name}")
-                    if not candidate_names.intersection(available_partnames):
-                        target_missing = True
-
-                if not target_missing and rel_id in used_ids:
-                    continue
-
-                removed = False
-                if hasattr(part, "drop_rel"):
-                    try:
-                        part.drop_rel(rel_id)
-                    except Exception:  # pragma: no cover - defensive cleanup
-                        pass
-                    else:
-                        removed = True
-
-                if not removed:
-                    try:
-                        del rels[rel_id]
-                    except Exception:  # pragma: no cover - defensive cleanup
-                        continue
-                    else:
-                        removed = True
-
-                if not removed:
-                    continue
-
-                removed_ids.add(rel_id)
-
-                if target_part is not None:
-                    self._remove_part_branch(target_part)
-
-                if hasattr(part, "_blob"):
-                    part._blob = None
-
-            if removed_ids:
-                self._remove_relationship_references(part, removed_ids)
-
-    def _remove_part_branch(self, part) -> None:
-        rels = getattr(part, "rels", None)
-        if not rels:
-            return
-
-        for rel_id, rel in list(rels.items()):
-            if getattr(rel, "is_external", False):
-                continue
-
-            target_part = getattr(rel, "target_part", None)
-            if target_part is None:
-                continue
-
-            try:
-                part.drop_rel(rel_id)
-            except Exception:  # pragma: no cover - defensive cleanup
-                continue
-
-            self._remove_part_branch(target_part)
-
-    def _prune_orphan_relationships(self) -> None:
-        """Remove relationships that target parts removed during templating."""
-
-        docx = getattr(self, "docx", None)
-        if docx is None:
-            return
-
-        doc_part = getattr(docx, "part", None)
-        if doc_part is None:
-            return
-
-        package = getattr(doc_part, "package", None)
-        if package is None:
-            return
-
-        parts = list(package.iter_parts())
-        partnames = {
-            self._normalise_partname(part)
-            for part in parts
-        }
-
-        removed_ids: dict[object, set[str]] = defaultdict(set)
-
-        for part in parts:
-            rels = getattr(part, "rels", None)
-            if not rels:
-                continue
-
-            base_name = self._normalise_partname(part)
-            rel_items = rels.items() if hasattr(rels, "items") else []
-            for rel_id, rel in list(rel_items):
-                remove = False
-
-                if getattr(rel, "is_external", False):
-                    remove = self._should_remove_external_relationship(rel)
-                    target = None
-                else:
-                    target = self._resolve_relationship_target(base_name, rel)
-                    if target is None:
-                        continue
-
-                    if target not in partnames and (
-                        target.startswith("word/")
-                        or f"word/{target}" not in partnames
-                    ):
-                        remove = True
-
-                if not remove:
-                    continue
-
-                removed = False
-                if hasattr(part, "drop_rel"):
-                    try:
-                        part.drop_rel(rel_id)
-                    except Exception:  # pragma: no cover - defensive cleanup
-                        pass
-                    else:
-                        removed = True
-
-                if not removed:
-                    try:
-                        del rels[rel_id]
-                    except Exception:  # pragma: no cover - defensive cleanup
-                        continue
-                    else:
-                        removed = True
-
-                if not removed:
-                    continue
-
-                removed_ids[part].add(rel_id)
-                if hasattr(part, "_blob"):
-                    part._blob = None
-
-        for part, rel_ids in removed_ids.items():
-            if rel_ids:
-                self._remove_relationship_references(part, rel_ids)
-
-    def _renumber_chart_assets(self) -> None:
-        docx = getattr(self, "docx", None)
-        if docx is None:
-            return
-
-        doc_part = getattr(docx, "part", None)
-        if doc_part is None:
-            return
-
-        package = getattr(doc_part, "package", None)
-        if package is None:
-            return
-
-        try:
-            parts = list(package.iter_parts())
-        except Exception:
-            return
-
-        chart_infos: list[dict[str, object | None]] = []
-        rename_targets: dict[object, str] = {}
-        workbook_targets: dict[object, str] = {}
-        color_targets: dict[object, str] = {}
-        style_targets: dict[object, str] = {}
-
-        for part in parts:
-            partname = self._normalise_partname(part)
-            chart_index = self._extract_part_index(
-                partname,
-                prefix="word/charts/chart",
-                suffix=".xml",
-            )
-            if chart_index is None:
-                continue
-
-            rels = getattr(part, "rels", None)
-            relationships = []
-            if isinstance(rels, dict):
-                relationships = list(rels.values())
-            elif hasattr(rels, "items"):
-                try:
-                    relationships = [rel for _, rel in rels.items()]
-                except Exception:
-                    relationships = []
-            elif hasattr(rels, "values"):
-                try:
-                    relationships = list(rels.values())
-                except Exception:
-                    relationships = []
-
-            color_part = None
-            style_part = None
-            workbook_part = None
-
-            for rel in relationships:
-                if getattr(rel, "is_external", False):
-                    continue
-
-                target_part = getattr(rel, "target_part", None)
-                if target_part is None:
+                if target_part is None or rel.is_external:
                     continue
 
                 target_name = self._normalise_partname(target_part)
-                if (
-                    color_part is None
-                    and target_name.startswith("word/charts/colors")
-                ):
-                    color_part = target_part
-                elif (
-                    style_part is None
-                    and target_name.startswith("word/charts/style")
-                ):
-                    style_part = target_part
-                elif (
-                    workbook_part is None
-                    and target_name.startswith(
-                        "word/embeddings/Microsoft_Excel_Worksheet"
-                    )
-                ):
-                    workbook_part = target_part
 
-            chart_infos.append(
-                {
-                    "index": chart_index,
-                    "name": partname,
-                    "part": part,
-                    "color": color_part,
-                    "style": style_part,
-                    "workbook": workbook_part,
-                }
-            )
+                if rel_id not in used_rel_ids:
+                    if self._matches_extra_template(target_name):
+                        part.drop_rel(rel_id)
+                    continue
 
-        if not chart_infos:
-            return
+                if self._matches_extra_template(target_name):
+                    active_partnames.add(target_name)
 
-        chart_infos.sort(
-            key=lambda info: (
-                info["index"] if info["index"] is not None else float("inf"),
-                info["name"],
-            )
-        )
+        return active_partnames
 
-        for position, info in enumerate(chart_infos, start=1):
-            chart_part = info.get("part")
-            if chart_part is None:
-                continue
-
-            old_chart_name = info.get("name")
-            new_chart_name = f"word/charts/chart{position}.xml"
-            rename_targets[chart_part] = new_chart_name
-            if isinstance(old_chart_name, str):
-                self._update_active_partname(old_chart_name, new_chart_name)
-
-            color_part = info.get("color")
-            if color_part is not None and color_part not in color_targets:
-                old_color_name = self._normalise_partname(color_part)
-                new_color_index = len(color_targets) + 1
-                new_color_name = f"word/charts/colors{new_color_index}.xml"
-                color_targets[color_part] = new_color_name
-                rename_targets[color_part] = new_color_name
-                self._update_active_partname(old_color_name, new_color_name)
-
-            style_part = info.get("style")
-            if style_part is not None and style_part not in style_targets:
-                old_style_name = self._normalise_partname(style_part)
-                new_style_index = len(style_targets) + 1
-                new_style_name = f"word/charts/style{new_style_index}.xml"
-                style_targets[style_part] = new_style_name
-                rename_targets[style_part] = new_style_name
-                self._update_active_partname(old_style_name, new_style_name)
-
-            workbook_part = info.get("workbook")
-            if workbook_part is not None and workbook_part not in workbook_targets:
-                workbook_targets[workbook_part] = self._build_workbook_partname(
-                    len(workbook_targets)
-                )
-
-        for workbook_part, new_name in workbook_targets.items():
-            old_name = self._normalise_partname(workbook_part)
-            if new_name != old_name:
-                rename_targets[workbook_part] = new_name
-                self._update_active_partname(old_name, new_name)
-
-        self._apply_part_renames(package, rename_targets)
-
-    def _should_remove_external_relationship(self, rel) -> bool:
-        target_ref = getattr(rel, "target_ref", None) or getattr(rel, "target", None)
-        if not target_ref:
-            return True
-
-        target = str(target_ref).strip()
-        if not target:
-            return True
-
-        lowered = target.lower()
-        if lowered.startswith("mailto:"):
-            return False
-        if lowered.startswith("http://") or lowered.startswith("https://"):
-            return False
-        if lowered.startswith("//"):
-            return False
-        if lowered.startswith("file:"):
-            return True
-        if any(lowered.startswith(prefix) for prefix in ("./", "../", "/")):
-            return True
-
-        scheme_split = lowered.split(":", 1)
-        if len(scheme_split) > 1 and scheme_split[0].isalpha():
-            return True
-
-        if any(sep in lowered for sep in ("/", "\\")):
-            return True
-
-        return True
-
-    def _normalise_document_structure(self) -> None:
-        docx = getattr(self, "docx", None)
-        if docx is None:
-            return
-
-        doc_part = getattr(docx, "part", None)
-        if doc_part is None:
-            return
-
-        document_element = getattr(doc_part, "element", None)
-        if document_element is None:
-            return
-
-        namespaces = {
-            key or "ns": value
-            for key, value in document_element.nsmap.items()
-            if value
-        }
-        namespaces.setdefault(
-            "w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-        )
-
-        bodies = self._xpath(document_element, "./w:body", namespaces)
-
-        if not bodies:
-            bodies = [
-                child
-                for child in document_element.iterchildren()
-                if self._tag_equals(child, qn("w:body"))
-            ]
-
-        if len(bodies) <= 1:
-            return
-
-        primary_body = bodies[0]
-        default_sectpr = None
-
-        modified = False
-
-        for existing in list(self._xpath(primary_body, "./w:sectPr", namespaces)):
-            primary_body.remove(existing)
-            default_sectpr = existing
-            modified = True
-
-        for extra_body in bodies[1:]:
-            if list(extra_body):
-                modified = True
-
-            for child in list(extra_body):
-                extra_body.remove(child)
-                if self._tag_equals(child, qn("w:sectPr")):
-                    if default_sectpr is None:
-                        default_sectpr = child
-                else:
-                    primary_body.append(child)
-
-            parent = extra_body.getparent()
-            if parent is not None:
-                parent.remove(extra_body)
-                modified = True
-
-        if default_sectpr is not None:
-            for existing in list(self._xpath(primary_body, "./w:sectPr", namespaces)):
-                primary_body.remove(existing)
-            primary_body.append(default_sectpr)
-            modified = True
-
-        if modified and hasattr(doc_part, "_blob"):
-            doc_part._blob = None
-
-    def _tag_equals(self, element, target: str) -> bool:
-        try:
-            return element.tag == target
-        except AttributeError:
-            return False
-
-    def _remove_relationship_references(self, part, rel_ids: set[str]) -> None:
-        element = getattr(part, "element", None)
-        if element is None:
-            element = getattr(part, "_element", None)
-        if element is None:
-            return
-
-        namespaces = {key or "ns": value for key, value in element.nsmap.items() if value}
-        namespaces.setdefault("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
-        namespaces.setdefault("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
-
-        relationship_namespace = namespaces["r"]
-        attr_prefix = f"{{{relationship_namespace}}}"
-
-        modified = False
-        for node in list(element.iter()):
-            values = {
-                value
-                for attr, value in node.attrib.items()
-                if attr.startswith(attr_prefix) and value is not None
-            }
-            if not values or not values.intersection(rel_ids):
-                continue
-
-            if node.tag == qn("w:hyperlink"):
-                self._unwrap_element(node)
-                modified = True
-                continue
-
-            self._remove_run_ancestor(node)
-            modified = True
-
-        if modified and hasattr(part, "_blob"):
-            part._blob = None
-
-    def _collect_relationship_ids(self, part) -> set[str]:
-        element = getattr(part, "element", None)
-        if element is None:
-            element = getattr(part, "_element", None)
-
-        if element is None:
-            blob = getattr(part, "_blob", None)
-            if blob:
-                try:
-                    element = parse_xml(blob)
-                except Exception:  # pragma: no cover - defensive parsing guard
-                    element = None
-                else:
-                    try:
-                        setattr(part, "_element", element)
-                    except Exception:  # pragma: no cover - cache assignment best-effort
-                        pass
-
-        xml: str | None = None
-        xml_blob = getattr(part, "_blob", None)
-        if isinstance(xml_blob, (bytes, bytearray)):
-            xml = xml_blob.decode("utf-8", errors="ignore")
-        elif element is not None:
-            try:
-                xml = etree.tostring(element, encoding="unicode")
-            except Exception:  # pragma: no cover - serialization guard
-                xml = None
-
-        namespaces: dict[str, str]
-        if element is not None:
-            namespaces = {
-                key or "ns": value
-                for key, value in element.nsmap.items()
-                if value
-            }
-        else:
-            namespaces = {}
-
-        namespaces.setdefault(
-            "r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-        )
-
-        relationship_namespace = namespaces["r"]
-        attr_prefix = f"{{{relationship_namespace}}}"
+    def _collect_used_relationship_ids(self, element) -> set[str]:
+        relationship_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        prefix = f"{{{relationship_ns}}}"
 
         used: set[str] = set()
 
-        if element is not None:
-            for node in element.iter():
-                for attr, value in node.attrib.items():
-                    if not value:
-                        continue
-
-                    if attr.startswith(attr_prefix):
-                        used.add(value)
-                        continue
-
-                    if attr.startswith("{"):
-                        local_name = attr.split("}", 1)[1]
-                    else:
-                        local_name = attr
-
-                    if local_name.lower() == "relid":
-                        used.add(value)
-
-        if xml:
-            pattern = re.compile(r"r:[A-Za-z_][\\w.-]*\s*=\s*[\"']([^\"']+)[\"']")
-            for match in pattern.finditer(xml):
-                used.add(match.group(1))
-
-            relid_pattern = re.compile(r"(?i)\brelid\s*=\s*[\"']([^\"']+)[\"']")
-            for match in relid_pattern.finditer(xml):
-                used.add(match.group(1))
+        for node in element.iter():
+            for attr, value in node.attrib.items():
+                if not value:
+                    continue
+                if attr.startswith(prefix) or attr == "relId":
+                    used.add(value)
 
         return used
-
-    def _extract_part_index(
-        self, partname: str, *, prefix: str, suffix: str
-    ) -> int | None:
-        pattern = re.escape(prefix) + r"(\d+)" + re.escape(suffix) + r"$"
-        match = re.match(pattern, partname)
-        if match:
-            try:
-                return int(match.group(1))
-            except ValueError:
-                return None
-        return None
-
-    def _build_workbook_partname(self, index: int) -> str:
-        if index <= 0:
-            return "word/embeddings/Microsoft_Excel_Worksheet.xlsx"
-        return f"word/embeddings/Microsoft_Excel_Worksheet{index}.xlsx"
-
-    def _update_active_partname(self, old_name: str, new_name: str) -> None:
-        if not old_name or old_name == new_name:
-            return
-
-        active = getattr(self, "_active_additional_partnames", None)
-        if not isinstance(active, set):
-            return
-
-        if old_name in active:
-            active.remove(old_name)
-            active.add(new_name)
-
-    def _apply_part_renames(self, package, rename_targets: dict[object, str]) -> None:
-        if not rename_targets:
-            return
-
-        try:
-            parts = list(package.iter_parts())
-        except Exception:
-            parts = []
-
-        used_names = {self._normalise_partname(part) for part in parts}
-
-        pending = [
-            (part, new_name)
-            for part, new_name in rename_targets.items()
-            if self._normalise_partname(part) != new_name
-        ]
-
-        if not pending:
-            return
-
-        temp_records: list[tuple[object, str]] = []
-        for idx, (part, new_name) in enumerate(pending):
-            temp_name = self._make_temp_partname(new_name, idx, used_names)
-            try:
-                part.partname = PackURI(f"/{temp_name}")
-            except Exception:
-                continue
-            used_names.add(temp_name)
-            temp_records.append((part, new_name))
-
-        for part, final_name in temp_records:
-            try:
-                part.partname = PackURI(f"/{final_name}")
-            except Exception:
-                continue
-            used_names.add(final_name)
-
-    def _make_temp_partname(
-        self, target_name: str, counter: int, used_names: set[str]
-    ) -> str:
-        if "/" in target_name:
-            directory, filename = target_name.rsplit("/", 1)
-        else:
-            directory, filename = "", target_name
-
-        if "." in filename:
-            stem, ext = filename.rsplit(".", 1)
-            extension = f".{ext}"
-        else:
-            stem = filename
-            extension = ""
-
-        candidate = f"{directory}/__tmp__{stem}_{counter}{extension}" if directory else f"__tmp__{stem}_{counter}{extension}"
-        while candidate in used_names:
-            counter += 1
-            candidate = (
-                f"{directory}/__tmp__{stem}_{counter}{extension}"
-                if directory
-                else f"__tmp__{stem}_{counter}{extension}"
-            )
-        return candidate
-
-    def _unwrap_element(self, node):
-        parent = node.getparent()
-        if parent is None:
-            return
-
-        index = parent.index(node)
-        for child in list(node):
-            parent.insert(index, child)
-            index += 1
-        parent.remove(node)
-
-    def _remove_run_ancestor(self, node) -> None:
-        current = node
-        run_tag = qn("w:r")
-        while current is not None and current.tag != run_tag:
-            current = current.getparent()
-
-        target = current if current is not None else node
-        parent = target.getparent()
-        if parent is None:
-            return
-        parent.remove(target)
-
-    def _resolve_relationship_target(self, base_name: str, rel) -> str | None:
-        target_part = getattr(rel, "target_part", None)
-        if target_part is not None:
-            return self._normalise_partname(target_part)
-
-        target_ref = getattr(rel, "target_ref", None) or getattr(rel, "target", None)
-        if not target_ref:
-            return None
-
-        return self._absolutise_part_target(base_name, str(target_ref))
-
-    def _xpath(
-        self, element, query: str, namespaces: dict[str, str] | None = None
-    ) -> list:
-        try:
-            tree = etree.ElementTree(element)
-            if namespaces is not None:
-                return tree.xpath(query, namespaces=namespaces)
-            return tree.xpath(query)
-        except (etree.Error, TypeError, ValueError):
-            return []
-
-    def _remove_attached_template_reference(self) -> None:
-        docx = getattr(self, "docx", None)
-        if docx is None:
-            return
-
-        doc_part = getattr(docx, "part", None)
-        if doc_part is None:
-            return
-
-        package = getattr(doc_part, "package", None)
-        if package is None:
-            return
-
-        settings_part = None
-        for part in package.iter_parts():
-            if self._normalise_partname(part) == "word/settings.xml":
-                settings_part = part
-                break
-
-        if settings_part is None:
-            return
-
-        element = getattr(settings_part, "element", None)
-        if element is None:
-            element = getattr(settings_part, "_element", None)
-        if element is None:
-            blob = getattr(settings_part, "_blob", None)
-            if blob:
-                try:
-                    element = parse_xml(blob)
-                except Exception:  # pragma: no cover - defensive
-                    element = None
-                else:
-                    settings_part._element = element
-
-        if element is None:
-            return
-
-        namespaces = {key or "ns": value for key, value in element.nsmap.items() if value}
-        namespaces.setdefault("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
-        namespaces.setdefault("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
-
-        attached_nodes = self._xpath(element, ".//w:attachedTemplate", namespaces)
-        if not attached_nodes:
-            return
-
-        rels = getattr(settings_part, "rels", None)
-        removed = False
-        relationship_attr = f"{{{namespaces['r']}}}id"
-
-        modified = False
-
-        for node in list(attached_nodes):
-            rid = node.get(relationship_attr)
-            if rid and rels and rid in rels:
-                try:
-                    del rels[rid]
-                except Exception:  # pragma: no cover - defensive cleanup
-                    pass
-                else:
-                    removed = True
-
-            parent = node.getparent()
-            if parent is not None:
-                parent.remove(node)
-                modified = True
-
-        if removed and hasattr(settings_part, "drop_rel"):
-            # Some relationship containers cache dropped IDs; ensure they're removed.
-            cached = getattr(settings_part, "_rels", {})
-            current = getattr(settings_part, "rels", {}) or {}
-            for rid in list(cached):
-                if rid in current:
-                    continue
-                try:
-                    settings_part.drop_rel(rid)
-                except Exception:  # pragma: no cover - defensive cleanup
-                    continue
-
-        if (removed or modified) and hasattr(settings_part, "_blob"):
-            settings_part._blob = None
-
-    def _absolutise_part_target(self, base_name: str, target: str) -> str | None:
-        cleaned = target.strip()
-        if not cleaned:
-            return None
-
-        if cleaned.startswith(('#', 'mailto:')):
-            return None
-
-        if '://' in cleaned.split('#', 1)[0]:
-            return None
-
-        cleaned = cleaned.split('#', 1)[0]
-
-        if cleaned.startswith("/"):
-            candidate = cleaned.lstrip("/")
-        else:
-            base_dir = posixpath.dirname(base_name)
-            candidate = posixpath.normpath(posixpath.join(base_dir, cleaned))
-
-        candidate = candidate.lstrip("./")
-        if not candidate:
-            return None
-
-        return candidate
 
     def _read_excel_part(self, part) -> tuple[list[zipfile.ZipInfo], dict[str, bytes]] | None:
         blob = getattr(part, "_blob", None)
