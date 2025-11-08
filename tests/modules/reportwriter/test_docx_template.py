@@ -1603,6 +1603,55 @@ def test_render_prunes_orphan_relationships(tmp_path):
     assert "https://example.com/report" in doc_rels_xml
 
 
+def test_render_prunes_missing_image_relationships(tmp_path):
+    base_template = Path("DOCS/sample_reports/template.docx")
+    original = base_template.read_bytes()
+
+    buffer = io.BytesIO()
+    doc_relationships_path = "word/_rels/document.xml.rels"
+    relationships_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    image_rel_id = "rId950"
+    missing_target = "media/missing_image.png"
+    drawing_paragraph = ORPHANED_DRAWING_PARAGRAPH.replace("rId999", image_rel_id)
+
+    with zipfile.ZipFile(io.BytesIO(original)) as src, zipfile.ZipFile(buffer, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == doc_relationships_path:
+                tree = ET.fromstring(data)
+                ET.SubElement(
+                    tree,
+                    f"{{{relationships_ns}}}Relationship",
+                    {
+                        "Id": image_rel_id,
+                        "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+                        "Target": missing_target,
+                    },
+                )
+                data = ET.tostring(tree, encoding="utf-8", xml_declaration=True)
+            elif info.filename == "word/document.xml":
+                data = data.replace(b"</w:body>", drawing_paragraph.encode("utf-8") + b"</w:body>")
+
+            dst.writestr(info, data)
+
+    modified_template = tmp_path / "broken_images.docx"
+    modified_template.write_bytes(buffer.getvalue())
+
+    template = GhostwriterDocxTemplate(str(modified_template))
+    template.render({}, Environment())
+
+    output_doc = tmp_path / "rendered.docx"
+    template.save(output_doc)
+
+    with zipfile.ZipFile(output_doc) as archive:
+        doc_rels_xml = archive.read(doc_relationships_path).decode("utf-8")
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert image_rel_id not in doc_rels_xml
+    assert missing_target not in doc_rels_xml
+    assert image_rel_id not in document_xml
+
+
 def test_render_removes_unreferenced_chart_parts(tmp_path):
     base_template = Path("DOCS/sample_reports/template.docx")
     original = base_template.read_bytes()

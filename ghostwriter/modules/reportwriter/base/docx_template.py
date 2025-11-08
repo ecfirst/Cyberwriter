@@ -431,12 +431,29 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 if not remove:
                     continue
 
-                try:
-                    del rels[rel_id]
-                except Exception:  # pragma: no cover - defensive cleanup
+                removed = False
+                if hasattr(part, "drop_rel"):
+                    try:
+                        part.drop_rel(rel_id)
+                    except Exception:  # pragma: no cover - defensive cleanup
+                        pass
+                    else:
+                        removed = True
+
+                if not removed:
+                    try:
+                        del rels[rel_id]
+                    except Exception:  # pragma: no cover - defensive cleanup
+                        continue
+                    else:
+                        removed = True
+
+                if not removed:
                     continue
 
                 removed_ids[part].add(rel_id)
+                if hasattr(part, "_blob"):
+                    part._blob = None
 
         for part, rel_ids in removed_ids.items():
             if rel_ids:
