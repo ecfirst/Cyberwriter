@@ -300,6 +300,16 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 part._blob = rendered_bytes
 
     def _remove_unreferenced_additional_parts(self) -> None:
+        """Detach SmartArt, chart, and workbook parts no longer referenced.
+
+        The main document templating step can remove sections containing charts or
+        SmartArt. When that happens the relationships that previously linked the
+        document to those parts should be removed so we don't attempt to render
+        their XML later in the pipeline. We restrict the cleanup to the main
+        document and its header/footer parts to avoid disturbing relationships
+        between chart and workbook parts that remain in use elsewhere.
+        """
+
         docx = getattr(self, "docx", None)
         if docx is None:
             return
@@ -308,27 +318,32 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if doc_part is None:
             return
 
-        package = getattr(doc_part, "package", None)
-        if package is None:
-            return
+        parts_to_scan = [doc_part]
 
-        parts = []
-        if doc_part is not None:
-            parts.append(doc_part)
-        parts.extend(package.iter_parts())
+        # Include header and footer parts since they can also contain charts.
+        header_footer_parts: list = []
+        rels = getattr(doc_part, "rels", None)
+        if rels:
+            for rel in rels.values():
+                if getattr(rel, "is_external", False):
+                    continue
+                target_part = getattr(rel, "target_part", None)
+                if target_part is None:
+                    continue
+                partname = self._normalise_partname(target_part)
+                if not partname.startswith("word/header") and not partname.startswith("word/footer"):
+                    continue
+                if target_part not in header_footer_parts:
+                    header_footer_parts.append(target_part)
 
-        seen: set[object] = set()
+        parts_to_scan.extend(header_footer_parts)
 
-        for part in parts:
-            if part in seen:
-                continue
-            seen.add(part)
-
+        for part in parts_to_scan:
             rels = getattr(part, "rels", None)
             if not rels:
                 continue
 
-            used_ids = None
+            used_ids = self._collect_relationship_ids(part)
 
             for rel_id, rel in list(rels.items()):
                 if getattr(rel, "is_external", False):
@@ -342,17 +357,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 if not self._matches_extra_template(target_name):
                     continue
 
-                if used_ids is None:
-                    used_ids = self._collect_relationship_ids(part)
-
                 if rel_id in used_ids:
                     continue
 
-                if hasattr(part, "drop_rel"):
-                    try:
-                        part.drop_rel(rel_id)
-                    except Exception:  # pragma: no cover - defensive cleanup
-                        continue
+                try:
+                    part.drop_rel(rel_id)
+                except Exception:  # pragma: no cover - defensive cleanup
+                    continue
 
     def _prune_orphan_relationships(self) -> None:
         """Remove relationships that target parts removed during templating."""
