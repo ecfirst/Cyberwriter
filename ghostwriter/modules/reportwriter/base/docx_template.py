@@ -20,6 +20,7 @@ _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_MISNESTED_DRAWING_PATTERN = re.compile(r"</w:drawing>(?P<content>.*?)</wp:inline>", re.DOTALL)
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
@@ -38,6 +39,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         "word/embeddings/Microsoft_Excel_Worksheet*.xlsx",
         "word/charts/chart*.xml",
     )
+    _active_additional_partnames: set[str] | None = None
 
     def render(self, context, jinja_env=None, autoescape: bool = False) -> None:  # type: ignore[override]
         """Render the template, including SmartArt diagram XML parts."""
@@ -69,7 +71,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
         self.render_properties(context, jinja_env)
 
         active_parts = self._cleanup_unused_additional_relationships()
+        self._active_additional_partnames = active_parts or set()
         self._render_additional_parts(context, jinja_env, active_parts)
+        self._fix_misnested_drawing_markup()
 
         self.is_rendered = True
 
@@ -365,6 +369,22 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if removed:
                 self._update_part_xml(part, element)
 
+        if active_partnames:
+            lookup = {
+                self._normalise_partname(part): part
+                for part in self._iter_additional_parts()
+            }
+            queue = list(active_partnames)
+            while queue:
+                partname = queue.pop()
+                part = lookup.get(partname)
+                if part is None:
+                    continue
+                for related in self._collect_related_additional_partnames(part):
+                    if related not in active_partnames:
+                        active_partnames.add(related)
+                        queue.append(related)
+
         # Ensure only additional parts that remain referenced are templated.
         return active_partnames
 
@@ -452,6 +472,63 @@ class GhostwriterDocxTemplate(DocxTemplate):
             current = current.getparent()
 
         return removal
+
+    def _collect_related_additional_partnames(self, part) -> set[str]:
+        rels = getattr(part, "rels", None)
+        if not rels:
+            return set()
+
+        related: set[str] = set()
+        for rel in rels.values():
+            if getattr(rel, "is_external", False):
+                continue
+            try:
+                target_part = rel.target_part
+            except (AttributeError, KeyError, ValueError):
+                target_part = None
+
+            if target_part is None:
+                continue
+
+            partname = self._normalise_partname(target_part)
+            if self._matches_extra_template(partname):
+                related.add(partname)
+
+        return related
+
+    def _fix_misnested_drawing_markup(self) -> None:
+        if not self.docx:
+            return
+
+        parts = [self.docx.part]
+
+        for uri in (self.HEADER_URI, self.FOOTER_URI):
+            for _rel_key, part in self.get_headers_footers(uri):
+                parts.append(part)
+
+        for part in parts:
+            xml = self.get_part_xml(part)
+            if not xml:
+                continue
+
+            fixed, count = _MISNESTED_DRAWING_PATTERN.subn(
+                lambda match: f"{match.group('content')}</wp:inline></w:drawing>",
+                xml,
+            )
+
+            if not count or fixed == xml:
+                continue
+
+            try:
+                element = parse_xml(fixed.encode("utf-8"))
+            except Exception:
+                continue
+
+            if hasattr(part, "_element"):
+                part._element = element
+            if hasattr(part, "_blob"):
+                part._blob = fixed.encode("utf-8")
+
 
     def _update_part_xml(self, part, element) -> None:
         if hasattr(part, "_element"):
