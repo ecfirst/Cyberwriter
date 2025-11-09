@@ -22,8 +22,9 @@ _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relati
 _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
+_DRAWING_CLOSING_GAP = r"(?:\s|[^<]|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _MISNESTED_DRAWING_RE = re.compile(
-    rf"</(?P<draw>(?:[A-Za-z_][\\w.-]*:)?drawing)>(?P<middle>{_XML_TAG_GAP})</(?P<inline>(?:[A-Za-z_][\\w.-]*:)?inline)>",
+    rf"</(?P<draw>(?:[A-Za-z_][\\w.-]*:)?drawing)>(?P<middle>{_DRAWING_CLOSING_GAP})</(?P<inline>(?:[A-Za-z_][\\w.-]*:)?inline)>",
     re.DOTALL,
 )
 
@@ -469,7 +470,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             replacements = 0
             while True:
                 working, count = _MISNESTED_DRAWING_RE.subn(
-                    r"</\g<inline>></\g<draw>>\g<middle>",
+                    r"\g<middle></\g<inline>></\g<draw>>",
                     working,
                 )
                 replacements += count
