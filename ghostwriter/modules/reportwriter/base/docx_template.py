@@ -511,8 +511,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 parts.append(part)
 
         for part in parts:
-            xml = self.get_part_xml(part)
-            if not xml:
+            element = self._get_part_element(part)
+            if element is None:
+                continue
+
+            xml = etree.tostring(element, encoding="unicode")
+            if "</w:drawing>" not in xml or "</wp:inline>" not in xml:
                 continue
 
             def _swap_closings(match: re.Match[str]) -> str:
@@ -527,20 +531,27 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
                 return f"{inline_content}</wp:inline></w:drawing>{trailing}"
 
-            fixed, count = _MISNESTED_DRAWING_PATTERN.subn(_swap_closings, xml)
+            fixed = xml
+            total = 0
 
-            if not count or fixed == xml:
+            while True:
+                fixed, count = _MISNESTED_DRAWING_PATTERN.subn(_swap_closings, fixed)
+                total += count
+                if count == 0:
+                    break
+
+            if total == 0 or fixed == xml:
                 continue
 
             try:
-                element = parse_xml(fixed.encode("utf-8"))
+                parsed = parse_xml(fixed.encode("utf-8"))
             except Exception:
-                continue
+                try:
+                    parsed = etree.fromstring(fixed.encode("utf-8"))
+                except Exception:
+                    continue
 
-            if hasattr(part, "_element"):
-                part._element = element
-            if hasattr(part, "_blob"):
-                part._blob = fixed.encode("utf-8")
+            self._update_part_xml(part, parsed)
 
 
     def _update_part_xml(self, part, element) -> None:
