@@ -339,16 +339,27 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 except ValueError:
                     target_part = None
 
-                if rel_id in used_rel_ids and target_part is not None:
-                    target_name = self._normalise_partname(target_part)
-                    if self._matches_extra_template(target_name):
+                target_name: str | None = (
+                    self._normalise_partname(target_part) if target_part is not None else None
+                )
+                matches_extra = bool(target_name and self._matches_extra_template(target_name))
+
+                if rel_id in used_rel_ids:
+                    if target_part is None:
+                        part.drop_rel(rel_id)
+                        missing_ids.add(rel_id)
+                    elif matches_extra:
                         active_partnames.add(target_name)
                     continue
 
-                part.drop_rel(rel_id)
+                if matches_extra or target_part is None:
+                    part.drop_rel(rel_id)
 
-                if rel_id in used_rel_ids:
-                    missing_ids.add(rel_id)
+                # Relationships that are neither used nor part of the additional
+                # templated assets (for example ``word/styles.xml``) must remain
+                # attached to the package.  They are retained implicitly by the
+                # ``continue`` so Word can still resolve numbering, styles, and
+                # comments that do not use ``r:id`` references in the body XML.
 
             current_rel_ids = set(rels.keys())
             invalid_ids = (missing_ids | used_rel_ids) - current_rel_ids
