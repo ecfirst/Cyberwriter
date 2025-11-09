@@ -16,16 +16,10 @@ from jinja2 import Environment, meta
 from lxml import etree
 
 
-_RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-
-
 _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
-_MISNESTED_DRAWING_RE = re.compile(
-    r"</(?P<draw>(?:[A-Za-z_][\w.-]*:)?drawing)>(?P<middle>.*?)</(?P<inline>(?:[A-Za-z_][\w.-]*:)?inline)>",
-    re.DOTALL,
-)
+_RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
@@ -74,11 +68,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self.render_properties(context, jinja_env)
 
-        active_parts = self._determine_active_additional_parts()
-
+        active_parts = self._cleanup_unused_additional_relationships()
         self._render_additional_parts(context, jinja_env, active_parts)
-        self._cleanup_missing_relationship_targets()
-        self._fix_misnested_drawing_markup()
 
         self.is_rendered = True
 
@@ -281,7 +272,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 for part in parts
                 if self._normalise_partname(part) in active_partnames
             ]
-
         excel_values: dict[str, dict[str, dict[str, str]]] = {}
 
         for part in parts:
@@ -316,15 +306,19 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
 
-    def _determine_active_additional_parts(self) -> set[str] | None:
-        docx = getattr(self, "docx", None)
-        if docx is None:
+    def _cleanup_unused_additional_relationships(self) -> set[str] | None:
+        if not self.docx:
             return None
 
-        package = docx.part.package
+        referencing_parts: list = [self.docx.part]
+
+        for uri in (self.HEADER_URI, self.FOOTER_URI):
+            for _rel_key, part in self.get_headers_footers(uri):
+                referencing_parts.append(part)
+
         active_partnames: set[str] = set()
 
-        for part in package.iter_parts():
+        for part in referencing_parts:
             element = self._get_part_element(part)
             if element is None:
                 continue
@@ -332,272 +326,134 @@ class GhostwriterDocxTemplate(DocxTemplate):
             used_rel_ids = self._collect_used_relationship_ids(element)
 
             rels = getattr(part, "rels", None)
-            if rels is None:
+            if not rels:
                 continue
 
-            for rel_id, rel in rels.items():
-                if rel_id not in used_rel_ids:
+            removed = False
+
+            for rel_id, rel in list(rels.items()):
+                if getattr(rel, "is_external", False):
                     continue
 
                 try:
                     target_part = rel.target_part
-                except ValueError:
+                except (AttributeError, KeyError, ValueError):
+                    target_part = None
+
+                if target_part is None:
                     continue
 
                 target_name = self._normalise_partname(target_part)
-                if target_name and self._matches_extra_template(target_name):
-                    active_partnames.add(target_name)
+                if not self._matches_extra_template(target_name):
+                    continue
 
+                if rel_id in used_rel_ids:
+                    active_partnames.add(target_name)
+                    continue
+
+                if self._remove_relationship_nodes(element, rel_id):
+                    removed = True
+
+                drop_rel = getattr(part, "drop_rel", None)
+                if callable(drop_rel):
+                    drop_rel(rel_id)
+                else:
+                    backing = getattr(rels, "_rels", None)
+                    if isinstance(backing, dict):
+                        backing.pop(rel_id, None)
+
+            if removed:
+                self._update_part_xml(part, element)
+
+        # Ensure only additional parts that remain referenced are templated.
         return active_partnames
 
     def _get_part_element(self, part):
-        element = getattr(part, "element", None)
-        if element is None and hasattr(part, "_element"):
-            element = part._element  # type: ignore[attr-defined]
+        element = getattr(part, "_element", None)
+        if element is not None:
+            return element
 
-        if element is None:
-            blob = getattr(part, "_blob", None)
-            if isinstance(blob, (bytes, bytearray)):
-                try:
-                    element = parse_xml(blob)
-                except Exception:  # pragma: no cover - defensive parse
-                    element = None
-                else:
-                    try:
-                        setattr(part, "_element", element)
-                    except Exception:  # pragma: no cover - cache best effort
-                        pass
+        blob = getattr(part, "_blob", None)
+        if blob is None and hasattr(part, "blob"):
+            try:
+                blob = part.blob  # type: ignore[attr-defined]
+            except Exception:
+                blob = None
+
+        if not isinstance(blob, (bytes, bytearray)):
+            xml = self.get_part_xml(part)
+            if not xml:
+                return None
+            blob = xml.encode("utf-8")
+
+        try:
+            element = parse_xml(blob)
+        except Exception:
+            return None
+
+        if hasattr(part, "_element"):
+            part._element = element
 
         return element
 
     def _collect_used_relationship_ids(self, element) -> set[str]:
         prefix = f"{{{_RELATIONSHIP_NS}}}"
-
         used: set[str] = set()
 
         for node in element.iter():
             for attr, value in node.attrib.items():
                 if not value:
                     continue
-                if attr.startswith(prefix) or attr == "relId":
+                if attr.startswith(prefix) or attr in {"r:id", "relId"}:
                     used.add(value)
 
         return used
 
-    def _cleanup_missing_relationship_targets(self) -> None:
-        docx = getattr(self, "docx", None)
-        if docx is None:
-            return
-
-        package = docx.part.package
-
-        for part in package.iter_parts():
-            rels = getattr(part, "rels", None)
-            if not rels:
-                continue
-
-            element = self._get_part_element(part)
-            if element is None:
-                continue
-
-            removed_nodes = False
-            missing_rel_ids: list[str] = []
-
-            for rel_id, rel in list(rels.items()):
-                if getattr(rel, "is_external", False):
-                    continue
-
-                if self._relationship_target_available(rel):
-                    continue
-
-                if self._remove_relationship_references(element, rel_id):
-                    removed_nodes = True
-
-                missing_rel_ids.append(rel_id)
-
-            if missing_rel_ids:
-                for rel_id in missing_rel_ids:
-                    drop_rel = getattr(part, "drop_rel", None)
-                    if callable(drop_rel):
-                        try:
-                            drop_rel(rel_id)
-                        except Exception:  # pragma: no cover - defensive cleanup
-                            pass
-                    else:  # pragma: no cover - legacy fallback
-                        backing = getattr(rels, "_rels", None)
-                        if isinstance(backing, dict):
-                            backing.pop(rel_id, None)
-
-            if removed_nodes:
-                self._update_part_blob(part, element)
-
-    def _fix_misnested_drawing_markup(self) -> None:
-        docx = getattr(self, "docx", None)
-        if docx is None:
-            return
-
-        package = docx.part.package
-
-        for part in package.iter_parts():
-            partname = getattr(part, "partname", None)
-            if not partname:
-                continue
-
-            name = str(partname)
-            if not name.endswith(".xml"):
-                continue
-
-            element = getattr(part, "_element", None)
-            blob = getattr(part, "_blob", None)
-
-            if element is not None:
-                try:
-                    xml_text = etree.tostring(element, encoding="unicode")
-                except Exception:  # pragma: no cover - defensive tostring
-                    xml_text = ""
-            else:
-                if not isinstance(blob, (bytes, bytearray)):
-                    if hasattr(part, "blob"):
-                        try:
-                            blob = part.blob  # type: ignore[attr-defined]
-                        except Exception:  # pragma: no cover - defensive fallback
-                            blob = None
-                if not isinstance(blob, (bytes, bytearray)):
-                    continue
-
-                try:
-                    xml_text = blob.decode("utf-8")
-                except Exception:  # pragma: no cover - defensive decode
-                    continue
-
-            if not xml_text:
-                continue
-
-            fixed_text = xml_text
-            replacements = 0
-
-            while True:
-                match = _MISNESTED_DRAWING_RE.search(fixed_text)
-                if not match:
-                    break
-
-                start, end = match.span()
-                inline = match.group("inline")
-                draw = match.group("draw")
-                middle = match.group("middle")
-
-                if "</" in middle:
-                    replacement = f"</{inline}></{draw}>{middle}"
-                else:
-                    replacement = f"{middle}</{inline}></{draw}>"
-
-                fixed_text = f"{fixed_text[:start]}{replacement}{fixed_text[end:]}"
-                replacements += 1
-
-            if not replacements:
-                continue
-
-            fixed_text = fixed_text.replace("></w:drawing>>", "></w:drawing>")
-
-            if _MISNESTED_DRAWING_RE.search(fixed_text):
-                parser = etree.XMLParser(recover=True)
-                try:
-                    recovered = etree.fromstring(fixed_text.encode("utf-8"), parser)
-                except Exception:
-                    continue
-                fixed_text = etree.tostring(recovered, encoding="unicode")
-
-            if element is not None and not fixed_text:
-                continue
-
-            try:
-                element = parse_xml(fixed_text.encode("utf-8"))
-            except Exception:  # pragma: no cover - fallback only
-                try:
-                    parser = etree.XMLParser(recover=True)
-                    recovered = etree.fromstring(fixed_text.encode("utf-8"), parser)
-                    element = parse_xml(etree.tostring(recovered, encoding="utf-8"))
-                except Exception:
-                    continue
-
-            self._update_part_blob(part, element)
-
-    def _relationship_target_available(self, rel) -> bool:
-        try:
-            target_part = rel.target_part
-        except (AttributeError, KeyError, ValueError):
-            return False
-
-        if target_part is None:
-            return False
-
-        blob = getattr(target_part, "_blob", None)
-        if blob:
-            return True
-
-        if hasattr(target_part, "blob"):
-            try:
-                if target_part.blob:  # type: ignore[attr-defined]
-                    return True
-            except Exception:
-                return False
-
-        if getattr(target_part, "_element", None) is not None:
-            return True
-
-        if getattr(target_part, "partname", None):
-            return True
-
-        return False
-
-    def _remove_relationship_references(self, element, rel_id: str) -> bool:
+    def _remove_relationship_nodes(self, element, rel_id: str) -> bool:
         if not rel_id:
             return False
 
-        attributes = (
-            f"{{{_RELATIONSHIP_NS}}}embed",
-            f"{{{_RELATIONSHIP_NS}}}link",
-            f"{{{_RELATIONSHIP_NS}}}id",
-        )
-
         removed = False
+        candidates = []
 
-        for node in list(element.iter()):
-            if node.get("relId") == rel_id:
-                removal = self._find_relationship_removal_node(node)
-            elif any(node.get(attr) == rel_id for attr in attributes):
-                removal = self._find_relationship_removal_node(node)
-            else:
-                removal = None
+        prefix = f"{{{_RELATIONSHIP_NS}}}"
+        tracked_attrs = {f"{prefix}embed", f"{prefix}link", f"{prefix}id", "relId"}
 
+        for node in element.iter():
+            if any(node.get(attr) == rel_id for attr in tracked_attrs):
+                candidates.append(node)
+
+        if not candidates:
+            return False
+
+        for node in candidates:
+            removal = self._find_relationship_removal_node(node)
             if removal is None:
                 continue
-
             parent = removal.getparent()
             if parent is None:
                 continue
-
             parent.remove(removal)
             removed = True
 
         return removed
 
     def _find_relationship_removal_node(self, node):
-        removal_node = None
         current = node
+        removal = None
 
         while current is not None:
             qname = etree.QName(current)
             local = qname.localname
             if local in {"drawing", "object", "pict"}:
-                removal_node = current
+                removal = current
             if local == "r":
                 return current
             current = current.getparent()
 
-        return removal_node
+        return removal
 
-    def _update_part_blob(self, part, element) -> None:
+    def _update_part_xml(self, part, element) -> None:
         if hasattr(part, "_element"):
             part._element = element
 
@@ -787,7 +643,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         rels_ns = rels_tree.nsmap.get(None)
         rels_prefix = f"{{{rels_ns}}}" if rels_ns else ""
         r_ns = workbook_tree.nsmap.get("r")
-        default_r_ns = _RELATIONSHIP_NS
+        default_r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
         r_prefix = f"{{{r_ns}}}" if r_ns else f"{{{default_r_ns}}}"
 
         rel_targets: dict[str, str] = {}
@@ -911,7 +767,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         ns = sheet_tree.nsmap.get(None)
         prefix = f"{{{ns}}}" if ns else ""
         r_ns = sheet_tree.nsmap.get("r")
-        default_r_ns = _RELATIONSHIP_NS
+        default_r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
         r_prefix = f"{{{r_ns}}}" if r_ns else f"{{{default_r_ns}}}"
 
         rels_path = sheet_path.replace("worksheets/", "worksheets/_rels/") + ".rels"

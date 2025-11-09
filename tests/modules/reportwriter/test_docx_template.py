@@ -781,7 +781,7 @@ def test_render_renders_main_document_before_additional_parts(monkeypatch):
     monkeypatch.setattr(
         template,
         "_render_additional_parts",
-        lambda context, env: calls.append("additional_parts"),
+        lambda context, env, parts=None: calls.append("additional_parts"),
     )
 
     template.render({}, Environment())
@@ -790,6 +790,70 @@ def test_render_renders_main_document_before_additional_parts(monkeypatch):
     assert "additional_parts" in calls
     assert calls.index("build_xml") < calls.index("additional_parts")
     assert calls.index("render_properties") < calls.index("additional_parts")
+
+
+def test_cleanup_unused_additional_relationships_returns_active_parts(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    chart_xml = (
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>'
+    )
+    active_chart = FakeXmlPart("/word/charts/chart1.xml", chart_xml)
+    unused_chart = FakeXmlPart("/word/charts/chart2.xml", chart_xml)
+
+    doc_xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+        '<w:body>'
+        '<w:p>'
+        '<w:r>'
+        '<w:drawing>'
+        '<wp:inline>'
+        '<a:graphic>'
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+        '<c:chart r:id="rIdActive"/>'
+        '</a:graphicData>'
+        '</a:graphic>'
+        '</wp:inline>'
+        '</w:drawing>'
+        '</w:r>'
+        '</w:p>'
+        '</w:body>'
+        '</w:document>'
+    )
+
+    class DummyRel:
+        def __init__(self, target_part):
+            self.target_part = target_part
+            self.is_external = False
+
+    class DummyDocPart(FakeXmlPart):
+        def __init__(self, xml):
+            super().__init__("/word/document.xml", xml)
+            self.rels = {
+                "rIdActive": DummyRel(active_chart),
+                "rIdUnused": DummyRel(unused_chart),
+            }
+
+        def drop_rel(self, rel_id):
+            self.rels.pop(rel_id, None)
+
+    doc_part = DummyDocPart(doc_xml)
+
+    monkeypatch.setattr(template, "get_headers_footers", lambda uri: [])
+    monkeypatch.setattr(template.docx, "part", doc_part)
+
+    active = template._cleanup_unused_additional_relationships()
+
+    assert active == {"word/charts/chart1.xml"}
+    assert "rIdActive" in doc_part.rels
+    assert "rIdUnused" not in doc_part.rels
+    xml_text = etree.tostring(doc_part._element, encoding="unicode")
+    assert "rIdUnused" not in xml_text
 
 
 def test_iter_additional_parts_filters_to_known_patterns(monkeypatch):
