@@ -20,7 +20,10 @@ _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-_MISNESTED_DRAWING_PATTERN = re.compile(r"</w:drawing>(?P<content>.*?)</wp:inline>", re.DOTALL)
+_MISNESTED_DRAWING_PATTERN = re.compile(
+    r"</w:drawing>(?P<content>.*?)</(?P<prefix>wp\d*):inline>",
+    re.DOTALL,
+)
 _TRAILING_CLOSING_TAGS_RE = re.compile(
     r"(?P<closings>(?:\s*</(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*>)+)\s*$",
     re.DOTALL,
@@ -516,11 +519,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
 
             xml = etree.tostring(element, encoding="unicode")
-            if "</w:drawing>" not in xml or "</wp:inline>" not in xml:
+            if "</w:drawing>" not in xml:
+                continue
+            if not re.search(r"</wp\d*:inline>", xml):
                 continue
 
             def _swap_closings(match: re.Match[str]) -> str:
                 content = match.group("content")
+                prefix = match.group("prefix") or "wp"
                 tail_match = _TRAILING_CLOSING_TAGS_RE.search(content)
                 if tail_match:
                     inline_content = content[: tail_match.start()]
@@ -529,7 +535,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     inline_content = content
                     trailing = ""
 
-                return f"{inline_content}</wp:inline></w:drawing>{trailing}"
+                return f"{inline_content}</{prefix}:inline></w:drawing>{trailing}"
 
             fixed = xml
             total = 0
