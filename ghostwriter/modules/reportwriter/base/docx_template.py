@@ -23,7 +23,7 @@ _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _MISNESTED_DRAWING_RE = re.compile(
-    r"</(?P<draw>(?:[A-Za-z_][\w.-]*:)?drawing)>(?P<middle>.*?)</(?P<inline>(?:[A-Za-z_][\w.-]*:)?inline)>",
+    rf"</(?P<draw>(?:[A-Za-z_][\\w.-]*:)?drawing)>(?P<middle>{_XML_TAG_GAP})</(?P<inline>(?:[A-Za-z_][\\w.-]*:)?inline)>",
     re.DOTALL,
 )
 
@@ -459,18 +459,30 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if not _MISNESTED_DRAWING_RE.search(xml_text):
                 continue
 
-            fixed_text = _MISNESTED_DRAWING_RE.sub(
-                r"</\g<inline>>\g<middle></\g<draw>>",
-                xml_text,
-            )
+            working = xml_text
+            replacements = 0
+            while True:
+                working, count = _MISNESTED_DRAWING_RE.subn(
+                    r"</\g<inline>></\g<draw>>\g<middle>",
+                    working,
+                )
+                replacements += count
+                if not count:
+                    break
 
-            if fixed_text == xml_text:
+            if not replacements:
                 continue
 
+            fixed_text = working
             try:
                 element = parse_xml(fixed_text.encode("utf-8"))
             except Exception:  # pragma: no cover - fallback only
-                continue
+                try:
+                    parser = etree.XMLParser(recover=True)
+                    recovered = etree.fromstring(fixed_text.encode("utf-8"), parser)
+                    element = parse_xml(etree.tostring(recovered, encoding="utf-8"))
+                except Exception:
+                    continue
 
             self._update_part_blob(part, element)
 
