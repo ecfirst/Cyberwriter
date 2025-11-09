@@ -16,6 +16,9 @@ from jinja2 import Environment, meta
 from lxml import etree
 
 
+_RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
 _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
@@ -70,6 +73,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         active_parts = self._determine_active_additional_parts()
 
         self._render_additional_parts(context, jinja_env, active_parts)
+        self._cleanup_missing_relationship_targets()
 
         self.is_rendered = True
 
@@ -362,8 +366,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         return element
 
     def _collect_used_relationship_ids(self, element) -> set[str]:
-        relationship_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-        prefix = f"{{{relationship_ns}}}"
+        prefix = f"{{{_RELATIONSHIP_NS}}}"
 
         used: set[str] = set()
 
@@ -375,6 +378,137 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     used.add(value)
 
         return used
+
+    def _cleanup_missing_relationship_targets(self) -> None:
+        docx = getattr(self, "docx", None)
+        if docx is None:
+            return
+
+        package = docx.part.package
+
+        for part in package.iter_parts():
+            rels = getattr(part, "rels", None)
+            if not rels:
+                continue
+
+            element = self._get_part_element(part)
+            if element is None:
+                continue
+
+            removed_nodes = False
+            missing_rel_ids: list[str] = []
+
+            for rel_id, rel in list(rels.items()):
+                if getattr(rel, "is_external", False):
+                    continue
+
+                if self._relationship_target_available(rel):
+                    continue
+
+                if self._remove_relationship_references(element, rel_id):
+                    removed_nodes = True
+
+                missing_rel_ids.append(rel_id)
+
+            if missing_rel_ids:
+                for rel_id in missing_rel_ids:
+                    drop_rel = getattr(part, "drop_rel", None)
+                    if callable(drop_rel):
+                        try:
+                            drop_rel(rel_id)
+                        except Exception:  # pragma: no cover - defensive cleanup
+                            pass
+                    else:  # pragma: no cover - legacy fallback
+                        backing = getattr(rels, "_rels", None)
+                        if isinstance(backing, dict):
+                            backing.pop(rel_id, None)
+
+            if removed_nodes:
+                self._update_part_blob(part, element)
+
+    def _relationship_target_available(self, rel) -> bool:
+        try:
+            target_part = rel.target_part
+        except (AttributeError, KeyError, ValueError):
+            return False
+
+        if target_part is None:
+            return False
+
+        blob = getattr(target_part, "_blob", None)
+        if blob:
+            return True
+
+        if hasattr(target_part, "blob"):
+            try:
+                if target_part.blob:  # type: ignore[attr-defined]
+                    return True
+            except Exception:
+                return False
+
+        if getattr(target_part, "_element", None) is not None:
+            return True
+
+        if getattr(target_part, "partname", None):
+            return True
+
+        return False
+
+    def _remove_relationship_references(self, element, rel_id: str) -> bool:
+        if not rel_id:
+            return False
+
+        attributes = (
+            f"{{{_RELATIONSHIP_NS}}}embed",
+            f"{{{_RELATIONSHIP_NS}}}link",
+            f"{{{_RELATIONSHIP_NS}}}id",
+        )
+
+        removed = False
+
+        for node in list(element.iter()):
+            if node.get("relId") == rel_id:
+                removal = self._find_relationship_removal_node(node)
+            elif any(node.get(attr) == rel_id for attr in attributes):
+                removal = self._find_relationship_removal_node(node)
+            else:
+                removal = None
+
+            if removal is None:
+                continue
+
+            parent = removal.getparent()
+            if parent is None:
+                continue
+
+            parent.remove(removal)
+            removed = True
+
+        return removed
+
+    def _find_relationship_removal_node(self, node):
+        removal_node = None
+        current = node
+
+        while current is not None:
+            qname = etree.QName(current)
+            local = qname.localname
+            if local in {"drawing", "object", "pict"}:
+                removal_node = current
+            if local == "r":
+                return current
+            current = current.getparent()
+
+        return removal_node
+
+    def _update_part_blob(self, part, element) -> None:
+        if hasattr(part, "_element"):
+            part._element = element
+
+        xml_bytes = etree.tostring(element, encoding="utf-8")
+
+        if hasattr(part, "_blob"):
+            part._blob = xml_bytes
 
     def _read_excel_part(self, part) -> tuple[list[zipfile.ZipInfo], dict[str, bytes]] | None:
         blob = getattr(part, "_blob", None)
@@ -557,7 +691,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         rels_ns = rels_tree.nsmap.get(None)
         rels_prefix = f"{{{rels_ns}}}" if rels_ns else ""
         r_ns = workbook_tree.nsmap.get("r")
-        default_r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        default_r_ns = _RELATIONSHIP_NS
         r_prefix = f"{{{r_ns}}}" if r_ns else f"{{{default_r_ns}}}"
 
         rel_targets: dict[str, str] = {}
@@ -681,7 +815,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         ns = sheet_tree.nsmap.get(None)
         prefix = f"{{{ns}}}" if ns else ""
         r_ns = sheet_tree.nsmap.get("r")
-        default_r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        default_r_ns = _RELATIONSHIP_NS
         r_prefix = f"{{{r_ns}}}" if r_ns else f"{{{default_r_ns}}}"
 
         rels_path = sheet_path.replace("worksheets/", "worksheets/_rels/") + ".rels"
