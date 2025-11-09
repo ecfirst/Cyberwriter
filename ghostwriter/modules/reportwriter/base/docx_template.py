@@ -23,7 +23,8 @@ _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _MISNESTED_DRAWING_RE = re.compile(
-    r"</(?P<draw>(?:[A-Za-z_][\w.-]*:)?drawing)>(?P<ws>\s*)</(?P<inline>(?:[A-Za-z_][\w.-]*:)?inline)>"
+    r"</(?P<draw>(?:[A-Za-z_][\w.-]*:)?drawing)>(?P<middle>.*?)</(?P<inline>(?:[A-Za-z_][\w.-]*:)?inline)>",
+    re.DOTALL,
 )
 
 
@@ -459,7 +460,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
 
             fixed_text = _MISNESTED_DRAWING_RE.sub(
-                r"</\g<inline>>\g<ws></\g<draw>>",
+                r"</\g<inline>>\g<middle></\g<draw>>",
                 xml_text,
             )
 
