@@ -22,9 +22,8 @@ _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relati
 _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
-_DRAWING_CLOSING_GAP = r"(?:\s|[^<]|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _MISNESTED_DRAWING_RE = re.compile(
-    rf"</(?P<draw>(?:[A-Za-z_][\\w.-]*:)?drawing)>(?P<middle>{_DRAWING_CLOSING_GAP})</(?P<inline>(?:[A-Za-z_][\\w.-]*:)?inline)>",
+    r"</(?P<draw>(?:[A-Za-z_][\w.-]*:)?drawing)>(?P<middle>.*?)</(?P<inline>(?:[A-Za-z_][\w.-]*:)?inline)>",
     re.DOTALL,
 )
 
@@ -466,21 +465,17 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if not _MISNESTED_DRAWING_RE.search(xml_text):
                 continue
 
-            working = xml_text
-            replacements = 0
-            while True:
-                working, count = _MISNESTED_DRAWING_RE.subn(
-                    r"\g<middle></\g<inline>></\g<draw>>",
-                    working,
-                )
-                replacements += count
-                if not count:
-                    break
+            def _reorder(match: re.Match[str]) -> str:
+                middle = match.group("middle")
+                inline = match.group("inline")
+                draw = match.group("draw")
+                return f"{middle}</{inline}></{draw}>"
+
+            fixed_text, replacements = _MISNESTED_DRAWING_RE.subn(_reorder, xml_text)
 
             if not replacements:
                 continue
 
-            fixed_text = working
             try:
                 element = parse_xml(fixed_text.encode("utf-8"))
             except Exception:  # pragma: no cover - fallback only
