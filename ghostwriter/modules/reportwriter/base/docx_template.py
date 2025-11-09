@@ -22,6 +22,9 @@ _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relati
 _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
+_MISNESTED_DRAWING_RE = re.compile(
+    r"</(?P<draw>(?:[A-Za-z_][\w.-]*:)?drawing)>(?P<ws>\s*)</(?P<inline>(?:[A-Za-z_][\w.-]*:)?inline)>"
+)
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
@@ -74,6 +77,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self._render_additional_parts(context, jinja_env, active_parts)
         self._cleanup_missing_relationship_targets()
+        self._fix_misnested_drawing_markup()
 
         self.is_rendered = True
 
@@ -425,6 +429,49 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             if removed_nodes:
                 self._update_part_blob(part, element)
+
+    def _fix_misnested_drawing_markup(self) -> None:
+        docx = getattr(self, "docx", None)
+        if docx is None:
+            return
+
+        package = docx.part.package
+
+        for part in package.iter_parts():
+            partname = getattr(part, "partname", None)
+            if not partname:
+                continue
+
+            name = str(partname)
+            if not name.endswith(".xml"):
+                continue
+
+            blob = getattr(part, "_blob", None)
+            if not isinstance(blob, (bytes, bytearray)):
+                continue
+
+            try:
+                xml_text = blob.decode("utf-8")
+            except Exception:  # pragma: no cover - defensive decode
+                continue
+
+            if not _MISNESTED_DRAWING_RE.search(xml_text):
+                continue
+
+            fixed_text = _MISNESTED_DRAWING_RE.sub(
+                r"</\g<inline>>\g<ws></\g<draw>>",
+                xml_text,
+            )
+
+            if fixed_text == xml_text:
+                continue
+
+            try:
+                element = parse_xml(fixed_text.encode("utf-8"))
+            except Exception:  # pragma: no cover - fallback only
+                continue
+
+            self._update_part_blob(part, element)
 
     def _relationship_target_available(self, rel) -> bool:
         try:
