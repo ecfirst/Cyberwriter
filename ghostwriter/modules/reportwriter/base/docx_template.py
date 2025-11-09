@@ -473,25 +473,39 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if not xml_text:
                 continue
 
-            if not _MISNESTED_DRAWING_RE.search(xml_text):
-                continue
+            fixed_text = xml_text
+            replacements = 0
 
-            def _reorder(match: re.Match[str]) -> str:
+            while True:
+                match = _MISNESTED_DRAWING_RE.search(fixed_text)
+                if not match:
+                    break
+
+                start, end = match.span()
                 inline = match.group("inline")
                 draw = match.group("draw")
                 middle = match.group("middle")
 
                 if "</" in middle:
-                    return f"</{inline}></{draw}>{middle}"
+                    replacement = f"</{inline}></{draw}>{middle}"
+                else:
+                    replacement = f"{middle}</{inline}></{draw}>"
 
-                return f"{middle}</{inline}></{draw}>"
-
-            fixed_text, replacements = _MISNESTED_DRAWING_RE.subn(_reorder, xml_text)
+                fixed_text = f"{fixed_text[:start]}{replacement}{fixed_text[end:]}"
+                replacements += 1
 
             if not replacements:
                 continue
 
             fixed_text = fixed_text.replace("></w:drawing>>", "></w:drawing>")
+
+            if _MISNESTED_DRAWING_RE.search(fixed_text):
+                parser = etree.XMLParser(recover=True)
+                try:
+                    recovered = etree.fromstring(fixed_text.encode("utf-8"), parser)
+                except Exception:
+                    continue
+                fixed_text = etree.tostring(recovered, encoding="unicode")
 
             if element is not None and not fixed_text:
                 continue
