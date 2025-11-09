@@ -447,33 +447,53 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if not name.endswith(".xml"):
                 continue
 
+            element = getattr(part, "_element", None)
             blob = getattr(part, "_blob", None)
-            if not isinstance(blob, (bytes, bytearray)):
-                if hasattr(part, "blob"):
-                    try:
-                        blob = part.blob  # type: ignore[attr-defined]
-                    except Exception:  # pragma: no cover - defensive fallback
-                        blob = None
+
+            if element is not None:
+                try:
+                    xml_text = etree.tostring(element, encoding="unicode")
+                except Exception:  # pragma: no cover - defensive tostring
+                    xml_text = ""
+            else:
+                if not isinstance(blob, (bytes, bytearray)):
+                    if hasattr(part, "blob"):
+                        try:
+                            blob = part.blob  # type: ignore[attr-defined]
+                        except Exception:  # pragma: no cover - defensive fallback
+                            blob = None
                 if not isinstance(blob, (bytes, bytearray)):
                     continue
 
-            try:
-                xml_text = blob.decode("utf-8")
-            except Exception:  # pragma: no cover - defensive decode
+                try:
+                    xml_text = blob.decode("utf-8")
+                except Exception:  # pragma: no cover - defensive decode
+                    continue
+
+            if not xml_text:
                 continue
 
             if not _MISNESTED_DRAWING_RE.search(xml_text):
                 continue
 
             def _reorder(match: re.Match[str]) -> str:
-                middle = match.group("middle")
                 inline = match.group("inline")
                 draw = match.group("draw")
+                middle = match.group("middle")
+
+                if "</" in middle:
+                    return f"</{inline}></{draw}>{middle}"
+
                 return f"{middle}</{inline}></{draw}>"
 
             fixed_text, replacements = _MISNESTED_DRAWING_RE.subn(_reorder, xml_text)
 
             if not replacements:
+                continue
+
+            fixed_text = fixed_text.replace("></w:drawing>>", "></w:drawing>")
+
+            if element is not None and not fixed_text:
                 continue
 
             try:

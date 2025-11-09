@@ -2298,6 +2298,98 @@ def test_fix_misnested_drawing_markup_moves_middle_content_inside_inline():
     assert part._element is not None
 
 
+def test_fix_misnested_drawing_markup_keeps_outer_closing_tags():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    class DummyPart:
+        def __init__(self, name: str, xml_text: str):
+            self.partname = PackURI(f"/{name}")
+            self._blob = xml_text.encode("utf-8")
+            self.rels: dict[str, object] = {}
+            self._element = None
+
+    class DummyPackage:
+        def __init__(self, parts: list[DummyPart]):
+            self._parts = parts
+
+        def iter_parts(self):
+            return iter(self._parts)
+
+    class DummyDocPart:
+        def __init__(self, package: DummyPackage):
+            self.package = package
+
+    class DummyDocx:
+        def __init__(self, package: DummyPackage):
+            self.part = DummyDocPart(package)
+
+    misnested_xml = (
+        "<w:document "
+        "xmlns:w='http://schemas.openxmlformats.org/wordprocessingml/2006/main' "
+        "xmlns:wp='http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'>"
+        "<w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx='1' cy='1'/></w:drawing>"
+        "</w:r></w:p></wp:inline></w:body></w:document>"
+    )
+
+    part = DummyPart("word/document.xml", misnested_xml)
+    package = DummyPackage([part])
+    template.docx = DummyDocx(package)
+
+    template._fix_misnested_drawing_markup()
+
+    fixed = part._blob.decode("utf-8")
+
+    assert fixed.index("</wp:inline>") < fixed.index("</w:drawing>")
+    assert fixed.endswith("</w:drawing></w:r></w:p></w:body></w:document>")
+
+
+def test_fix_misnested_drawing_markup_uses_existing_element_when_available():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    class DummyPart:
+        def __init__(self, name: str, xml_text: str):
+            self.partname = PackURI(f"/{name}")
+            self._blob = None
+            self._element = parse_xml(xml_text.encode("utf-8"))
+            self.rels: dict[str, object] = {}
+
+    class DummyPackage:
+        def __init__(self, parts: list[DummyPart]):
+            self._parts = parts
+
+        def iter_parts(self):
+            return iter(self._parts)
+
+    class DummyDocPart:
+        def __init__(self, package: DummyPackage):
+            self.package = package
+
+    class DummyDocx:
+        def __init__(self, package: DummyPackage):
+            self.part = DummyDocPart(package)
+
+    misnested_xml = (
+        "<w:document "
+        "xmlns:w='http://schemas.openxmlformats.org/wordprocessingml/2006/main' "
+        "xmlns:wp='http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'>"
+        "<w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx='1' cy='1'/></w:drawing>"
+        "<wp:docPr id='4' name='Graphic'/></wp:inline></w:r></w:p></w:body></w:document>"
+    )
+
+    part = DummyPart("word/document.xml", misnested_xml)
+    package = DummyPackage([part])
+    template.docx = DummyDocx(package)
+
+    template._fix_misnested_drawing_markup()
+
+    fixed = etree.tostring(part._element, encoding="unicode")
+
+    assert "</w:drawing>" in fixed
+    assert fixed.index("</wp:inline>") < fixed.index("</w:drawing>")
+
+
 def test_render_merges_duplicate_body_elements(tmp_path):
     base_template = Path("DOCS/sample_reports/template.docx")
     original = base_template.read_bytes()
