@@ -449,7 +449,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             blob = getattr(part, "_blob", None)
             if not isinstance(blob, (bytes, bytearray)):
-                continue
+                if hasattr(part, "blob"):
+                    try:
+                        blob = part.blob  # type: ignore[attr-defined]
+                    except Exception:  # pragma: no cover - defensive fallback
+                        blob = None
+                if not isinstance(blob, (bytes, bytearray)):
+                    continue
 
             try:
                 xml_text = blob.decode("utf-8")
