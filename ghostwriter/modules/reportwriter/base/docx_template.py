@@ -67,7 +67,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self.render_properties(context, jinja_env)
 
-        active_parts = self._cleanup_additional_parts()
+        active_parts = self._determine_active_additional_parts()
 
         self._render_additional_parts(context, jinja_env, active_parts)
 
@@ -307,7 +307,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
 
-    def _cleanup_additional_parts(self) -> set[str] | None:
+    def _determine_active_additional_parts(self) -> set[str] | None:
         docx = getattr(self, "docx", None)
         if docx is None:
             return None
@@ -326,47 +326,18 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if rels is None:
                 continue
 
-            missing_ids: set[str] = set()
-
-            for rel_id, rel in list(rels.items()):
-                if rel.is_external:
-                    if rel_id not in used_rel_ids:
-                        part.drop_rel(rel_id)
+            for rel_id, rel in rels.items():
+                if rel_id not in used_rel_ids:
                     continue
 
                 try:
                     target_part = rel.target_part
                 except ValueError:
-                    target_part = None
-
-                target_name: str | None = (
-                    self._normalise_partname(target_part) if target_part is not None else None
-                )
-                matches_extra = bool(target_name and self._matches_extra_template(target_name))
-
-                if rel_id in used_rel_ids:
-                    if target_part is None:
-                        part.drop_rel(rel_id)
-                        missing_ids.add(rel_id)
-                    elif matches_extra:
-                        active_partnames.add(target_name)
                     continue
 
-                if matches_extra or target_part is None:
-                    part.drop_rel(rel_id)
-
-                # Relationships that are neither used nor part of the additional
-                # templated assets (for example ``word/styles.xml``) must remain
-                # attached to the package.  They are retained implicitly by the
-                # ``continue`` so Word can still resolve numbering, styles, and
-                # comments that do not use ``r:id`` references in the body XML.
-
-            current_rel_ids = set(rels.keys())
-            invalid_ids = (missing_ids | used_rel_ids) - current_rel_ids
-
-            if invalid_ids:
-                if self._remove_relationship_references(element, invalid_ids):
-                    self._update_part_element(part, element)
+                target_name = self._normalise_partname(target_part)
+                if target_name and self._matches_extra_template(target_name):
+                    active_partnames.add(target_name)
 
         return active_partnames
 
@@ -404,72 +375,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     used.add(value)
 
         return used
-
-    def _remove_relationship_references(
-        self,
-        element,
-        invalid_ids: set[str],
-    ) -> bool:
-        if not invalid_ids:
-            return False
-
-        namespaces = {
-            "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
-            "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-        }
-
-        xpath = ".//*[@r:embed] | .//*[@r:id] | .//*[@r:link] | .//*[@relId]"
-        changed = False
-
-        for node in list(element.xpath(xpath, namespaces=namespaces)):
-            rel_ids = {
-                node.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"),
-                node.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"),
-                node.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}link"),
-                node.get("relId"),
-            }
-            rel_ids.discard(None)
-
-            if not rel_ids.intersection(invalid_ids):
-                continue
-
-            removal_target = self._find_removal_target(node)
-            if removal_target is None:
-                removal_target = node
-
-            parent = removal_target.getparent()
-            if parent is None:
-                continue
-
-            parent.remove(removal_target)
-            changed = True
-
-        return changed
-
-    def _find_removal_target(self, node):
-        removal_tags = {
-            ("http://schemas.openxmlformats.org/wordprocessingml/2006/main", tag)
-            for tag in ("drawing", "pict", "object", "hyperlink", "sdt", "fldSimple")
-        }
-
-        current = node
-        while current is not None:
-            qname = etree.QName(current)
-            key = (qname.namespace, qname.localname)
-            if key in removal_tags:
-                return current
-            if key[1] == "p":
-                return current
-            current = current.getparent()
-
-        return None
-
-    def _update_part_element(self, part, element) -> None:
-        if hasattr(part, "_element"):
-            part._element = element
-
-        if hasattr(part, "_blob"):
-            part._blob = etree.tostring(element, encoding="utf-8")
 
     def _read_excel_part(self, part) -> tuple[list[zipfile.ZipInfo], dict[str, bytes]] | None:
         blob = getattr(part, "_blob", None)
