@@ -16,6 +16,7 @@ from typing import Iterator
 from docx.oxml import parse_xml
 from docxtpl.template import DocxTemplate
 from jinja2 import Environment, meta
+from jinja2.debug import Traceback as JinjaTraceback
 from lxml import etree
 
 
@@ -426,21 +427,41 @@ class GhostwriterDocxTemplate(DocxTemplate):
         except Exception as exc:
             part_label = self._describe_part(part)
             error_line = self._extract_template_error_line(exc)
+            context_line, error_context = self._extract_template_debug_context(exc)
+            if error_line is None and context_line is not None:
+                error_line = context_line
             statements, total = self._collect_template_statements(
                 xml, focus_line=error_line
             )
             preview_summary = self._format_statement_preview(statements, total)
+            message_parts: list[str] = []
             if error_line is not None:
-                preview_summary = f"error near template line {error_line}; {preview_summary}"
+                message_parts.append(f"error near template line {error_line}")
+            if error_context:
+                message_parts.append(
+                    self._format_template_context(error_context, error_line)
+                )
+            message_parts.append(preview_summary)
+            message_detail = "; ".join(message_parts)
             logger.exception(
                 "Failed to render DOCX template part %s. %s",
                 part_label,
-                preview_summary,
+                message_detail,
                 extra={
                     "docx_template_part": part_label,
                     "docx_template_statement_count": total,
                     "docx_template_statements_preview": statements,
                     "docx_template_error_line": error_line,
+                    **(
+                        {
+                            "docx_template_error_context": [
+                                {"line": line, "text": text}
+                                for line, text in error_context
+                            ]
+                        }
+                        if error_context
+                        else {}
+                    ),
                 },
             )
             raise
@@ -520,6 +541,47 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         return last_line
 
+    def _extract_template_debug_context(
+        self,
+        exc: BaseException,
+        *,
+        before: int = 2,
+        after: int = 2,
+    ) -> tuple[int | None, list[tuple[int, str]]]:
+        """Return contextual template lines surrounding the error."""
+
+        try:
+            traceback = JinjaTraceback.from_exception(exc)
+        except Exception:
+            return None, []
+
+        context_line: int | None = None
+        context: list[tuple[int, str]] = []
+
+        for frame in traceback.frames:
+            filename = getattr(frame, "filename", getattr(frame, "name", None))
+            if filename != "<template>":
+                continue
+
+            context_line = getattr(frame, "lineno", None)
+            source = getattr(frame, "source", None)
+            if not source:
+                break
+
+            lines = source.splitlines()
+            if context_line is None:
+                break
+
+            start = max(context_line - 1 - before, 0)
+            end = min(context_line - 1 + after + 1, len(lines))
+
+            for index in range(start, end):
+                line_text = self._trim_template_text(lines[index])
+                context.append((index + 1, line_text))
+            break
+
+        return context_line, context
+
     def _format_statement_preview(
         self, statements: list[dict[str, str | int]], total: int
     ) -> str:
@@ -572,6 +634,23 @@ class GhostwriterDocxTemplate(DocxTemplate):
             )
 
         return " | ".join(formatted_entries)
+
+    def _format_template_context(
+        self, context_lines: list[tuple[int, str]], error_line: int | None
+    ) -> str:
+        """Format template source context for inclusion in log messages."""
+
+        if not context_lines:
+            return ""
+
+        formatted: list[str] = []
+        for line_number, text in context_lines:
+            label = f"line {line_number}"
+            if error_line is not None and line_number == error_line:
+                label += " (error)"
+            formatted.append(f"{label}={text!r}")
+
+        return "template context: " + " | ".join(formatted)
 
     def _build_statement_context(self, xml: str, start: int) -> dict[str, str | int]:
         """Return Word-specific context for a templating statement."""
@@ -647,6 +726,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if len(text) > 200:
             return text[:197] + "..."
         return text
+
+    def _trim_template_text(self, text: str) -> str:
+        """Normalise whitespace and length for template context lines."""
+
+        cleaned = text.strip("\r\n")
+        if len(cleaned) > 200:
+            return cleaned[:197] + "..."
+        return cleaned
 
     def _remove_relationship_entry(self, rels, rel_id: str) -> None:
         """Remove relationship ``rel_id`` from ``rels`` and any cached target maps."""

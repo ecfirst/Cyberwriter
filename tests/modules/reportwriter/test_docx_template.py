@@ -1771,3 +1771,91 @@ def test_extract_template_error_line_from_traceback():
         pytest.fail("Expected TypeError to be raised")
 
     assert line == 3
+
+
+def test_extract_template_debug_context_returns_lines():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    env = Environment(autoescape=False)
+    jinja_template = env.from_string(
+        "\n".join(
+            [
+                "{% set limit = 5 %}",
+                "{% if value is not none %}",
+                "{{ value > limit }}",
+                "{% endif %}",
+            ]
+        )
+    )
+
+    try:
+        jinja_template.render(value=None)
+    except TypeError as exc:
+        line, context = template._extract_template_debug_context(exc, before=1, after=1)
+    else:  # pragma: no cover - render should raise
+        pytest.fail("Expected TypeError to be raised")
+
+    assert line == 3
+    assert context == [
+        (2, "{% if value is not none %}"),
+        (3, "{{ value > limit }}"),
+        (4, "{% endif %}"),
+    ]
+
+
+def test_format_template_context_marks_error_line():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+
+    context_lines = [
+        (2, "{% if foo %}"),
+        (3, "{{ bar > 10 }}"),
+        (4, "{% endif %}"),
+    ]
+
+    summary = template._format_template_context(context_lines, error_line=3)
+
+    assert summary.startswith("template context:")
+    assert "line 3 (error)='{{ bar > 10 }}'" in summary
+
+
+def test_render_xml_part_logs_template_context(monkeypatch, caplog):
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    xml = "<root>{{ value }}</root>"
+
+    class FakePart:
+        partname = PackURI("/word/document.xml")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(docx_template.DocxTemplate, "render_xml_part", _boom)
+    monkeypatch.setattr(
+        GhostwriterDocxTemplate,
+        "_extract_template_error_line",
+        lambda self, exc: 3,
+    )
+    monkeypatch.setattr(
+        GhostwriterDocxTemplate,
+        "_extract_template_debug_context",
+        lambda self, exc: (
+            3,
+            [
+                (2, "{% if value is not none %}"),
+                (3, "{{ value > limit }}"),
+                (4, "{% endif %}"),
+            ],
+        ),
+    )
+
+    with caplog.at_level("ERROR", logger=docx_template.logger.name):
+        with pytest.raises(RuntimeError):
+            template.render_xml_part(xml, FakePart(), {}, Environment())
+
+    record = caplog.records[0]
+    message = record.getMessage()
+    assert "template context:" in message
+    assert "line 3 (error)='{{ value > limit }}'" in message
+    assert record.docx_template_error_context == [
+        {"line": 2, "text": "{% if value is not none %}"},
+        {"line": 3, "text": "{{ value > limit }}"},
+        {"line": 4, "text": "{% endif %}"},
+    ]
