@@ -33,6 +33,9 @@ _WORDPROCESSING_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/ma
 _HYPERLINK_RELTYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 )
+_COMMENTS_EXTENDED_PART = "word/commentsExtended.xml"
+_MS_COMMENTS_EXTENDED_CONTENT_TYPE = "application/vnd.ms-word.commentsExtended+xml"
+_SETTINGS_PARTNAME = "word/settings.xml"
 
 
 logger = logging.getLogger(__name__)
@@ -121,7 +124,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if footer_part:
                 self._cleanup_part_relationships(footer_part, cleaned_xml)
 
+        self._cleanup_settings_part()
         self._render_additional_parts(context, jinja_env)
+
+        self._normalise_package_content_types()
 
         self.render_properties(context, jinja_env)
 
@@ -335,6 +341,36 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 seen.add(target)
                 queue.append(target)
 
+    def _normalise_package_content_types(self) -> None:
+        doc = getattr(self, "docx", None)
+        main_part = getattr(doc, "_part", None) if doc is not None else None
+        package = getattr(main_part, "package", None)
+        if package is None:
+            return
+
+        parts_source = getattr(package, "parts", None)
+        parts: list = []
+
+        if parts_source is not None:
+            try:
+                parts = list(parts_source)
+            except TypeError:
+                parts = list(parts_source())  # type: ignore[operator]
+        elif hasattr(package, "iter_parts"):
+            parts = list(package.iter_parts())
+
+        if not parts and hasattr(package, "iter_parts"):
+            parts = list(package.iter_parts())
+
+        for part in parts:
+            if self._normalise_partname(part) != _COMMENTS_EXTENDED_PART:
+                continue
+            current = getattr(part, "content_type", None)
+            if current == _MS_COMMENTS_EXTENDED_CONTENT_TYPE:
+                return
+            setattr(part, "_content_type", _MS_COMMENTS_EXTENDED_CONTENT_TYPE)
+            return
+
     @staticmethod
     def _install_numeric_tests(env: Environment) -> None:
         """Install numeric comparison tests that tolerate ``None`` and undefined values."""
@@ -376,6 +412,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
     def _is_excel_part(self, partname: str) -> bool:
         return partname.endswith(".xlsx")
 
+    def _is_settings_part(self, part) -> bool:
+        try:
+            partname = self._normalise_partname(part)
+        except Exception:
+            return False
+        return partname == _SETTINGS_PARTNAME
+
     def _render_additional_parts(self, context, jinja_env) -> None:
         parts = list(self._iter_additional_parts())
         excel_values: dict[str, dict[str, dict[str, str]]] = {}
@@ -412,6 +455,47 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
             self._cleanup_part_relationships(part, rendered)
+
+    def _cleanup_settings_part(self) -> None:
+        doc = getattr(self, "docx", None)
+        main_part = getattr(doc, "_part", None) if doc is not None else None
+        if main_part is None:
+            return
+
+        try:
+            settings_part = main_part.part_related_by(f"{_RELATIONSHIP_NS}/settings")
+        except Exception:
+            return
+
+        raw_xml = self.get_part_xml(settings_part)
+        if isinstance(raw_xml, bytes):
+            xml_text = raw_xml.decode("utf-8")
+        else:
+            xml_text = raw_xml
+
+        cleaned = self._cleanup_word_markup(settings_part, xml_text)
+
+        if isinstance(cleaned, bytes):
+            cleaned_bytes = cleaned
+            cleaned_xml = cleaned.decode("utf-8", errors="ignore")
+            parsed_root = parse_xml(cleaned_bytes)
+        elif isinstance(cleaned, str):
+            cleaned_xml = cleaned
+            cleaned_bytes = cleaned.encode("utf-8")
+            parsed_root = parse_xml(cleaned_bytes)
+        else:
+            parsed_root = self._ensure_xml_root(cleaned)
+            if parsed_root is None:
+                return
+            cleaned_bytes = etree.tostring(parsed_root)
+            cleaned_xml = cleaned_bytes.decode("utf-8", errors="ignore")
+
+        if hasattr(settings_part, "_element"):
+            settings_part._element = parsed_root
+        if hasattr(settings_part, "_blob"):
+            settings_part._blob = cleaned_bytes
+
+        self._cleanup_part_relationships(settings_part, cleaned_xml)
 
     def _cleanup_part_relationships(self, part, xml) -> None:
         """Remove relationships not referenced in the rendered ``xml``."""
@@ -815,6 +899,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
         bookmark_names = self._collect_bookmark_names(root, word_ns)
         self._remove_missing_anchor_hyperlinks(root, word_ns, bookmark_names)
         if part is not None:
+            if self._is_settings_part(part):
+                self._remove_attached_template(part, root, word_ns)
             self._remove_external_file_hyperlinks(part, root, word_ns)
 
         return self._coerce_cleaned_xml(xml, root)
@@ -890,6 +976,20 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if not anchor or anchor in bookmark_names:
                 continue
             self._unwrap_element(hyperlink)
+
+    def _remove_attached_template(self, part, root, word_ns: str) -> None:
+        if not self._is_settings_part(part):
+            return
+
+        attached_tag = f"{{{word_ns}}}attachedTemplate"
+        rel_attr = f"{{{_RELATIONSHIP_NS}}}id"
+        rels = getattr(part, "rels", None)
+
+        for element in list(root.iter(attached_tag)):
+            rel_id = element.get(rel_attr)
+            self._remove_element(element)
+            if rel_id and rels is not None:
+                self._remove_relationship_entry(rels, rel_id)
 
     def _remove_external_file_hyperlinks(self, part, root, word_ns: str) -> None:
         rels = getattr(part, "rels", None)

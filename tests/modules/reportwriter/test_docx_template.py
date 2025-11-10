@@ -7,6 +7,7 @@ import re
 import zipfile
 from importlib import util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from docx.opc.packuri import PackURI
@@ -684,6 +685,18 @@ class FakeRelPart(FakeXmlPart):
         self.rels.pop(rel_id, None)
 
 
+class FakeContentTypePart:
+    """Lightweight part exposing a mutable content type."""
+
+    def __init__(self, partname: str, content_type: str):
+        self.partname = PackURI(partname)
+        self._content_type = content_type
+
+    @property
+    def content_type(self):
+        return self._content_type
+
+
 class FakeStubbornRelPart(FakeRelPart):
     """Relationship cleanup stub that never removes relationships via ``drop_rel``."""
 
@@ -816,6 +829,61 @@ def test_cleanup_word_markup_removes_external_file_hyperlinks():
     assert "rIdWeb" in part.rels
     assert 'r:id="rIdFile"' not in cleaned
     assert 'r:id="rIdWeb"' in cleaned
+
+
+def test_cleanup_word_markup_removes_attached_template_relationship():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:attachedTemplate r:id=\"rIdTpl\"/>"
+        "<w:trackRevisions/>"
+        "</w:settings>"
+    )
+
+    rels = {
+        "rIdTpl": FakeRelationship(
+            reltype=f"{docx_template._RELATIONSHIP_NS}/attachedTemplate"
+        )
+    }
+    part = FakeRelPart("/word/settings.xml", xml, rels)
+
+    cleaned = template._cleanup_word_markup(part, xml)
+
+    assert "attachedTemplate" not in cleaned
+    assert "trackRevisions" in cleaned
+    assert part.rels == {}
+
+
+def test_cleanup_settings_part_removes_attached_template_relationship():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    xml = (
+        '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:attachedTemplate r:id=\"rIdTpl\"/>"
+        "<w:trackRevisions/>"
+        "</w:settings>"
+    )
+    rels = {
+        "rIdTpl": FakeRelationship(
+            reltype=f"{docx_template._RELATIONSHIP_NS}/attachedTemplate"
+        )
+    }
+    settings_part = FakeRelPart("/word/settings.xml", xml, rels)
+
+    def part_related_by(reltype):
+        if reltype == f"{docx_template._RELATIONSHIP_NS}/settings":
+            return settings_part
+        raise KeyError(reltype)
+
+    template.docx = SimpleNamespace(_part=SimpleNamespace(part_related_by=part_related_by))
+    template.get_part_xml = lambda part: part._blob.decode("utf-8")
+
+    template._cleanup_settings_part()
+
+    assert settings_part.rels == {}
+    assert b"attachedTemplate" not in settings_part._blob
+    assert b"trackRevisions" in settings_part._blob
 
 
 def test_collect_relationship_ids_handles_multiple_values():
@@ -1883,6 +1951,23 @@ def test_render_xml_part_logs_template_context(monkeypatch, caplog):
         {"line": 3, "text": "{{ value > limit }}"},
         {"line": 4, "text": "{% endif %}"},
     ]
+
+
+def test_normalise_package_content_types_updates_comments_extended():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    part = FakeContentTypePart(
+        "/word/commentsExtended.xml",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml",
+    )
+    package = SimpleNamespace(parts=[part])
+    template.docx = SimpleNamespace(_part=SimpleNamespace(package=package))
+
+    template._normalise_package_content_types()
+
+    assert (
+        part.content_type
+        == docx_template._MS_COMMENTS_EXTENDED_CONTENT_TYPE
+    )
 
 
 def test_numeric_tests_handle_missing_values():
