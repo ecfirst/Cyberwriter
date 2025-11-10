@@ -1076,6 +1076,23 @@ class GhostwriterDocxTemplate(DocxTemplate):
         word_ns = self._get_word_namespace(root)
 
         self._remove_unbalanced_bookmarks(root, word_ns)
+        self._remove_unbalanced_range_elements(
+            root,
+            word_ns,
+            (
+                ("commentRangeStart", "commentRangeEnd"),
+                ("moveFromRangeStart", "moveFromRangeEnd"),
+                ("moveToRangeStart", "moveToRangeEnd"),
+                ("customXmlDelRangeStart", "customXmlDelRangeEnd"),
+                ("customXmlInsRangeStart", "customXmlInsRangeEnd"),
+                (
+                    "customXmlMoveFromRangeStart",
+                    "customXmlMoveFromRangeEnd",
+                ),
+                ("customXmlMoveToRangeStart", "customXmlMoveToRangeEnd"),
+                ("permStart", "permEnd"),
+            ),
+        )
         bookmark_names = self._collect_bookmark_names(root, word_ns)
         self._remove_missing_anchor_hyperlinks(root, word_ns, bookmark_names)
         if part is not None:
@@ -1141,6 +1158,52 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 names.add(name)
 
         return names
+
+    def _remove_unbalanced_range_elements(
+        self,
+        root,
+        word_ns: str,
+        pairs: tuple[tuple[str, str], ...],
+    ) -> None:
+        id_attr = f"{{{word_ns}}}id"
+
+        for start_local, end_local in pairs:
+            start_tag = f"{{{word_ns}}}{start_local}"
+            end_tag = f"{{{word_ns}}}{end_local}"
+
+            starts: dict[str, list] = defaultdict(list)
+            ends: dict[str, list] = defaultdict(list)
+
+            for element in root.iter(start_tag):
+                marker_id = element.get(id_attr)
+                if marker_id is not None:
+                    starts[str(marker_id)].append(element)
+
+            for element in root.iter(end_tag):
+                marker_id = element.get(id_attr)
+                if marker_id is not None:
+                    ends[str(marker_id)].append(element)
+
+            start_ids = set(starts)
+            end_ids = set(ends)
+
+            for marker_id in start_ids - end_ids:
+                for element in starts[marker_id]:
+                    self._remove_element(element)
+
+            for marker_id in end_ids - start_ids:
+                for element in ends[marker_id]:
+                    self._remove_element(element)
+
+            for marker_id in start_ids & end_ids:
+                start_elements = starts[marker_id]
+                end_elements = ends[marker_id]
+                pair_count = min(len(start_elements), len(end_elements))
+
+                for element in start_elements[pair_count:]:
+                    self._remove_element(element)
+                for element in end_elements[pair_count:]:
+                    self._remove_element(element)
 
     def _remove_missing_anchor_hyperlinks(
         self,

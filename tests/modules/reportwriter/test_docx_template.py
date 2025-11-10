@@ -816,6 +816,43 @@ def test_cleanup_word_markup_balances_bookmarks_and_hyperlinks():
     assert '<w:hyperlink w:anchor="Keep"' in cleaned_xml
 
 
+def test_cleanup_word_markup_removes_unbalanced_comment_ranges():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body>"
+        "<w:p><w:commentRangeStart w:id=\"1\"/><w:r><w:t>Keep</w:t></w:r>"
+        "<w:commentRangeEnd w:id=\"1\"/></w:p>"
+        "<w:p><w:commentRangeStart w:id=\"2\"/></w:p>"
+        "<w:p><w:commentRangeEnd w:id=\"3\"/></w:p>"
+        "<w:p><w:commentRangeStart w:id=\"4\"/></w:p>"
+        "<w:p><w:commentRangeStart w:id=\"4\"/></w:p>"
+        "<w:p><w:commentRangeEnd w:id=\"4\"/></w:p>"
+        "<w:p><w:commentRangeStart w:id=\"5\"/><w:r><w:t>Dup end</w:t></w:r></w:p>"
+        "<w:p><w:commentRangeEnd w:id=\"5\"/></w:p>"
+        "<w:p><w:commentRangeEnd w:id=\"5\"/></w:p>"
+        "<w:p><w:permStart w:id=\"7\"/><w:r><w:t>Hold</w:t></w:r><w:permEnd w:id=\"7\"/></w:p>"
+        "<w:p><w:permStart w:id=\"8\"/></w:p>"
+        "<w:p><w:permEnd w:id=\"9\"/></w:p>"
+        "</w:body></w:document>"
+    )
+
+    part = FakeRelPart("/word/document.xml", xml, {})
+    tree = parse_xml(xml.encode("utf-8"))
+
+    cleaned = template._cleanup_word_markup(part, tree)
+    cleaned_xml = etree.tostring(cleaned, encoding="unicode")
+
+    assert 'w:commentRangeStart w:id="2"' not in cleaned_xml
+    assert 'w:commentRangeEnd w:id="3"' not in cleaned_xml
+    assert cleaned_xml.count('w:commentRangeStart w:id="4"') == 1
+    assert cleaned_xml.count('w:commentRangeEnd w:id="4"') == 1
+    assert cleaned_xml.count('w:commentRangeEnd w:id="5"') == 1
+    assert 'w:permStart w:id="8"' not in cleaned_xml
+    assert 'w:permEnd w:id="9"' not in cleaned_xml
+
+
 def test_cleanup_word_markup_removes_external_file_hyperlinks():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
