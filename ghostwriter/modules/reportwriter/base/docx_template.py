@@ -16,7 +16,10 @@ from typing import Iterator
 from docx.oxml import parse_xml
 from docxtpl.template import DocxTemplate
 from jinja2 import Environment, meta
-from jinja2.debug import Traceback as JinjaTraceback
+try:
+    from jinja2.debug import Traceback as JinjaTraceback
+except Exception:  # pragma: no cover - depends on optional Jinja debug support
+    JinjaTraceback = None  # type: ignore[assignment]
 from lxml import etree
 
 
@@ -549,6 +552,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
         after: int = 2,
     ) -> tuple[int | None, list[tuple[int, str]]]:
         """Return contextual template lines surrounding the error."""
+
+        if JinjaTraceback is None:
+            return None, []
 
         try:
             traceback = JinjaTraceback.from_exception(exc)

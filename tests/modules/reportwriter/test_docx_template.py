@@ -1773,26 +1773,39 @@ def test_extract_template_error_line_from_traceback():
     assert line == 3
 
 
-def test_extract_template_debug_context_returns_lines():
+def test_extract_template_debug_context_returns_lines(monkeypatch):
     template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
-    env = Environment(autoescape=False)
-    jinja_template = env.from_string(
-        "\n".join(
-            [
-                "{% set limit = 5 %}",
-                "{% if value is not none %}",
-                "{{ value > limit }}",
-                "{% endif %}",
-            ]
-        )
+
+    class FakeFrame:
+        def __init__(self, filename, lineno, source):
+            self.filename = filename
+            self.lineno = lineno
+            self.source = source
+
+    class FakeTraceback:
+        def __init__(self, frames):
+            self.frames = frames
+
+        @classmethod
+        def from_exception(cls, exc):  # noqa: D401 - signature mirrors real API
+            source = "\n".join(
+                [
+                    "{% set limit = 5 %}",
+                    "{% if value is not none %}",
+                    "{{ value > limit }}",
+                    "{% endif %}",
+                ]
+            )
+            return cls([FakeFrame("<template>", 3, source)])
+
+    monkeypatch.setattr(
+        docx_template,
+        "JinjaTraceback",
+        FakeTraceback,
+        raising=False,
     )
 
-    try:
-        jinja_template.render(value=None)
-    except TypeError as exc:
-        line, context = template._extract_template_debug_context(exc, before=1, after=1)
-    else:  # pragma: no cover - render should raise
-        pytest.fail("Expected TypeError to be raised")
+    line, context = template._extract_template_debug_context(RuntimeError("boom"), before=1, after=1)
 
     assert line == 3
     assert context == [
@@ -1800,6 +1813,17 @@ def test_extract_template_debug_context_returns_lines():
         (3, "{{ value > limit }}"),
         (4, "{% endif %}"),
     ]
+
+
+def test_extract_template_debug_context_handles_missing_traceback(monkeypatch):
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+
+    monkeypatch.setattr(docx_template, "JinjaTraceback", None, raising=False)
+
+    line, context = template._extract_template_debug_context(RuntimeError("boom"))
+
+    assert line is None
+    assert context == []
 
 
 def test_format_template_context_marks_error_line():
