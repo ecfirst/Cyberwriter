@@ -21,7 +21,7 @@ _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _MISNESTED_DRAWING_PATTERN = re.compile(
-    r"</w:drawing>(?P<content>.*?)</(?P<prefix>wp\d*):inline>",
+    r"</w:drawing>(?P<content>.*?)</(?P<prefix>[A-Za-z_][\w.-]*):inline>",
     re.DOTALL,
 )
 _TRAILING_CLOSING_TAGS_RE = re.compile(
@@ -525,7 +525,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             xml = etree.tostring(element, encoding="unicode")
             if "</w:drawing>" not in xml:
                 continue
-            if not re.search(r"</wp\d*:inline>", xml):
+            if not re.search(r"</[A-Za-z_][\w.-]*:inline>", xml):
                 continue
 
             def _swap_closings(match: re.Match[str]) -> str:
