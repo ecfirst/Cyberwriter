@@ -7,6 +7,7 @@ import io
 import re
 import zipfile
 import posixpath
+from collections import defaultdict, deque
 from copy import deepcopy
 from typing import Iterator
 
@@ -21,6 +22,10 @@ _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _RELATIONSHIP_PREFIX = f"{{{_RELATIONSHIP_NS}}}"
+_WORDPROCESSING_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_HYPERLINK_RELTYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+)
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
@@ -54,27 +59,32 @@ class GhostwriterDocxTemplate(DocxTemplate):
             else:
                 jinja_env.autoescape = autoescape
 
-        self._render_additional_parts(context, jinja_env)
-
         xml_src = self.build_xml(context, jinja_env)
         tree = self.fix_tables(xml_src)
         self.fix_docpr_ids(tree)
+        tree = self._cleanup_word_markup(self.docx._part, tree)
         self.map_tree(tree)
         self._cleanup_part_relationships(self.docx._part, tree)
 
         headers = self.build_headers_footers_xml(context, self.HEADER_URI, jinja_env)
         for rel_key, xml in headers:
-            self.map_headers_footers_xml(rel_key, xml)
-            header_part = self.docx._part.rels.get(rel_key)
+            rel = self.docx._part.rels.get(rel_key) if self.docx and self.docx._part else None
+            header_part = rel.target_part if rel else None
+            cleaned_xml = self._cleanup_word_markup(header_part, xml)
+            self.map_headers_footers_xml(rel_key, cleaned_xml)
             if header_part:
-                self._cleanup_part_relationships(header_part.target_part, xml)
+                self._cleanup_part_relationships(header_part, cleaned_xml)
 
         footers = self.build_headers_footers_xml(context, self.FOOTER_URI, jinja_env)
         for rel_key, xml in footers:
-            self.map_headers_footers_xml(rel_key, xml)
-            footer_part = self.docx._part.rels.get(rel_key)
+            rel = self.docx._part.rels.get(rel_key) if self.docx and self.docx._part else None
+            footer_part = rel.target_part if rel else None
+            cleaned_xml = self._cleanup_word_markup(footer_part, xml)
+            self.map_headers_footers_xml(rel_key, cleaned_xml)
             if footer_part:
-                self._cleanup_part_relationships(footer_part.target_part, xml)
+                self._cleanup_part_relationships(footer_part, cleaned_xml)
+
+        self._render_additional_parts(context, jinja_env)
 
         self.render_properties(context, jinja_env)
 
@@ -246,15 +256,47 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if not self.docx:
             return
 
-        package = self.docx.part.package
         seen: set[str] = set()
-        for part in package.iter_parts():
+        for part in self._iter_reachable_parts():
+            if part is self.docx._part:
+                continue
+
             partname = self._normalise_partname(part)
             if partname in seen:
                 continue
             if self._matches_extra_template(partname):
                 seen.add(partname)
                 yield part
+
+    def _iter_reachable_parts(self) -> Iterator:
+        """Yield parts reachable from the main document via relationships."""
+
+        if not self.docx or not self.docx._part:
+            return
+
+        queue: deque = deque([self.docx._part])
+        seen = {self.docx._part}
+
+        while queue:
+            part = queue.popleft()
+            yield part
+
+            rels = getattr(part, "rels", None)
+            if not rels:
+                continue
+
+            for rel in rels.values():
+                if getattr(rel, "is_external", False):
+                    continue
+
+                try:
+                    target = getattr(rel, "target_part", None)
+                except ValueError:
+                    continue
+                if target is None or target in seen:
+                    continue
+                seen.add(target)
+                queue.append(target)
 
     def _matches_extra_template(self, partname: str) -> bool:
         return any(fnmatch.fnmatch(partname, pattern) for pattern in self._EXTRA_TEMPLATED_PATTERNS)
@@ -320,6 +362,189 @@ class GhostwriterDocxTemplate(DocxTemplate):
             targets = getattr(rels, "_target_parts_by_rId", None)
             if targets is not None:
                 targets.pop(rel_id, None)
+
+    def _cleanup_word_markup(self, part, xml):
+        """Normalise WordprocessingML after templating removes content."""
+
+        root = self._ensure_xml_root(xml)
+        if root is None:
+            return xml
+
+        word_ns = self._get_word_namespace(root)
+
+        self._remove_unbalanced_bookmarks(root, word_ns)
+        bookmark_names = self._collect_bookmark_names(root, word_ns)
+        self._remove_missing_anchor_hyperlinks(root, word_ns, bookmark_names)
+        if part is not None:
+            self._remove_external_file_hyperlinks(part, root, word_ns)
+
+        return self._coerce_cleaned_xml(xml, root)
+
+    def _get_word_namespace(self, root) -> str:
+        if hasattr(root, "nsmap") and root.nsmap:
+            ns = root.nsmap.get("w")
+            if ns:
+                return ns
+        return _WORDPROCESSING_NS
+
+    def _remove_unbalanced_bookmarks(self, root, word_ns: str) -> None:
+        start_tag = f"{{{word_ns}}}bookmarkStart"
+        end_tag = f"{{{word_ns}}}bookmarkEnd"
+        id_attr = f"{{{word_ns}}}id"
+
+        starts: dict[str, list] = defaultdict(list)
+        ends: dict[str, list] = defaultdict(list)
+
+        for element in root.iter():
+            if element.tag == start_tag:
+                bookmark_id = element.get(id_attr)
+                if bookmark_id is not None:
+                    starts[str(bookmark_id)].append(element)
+            elif element.tag == end_tag:
+                bookmark_id = element.get(id_attr)
+                if bookmark_id is not None:
+                    ends[str(bookmark_id)].append(element)
+
+        start_ids = set(starts)
+        end_ids = set(ends)
+
+        for bookmark_id in start_ids - end_ids:
+            for element in starts[bookmark_id]:
+                self._remove_element(element)
+
+        for bookmark_id in end_ids - start_ids:
+            for element in ends[bookmark_id]:
+                self._remove_element(element)
+
+        for bookmark_id in start_ids & end_ids:
+            start_elements = starts[bookmark_id]
+            end_elements = ends[bookmark_id]
+            pair_count = min(len(start_elements), len(end_elements))
+            for element in start_elements[pair_count:]:
+                self._remove_element(element)
+            for element in end_elements[pair_count:]:
+                self._remove_element(element)
+
+    def _collect_bookmark_names(self, root, word_ns: str) -> set[str]:
+        start_tag = f"{{{word_ns}}}bookmarkStart"
+        name_attr = f"{{{word_ns}}}name"
+        names: set[str] = set()
+
+        for element in root.iter(start_tag):
+            name = element.get(name_attr)
+            if name:
+                names.add(name)
+
+        return names
+
+    def _remove_missing_anchor_hyperlinks(
+        self,
+        root,
+        word_ns: str,
+        bookmark_names: set[str],
+    ) -> None:
+        hyperlink_tag = f"{{{word_ns}}}hyperlink"
+        anchor_attr = f"{{{word_ns}}}anchor"
+
+        for hyperlink in list(root.iter(hyperlink_tag)):
+            anchor = hyperlink.get(anchor_attr)
+            if not anchor or anchor in bookmark_names:
+                continue
+            self._unwrap_element(hyperlink)
+
+    def _remove_external_file_hyperlinks(self, part, root, word_ns: str) -> None:
+        rels = getattr(part, "rels", None)
+        if not rels:
+            return
+
+        for rel_id, rel in list(rels.items()):
+            reltype = getattr(rel, "reltype", "")
+            is_external = getattr(rel, "is_external", False)
+            if reltype != _HYPERLINK_RELTYPE or not is_external:
+                continue
+
+            target = self._get_relationship_target(rel)
+            if not target or not target.lower().startswith("file:"):
+                continue
+
+            self._remove_hyperlink_elements_by_id(root, rel_id, word_ns)
+            if hasattr(part, "drop_rel"):
+                part.drop_rel(rel_id)
+            else:
+                rels.pop(rel_id, None)
+            targets = getattr(rels, "_target_parts_by_rId", None)
+            if targets is not None:
+                targets.pop(rel_id, None)
+
+    def _remove_hyperlink_elements_by_id(self, root, rel_id: str, word_ns: str) -> None:
+        hyperlink_tag = f"{{{word_ns}}}hyperlink"
+        rel_attr = f"{{{_RELATIONSHIP_NS}}}id"
+
+        for hyperlink in list(root.iter(hyperlink_tag)):
+            if hyperlink.get(rel_attr) != rel_id:
+                continue
+            self._unwrap_element(hyperlink)
+
+    def _get_relationship_target(self, rel) -> str:
+        for attr in ("target_ref", "target", "target_uri", "target_ref_uri"):
+            value = getattr(rel, attr, None)
+            if value:
+                return str(value)
+        return ""
+
+    def _unwrap_element(self, element) -> None:
+        parent = element.getparent()
+        if parent is None:
+            return
+
+        index = parent.index(element)
+        prev = parent[index - 1] if index > 0 else None
+
+        for child in list(element):
+            element.remove(child)
+            parent.insert(index, child)
+            index += 1
+
+        tail = element.tail
+        parent.remove(element)
+
+        if tail:
+            if index < len(parent):
+                next_el = parent[index]
+                next_el.tail = (tail + (next_el.tail or "")) if next_el.tail else tail
+            elif prev is not None:
+                prev.tail = (prev.tail or "") + tail
+            else:
+                parent.text = (parent.text or "") + tail
+
+    def _remove_element(self, element) -> None:
+        parent = element.getparent()
+        if parent is None:
+            return
+
+        index = parent.index(element)
+        tail = element.tail
+        parent.remove(element)
+
+        if tail:
+            if index < len(parent):
+                next_el = parent[index]
+                next_el.tail = (tail + (next_el.tail or "")) if next_el.tail else tail
+            else:
+                previous = parent[index - 1] if index > 0 else None
+                if previous is not None:
+                    previous.tail = (previous.tail or "") + tail
+                else:
+                    parent.text = (parent.text or "") + tail
+
+    def _coerce_cleaned_xml(self, original, root):
+        if isinstance(original, etree._ElementTree):
+            return original
+        if isinstance(original, etree._Element):
+            return root
+        if isinstance(original, bytes):
+            return etree.tostring(root)
+        return etree.tostring(root, encoding="unicode")
 
     def _collect_relationship_ids(self, xml) -> set[str]:
         root = self._ensure_xml_root(xml)

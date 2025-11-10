@@ -633,6 +633,16 @@ class FakeRelationship:
         self.target_part = target_part
 
 
+class FakeHyperlinkRelationship:
+    """Relationship describing an external hyperlink."""
+
+    def __init__(self, rel_id: str, target: str):
+        self.reltype = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+        self.is_external = True
+        self.target_ref = target
+        self.rel_id = rel_id
+
+
 class FakeRelationships(dict):
     """Minimal relationship mapping with an internal target lookup."""
 
@@ -700,6 +710,59 @@ def test_cleanup_part_relationships_keeps_used_ids():
     assert "rId1" in part.rels
 
 
+def test_cleanup_word_markup_balances_bookmarks_and_hyperlinks():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body>"
+        "<w:p><w:bookmarkStart w:id=\"1\" w:name=\"Keep\"/><w:r><w:t>Intro</w:t></w:r>"
+        "<w:bookmarkEnd w:id=\"1\"/></w:p>"
+        "<w:p><w:bookmarkStart w:id=\"2\" w:name=\"_Drop\"/></w:p>"
+        "<w:p><w:bookmarkEnd w:id=\"3\"/></w:p>"
+        "<w:p><w:hyperlink w:anchor=\"Keep\"><w:r><w:t>Valid</w:t></w:r></w:hyperlink></w:p>"
+        "<w:p><w:hyperlink w:anchor=\"_Missing\"><w:r><w:t>Broken</w:t></w:r></w:hyperlink></w:p>"
+        "</w:body></w:document>"
+    )
+
+    part = FakeRelPart("/word/document.xml", xml, {})
+    tree = parse_xml(xml.encode("utf-8"))
+
+    cleaned = template._cleanup_word_markup(part, tree)
+    cleaned_xml = etree.tostring(cleaned, encoding="unicode")
+
+    assert "_Drop" not in cleaned_xml
+    assert 'w:id="3"' not in cleaned_xml
+    assert '<w:hyperlink w:anchor="_Missing"' not in cleaned_xml
+    assert "Broken" in cleaned_xml
+    assert '<w:hyperlink w:anchor="Keep"' in cleaned_xml
+
+
+def test_cleanup_word_markup_removes_external_file_hyperlinks():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body>"
+        "<w:p><w:hyperlink r:id=\"rIdFile\"><w:r><w:t>Unsafe</w:t></w:r></w:hyperlink></w:p>"
+        "<w:p><w:hyperlink r:id=\"rIdWeb\"><w:r><w:t>Safe</w:t></w:r></w:hyperlink></w:p>"
+        "</w:body></w:document>"
+    )
+
+    rels = {
+        "rIdFile": FakeHyperlinkRelationship("rIdFile", "file:///tmp/untrusted.docx"),
+        "rIdWeb": FakeHyperlinkRelationship("rIdWeb", "https://example.com"),
+    }
+    part = FakeRelPart("/word/document.xml", xml, rels)
+
+    cleaned = template._cleanup_word_markup(part, xml)
+
+    assert "rIdFile" not in part.rels
+    assert "rIdWeb" in part.rels
+    assert 'r:id="rIdFile"' not in cleaned
+    assert 'r:id="rIdWeb"' in cleaned
+
+
 def test_collect_relationship_ids_handles_multiple_values():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
@@ -723,9 +786,9 @@ def test_iter_additional_parts_filters_to_known_patterns(monkeypatch):
     other = FakeXmlPart("/word/document.xml", DIAGRAM_XML.format("value"))
 
     monkeypatch.setattr(
-        template.docx.part.package,
-        "iter_parts",
-        lambda: iter([matching, chart, other]),
+        template,
+        "_iter_reachable_parts",
+        lambda: iter([template.docx._part, matching, chart, other]),
     )
 
     assert list(template._iter_additional_parts()) == [matching, chart]
@@ -773,7 +836,11 @@ def test_iter_additional_parts_includes_excel_parts(monkeypatch):
         SHARED_STRINGS_XML,
     )
 
-    monkeypatch.setattr(template.docx.part.package, "iter_parts", lambda: iter([excel]))
+    monkeypatch.setattr(
+        template,
+        "_iter_reachable_parts",
+        lambda: iter([template.docx._part, excel]),
+    )
 
     assert list(template._iter_additional_parts()) == [excel]
 
