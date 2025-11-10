@@ -635,6 +635,7 @@ class FakeRelationship:
             reltype
             or "http://schemas.openxmlformats.org/officeDocument/2006/relationships/embeddedPackage"
         )
+        self._reltype = self.reltype
         self.target_part = target_part
 
 
@@ -695,6 +696,15 @@ class FakeContentTypePart:
     @property
     def content_type(self):
         return self._content_type
+
+
+class FakeAppPropertiesPart:
+    """App properties part with mutable XML and blob values."""
+
+    def __init__(self, xml: str):
+        self.partname = PackURI("/docProps/app.xml")
+        self._blob = xml.encode("utf-8")
+        self._element = parse_xml(xml)
 
 
 class FakeStubbornRelPart(FakeRelPart):
@@ -1968,6 +1978,66 @@ def test_normalise_package_content_types_updates_comments_extended():
         part.content_type
         == docx_template._MS_COMMENTS_EXTENDED_CONTENT_TYPE
     )
+
+
+def test_cleanup_part_relationships_upgrades_comments_extended_reltype():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body><w:p><w:r><w:t>Content</w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+    rel = FakeRelationship(
+        reltype=docx_template._COMMENTS_EXTENDED_RELTYPE_2011
+    )
+    part = FakeRelPart("/word/document.xml", xml, {"rId5": rel})
+
+    template._cleanup_part_relationships(part, xml)
+
+    assert rel.reltype == docx_template._COMMENTS_EXTENDED_RELTYPE_2017
+    assert rel._reltype == docx_template._COMMENTS_EXTENDED_RELTYPE_2017
+
+
+def test_repair_app_properties_fills_empty_titles(monkeypatch):
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+
+    app_xml = (
+        "<?xml version='1.0' encoding='UTF-8'?>"
+        "<Properties xmlns='http://schemas.openxmlformats.org/officeDocument/2006/extended-properties' "
+        "xmlns:vt='http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes'>"
+        "<HeadingPairs><vt:vector size='2' baseType='variant'>"
+        "<vt:variant><vt:lpstr>Title</vt:lpstr></vt:variant>"
+        "<vt:variant><vt:i4>1</vt:i4></vt:variant>"
+        "</vt:vector></HeadingPairs>"
+        "<TitlesOfParts><vt:vector size='1' baseType='lpstr'><vt:lpstr/></vt:vector></TitlesOfParts>"
+        "</Properties>"
+    )
+
+    app_part = FakeAppPropertiesPart(app_xml)
+
+    package = SimpleNamespace(parts=[app_part])
+    template.docx = SimpleNamespace(_part=SimpleNamespace(package=package))
+
+    monkeypatch.setattr(template, "get_part_xml", lambda self, part: part._blob)
+
+    template._repair_app_properties()
+
+    updated_xml = app_part._blob.decode("utf-8")
+    assert "Document" in updated_xml
+
+    parsed = etree.fromstring(app_part._blob)
+    namespaces = {
+        "ep": "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties",
+        "vt": "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes",
+    }
+
+    titles_vector = parsed.find(".//ep:TitlesOfParts/vt:vector", namespaces)
+    assert titles_vector is not None
+    assert titles_vector.get("size") == "1"
+    lpstr = titles_vector.find("vt:lpstr", namespaces)
+    assert lpstr is not None
+    assert lpstr.text
 
 
 def test_numeric_tests_handle_missing_values():

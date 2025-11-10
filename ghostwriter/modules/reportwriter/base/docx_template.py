@@ -34,8 +34,22 @@ _HYPERLINK_RELTYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 )
 _COMMENTS_EXTENDED_PART = "word/commentsExtended.xml"
+_COMMENTS_EXTENDED_RELTYPE_2011 = (
+    "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
+)
+_COMMENTS_EXTENDED_RELTYPE_2017 = (
+    "http://schemas.microsoft.com/office/2017/06/relationships/commentsExtended"
+)
 _MS_COMMENTS_EXTENDED_CONTENT_TYPE = "application/vnd.ms-word.commentsExtended+xml"
 _SETTINGS_PARTNAME = "word/settings.xml"
+_APP_PROPERTIES_PART = "docProps/app.xml"
+_APP_PROPERTIES_NS = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+)
+_VTYPES_NS = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
+)
+_DOCUMENT_PARTNAME = "word/document.xml"
 
 
 logger = logging.getLogger(__name__)
@@ -73,7 +87,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
             f"{_RELATIONSHIP_NS}/footnotes",
             f"{_RELATIONSHIP_NS}/endnotes",
             f"{_RELATIONSHIP_NS}/people",
-            "http://schemas.microsoft.com/office/2011/relationships/commentsExtended",
+            _COMMENTS_EXTENDED_RELTYPE_2011,
+            _COMMENTS_EXTENDED_RELTYPE_2017,
             "http://schemas.microsoft.com/office/2011/relationships/comments",
         }
     )
@@ -130,6 +145,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
         self._normalise_package_content_types()
 
         self.render_properties(context, jinja_env)
+
+        self._repair_app_properties()
 
         self.is_rendered = True
 
@@ -342,11 +359,146 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 queue.append(target)
 
     def _normalise_package_content_types(self) -> None:
+        parts = self._iter_package_parts()
+        if not parts:
+            return
+
+        for part in parts:
+            if self._normalise_partname(part) != _COMMENTS_EXTENDED_PART:
+                continue
+            current = getattr(part, "content_type", None)
+            if current == _MS_COMMENTS_EXTENDED_CONTENT_TYPE:
+                return
+            setattr(part, "_content_type", _MS_COMMENTS_EXTENDED_CONTENT_TYPE)
+            return
+
+    def _repair_app_properties(self) -> None:
+        parts = self._iter_package_parts()
+        if not parts:
+            return
+
+        app_part = None
+        for part in parts:
+            try:
+                partname = self._normalise_partname(part)
+            except Exception:
+                continue
+            if partname == _APP_PROPERTIES_PART:
+                app_part = part
+                break
+
+        if app_part is None:
+            return
+
+        raw_xml = self.get_part_xml(app_part)
+        if isinstance(raw_xml, bytes):
+            xml_text = raw_xml.decode("utf-8", errors="ignore")
+        else:
+            xml_text = raw_xml
+
+        try:
+            root = etree.fromstring(xml_text.encode("utf-8"))
+        except (etree.XMLSyntaxError, AttributeError):
+            return
+
+        namespaces = {k or "ep": v for k, v in root.nsmap.items() if v}
+        namespaces.setdefault("ep", _APP_PROPERTIES_NS)
+        namespaces.setdefault("vt", _VTYPES_NS)
+
+        titles_vector = root.find(".//ep:TitlesOfParts/vt:vector", namespaces)
+        if titles_vector is None:
+            return
+
+        heading_vector = root.find(".//ep:HeadingPairs/vt:vector", namespaces)
+        vt_ns = namespaces.get("vt")
+        vt_prefix = f"{{{vt_ns}}}" if vt_ns else ""
+
+        lpstr_nodes: list = []
+        for child in list(titles_vector):
+            qname = etree.QName(child)
+            if qname.namespace == vt_ns and qname.localname == "lpstr":
+                lpstr_nodes.append(child)
+                continue
+            if qname.namespace == vt_ns and qname.localname == "variant":
+                inner = child.find(f".//{vt_prefix}lpstr")
+                if inner is not None:
+                    lpstr_nodes.append(inner)
+
+        expected_count = 0
+        if heading_vector is not None:
+            for variant in heading_vector.findall(f"{vt_prefix}variant"):
+                count_node = variant.find(f".//{vt_prefix}i4")
+                if count_node is None or count_node.text is None:
+                    continue
+                try:
+                    expected_count += int(count_node.text)
+                except ValueError:
+                    continue
+
+        fallback_total = max(len(lpstr_nodes), expected_count)
+        fallback_label = "Document {}" if fallback_total > 1 else "Document"
+
+        if not lpstr_nodes:
+            new_node = etree.SubElement(titles_vector, f"{vt_prefix}lpstr")
+            new_node.text = (
+                fallback_label.format(1)
+                if "{}" in fallback_label
+                else fallback_label
+            )
+            lpstr_nodes.append(new_node)
+
+        for index, node in enumerate(lpstr_nodes):
+            text = (node.text or "").strip()
+            if text:
+                continue
+            node.text = (
+                fallback_label.format(index + 1)
+                if "{}" in fallback_label
+                else fallback_label
+            )
+
+        while expected_count and len(lpstr_nodes) < expected_count:
+            new_node = etree.SubElement(titles_vector, f"{vt_prefix}lpstr")
+            new_node.text = (
+                fallback_label.format(len(lpstr_nodes) + 1)
+                if "{}" in fallback_label
+                else fallback_label
+            )
+            lpstr_nodes.append(new_node)
+
+        titles_vector.set("size", str(len(lpstr_nodes)))
+
+        if (
+            heading_vector is not None
+            and expected_count
+            and lpstr_nodes
+        ):
+            i4_nodes = [
+                variant.find(f".//{vt_prefix}i4")
+                for variant in heading_vector.findall(f"{vt_prefix}variant")
+            ]
+            i4_nodes = [node for node in i4_nodes if node is not None]
+            if len(i4_nodes) == 1:
+                i4_nodes[0].text = str(len(lpstr_nodes))
+
+        output_bytes = etree.tostring(root, encoding="utf-8")
+        output_xml = output_bytes.decode("utf-8")
+
+        if hasattr(app_part, "_element"):
+            try:
+                app_part._element = parse_xml(output_xml)
+            except Exception:
+                app_part._element = etree.fromstring(output_bytes)
+
+        if hasattr(app_part, "_blob"):
+            app_part._blob = output_bytes
+
+    def _iter_package_parts(self) -> list:
         doc = getattr(self, "docx", None)
         main_part = getattr(doc, "_part", None) if doc is not None else None
         package = getattr(main_part, "package", None)
         if package is None:
-            return
+            return []
 
         parts_source = getattr(package, "parts", None)
         parts: list = []
@@ -362,14 +514,39 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if not parts and hasattr(package, "iter_parts"):
             parts = list(package.iter_parts())
 
-        for part in parts:
-            if self._normalise_partname(part) != _COMMENTS_EXTENDED_PART:
-                continue
-            current = getattr(part, "content_type", None)
-            if current == _MS_COMMENTS_EXTENDED_CONTENT_TYPE:
-                return
-            setattr(part, "_content_type", _MS_COMMENTS_EXTENDED_CONTENT_TYPE)
+        return parts
+
+    def _is_document_part(self, part) -> bool:
+        partname = getattr(part, "partname", None)
+        if not partname:
+            return False
+        try:
+            normalised = str(partname).lstrip("/")
+        except Exception:
+            return False
+        return normalised == _DOCUMENT_PARTNAME
+
+    def _ensure_modern_comments_relationship(self, rels) -> None:
+        if not rels:
             return
+
+        for rel in rels.values():
+            reltype = getattr(rel, "reltype", "")
+            if reltype != _COMMENTS_EXTENDED_RELTYPE_2011:
+                continue
+            self._set_relationship_type(rel, _COMMENTS_EXTENDED_RELTYPE_2017)
+
+    @staticmethod
+    def _set_relationship_type(rel, reltype: str) -> None:
+        if hasattr(rel, "_reltype"):
+            try:
+                setattr(rel, "_reltype", reltype)
+            except Exception:
+                pass
+        try:
+            setattr(rel, "reltype", reltype)
+        except Exception:
+            pass
 
     @staticmethod
     def _install_numeric_tests(env: Environment) -> None:
@@ -518,6 +695,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if self._try_drop_relationship(part, rel_id):
                 continue
             self._remove_relationship_entry(rels, rel_id)
+
+        if self._is_document_part(part):
+            self._ensure_modern_comments_relationship(rels)
 
     def _try_drop_relationship(self, part, rel_id: str) -> bool:
         """Attempt to drop relationship via the part API, returning ``True`` if removed."""
@@ -882,7 +1062,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return set()
 
         normalised = str(partname).lstrip("/")
-        if normalised == "word/document.xml":
+        if normalised == _DOCUMENT_PARTNAME:
             return set(self._DOCUMENT_REQUIRED_RELATIONSHIP_TYPES)
         return set()
 
