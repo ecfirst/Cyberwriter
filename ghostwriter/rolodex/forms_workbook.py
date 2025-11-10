@@ -18,6 +18,7 @@ from ghostwriter.rolodex.ip_artifacts import (
     parse_ip_text,
 )
 from ghostwriter.rolodex.models import ProjectDataFile
+from ghostwriter.rolodex.workbook_defaults import normalize_workbook_payload
 
 
 class MultipleTextInput(forms.Widget):
@@ -120,7 +121,7 @@ class ProjectWorkbookForm(forms.Form):
             workbook_file.seek(0)
             raise forms.ValidationError(_("The workbook JSON must contain an object at the top level."))
         workbook_file.seek(0)
-        self.cleaned_data["parsed_workbook"] = parsed
+        self.cleaned_data["parsed_workbook"] = normalize_workbook_payload(parsed)
         return workbook_file
 
 

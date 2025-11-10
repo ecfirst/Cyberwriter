@@ -17,6 +17,10 @@ from ghostwriter.rolodex.workbook import (
     build_workbook_sections,
     normalize_scope_selection,
 )
+from ghostwriter.rolodex.workbook_defaults import (
+    ensure_data_responses_defaults,
+    normalize_workbook_payload,
+)
 
 
 class WorkbookHelpersTests(SimpleTestCase):
@@ -60,6 +64,17 @@ class WorkbookHelpersTests(SimpleTestCase):
         ordered_keys = [section["key"] for section in sections]
         self.assertEqual(ordered_keys[:3], ["client", "general", "wireless"])
 
+    def test_build_workbook_sections_hides_generated_sections(self):
+        normalized = normalize_workbook_payload(
+            {"general": {"external_start": "2025-01-10"}}
+        )
+
+        sections = build_workbook_sections(normalized)
+        keys = [section["key"] for section in sections]
+
+        self.assertEqual(keys, ["general"])
+        self.assertNotIn("endpoint", keys)
+
     def test_required_files_include_slug(self):
         workbook_data = {
             "dns": {"records": [{"domain": "example.com"}]},
@@ -102,12 +117,8 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertIn("internal_nexpose_csv.csv", labels)
         self.assertIn("iot_nexpose_csv.csv", labels)
 
-    def test_iot_testing_question_added_when_iot_section_present(self):
-        workbook_data = {
-            "iot_iomt_nexpose": {"total": 0},
-        }
-
-        questions, _ = build_data_configuration(workbook_data)
+    def test_iot_testing_question_added_by_default(self):
+        questions, _ = build_data_configuration({})
 
         iot_question = next(
             (q for q in questions if q["key"] == "iot_testing_confirm"),
@@ -219,6 +230,46 @@ class WorkbookHelpersTests(SimpleTestCase):
             bucket_question["field_kwargs"]["choices"],
             (("High", "High"), ("Medium", "Medium"), ("Low", "Low")),
         )
+
+    def test_sections_skipped_when_workbook_data_missing(self):
+        normalized = normalize_workbook_payload({"general": {"external_start": "2025-01-10"}})
+
+        questions, _ = build_data_configuration(normalized)
+        sections = {question["section"] for question in questions}
+
+        self.assertNotIn("Wireless", sections)
+        self.assertNotIn("Password Policies", sections)
+        self.assertNotIn("Active Directory", sections)
+
+    def test_password_questions_skipped_for_empty_policies(self):
+        normalized = normalize_workbook_payload({"password": {"policies": []}})
+
+        questions, _ = build_data_configuration(normalized)
+        sections = {question["section"] for question in questions}
+
+        self.assertNotIn("Password Policies", sections)
+
+    def test_normalize_workbook_payload_populates_expected_defaults(self):
+        normalized = normalize_workbook_payload({})
+
+        self.assertIn("endpoint", normalized)
+        self.assertEqual(normalized["endpoint"]["domains"], [])
+        self.assertIn("password", normalized)
+        self.assertEqual(normalized["password"]["policies"], [])
+        meta = normalized.get("__meta__", {})
+        uploaded = meta.get("uploaded_sections")
+        self.assertIsInstance(uploaded, list)
+        self.assertEqual(uploaded, [])
+
+    def test_ensure_data_responses_defaults_populates_structure(self):
+        defaults = ensure_data_responses_defaults({})
+
+        self.assertIn("general", defaults)
+        self.assertEqual(defaults["general"]["assessment_scope"], [])
+        self.assertIn("password", defaults)
+        self.assertEqual(defaults["password"]["entries"], [])
+        self.assertIn("wireless", defaults)
+        self.assertIn("overall_risk", defaults)
 
     def test_wireless_psk_questions_include_summary_and_networks(self):
         workbook_data = {"wireless": {"weak_psks": "yes"}}

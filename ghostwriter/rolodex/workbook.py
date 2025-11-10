@@ -9,6 +9,10 @@ from django.utils.text import slugify
 
 # Ghostwriter Libraries
 from ghostwriter.rolodex.forms_workbook import MultiValueField, SummaryMultipleChoiceField
+from ghostwriter.rolodex.workbook_defaults import (
+    WORKBOOK_META_KEY,
+    get_uploaded_sections,
+)
 
 SECTION_DISPLAY_ORDER = [
     "client",
@@ -261,8 +265,13 @@ def build_workbook_sections(workbook_data: Optional[Dict[str, Any]]) -> List[Dic
     if not isinstance(workbook_data, dict):
         return []
 
+    visible_sections = get_uploaded_sections(workbook_data)
     sections: List[Dict[str, Any]] = []
     for position, (key, value) in enumerate(workbook_data.items()):
+        if key == WORKBOOK_META_KEY:
+            continue
+        if visible_sections and key not in visible_sections:
+            continue
         slug = _slugify_identifier("workbook", key)
         slug = slug or "workbook-section"
         sections.append(
@@ -296,11 +305,15 @@ def build_data_configuration(
     """Return dynamic questions and file requirements derived from workbook data."""
 
     data = workbook_data or {}
+    uploaded_sections = get_uploaded_sections(workbook_data)
     artifacts = data_artifacts or {}
     risks = project_risks or {}
     questions: List[Dict[str, Any]] = []
     required_files: List[Dict[str, str]] = []
     required_file_index: Set[Tuple[str, Optional[str]]] = set()
+
+    def has_workbook_section(key: str) -> bool:
+        return key in uploaded_sections
 
     def add_required(label: str, context: Optional[str] = None) -> None:
         key = (label, context)
@@ -411,99 +424,99 @@ def build_data_configuration(
         widget=forms.RadioSelect,
     )
 
-    iot_section = _get_nested(data, ("iot_iomt_nexpose",), None)
-    if isinstance(iot_section, dict):
-        add_question(
-            key="iot_testing_confirm",
-            label="Was Internal IoT/IoMT testing performed?",
-            field_class=forms.ChoiceField,
-            section="IoT/IoMT",
-            choices=YES_NO_CHOICES,
-            widget=forms.RadioSelect,
-            initial="no",
-        )
+    add_question(
+        key="iot_testing_confirm",
+        label="Was Internal IoT/IoMT testing performed?",
+        field_class=forms.ChoiceField,
+        section="IoT/IoMT",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+        initial="no",
+    )
 
     # Intelligence questions
-    osint_data = _get_nested(data, ("osint",), {}) or {}
+    if has_workbook_section("osint"):
+        osint_data = _get_nested(data, ("osint",), {}) or {}
 
-    if _as_int(_get_nested(osint_data, ("total_squat",), 0)) > 0:
-        add_question(
-            key="osint_squat_concern",
-            label="Of the squatting domains found, which is the most concerning (single domain or comma-separated list)",
-            field_class=forms.CharField,
-            section="Intelligence",
-            widget=forms.TextInput(attrs={"class": "form-control"}),
-        )
+        if _as_int(_get_nested(osint_data, ("total_squat",), 0)) > 0:
+            add_question(
+                key="osint_squat_concern",
+                label="Of the squatting domains found, which is the most concerning (single domain or comma-separated list)",
+                field_class=forms.CharField,
+                section="Intelligence",
+                widget=forms.TextInput(attrs={"class": "form-control"}),
+            )
 
-    osint_risk_choices = (("High", "High"), ("Medium", "Medium"), ("Low", "Low"))
+        osint_risk_choices = (("High", "High"), ("Medium", "Medium"), ("Low", "Low"))
 
-    if _as_int(_get_nested(osint_data, ("total_buckets",), 0)) > 0:
-        add_question(
-            key="osint_bucket_risk",
-            label="What is the risk you would assign to the exposed buckets found?",
-            field_class=forms.ChoiceField,
-            section="Intelligence",
-            choices=osint_risk_choices,
-        )
+        if _as_int(_get_nested(osint_data, ("total_buckets",), 0)) > 0:
+            add_question(
+                key="osint_bucket_risk",
+                label="What is the risk you would assign to the exposed buckets found?",
+                field_class=forms.ChoiceField,
+                section="Intelligence",
+                choices=osint_risk_choices,
+            )
 
-    if _as_int(_get_nested(osint_data, ("total_leaks",), 0)) > 0:
-        add_question(
-            key="osint_leaked_creds_risk",
-            label="What is the risk you would assign to the leaked creds found?",
-            field_class=forms.ChoiceField,
-            section="Intelligence",
-            choices=osint_risk_choices,
-        )
+        if _as_int(_get_nested(osint_data, ("total_leaks",), 0)) > 0:
+            add_question(
+                key="osint_leaked_creds_risk",
+                label="What is the risk you would assign to the leaked creds found?",
+                field_class=forms.ChoiceField,
+                section="Intelligence",
+                choices=osint_risk_choices,
+            )
 
     # Required DNS artifacts
-    dns_records = _get_nested(data, ("dns", "records"), []) or []
-    if isinstance(dns_records, list):
-        for record in dns_records:
-            domain = _extract_domain(record)
-            if domain:
-                add_required("dns_report.csv", domain)
+    if has_workbook_section("dns"):
+        dns_records = _get_nested(data, ("dns", "records"), []) or []
+        if isinstance(dns_records, list):
+            for record in dns_records:
+                domain = _extract_domain(record)
+                if domain:
+                    add_required("dns_report.csv", domain)
 
-    target_issue = "One or more SOA fields are outside recommended ranges"
-    dns_entries = artifacts.get("dns_issues") if isinstance(artifacts, dict) else None
-    if isinstance(dns_entries, list):
-        seen_domains: Set[str] = set()
-        for entry in dns_entries:
-            if not isinstance(entry, dict):
-                continue
-            domain_name = _as_str(entry.get("domain")) or ""
-            issues = entry.get("issues")
-            if not isinstance(issues, list):
-                continue
-            has_issue = False
-            for issue in issues:
-                if isinstance(issue, dict):
-                    issue_text = issue.get("issue")
-                else:
-                    issue_text = issue
-                if _as_str(issue_text) == target_issue:
-                    has_issue = True
-                    break
-            if not has_issue:
-                continue
-            display_domain = domain_name or "Unknown Domain"
-            normalized_domain = display_domain.lower()
-            if normalized_domain in seen_domains:
-                continue
-            seen_domains.add(normalized_domain)
-            slug = _slugify_identifier("dns", display_domain)
-            if not slug:
-                slug = f"dns_domain_{len(seen_domains)}"
-            add_question(
-                key=f"{slug}_soa_fields",
-                label="Which SOA fields are outside the recommended ranges?",
-                field_class=forms.MultipleChoiceField,
-                section="DNS",
-                subheading=display_domain,
-                choices=DNS_SOA_FIELD_CHOICES,
-                widget=forms.CheckboxSelectMultiple,
-                entry_slug=slug,
-                entry_field_key="soa_fields",
-            )
+        target_issue = "One or more SOA fields are outside recommended ranges"
+        dns_entries = artifacts.get("dns_issues") if isinstance(artifacts, dict) else None
+        if isinstance(dns_entries, list):
+            seen_domains: Set[str] = set()
+            for entry in dns_entries:
+                if not isinstance(entry, dict):
+                    continue
+                domain_name = _as_str(entry.get("domain")) or ""
+                issues = entry.get("issues")
+                if not isinstance(issues, list):
+                    continue
+                has_issue = False
+                for issue in issues:
+                    if isinstance(issue, dict):
+                        issue_text = issue.get("issue")
+                    else:
+                        issue_text = issue
+                    if _as_str(issue_text) == target_issue:
+                        has_issue = True
+                        break
+                if not has_issue:
+                    continue
+                display_domain = domain_name or "Unknown Domain"
+                normalized_domain = display_domain.lower()
+                if normalized_domain in seen_domains:
+                    continue
+                seen_domains.add(normalized_domain)
+                slug = _slugify_identifier("dns", display_domain)
+                if not slug:
+                    slug = f"dns_domain_{len(seen_domains)}"
+                add_question(
+                    key=f"{slug}_soa_fields",
+                    label="Which SOA fields are outside the recommended ranges?",
+                    field_class=forms.MultipleChoiceField,
+                    section="DNS",
+                    subheading=display_domain,
+                    choices=DNS_SOA_FIELD_CHOICES,
+                    widget=forms.CheckboxSelectMultiple,
+                    entry_slug=slug,
+                    entry_field_key="soa_fields",
+                )
 
     if _as_int(_get_nested(data, ("web", "combined_unique"), 0)) > 0:
         add_required("burp_csv.csv")
@@ -527,234 +540,244 @@ def build_data_configuration(
     if iot_nexpose_total > 0:
         add_required("iot_nexpose_csv.csv")
 
-    firewall_source = _get_nested(data, ("fierwall",), None)
-    if not isinstance(firewall_source, dict):
-        firewall_source = _get_nested(data, ("firewall",), {})
-    if _as_int(_get_nested(firewall_source or {}, ("unique",), 0)) > 0:
-        add_required("firewall_csv.csv")
+    if has_workbook_section("firewall"):
+        firewall_source = _get_nested(data, ("fierwall",), None)
+        if not isinstance(firewall_source, dict):
+            firewall_source = _get_nested(data, ("firewall",), {})
+        if _as_int(_get_nested(firewall_source or {}, ("unique",), 0)) > 0:
+            add_required("firewall_csv.csv")
 
-    firewall_devices = _get_nested(firewall_source or {}, ("devices",), []) or []
-    if isinstance(firewall_devices, list):
-        for index, device in enumerate(firewall_devices, start=1):
-            if isinstance(device, dict):
-                device_name = device.get("name") or device.get("device") or device.get("hostname")
-            else:
-                device_name = device
-            display_name = _as_str(device_name).strip() or f"Device {index}"
-            base_slug = _slugify_identifier("firewall", display_name)
-            if not base_slug:
-                base_slug = f"firewall_device_{index}"
-            slug = f"{base_slug}_type"
-            add_question(
-                key=f"{slug}",
-                label="Firewall Type",
-                field_class=forms.CharField,
-                section="Firewall",
-                subheading=display_name,
-                widget=forms.TextInput(attrs={"class": "form-control"}),
-                entry_slug=base_slug,
-                entry_field_key="type",
-            )
+        firewall_devices = _get_nested(firewall_source or {}, ("devices",), []) or []
+        if isinstance(firewall_devices, list):
+            for index, device in enumerate(firewall_devices, start=1):
+                if isinstance(device, dict):
+                    device_name = device.get("name") or device.get("device") or device.get("hostname")
+                else:
+                    device_name = device
+                display_name = _as_str(device_name).strip() or f"Device {index}"
+                base_slug = _slugify_identifier("firewall", display_name)
+                if not base_slug:
+                    base_slug = f"firewall_device_{index}"
+                slug = f"{base_slug}_type"
+                add_question(
+                    key=f"{slug}",
+                    label="Firewall Type",
+                    field_class=forms.CharField,
+                    section="Firewall",
+                    subheading=display_name,
+                    widget=forms.TextInput(attrs={"class": "form-control"}),
+                    entry_slug=base_slug,
+                    entry_field_key="type",
+                )
 
-    add_question(
-        key="firewall_periodic_reviews",
-        label="Did the client indicate they were performing periodic reviews for firewall rule business justifications?",
-        field_class=forms.ChoiceField,
-        section="Firewall",
-        choices=YES_NO_CHOICES,
-        widget=forms.RadioSelect,
-    )
+        add_question(
+            key="firewall_periodic_reviews",
+            label="Did the client indicate they were performing periodic reviews for firewall rule business justifications?",
+            field_class=forms.ChoiceField,
+            section="Firewall",
+            choices=YES_NO_CHOICES,
+            widget=forms.RadioSelect,
+        )
 
     # Active Directory risk questions
-    ad_domains = _get_nested(data, ("ad", "domains"), []) or []
-    if isinstance(ad_domains, list):
-        for record in ad_domains:
-            domain = _extract_domain(record)
-            if not domain:
-                continue
-            slug = _slugify_identifier("ad", domain)
-            for metric_key, metric_label in AD_DOMAIN_METRICS:
-                question_key = f"{slug}_{metric_key}"
+    if has_workbook_section("ad"):
+        ad_domains = _get_nested(data, ("ad", "domains"), []) or []
+        if isinstance(ad_domains, list):
+            for record in ad_domains:
+                domain = _extract_domain(record)
+                if not domain:
+                    continue
+                slug = _slugify_identifier("ad", domain)
+                for metric_key, metric_label in AD_DOMAIN_METRICS:
+                    question_key = f"{slug}_{metric_key}"
+                    add_question(
+                        key=question_key,
+                        label=metric_label,
+                        field_class=forms.ChoiceField,
+                        section="Active Directory",
+                        subheading=domain,
+                        choices=RISK_CHOICES,
+                        widget=forms.RadioSelect,
+                        entry_slug=slug,
+                        entry_field_key=metric_key,
+                    )
+
+    # Password policy risk
+    if has_workbook_section("password"):
+        password_policies = _get_nested(data, ("password", "policies"), []) or []
+        add_question(
+            key="password_additional_controls",
+            label="Did the client indicate they had additional password controls in place (i.e. blacklisting)?",
+            field_class=forms.ChoiceField,
+            section="Password Policies",
+            choices=YES_NO_CHOICES,
+            widget=forms.RadioSelect,
+        )
+
+        add_question(
+            key="password_enforce_mfa_all_accounts",
+            label="Did the client indicate they enforce MFA on all accounts?",
+            field_class=forms.ChoiceField,
+            section="Password Policies",
+            choices=YES_NO_CHOICES,
+            widget=forms.RadioSelect,
+        )
+
+        if isinstance(password_policies, list):
+            for policy in password_policies:
+                domain_name = None
+                if isinstance(policy, dict):
+                    domain_name = policy.get("domain_name") or policy.get("domain")
+                domain_name = _as_str(domain_name) or "Unnamed Domain"
+                slug = _slugify_identifier("password", domain_name)
                 add_question(
-                    key=question_key,
-                    label=metric_label,
+                    key=f"{slug}_risk",
+                    label=(
+                        "What is the risk you assign for the passwords cracked in the "
+                        f"'{domain_name}' domain? (High, Medium or Low)"
+                    ),
                     field_class=forms.ChoiceField,
-                    section="Active Directory",
+                    section="Password Policies",
+                    subheading=domain_name,
+                    choices=RISK_CHOICES,
+                    widget=forms.RadioSelect,
+                    entry_slug=slug,
+                    entry_field_key="risk",
+                )
+
+    # Endpoint risk questions
+    if has_workbook_section("endpoint"):
+        endpoint_domains = _get_nested(data, ("endpoint", "domains"), []) or []
+        if isinstance(endpoint_domains, list):
+            for entry in endpoint_domains:
+                domain = None
+                if isinstance(entry, dict):
+                    domain = entry.get("domain") or entry.get("name")
+                    if isinstance(domain, dict):
+                        domain = domain.get("domain") or domain.get("name")
+                domain = _as_str(domain) or "Unnamed Domain"
+                slug = _slugify_identifier("endpoint", domain)
+                add_question(
+                    key=f"{slug}_av_gap",
+                    label=(
+                        f"What is the risk you associate with the number of systems without active, up-to-date security software "
+                        f"found in the '{domain}' domain? (High, Medium, Low)"
+                    ),
+                    field_class=forms.ChoiceField,
+                    section="Endpoint",
                     subheading=domain,
                     choices=RISK_CHOICES,
                     widget=forms.RadioSelect,
                     entry_slug=slug,
-                    entry_field_key=metric_key,
+                    entry_field_key="av_gap",
+                )
+                add_question(
+                    key=f"{slug}_open_wifi",
+                    label=(
+                        f"What is the risk you associate with the Open WiFi networks accessed on machines in the '{domain}' domain? "
+                        f"(High, Medium, Low)"
+                    ),
+                    field_class=forms.ChoiceField,
+                    section="Endpoint",
+                    subheading=domain,
+                    choices=RISK_CHOICES,
+                    widget=forms.RadioSelect,
+                    entry_slug=slug,
+                    entry_field_key="open_wifi",
                 )
 
-    # Password policy risk
-    password_policies = _get_nested(data, ("password", "policies"), []) or []
-    add_question(
-        key="password_additional_controls",
-        label="Did the client indicate they had additional password controls in place (i.e. blacklisting)?",
-        field_class=forms.ChoiceField,
-        section="Password Policies",
-        choices=YES_NO_CHOICES,
-        widget=forms.RadioSelect,
-    )
-
-    add_question(
-        key="password_enforce_mfa_all_accounts",
-        label="Did the client indicate they enforce MFA on all accounts?",
-        field_class=forms.ChoiceField,
-        section="Password Policies",
-        choices=YES_NO_CHOICES,
-        widget=forms.RadioSelect,
-    )
-
-    if isinstance(password_policies, list):
-        for policy in password_policies:
-            domain_name = None
-            if isinstance(policy, dict):
-                domain_name = policy.get("domain_name") or policy.get("domain")
-            domain_name = _as_str(domain_name) or "Unnamed Domain"
-            slug = _slugify_identifier("password", domain_name)
+    if has_workbook_section("wireless"):
+        # Wireless baseline questions
+        for key_suffix, label in WIRELESS_NETWORK_TYPES:
+            question_key = f"wireless_{key_suffix}_risk"
             add_question(
-                key=f"{slug}_risk",
-                label=f"What is the risk you assign for the passwords cracked in the '{domain_name}' domain? (High, Medium or Low)",
+                key=question_key,
+                label=label,
                 field_class=forms.ChoiceField,
-                section="Password Policies",
-                subheading=domain_name,
+                section="Wireless",
+                subheading="Wireless Network Risk",
                 choices=RISK_CHOICES,
                 widget=forms.RadioSelect,
-                entry_slug=slug,
-                entry_field_key="risk",
             )
 
-    # Endpoint risk questions
-    endpoint_domains = _get_nested(data, ("endpoint", "domains"), []) or []
-    if isinstance(endpoint_domains, list):
-        for entry in endpoint_domains:
-            domain = None
-            if isinstance(entry, dict):
-                domain = entry.get("domain") or entry.get("name")
-                if isinstance(domain, dict):
-                    domain = domain.get("domain") or domain.get("name")
-            domain = _as_str(domain) or "Unnamed Domain"
-            slug = _slugify_identifier("endpoint", domain)
-            add_question(
-                key=f"{slug}_av_gap",
-                label=(
-                    f"What is the risk you associate with the number of systems without active, up-to-date security software "
-                    f"found in the '{domain}' domain? (High, Medium, Low)"
-                ),
-                field_class=forms.ChoiceField,
-                section="Endpoint",
-                subheading=domain,
-                choices=RISK_CHOICES,
-                widget=forms.RadioSelect,
-                entry_slug=slug,
-                entry_field_key="av_gap",
-            )
-            add_question(
-                key=f"{slug}_open_wifi",
-                label=(
-                    f"What is the risk you associate with the Open WiFi networks accessed on machines in the '{domain}' domain? "
-                    f"(High, Medium, Low)"
-                ),
-                field_class=forms.ChoiceField,
-                section="Endpoint",
-                subheading=domain,
-                choices=RISK_CHOICES,
-                widget=forms.RadioSelect,
-                entry_slug=slug,
-                entry_field_key="open_wifi",
-            )
-
-    # Wireless baseline questions
-    for key_suffix, label in WIRELESS_NETWORK_TYPES:
-        question_key = f"wireless_{key_suffix}_risk"
         add_question(
-            key=question_key,
-            label=label,
+            key="wireless_psk_rotation_concern",
+            label="Are you concerned the PSK(s) is not changed periodically (or when people leave the org)? (Yn)",
             field_class=forms.ChoiceField,
             section="Wireless",
             subheading="Wireless Network Risk",
-            choices=RISK_CHOICES,
-            widget=forms.RadioSelect,
-        )
-
-    add_question(
-        key="wireless_psk_rotation_concern",
-        label="Are you concerned the PSK(s) is not changed periodically (or when people leave the org)? (Yn)",
-        field_class=forms.ChoiceField,
-        section="Wireless",
-        subheading="Wireless Network Risk",
-        choices=YES_NO_CHOICES,
-        widget=forms.RadioSelect,
-    )
-
-    weak_psk_value = _as_str(_get_nested(data, ("wireless", "weak_psks"), "")).lower()
-    if weak_psk_value and weak_psk_value != "no":
-        add_question(
-            key="wireless_psk_weak_reasons",
-            label="Why was the wireless PSK(s) weak?",
-            field_class=SummaryMultipleChoiceField,
-            section="Wireless",
-            subheading="PSK Analysis",
-            choices=WEAK_PSK_CHOICES,
-            widget=forms.CheckboxSelectMultiple,
-            field_kwargs={"summary_map": WEAK_PSK_SUMMARY_MAP},
-        )
-        add_question(
-            key="wireless_psk_masterpass",
-            label="Was the PSK(s) contained in masterpass? (yN)",
-            field_class=forms.ChoiceField,
-            section="Wireless",
-            subheading="PSK Analysis",
             choices=YES_NO_CHOICES,
             widget=forms.RadioSelect,
-            initial="no",
+        )
+
+        weak_psk_value = _as_str(_get_nested(data, ("wireless", "weak_psks"), "")).lower()
+        if weak_psk_value and weak_psk_value != "no":
+            add_question(
+                key="wireless_psk_weak_reasons",
+                label="Why was the wireless PSK(s) weak?",
+                field_class=SummaryMultipleChoiceField,
+                section="Wireless",
+                subheading="PSK Analysis",
+                choices=WEAK_PSK_CHOICES,
+                widget=forms.CheckboxSelectMultiple,
+                field_kwargs={"summary_map": WEAK_PSK_SUMMARY_MAP},
+            )
+            add_question(
+                key="wireless_psk_masterpass",
+                label="Was the PSK(s) contained in masterpass? (yN)",
+                field_class=forms.ChoiceField,
+                section="Wireless",
+                subheading="PSK Analysis",
+                choices=YES_NO_CHOICES,
+                widget=forms.RadioSelect,
+                initial="no",
+            )
+            add_question(
+                key="wireless_psk_masterpass_ssids",
+                label="Enter the network SSID(s) with PSK's contained in 'masterpass'",
+                field_class=MultiValueField,
+                section="Wireless",
+                subheading="PSK Analysis",
+            )
+
+        wep_confirm = _as_str(_get_nested(data, ("wireless", "wep_inuse", "confirm"), "")).lower()
+        if wep_confirm == "yes":
+            add_question(
+                key="wireless_wep_crack_minutes",
+                label="How many minutes did it take to crack the WEP key(s)?",
+                field_class=forms.CharField,
+                section="Wireless",
+                subheading="WEP Networks",
+                widget=forms.TextInput(attrs={"class": "form-control"}),
+            )
+            add_question(
+                key="wireless_wep_ssids",
+                label="Enter the WEP wireless network SSID(s)",
+                field_class=MultiValueField,
+                section="Wireless",
+                subheading="WEP Networks",
+            )
+
+        add_question(
+            key="wireless_segmentation_tested",
+            label="Did you test open/guest wireless network segmentation?",
+            field_class=forms.BooleanField,
+            section="Wireless",
+            subheading="Segmentation",
+            help_text="Select if segmentation testing was performed.",
         )
         add_question(
-            key="wireless_psk_masterpass_ssids",
-            label="Enter the network SSID(s) with PSK's contained in 'masterpass'",
+            key="wireless_segmentation_ssids",
+            label="Enter the Guest/Open wireless network SSID(s)",
             field_class=MultiValueField,
             section="Wireless",
-            subheading="PSK Analysis",
+            subheading="Segmentation",
+            help_text="Provide one or more SSIDs discovered during segmentation testing.",
         )
 
-    wep_confirm = _as_str(_get_nested(data, ("wireless", "wep_inuse", "confirm"), "")).lower()
-    if wep_confirm == "yes":
-        add_question(
-            key="wireless_wep_crack_minutes",
-            label="How many minutes did it take to crack the WEP key(s)?",
-            field_class=forms.CharField,
-            section="Wireless",
-            subheading="WEP Networks",
-            widget=forms.TextInput(attrs={"class": "form-control"}),
-        )
-        add_question(
-            key="wireless_wep_ssids",
-            label="Enter the WEP wireless network SSID(s)",
-            field_class=MultiValueField,
-            section="Wireless",
-            subheading="WEP Networks",
-        )
-
-    add_question(
-        key="wireless_segmentation_tested",
-        label="Did you test open/guest wireless network segmentation?",
-        field_class=forms.BooleanField,
-        section="Wireless",
-        subheading="Segmentation",
-        help_text="Select if segmentation testing was performed.",
-    )
-    add_question(
-        key="wireless_segmentation_ssids",
-        label="Enter the Guest/Open wireless network SSID(s)",
-        field_class=MultiValueField,
-        section="Wireless",
-        subheading="Segmentation",
-        help_text="Provide one or more SSIDs discovered during segmentation testing.",
-    )
-
-    if _as_int(_get_nested(data, ("cloud_config", "fail"), 0)) > 0:
+    if has_workbook_section("cloud_config") and _as_int(
+        _get_nested(data, ("cloud_config", "fail"), 0)
+    ) > 0:
         add_question(
             key="cloud_config_risk",
             label="What is the risk you would assign to the Cloud Management fails? (High, Medium, Low)",
@@ -764,7 +787,9 @@ def build_data_configuration(
             widget=forms.RadioSelect,
         )
 
-    if _as_int(_get_nested(data, ("system_config", "total_fail"), 0)) > 0:
+    if has_workbook_section("system_config") and _as_int(
+        _get_nested(data, ("system_config", "total_fail"), 0)
+    ) > 0:
         add_question(
             key="system_config_risk",
             label="What is the risk you would assign to the System Configuration fails? (High, Medium, Low)",

@@ -94,6 +94,7 @@ from ghostwriter.rolodex.workbook import (
     build_workbook_sections,
     normalize_scope_selection,
 )
+from ghostwriter.rolodex.workbook_defaults import ensure_data_responses_defaults
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 
 # Using __name__ resolves to ghostwriter.rolodex.views
@@ -1853,9 +1854,10 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["workbook_sections"] = build_workbook_sections(object.workbook_data)
         ctx["data_file_form"] = ProjectDataFileForm()
         ctx["data_questions"] = questions
+        normalized_responses = ensure_data_responses_defaults(object.data_responses)
         data_responses_form = ProjectDataResponsesForm(
             question_definitions=questions,
-            initial=object.data_responses or {},
+            initial=normalized_responses,
         )
         ctx["data_responses_form"] = data_responses_form
         ctx["data_responses_fields"] = {
@@ -2026,7 +2028,7 @@ class ProjectWorkbookUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                 project.workbook_file.delete(save=False)
             project.workbook_file = workbook_file
             project.workbook_data = parsed
-            project.data_responses = {}
+            project.data_responses = ensure_data_responses_defaults({})
             project.save()
             messages.success(request, "Workbook uploaded successfully.")
         else:
@@ -2231,7 +2233,11 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
             if first_ca_value != "no":
                 responses.pop("general_scope_changed", None)
 
-            existing_grouped = project.data_responses if isinstance(project.data_responses, dict) else {}
+            existing_grouped = (
+                ensure_data_responses_defaults(project.data_responses)
+                if isinstance(project.data_responses, dict)
+                else ensure_data_responses_defaults({})
+            )
             grouped_responses = _build_grouped_data_responses(
                 responses,
                 questions,
@@ -2239,7 +2245,7 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
                 workbook_data=project.workbook_data,
             )
 
-            project.data_responses = grouped_responses
+            project.data_responses = ensure_data_responses_defaults(grouped_responses)
             project.save(update_fields=["data_responses"])
             messages.success(request, "Project data responses saved.")
         else:
