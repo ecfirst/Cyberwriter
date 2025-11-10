@@ -639,6 +639,22 @@ class FakeRelationship:
         self.target_part = target_part
 
 
+class FakeExternalRelationship:
+    """Relationship that mimics python-docx external targets."""
+
+    def __init__(self, target_ref: str = "http://example.com/external.bin"):
+        self.reltype = f"{docx_template._RELATIONSHIP_NS}/image"
+        self._reltype = self.reltype
+        self.target_ref = target_ref
+        self.is_external = True
+
+    @property
+    def target_part(self):  # pragma: no cover - exercised through template call
+        raise ValueError(
+            "target_part property on _Relationship is undefined when target mode is External"
+        )
+
+
 class FakeHyperlinkRelationship:
     """Relationship describing an external hyperlink."""
 
@@ -970,6 +986,54 @@ def test_renumber_media_parts_is_noop_when_sequential():
     assert PackURI("/word/charts/chart1.xml") in package._parts
     assert PackURI("/word/charts/chart2.xml") in package._parts
 
+
+def test_renumber_media_parts_skips_external_relationships():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+
+    chart1 = FakeXmlPart(
+        "/word/charts/chart1.xml",
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>',
+    )
+    chart3 = FakeXmlPart(
+        "/word/charts/chart3.xml",
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>',
+    )
+
+    rel_chart1 = FakeRelationship(chart1)
+    rel_chart1.target_ref = "charts/chart1.xml"
+    rel_chart1._target = PackURI("/word/charts/chart1.xml")
+    rel_chart3 = FakeRelationship(chart3)
+    rel_chart3.target_ref = "charts/chart3.xml"
+    rel_chart3._target = PackURI("/word/charts/chart3.xml")
+
+    external_rel = FakeExternalRelationship()
+    external_rel.target_ref = "http://example.com/template.dotx"
+
+    document_part = FakeRelPart(
+        "/word/document.xml",
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
+        {"rId1": rel_chart1, "rId2": rel_chart3, "rIdExt": external_rel},
+    )
+
+    parts = [document_part, chart1, chart3]
+    package = SimpleNamespace(
+        parts=parts,
+        _parts={part.partname: part for part in parts if hasattr(part, "partname")},
+        _partnames={part.partname: part for part in parts if hasattr(part, "partname")},
+        _content_types=SimpleNamespace(_overrides={part.partname: "chart" for part in parts[1:]}),
+    )
+
+    for part in parts:
+        part.package = package
+
+    template.docx = SimpleNamespace(_part=document_part)
+
+    template._renumber_media_parts()
+
+    assert chart3.partname == PackURI("/word/charts/chart2.xml")
+
+    assert document_part.rels["rIdExt"].target_ref == "http://example.com/template.dotx"
+    assert "chart2.xml" in document_part.rels["rId2"].target_ref
 
 def test_cleanup_word_markup_removes_external_file_hyperlinks():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")

@@ -852,7 +852,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
 
             for rel in list(getattr(rels, "values", lambda: [])()):
-                target_part = getattr(rel, "target_part", None)
+                try:
+                    target_part = getattr(rel, "target_part", None)
+                except ValueError:
+                    # External relationships do not expose a ``target_part``;
+                    # they reference an absolute target and are unaffected by
+                    # part renames within the package.
+                    continue
                 if target_part not in lookup:
                     continue
                 absolute_target = lookup[target_part]
