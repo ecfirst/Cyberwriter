@@ -628,8 +628,11 @@ class FakeXlsxPart:
 class FakeRelationship:
     """Relationship pointing a chart to an embedded workbook."""
 
-    def __init__(self, target_part):
-        self.reltype = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/embeddedPackage"
+    def __init__(self, target_part=None, *, reltype: str | None = None):
+        self.reltype = (
+            reltype
+            or "http://schemas.openxmlformats.org/officeDocument/2006/relationships/embeddedPackage"
+        )
         self.target_part = target_part
 
 
@@ -708,6 +711,32 @@ def test_cleanup_part_relationships_keeps_used_ids():
     template._cleanup_part_relationships(part, xml)
 
     assert "rId1" in part.rels
+
+
+def test_cleanup_part_relationships_preserves_core_document_parts():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body>"
+        "<w:p><w:r><w:t>Body</w:t></w:r></w:p>"
+        "<w:p><w:commentRangeStart w:id=\"1\"/><w:r><w:t>Issue</w:t></w:r><w:commentRangeEnd w:id=\"1\"/></w:p>"
+        "</w:body></w:document>"
+    )
+
+    rel_ns = docx_template._RELATIONSHIP_NS
+    rels = {
+        "rIdStyles": FakeRelationship(object(), reltype=f"{rel_ns}/styles"),
+        "rIdNumbering": FakeRelationship(object(), reltype=f"{rel_ns}/numbering"),
+        "rIdComments": FakeRelationship(object(), reltype=f"{rel_ns}/comments"),
+        "rIdChart": FakeRelationship(object(), reltype=f"{rel_ns}/chart"),
+    }
+
+    part = FakeRelPart("/word/document.xml", xml, rels)
+
+    template._cleanup_part_relationships(part, xml)
+
+    assert set(part.rels) == {"rIdStyles", "rIdNumbering", "rIdComments"}
 
 
 def test_cleanup_word_markup_balances_bookmarks_and_hyperlinks():

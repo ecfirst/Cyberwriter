@@ -45,6 +45,26 @@ class GhostwriterDocxTemplate(DocxTemplate):
         "word/charts/chart*.xml",
     )
 
+    _DOCUMENT_REQUIRED_RELATIONSHIP_TYPES: frozenset[str] = frozenset(
+        {
+            f"{_RELATIONSHIP_NS}/styles",
+            f"{_RELATIONSHIP_NS}/stylesWithEffects",
+            f"{_RELATIONSHIP_NS}/numbering",
+            f"{_RELATIONSHIP_NS}/fontTable",
+            f"{_RELATIONSHIP_NS}/settings",
+            f"{_RELATIONSHIP_NS}/theme",
+            f"{_RELATIONSHIP_NS}/webSettings",
+            f"{_RELATIONSHIP_NS}/glossaryDocument",
+            f"{_RELATIONSHIP_NS}/comments",
+            f"{_RELATIONSHIP_NS}/commentAuthors",
+            f"{_RELATIONSHIP_NS}/footnotes",
+            f"{_RELATIONSHIP_NS}/endnotes",
+            f"{_RELATIONSHIP_NS}/people",
+            "http://schemas.microsoft.com/office/2011/relationships/commentsExtended",
+            "http://schemas.microsoft.com/office/2011/relationships/comments",
+        }
+    )
+
     def render(self, context, jinja_env=None, autoescape: bool = False) -> None:  # type: ignore[override]
         """Render the template, including SmartArt diagram XML parts."""
 
@@ -352,16 +372,30 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return
 
         referenced = self._collect_relationship_ids(xml)
+        required_types = self._get_required_relationship_types(part)
         if not referenced and not len(rels):
             return
 
-        for rel_id in list(rels.keys()):
+        for rel_id, rel in list(rels.items()):
             if rel_id in referenced:
+                continue
+            reltype = getattr(rel, "reltype", "")
+            if reltype in required_types:
                 continue
             part.drop_rel(rel_id)
             targets = getattr(rels, "_target_parts_by_rId", None)
             if targets is not None:
                 targets.pop(rel_id, None)
+
+    def _get_required_relationship_types(self, part) -> set[str]:
+        partname = getattr(part, "partname", None)
+        if not partname:
+            return set()
+
+        normalised = str(partname).lstrip("/")
+        if normalised == "word/document.xml":
+            return set(self._DOCUMENT_REQUIRED_RELATIONSHIP_TYPES)
+        return set()
 
     def _cleanup_word_markup(self, part, xml):
         """Normalise WordprocessingML after templating removes content."""
