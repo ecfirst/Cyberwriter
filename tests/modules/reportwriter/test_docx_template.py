@@ -1597,6 +1597,22 @@ def test_collect_template_statements_limits_preview_entries():
     ]
 
 
+def test_collect_template_statements_focuses_on_error_line():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    statements = [f"{{{{ value_{index} }}}}" for index in range(1, 11)]
+    xml = "\n".join(["<root>"] + statements + ["</root>"])
+
+    preview, total = template._collect_template_statements(xml, limit=3, focus_line=8)
+
+    assert total == 10
+    assert [entry["line"] for entry in preview] == [8, 9, 10]
+    assert [entry["statement"] for entry in preview] == [
+        "{{ value_8 }}",
+        "{{ value_9 }}",
+        "{{ value_10 }}",
+    ]
+
+
 def test_collect_template_statements_includes_word_context():
     template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
     xml = (
@@ -1705,3 +1721,53 @@ def test_render_xml_part_logs_preview(monkeypatch, caplog):
     assert "line 2" in message
     assert "paragraph 2" in message
     assert "text='{% if foo > bar %}'" in message
+
+
+def test_render_xml_part_logs_preview_focuses_on_template_error(monkeypatch, caplog):
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    xml_lines = [
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+        "<w:body>",
+    ]
+    xml_lines.extend(
+        f"<w:p><w:r><w:t>{{{{ value_{index} }}}}</w:t></w:r></w:p>" for index in range(1, 21)
+    )
+    xml_lines.extend(["</w:body>", "</w:document>"])
+    xml = "\n".join(xml_lines)
+
+    class FakePart:
+        partname = PackURI("/word/document.xml")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(docx_template.DocxTemplate, "render_xml_part", _boom)
+    monkeypatch.setattr(
+        GhostwriterDocxTemplate,
+        "_extract_template_error_line",
+        lambda self, exc: 20,
+    )
+
+    with caplog.at_level("ERROR", logger=docx_template.logger.name):
+        with pytest.raises(RuntimeError):
+            template.render_xml_part(xml, FakePart(), {}, Environment())
+
+    assert caplog.records
+    message = caplog.records[0].getMessage()
+    assert "error near template line 20" in message
+    assert "{{ value_20 }}" in message
+    assert "{{ value_1 }}" not in message
+    assert caplog.records[0].docx_template_error_line == 20
+
+
+def test_extract_template_error_line_from_traceback():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+
+    try:
+        exec(compile("\n\nraise TypeError('boom')", "<template>", "exec"), {})
+    except TypeError as exc:
+        line = template._extract_template_error_line(exc)
+    else:  # pragma: no cover - exec always raises in this block
+        pytest.fail("Expected TypeError to be raised")
+
+    assert line == 3

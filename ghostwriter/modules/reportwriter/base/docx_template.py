@@ -423,10 +423,15 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         try:
             return super().render_xml_part(xml, part, context, jinja_env)
-        except Exception:
+        except Exception as exc:
             part_label = self._describe_part(part)
-            statements, total = self._collect_template_statements(xml)
+            error_line = self._extract_template_error_line(exc)
+            statements, total = self._collect_template_statements(
+                xml, focus_line=error_line
+            )
             preview_summary = self._format_statement_preview(statements, total)
+            if error_line is not None:
+                preview_summary = f"error near template line {error_line}; {preview_summary}"
             logger.exception(
                 "Failed to render DOCX template part %s. %s",
                 part_label,
@@ -435,6 +440,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     "docx_template_part": part_label,
                     "docx_template_statement_count": total,
                     "docx_template_statements_preview": statements,
+                    "docx_template_error_line": error_line,
                 },
             )
             raise
@@ -450,22 +456,48 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return f"<{reltype}>"
         return "<unknown>"
 
-    def _collect_template_statements(self, xml: str, limit: int = 10) -> tuple[list[dict[str, str | int]], int]:
+    def _collect_template_statements(
+        self, xml: str, limit: int = 10, *, focus_line: int | None = None
+    ) -> tuple[list[dict[str, str | int]], int]:
         """Return a preview of templating statements found in ``xml``."""
 
         preview: list[dict[str, str | int]] = []
         total = 0
+        matches: list[tuple[int, str, int]] = []
 
         for match in _JINJA_STATEMENT_RE.finditer(xml):
             total += 1
-            if len(preview) >= limit:
-                continue
-
             start = match.start()
             line = xml.count("\n", 0, start) + 1
             snippet = match.group(0)
             if len(snippet) > 200:
                 snippet = snippet[:197] + "..."
+
+            matches.append((line, snippet, start))
+
+        if not matches:
+            return [], total
+
+        selected: list[tuple[int, str, int]]
+        if focus_line is not None:
+            focus_index: int | None = None
+            for index, (line, _snippet, _start) in enumerate(matches):
+                if line >= focus_line:
+                    focus_index = index
+                    break
+            if focus_index is None:
+                start_index = max(0, len(matches) - limit)
+            else:
+                start_index = focus_index - (limit // 2)
+                if start_index < 0:
+                    start_index = 0
+                if start_index + limit > len(matches):
+                    start_index = max(0, len(matches) - limit)
+            selected = matches[start_index : start_index + limit]
+        else:
+            selected = matches[:limit]
+
+        for line, snippet, start in selected:
             entry: dict[str, str | int] = {"line": line, "statement": snippet}
             context = self._build_statement_context(xml, start)
             if context:
@@ -473,6 +505,20 @@ class GhostwriterDocxTemplate(DocxTemplate):
             preview.append(entry)
 
         return preview, total
+
+    def _extract_template_error_line(self, exc: BaseException) -> int | None:
+        """Return the line number within the Jinja template that raised ``exc``."""
+
+        tb = exc.__traceback__
+        last_line: int | None = None
+
+        while tb is not None:
+            frame = tb.tb_frame
+            if frame.f_code.co_filename == "<template>":
+                last_line = tb.tb_lineno
+            tb = tb.tb_next
+
+        return last_line
 
     def _format_statement_preview(
         self, statements: list[dict[str, str | int]], total: int
