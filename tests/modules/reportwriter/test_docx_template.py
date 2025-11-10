@@ -1883,3 +1883,25 @@ def test_render_xml_part_logs_template_context(monkeypatch, caplog):
         {"line": 3, "text": "{{ value > limit }}"},
         {"line": 4, "text": "{% endif %}"},
     ]
+
+
+def test_numeric_tests_handle_missing_values():
+    env = Environment()
+    GhostwriterDocxTemplate._install_numeric_tests(env)
+
+    assert env.tests["gt"](2, 1) is True
+    assert env.tests["lt"](1, 2) is True
+    assert env.tests["ge"](5, 5) is True
+    assert env.tests["le"](3, 4) is True
+
+    assert env.tests["gt"](None, 0) is False
+    assert env.tests["ge"](None, 0) is True
+    assert env.tests["lt"](None, 1) is True
+    assert env.tests["le"](None, 0) is True
+
+    undefined_value = env.undefined("missing")
+    assert env.tests["gt"](undefined_value, 0) is False
+    assert env.tests["lt"](undefined_value, 1) is True
+
+    assert env.tests["gt"]("5", 1) is False
+    assert env.tests["lt"](10, "1") is False

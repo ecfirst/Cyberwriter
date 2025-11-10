@@ -11,11 +11,12 @@ import zipfile
 import posixpath
 from collections import defaultdict, deque
 from copy import deepcopy
+import operator
 from typing import Iterator
 
 from docx.oxml import parse_xml
 from docxtpl.template import DocxTemplate
-from jinja2 import Environment, meta
+from jinja2 import Environment, meta, Undefined
 try:
     from jinja2.debug import Traceback as JinjaTraceback
 except Exception:  # pragma: no cover - depends on optional Jinja debug support
@@ -87,6 +88,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 jinja_env = Environment(autoescape=autoescape)
             else:
                 jinja_env.autoescape = autoescape
+
+        active_env = jinja_env or getattr(self, "jinja_env", None)
+        if active_env is None:
+            active_env = Environment(autoescape=autoescape) if autoescape else Environment()
+        jinja_env = active_env
+        self._install_numeric_tests(active_env)
+        self.jinja_env = active_env
 
         xml_src = self.build_xml(context, jinja_env)
         tree = self.fix_tables(xml_src)
@@ -326,6 +334,38 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     continue
                 seen.add(target)
                 queue.append(target)
+
+    @staticmethod
+    def _install_numeric_tests(env: Environment) -> None:
+        """Install numeric comparison tests that tolerate ``None`` and undefined values."""
+
+        comparators = {
+            "gt": operator.gt,
+            "ge": operator.ge,
+            "lt": operator.lt,
+            "le": operator.le,
+        }
+
+        for name, comparator in comparators.items():
+            env.tests[name] = GhostwriterDocxTemplate._make_numeric_test(comparator)
+
+    @staticmethod
+    def _make_numeric_test(comparator):
+        def _test(value, other):
+            coerced_value = GhostwriterDocxTemplate._coerce_numeric(value)
+            coerced_other = GhostwriterDocxTemplate._coerce_numeric(other)
+            try:
+                return comparator(coerced_value, coerced_other)
+            except TypeError:
+                return False
+
+        return _test
+
+    @staticmethod
+    def _coerce_numeric(value):
+        if isinstance(value, Undefined) or value is None:
+            return 0
+        return value
 
     def _matches_extra_template(self, partname: str) -> bool:
         return any(fnmatch.fnmatch(partname, pattern) for pattern in self._EXTRA_TEMPLATED_PATTERNS)
