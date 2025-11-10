@@ -8,6 +8,7 @@ import zipfile
 from importlib import util
 from pathlib import Path
 
+import pytest
 from docx.opc.packuri import PackURI
 from docx.oxml import parse_xml
 from jinja2 import Environment
@@ -1634,3 +1635,73 @@ def test_collect_template_statements_includes_word_context():
     assert second_cell["table_cell_index"] == 2
     assert second_cell["paragraph_text"] == "{{ row.other }}"
 
+
+def test_format_statement_preview_includes_context():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    statements = [
+        {
+            "line": 2,
+            "statement": "{% if foo > bar %}",
+            "paragraph_index": 2,
+            "paragraph_text": "{% if foo > bar %}",
+        },
+        {
+            "line": 4,
+            "statement": "{{ row.value }}",
+            "paragraph_index": 4,
+            "paragraph_text": "{{ row.value }}",
+            "table_index": 1,
+            "table_row_index": 1,
+            "table_cell_index": 1,
+        },
+    ]
+
+    summary = template._format_statement_preview(statements, total=3)
+
+    assert "line 2" in summary
+    assert "paragraph 2" in summary
+    assert "text='{% if foo > bar %}'" in summary
+    assert "table 1, row 1, cell 1" in summary
+    assert "…and 1 more templating statements not shown" in summary
+
+
+def test_format_statement_preview_handles_empty_preview():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+
+    summary_no_statements = template._format_statement_preview([], total=0)
+    assert summary_no_statements == "No templating statements were found in the templated XML."
+
+    summary_without_preview = template._format_statement_preview([], total=5)
+    assert "Collected 5 templating statements" in summary_without_preview
+
+
+def test_render_xml_part_logs_preview(monkeypatch, caplog):
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>"
+        "<w:p><w:r><w:t>Intro</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>{% if foo > bar %}</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>More</w:t></w:r></w:p>"
+        "</w:body>"
+        "</w:document>"
+    )
+
+    class FakePart:
+        partname = PackURI("/word/document.xml")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(docx_template.DocxTemplate, "render_xml_part", _boom)
+
+    with caplog.at_level("ERROR", logger=docx_template.logger.name):
+        with pytest.raises(RuntimeError):
+            template.render_xml_part(xml, FakePart(), {}, Environment())
+
+    assert caplog.records
+    message = caplog.records[0].getMessage()
+    assert "Failed to render DOCX template part word/document.xml" in message
+    assert "line 2" in message
+    assert "paragraph 2" in message
+    assert "text='{% if foo > bar %}'" in message

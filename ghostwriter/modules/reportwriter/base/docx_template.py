@@ -426,8 +426,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
         except Exception:
             part_label = self._describe_part(part)
             statements, total = self._collect_template_statements(xml)
+            preview_summary = self._format_statement_preview(statements, total)
             logger.exception(
-                "Failed to render DOCX template part %s", part_label,
+                "Failed to render DOCX template part %s. %s",
+                part_label,
+                preview_summary,
                 extra={
                     "docx_template_part": part_label,
                     "docx_template_statement_count": total,
@@ -470,6 +473,59 @@ class GhostwriterDocxTemplate(DocxTemplate):
             preview.append(entry)
 
         return preview, total
+
+    def _format_statement_preview(
+        self, statements: list[dict[str, str | int]], total: int
+    ) -> str:
+        """Summarise templating statements for logging."""
+
+        if not statements:
+            if total:
+                return (
+                    "Collected %d templating statements but preview is limited to 0 entries."
+                    % total
+                )
+            return "No templating statements were found in the templated XML."
+
+        formatted_entries: list[str] = []
+        for entry in statements:
+            parts: list[str] = []
+
+            line = entry.get("line")
+            if isinstance(line, int):
+                parts.append(f"line {line}")
+
+            statement = entry.get("statement")
+            if isinstance(statement, str):
+                parts.append(f"statement={statement!r}")
+
+            paragraph = entry.get("paragraph_index")
+            if isinstance(paragraph, int):
+                parts.append(f"paragraph {paragraph}")
+
+            paragraph_text = entry.get("paragraph_text")
+            if isinstance(paragraph_text, str) and paragraph_text:
+                parts.append(f"text={paragraph_text!r}")
+
+            table = entry.get("table_index")
+            if isinstance(table, int):
+                table_parts = [f"table {table}"]
+                row = entry.get("table_row_index")
+                if isinstance(row, int):
+                    table_parts.append(f"row {row}")
+                cell = entry.get("table_cell_index")
+                if isinstance(cell, int):
+                    table_parts.append(f"cell {cell}")
+                parts.append(", ".join(table_parts))
+
+            formatted_entries.append("; ".join(parts))
+
+        if len(statements) < total:
+            formatted_entries.append(
+                f"…and {total - len(statements)} more templating statements not shown"
+            )
+
+        return " | ".join(formatted_entries)
 
     def _build_statement_context(self, xml: str, start: int) -> dict[str, str | int]:
         """Return Word-specific context for a templating statement."""
