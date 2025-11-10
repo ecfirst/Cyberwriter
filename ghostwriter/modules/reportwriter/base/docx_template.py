@@ -507,21 +507,29 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if package is None:
             return []
 
-        parts_source = getattr(package, "parts", None)
+        iter_parts = getattr(package, "iter_parts", None)
         parts: list = []
 
-        if parts_source is not None:
+        if callable(iter_parts):
             try:
-                parts = list(parts_source)
-            except TypeError:
-                parts = list(parts_source())  # type: ignore[operator]
-        elif hasattr(package, "iter_parts"):
-            parts = list(package.iter_parts())
+                parts = list(iter_parts())
+            except Exception:
+                parts = []
 
-        if not parts and hasattr(package, "iter_parts"):
-            parts = list(package.iter_parts())
+        if not parts:
+            parts_source = getattr(package, "parts", None)
+            if isinstance(parts_source, dict):
+                parts = list(parts_source.values())
+            elif parts_source is not None:
+                try:
+                    parts = list(parts_source)
+                except TypeError:
+                    try:
+                        parts = list(parts_source())  # type: ignore[operator]
+                    except Exception:
+                        parts = []
 
-        return parts
+        return [part for part in parts if not isinstance(part, PackURI)]
 
     def _is_document_part(self, part) -> bool:
         partname = getattr(part, "partname", None)
