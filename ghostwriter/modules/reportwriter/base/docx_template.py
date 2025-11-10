@@ -19,6 +19,8 @@ from lxml import etree
 _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
+_RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_RELATIONSHIP_PREFIX = f"{{{_RELATIONSHIP_NS}}}"
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
@@ -58,14 +60,21 @@ class GhostwriterDocxTemplate(DocxTemplate):
         tree = self.fix_tables(xml_src)
         self.fix_docpr_ids(tree)
         self.map_tree(tree)
+        self._cleanup_part_relationships(self.docx._part, tree)
 
         headers = self.build_headers_footers_xml(context, self.HEADER_URI, jinja_env)
         for rel_key, xml in headers:
             self.map_headers_footers_xml(rel_key, xml)
+            header_part = self.docx._part.rels.get(rel_key)
+            if header_part:
+                self._cleanup_part_relationships(header_part.target_part, xml)
 
         footers = self.build_headers_footers_xml(context, self.FOOTER_URI, jinja_env)
         for rel_key, xml in footers:
             self.map_headers_footers_xml(rel_key, xml)
+            footer_part = self.docx._part.rels.get(rel_key)
+            if footer_part:
+                self._cleanup_part_relationships(footer_part.target_part, xml)
 
         self.render_properties(context, jinja_env)
 
@@ -291,6 +300,79 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 part._element = parse_xml(rendered_bytes)
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
+            self._cleanup_part_relationships(part, rendered)
+
+    def _cleanup_part_relationships(self, part, xml) -> None:
+        """Remove relationships not referenced in the rendered ``xml``."""
+
+        rels = getattr(part, "rels", None)
+        if not rels:
+            return
+
+        referenced = self._collect_relationship_ids(xml)
+        if not referenced and not len(rels):
+            return
+
+        for rel_id in list(rels.keys()):
+            if rel_id in referenced:
+                continue
+            part.drop_rel(rel_id)
+            targets = getattr(rels, "_target_parts_by_rId", None)
+            if targets is not None:
+                targets.pop(rel_id, None)
+
+    def _collect_relationship_ids(self, xml) -> set[str]:
+        root = self._ensure_xml_root(xml)
+        if root is None:
+            return set()
+
+        referenced: set[str] = set()
+        for element in root.iter():
+            for attr_name, attr_value in element.attrib.items():
+                if not attr_name.startswith(_RELATIONSHIP_PREFIX):
+                    continue
+                referenced.update(self._parse_relationship_value(attr_value))
+        return referenced
+
+    def _ensure_xml_root(self, xml):
+        if isinstance(xml, etree._Element):
+            tree = xml.getroottree()
+            return tree.getroot() if tree is not None else xml
+        if isinstance(xml, etree._ElementTree):
+            return xml.getroot()
+
+        if isinstance(xml, bytes):
+            data = xml
+        elif isinstance(xml, str):
+            data = xml.encode("utf-8")
+        else:
+            return None
+
+        try:
+            return etree.fromstring(data)
+        except etree.XMLSyntaxError:
+            return None
+
+    def _parse_relationship_value(self, value: str) -> set[str]:
+        if not value:
+            return set()
+
+        matches = re.findall(r"rId\d+", value)
+        if matches:
+            return set(matches)
+
+        stripped = value.strip()
+        if not stripped:
+            return set()
+
+        parts = stripped.split()
+        if len(parts) > 1:
+            matches = re.findall(r"rId\d+", " ".join(parts))
+            if matches:
+                return set(matches)
+            return {part for part in parts if part}
+
+        return {stripped}
 
     def _read_excel_part(self, part) -> tuple[list[zipfile.ZipInfo], dict[str, bytes]] | None:
         blob = getattr(part, "_blob", None)
