@@ -1,7 +1,7 @@
 """Helpers for generating workbook-driven project questions."""
 
 # Standard Libraries
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 # Django Imports
 from django import forms
@@ -11,6 +11,7 @@ from django.utils.text import slugify
 from ghostwriter.rolodex.forms_workbook import MultiValueField, SummaryMultipleChoiceField
 from ghostwriter.rolodex.workbook_defaults import (
     WORKBOOK_META_KEY,
+    ensure_data_responses_defaults,
     get_uploaded_sections,
 )
 
@@ -162,6 +163,29 @@ def get_scope_initial(project_type: Optional[str]) -> List[str]:
     if not preset:
         return []
     return [key for key in SCOPE_OPTION_ORDER if key in preset]
+
+
+def prepare_data_responses_initial(
+    responses: Optional[Mapping[str, Any]], project_type: Optional[str]
+) -> Dict[str, Any]:
+    """Return normalized responses with scope defaults applied for the ``project_type``."""
+
+    normalized = ensure_data_responses_defaults(
+        responses if isinstance(responses, Mapping) else {}
+    )
+    if not project_type:
+        return normalized
+
+    default_scope = get_scope_initial(project_type)
+    if not default_scope:
+        return normalized
+
+    general_values = normalized.setdefault("general", {})
+    existing_scope = general_values.get("assessment_scope")
+    if not existing_scope:
+        general_values["assessment_scope"] = list(default_scope)
+
+    return normalized
 
 
 def normalize_scope_selection(selection: Iterable[str]) -> List[str]:

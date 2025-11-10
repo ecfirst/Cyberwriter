@@ -16,6 +16,7 @@ from ghostwriter.rolodex.workbook import (
     build_scope_summary,
     build_workbook_sections,
     normalize_scope_selection,
+    prepare_data_responses_initial,
 )
 from ghostwriter.rolodex.workbook_defaults import (
     ensure_data_responses_defaults,
@@ -102,6 +103,25 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertIsNotNone(followup)
         assert followup is not None  # pragma: no cover - typing aid
         self.assertEqual(followup["field_kwargs"].get("choices"), YES_NO_CHOICES)
+
+    def test_prepare_data_responses_initial_applies_scope_defaults(self):
+        normalized = prepare_data_responses_initial({}, project_type="Silver")
+
+        general = normalized.get("general")
+        self.assertIsInstance(general, dict)
+        assert isinstance(general, dict)  # pragma: no cover - typing hint
+        self.assertEqual(general.get("assessment_scope"), ["external", "firewall"])
+
+    def test_prepare_data_responses_initial_preserves_existing_scope(self):
+        normalized = prepare_data_responses_initial(
+            {"general": {"assessment_scope": ["cloud"]}},
+            project_type="Gold",
+        )
+
+        general = normalized.get("general")
+        self.assertIsInstance(general, dict)
+        assert isinstance(general, dict)  # pragma: no cover - typing hint
+        self.assertEqual(general.get("assessment_scope"), ["cloud"])
 
     def test_nexpose_csv_requirements_added_for_positive_totals(self):
         workbook_data = {

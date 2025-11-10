@@ -93,6 +93,7 @@ from ghostwriter.rolodex.workbook import (
     build_scope_summary,
     build_workbook_sections,
     normalize_scope_selection,
+    prepare_data_responses_initial,
 )
 from ghostwriter.rolodex.workbook_defaults import ensure_data_responses_defaults
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
@@ -1854,7 +1855,10 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["workbook_sections"] = build_workbook_sections(object.workbook_data)
         ctx["data_file_form"] = ProjectDataFileForm()
         ctx["data_questions"] = questions
-        normalized_responses = ensure_data_responses_defaults(object.data_responses)
+        normalized_responses = prepare_data_responses_initial(
+            object.data_responses,
+            project_type_name,
+        )
         data_responses_form = ProjectDataResponsesForm(
             question_definitions=questions,
             initial=normalized_responses,
