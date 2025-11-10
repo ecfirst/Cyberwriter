@@ -1573,3 +1573,25 @@ def test_get_undeclared_variables_ignores_tr_loop_variables(monkeypatch):
     assert "project" in undeclared
     assert "site" not in undeclared
 
+
+def test_collect_template_statements_limits_preview_entries():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    xml = """
+    <root>
+    {% if foo %}
+    <node>{{ value }}</node>
+    {% for item in items %}
+    {{ item.name }}
+    {% endfor %}
+    {% endif %}
+    </root>
+    """.strip()
+
+    preview, total = template._collect_template_statements(xml, limit=2)
+
+    assert total == 5
+    assert preview == [
+        {"line": 2, "statement": "{% if foo %}"},
+        {"line": 3, "statement": "{{ value }}"},
+    ]
+

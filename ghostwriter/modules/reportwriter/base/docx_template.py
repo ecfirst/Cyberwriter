@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import io
+import logging
 import re
 import zipfile
 import posixpath
@@ -26,6 +27,9 @@ _WORDPROCESSING_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/ma
 _HYPERLINK_RELTYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
@@ -412,6 +416,55 @@ class GhostwriterDocxTemplate(DocxTemplate):
             targets.pop(rel_id, None)
 
         return True
+
+    def render_xml_part(self, xml, part, context, jinja_env):  # type: ignore[override]
+        """Render ``xml`` for ``part`` and log detailed failures."""
+
+        try:
+            return super().render_xml_part(xml, part, context, jinja_env)
+        except Exception:
+            part_label = self._describe_part(part)
+            statements, total = self._collect_template_statements(xml)
+            logger.exception(
+                "Failed to render DOCX template part %s", part_label,
+                extra={
+                    "docx_template_part": part_label,
+                    "docx_template_statement_count": total,
+                    "docx_template_statements_preview": statements,
+                },
+            )
+            raise
+
+    def _describe_part(self, part) -> str:
+        if part is None:
+            return "<document>"
+        partname = getattr(part, "partname", None)
+        if partname:
+            return str(partname).lstrip("/") or "<document>"
+        reltype = getattr(part, "reltype", None)
+        if reltype:
+            return f"<{reltype}>"
+        return "<unknown>"
+
+    def _collect_template_statements(self, xml: str, limit: int = 10) -> tuple[list[dict[str, str | int]], int]:
+        """Return a preview of templating statements found in ``xml``."""
+
+        preview: list[dict[str, str | int]] = []
+        total = 0
+
+        for match in _JINJA_STATEMENT_RE.finditer(xml):
+            total += 1
+            if len(preview) >= limit:
+                continue
+
+            start = match.start()
+            line = xml.count("\n", 0, start) + 1
+            snippet = match.group(0)
+            if len(snippet) > 200:
+                snippet = snippet[:197] + "..."
+            preview.append({"line": line, "statement": snippet})
+
+        return preview, total
 
     def _remove_relationship_entry(self, rels, rel_id: str) -> None:
         """Remove relationship ``rel_id`` from ``rels`` and any cached target maps."""
