@@ -2311,7 +2311,7 @@ def test_renumber_chart_assets_handles_shared_color_parts():
 
 
 
-def test_fix_misnested_drawing_markup_moves_middle_content_inside_inline():
+def test_fix_misnested_drawing_markup_removes_invalid_block():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
 
@@ -2354,15 +2354,13 @@ def test_fix_misnested_drawing_markup_moves_middle_content_inside_inline():
 
     fixed = part._blob.decode("utf-8")
 
-    assert "</w:drawing>" in fixed
-    assert "</wp:inline>" in fixed
-    assert fixed.index("</wp:inline>") < fixed.index("</w:drawing>")
-    assert "<wp:docPr id='4' name='Graphic'/>15" in fixed
-    assert "</w:drawing><wp:docPr" not in fixed
+    assert "<w:drawing" not in fixed
+    assert "</wp:inline>" not in fixed
+    assert "wp:docPr" not in fixed
     assert part._element is not None
 
 
-def test_fix_misnested_drawing_markup_keeps_outer_closing_tags():
+def test_fix_misnested_drawing_markup_prunes_standalone_inline():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
 
@@ -2404,8 +2402,8 @@ def test_fix_misnested_drawing_markup_keeps_outer_closing_tags():
 
     fixed = part._blob.decode("utf-8")
 
-    assert fixed.index("</wp:inline>") < fixed.index("</w:drawing>")
-    assert fixed.endswith("</w:drawing></w:r></w:p></w:body></w:document>")
+    assert "<w:drawing" not in fixed
+    assert fixed.endswith("</w:r></w:p></w:body></w:document>")
 
 
 def test_fix_misnested_drawing_markup_uses_existing_element_when_available():
@@ -2450,8 +2448,7 @@ def test_fix_misnested_drawing_markup_uses_existing_element_when_available():
 
     fixed = etree.tostring(part._element, encoding="unicode")
 
-    assert "</w:drawing>" in fixed
-    assert fixed.index("</wp:inline>") < fixed.index("</w:drawing>")
+    assert "<w:drawing" not in fixed
 
 
 def test_render_merges_duplicate_body_elements(tmp_path):

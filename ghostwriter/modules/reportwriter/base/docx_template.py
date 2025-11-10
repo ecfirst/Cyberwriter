@@ -24,12 +24,6 @@ _MISNESTED_DRAWING_PATTERN = re.compile(
     r"</w:drawing>(?P<content>.*?)</(?P<prefix>[A-Za-z_][\w.-]*):inline>",
     re.DOTALL,
 )
-_TRAILING_CLOSING_TAGS_RE = re.compile(
-    r"(?P<closings>(?:\s*</(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*>)+)\s*$",
-    re.DOTALL,
-)
-
-
 class GhostwriterDocxTemplate(DocxTemplate):
     """Docx template that also renders SmartArt diagram parts.
 
@@ -525,34 +519,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
             xml = etree.tostring(element, encoding="unicode")
             if "</w:drawing>" not in xml:
                 continue
-            if not re.search(r"</[A-Za-z_][\w.-]*:inline>", xml):
+            if not _MISNESTED_DRAWING_PATTERN.search(xml):
                 continue
 
-            def _swap_closings(match: re.Match[str]) -> str:
-                content = match.group("content")
-                prefix = match.group("prefix") or "wp"
-                tail_match = _TRAILING_CLOSING_TAGS_RE.search(content)
-                if tail_match:
-                    inline_content = content[: tail_match.start()]
-                    trailing = tail_match.group("closings")
-                else:
-                    inline_content = content
-                    trailing = ""
-
-                return f"{inline_content}</{prefix}:inline></w:drawing>{trailing}"
-
             fixed = xml
-            total = 0
+            removed = 0
 
             while True:
-                fixed, count = _MISNESTED_DRAWING_PATTERN.subn(_swap_closings, fixed)
-                total += count
-                if count == 0:
-                    break
-
-            removed = False
-
-            while _MISNESTED_DRAWING_PATTERN.search(fixed):
                 match = _MISNESTED_DRAWING_PATTERN.search(fixed)
                 if match is None:
                     break
@@ -561,20 +534,18 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 if start == -1:
                     break
 
-                tail_match = _TRAILING_CLOSING_TAGS_RE.search(match.group("content"))
-                trailing = tail_match.group("closings") if tail_match else ""
+                fixed = f"{fixed[:start]}{fixed[match.end():]}"
+                removed += 1
 
-                fixed = f"{fixed[:start]}{trailing}{fixed[match.end():]}"
-                removed = True
-
-            if not removed and (total == 0 or fixed == xml):
+            if removed == 0 or fixed == xml:
                 continue
 
             try:
                 parsed = parse_xml(fixed.encode("utf-8"))
             except Exception:
                 try:
-                    parsed = etree.fromstring(fixed.encode("utf-8"))
+                    parser = etree.XMLParser(recover=True)
+                    parsed = etree.fromstring(fixed.encode("utf-8"), parser=parser)
                 except Exception:
                     continue
 
