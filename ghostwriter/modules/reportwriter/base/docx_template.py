@@ -873,7 +873,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 relative_target = self._build_relationship_target(
                     source_name, absolute_target
                 )
-                self._set_relationship_target(rel, relative_target, absolute_target)
+                self._set_relationship_target(rel, relative_target, target_part)
+
+                targets_map = getattr(rels, "_target_parts_by_rId", None)
+                if isinstance(targets_map, dict):
+                    targets_map[rel.rId] = target_part
 
     def _build_relationship_target(self, source_name: str, target_name: str) -> str:
         source_dir = posixpath.dirname(source_name) or "."
@@ -883,7 +887,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         return relative
 
     def _set_relationship_target(
-        self, rel, relative_target: str, absolute_target: str
+        self, rel, relative_target: str, target_part
     ) -> None:
         for attr in ("target_ref", "_target_ref"):
             if hasattr(rel, attr):
@@ -892,14 +896,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 except Exception:
                     pass
 
-        if hasattr(rel, "_target"):
+        if hasattr(rel, "_target") and not getattr(rel, "is_external", False):
             try:
-                rel._target = PackURI(f"/{absolute_target}")
+                rel._target = target_part
             except Exception:
-                try:
-                    rel._target = absolute_target
-                except Exception:
-                    pass
+                pass
 
     def _try_drop_relationship(self, part, rel_id: str) -> bool:
         """Attempt to drop relationship via the part API, returning ``True`` if removed."""
