@@ -416,7 +416,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
         try:
             element = parse_xml(blob)
         except Exception:
-            return None
+            try:
+                parser = etree.XMLParser(recover=True)
+                element = etree.fromstring(blob, parser=parser)
+            except Exception:
+                return None
 
         if hasattr(part, "_element"):
             part._element = element
