@@ -683,6 +683,15 @@ class FakeRelPart(FakeXmlPart):
         self.rels.pop(rel_id, None)
 
 
+class FakeStubbornRelPart(FakeRelPart):
+    """Relationship cleanup stub that never removes relationships via ``drop_rel``."""
+
+    def drop_rel(self, rel_id):
+        # Simulate python-docx refusing to remove the relationship because it still sees
+        # references in the part XML.
+        return None
+
+
 def test_cleanup_part_relationships_removes_unused_ids():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
@@ -696,6 +705,22 @@ def test_cleanup_part_relationships_removes_unused_ids():
     template._cleanup_part_relationships(part, xml)
 
     assert part.rels == {}
+
+
+def test_cleanup_part_relationships_forces_removal_when_drop_rel_keeps_id():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body><w:p><w:r><w:t>Only text</w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+    part = FakeStubbornRelPart("/word/document.xml", xml, {"rId7": FakeRelationship(object())})
+
+    template._cleanup_part_relationships(part, xml)
+
+    assert "rId7" not in part.rels
+    assert "rId7" not in part.rels._target_parts_by_rId
 
 
 def test_cleanup_part_relationships_keeps_used_ids():

@@ -382,10 +382,47 @@ class GhostwriterDocxTemplate(DocxTemplate):
             reltype = getattr(rel, "reltype", "")
             if reltype in required_types:
                 continue
-            part.drop_rel(rel_id)
-            targets = getattr(rels, "_target_parts_by_rId", None)
-            if targets is not None:
-                targets.pop(rel_id, None)
+            if self._try_drop_relationship(part, rel_id):
+                continue
+            self._remove_relationship_entry(rels, rel_id)
+
+    def _try_drop_relationship(self, part, rel_id: str) -> bool:
+        """Attempt to drop relationship via the part API, returning ``True`` if removed."""
+
+        drop_rel = getattr(part, "drop_rel", None)
+        if not callable(drop_rel):
+            return False
+
+        rels = getattr(part, "rels", None)
+
+        try:
+            drop_rel(rel_id)
+        except KeyError:
+            removed = True
+        except Exception:
+            return False
+        else:
+            removed = rel_id not in rels if rels else True
+
+        if not removed:
+            return False
+
+        targets = getattr(rels, "_target_parts_by_rId", None) if rels is not None else None
+        if targets is not None:
+            targets.pop(rel_id, None)
+
+        return True
+
+    def _remove_relationship_entry(self, rels, rel_id: str) -> None:
+        """Remove relationship ``rel_id`` from ``rels`` and any cached target maps."""
+
+        if rels is None:
+            return
+
+        rels.pop(rel_id, None)
+        targets = getattr(rels, "_target_parts_by_rId", None)
+        if targets is not None:
+            targets.pop(rel_id, None)
 
     def _get_required_relationship_types(self, part) -> set[str]:
         partname = getattr(part, "partname", None)
