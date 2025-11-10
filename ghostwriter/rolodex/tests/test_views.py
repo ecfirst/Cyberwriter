@@ -1054,6 +1054,9 @@ class ProjectWorkbookUploadViewTests(TestCase):
         self.assertIn("client", self.project.workbook_data)
         self.assertEqual(self.project.workbook_data["client"]["name"], "Example Client")
         self.assertTrue(self.project.workbook_file.name.endswith("workbook.json"))
+        self.assertIn("password", self.project.data_responses)
+        password_responses = self.project.data_responses.get("password", {})
+        self.assertEqual(password_responses.get("entries"), [])
 
     def test_upload_populates_project_risks(self):
         workbook_payload = {
