@@ -628,9 +628,30 @@ class FakeXlsxPart:
 class FakeRelationship:
     """Relationship pointing a chart to an embedded workbook."""
 
-    def __init__(self, target_part):
-        self.reltype = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/embeddedPackage"
+    def __init__(self, target_part=None, *, reltype: str | None = None):
+        self.reltype = (
+            reltype
+            or "http://schemas.openxmlformats.org/officeDocument/2006/relationships/embeddedPackage"
+        )
         self.target_part = target_part
+
+
+class FakeHyperlinkRelationship:
+    """Relationship describing an external hyperlink."""
+
+    def __init__(self, rel_id: str, target: str):
+        self.reltype = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+        self.is_external = True
+        self.target_ref = target
+        self.rel_id = rel_id
+
+
+class FakeRelationships(dict):
+    """Minimal relationship mapping with an internal target lookup."""
+
+    def __init__(self, mapping: dict[str, FakeRelationship] | None = None):
+        super().__init__(mapping or {})
+        self._target_parts_by_rId = dict(self)
 
 
 class FakeChartPart(FakeXmlPart):
@@ -638,7 +659,151 @@ class FakeChartPart(FakeXmlPart):
 
     def __init__(self, partname: str, xml: str, target_part):
         super().__init__(partname, xml)
-        self.rels = {"rId1": FakeRelationship(target_part)}
+        self.rels = FakeRelationships({"rId1": FakeRelationship(target_part)})
+
+    def drop_rel(self, rel_id):
+        self.rels.pop(rel_id, None)
+
+
+class FakeWorkbookPart:
+    """Workbook part stub exposing only a ``partname`` attribute."""
+
+    def __init__(self, partname: str = "/word/embeddings/workbook.xlsx"):
+        self.partname = partname
+
+
+class FakeRelPart(FakeXmlPart):
+    """XML part with arbitrary relationships for cleanup tests."""
+
+    def __init__(self, partname: str, xml: str, rels: dict[str, FakeRelationship]):
+        super().__init__(partname, xml)
+        self.rels = FakeRelationships(rels)
+
+    def drop_rel(self, rel_id):
+        self.rels.pop(rel_id, None)
+
+
+def test_cleanup_part_relationships_removes_unused_ids():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body><w:p><w:r><w:t>Keep</w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+    part = FakeRelPart("/word/document.xml", xml, {"rId1": FakeRelationship(object())})
+
+    template._cleanup_part_relationships(part, xml)
+
+    assert part.rels == {}
+
+
+def test_cleanup_part_relationships_keeps_used_ids():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body><w:p><w:hyperlink r:id=\"rId1\"><w:r><w:t>Link</w:t></w:r></w:hyperlink></w:p>"
+        "</w:body></w:document>"
+    )
+    part = FakeRelPart("/word/document.xml", xml, {"rId1": FakeRelationship(object())})
+
+    template._cleanup_part_relationships(part, xml)
+
+    assert "rId1" in part.rels
+
+
+def test_cleanup_part_relationships_preserves_core_document_parts():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body>"
+        "<w:p><w:r><w:t>Body</w:t></w:r></w:p>"
+        "<w:p><w:commentRangeStart w:id=\"1\"/><w:r><w:t>Issue</w:t></w:r><w:commentRangeEnd w:id=\"1\"/></w:p>"
+        "</w:body></w:document>"
+    )
+
+    rel_ns = docx_template._RELATIONSHIP_NS
+    rels = {
+        "rIdStyles": FakeRelationship(object(), reltype=f"{rel_ns}/styles"),
+        "rIdNumbering": FakeRelationship(object(), reltype=f"{rel_ns}/numbering"),
+        "rIdComments": FakeRelationship(object(), reltype=f"{rel_ns}/comments"),
+        "rIdChart": FakeRelationship(object(), reltype=f"{rel_ns}/chart"),
+    }
+
+    part = FakeRelPart("/word/document.xml", xml, rels)
+
+    template._cleanup_part_relationships(part, xml)
+
+    assert set(part.rels) == {"rIdStyles", "rIdNumbering", "rIdComments"}
+
+
+def test_cleanup_word_markup_balances_bookmarks_and_hyperlinks():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body>"
+        "<w:p><w:bookmarkStart w:id=\"1\" w:name=\"Keep\"/><w:r><w:t>Intro</w:t></w:r>"
+        "<w:bookmarkEnd w:id=\"1\"/></w:p>"
+        "<w:p><w:bookmarkStart w:id=\"2\" w:name=\"_Drop\"/></w:p>"
+        "<w:p><w:bookmarkEnd w:id=\"3\"/></w:p>"
+        "<w:p><w:hyperlink w:anchor=\"Keep\"><w:r><w:t>Valid</w:t></w:r></w:hyperlink></w:p>"
+        "<w:p><w:hyperlink w:anchor=\"_Missing\"><w:r><w:t>Broken</w:t></w:r></w:hyperlink></w:p>"
+        "</w:body></w:document>"
+    )
+
+    part = FakeRelPart("/word/document.xml", xml, {})
+    tree = parse_xml(xml.encode("utf-8"))
+
+    cleaned = template._cleanup_word_markup(part, tree)
+    cleaned_xml = etree.tostring(cleaned, encoding="unicode")
+
+    assert "_Drop" not in cleaned_xml
+    assert 'w:id="3"' not in cleaned_xml
+    assert '<w:hyperlink w:anchor="_Missing"' not in cleaned_xml
+    assert "Broken" in cleaned_xml
+    assert '<w:hyperlink w:anchor="Keep"' in cleaned_xml
+
+
+def test_cleanup_word_markup_removes_external_file_hyperlinks():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body>"
+        "<w:p><w:hyperlink r:id=\"rIdFile\"><w:r><w:t>Unsafe</w:t></w:r></w:hyperlink></w:p>"
+        "<w:p><w:hyperlink r:id=\"rIdWeb\"><w:r><w:t>Safe</w:t></w:r></w:hyperlink></w:p>"
+        "</w:body></w:document>"
+    )
+
+    rels = {
+        "rIdFile": FakeHyperlinkRelationship("rIdFile", "file:///tmp/untrusted.docx"),
+        "rIdWeb": FakeHyperlinkRelationship("rIdWeb", "https://example.com"),
+    }
+    part = FakeRelPart("/word/document.xml", xml, rels)
+
+    cleaned = template._cleanup_word_markup(part, xml)
+
+    assert "rIdFile" not in part.rels
+    assert "rIdWeb" in part.rels
+    assert 'r:id="rIdFile"' not in cleaned
+    assert 'r:id="rIdWeb"' in cleaned
+
+
+def test_collect_relationship_ids_handles_multiple_values():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<w:body><w:p><w:bookmarkStart w:id="0" w:name="_GoBack" r:ids="rId5 rId6"/></w:p>'
+        "</w:body></w:document>"
+    )
+
+    ids = template._collect_relationship_ids(xml)
+
+    assert ids == {"rId5", "rId6"}
 
 
 def test_iter_additional_parts_filters_to_known_patterns(monkeypatch):
@@ -650,9 +815,9 @@ def test_iter_additional_parts_filters_to_known_patterns(monkeypatch):
     other = FakeXmlPart("/word/document.xml", DIAGRAM_XML.format("value"))
 
     monkeypatch.setattr(
-        template.docx.part.package,
-        "iter_parts",
-        lambda: iter([matching, chart, other]),
+        template,
+        "_iter_reachable_parts",
+        lambda: iter([template.docx._part, matching, chart, other]),
     )
 
     assert list(template._iter_additional_parts()) == [matching, chart]
@@ -671,6 +836,25 @@ def test_render_additional_parts_updates_diagram_xml(monkeypatch):
     assert "Rendered" in text
 
 
+def test_render_additional_parts_removes_unused_chart_relationship(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    chart_xml = (
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '{% if include_workbook %}<c:externalData r:id="rId1"/>{% endif %}'
+        "</c:chartSpace>"
+    )
+    workbook_part = FakeWorkbookPart()
+    chart_part = FakeChartPart("/word/charts/chart1.xml", chart_xml, workbook_part)
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([chart_part]))
+
+    template._render_additional_parts({"include_workbook": False}, None)
+
+    assert chart_part.rels == {}
+
+
 def test_iter_additional_parts_includes_excel_parts(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
@@ -681,7 +865,11 @@ def test_iter_additional_parts_includes_excel_parts(monkeypatch):
         SHARED_STRINGS_XML,
     )
 
-    monkeypatch.setattr(template.docx.part.package, "iter_parts", lambda: iter([excel]))
+    monkeypatch.setattr(
+        template,
+        "_iter_reachable_parts",
+        lambda: iter([template.docx._part, excel]),
+    )
 
     assert list(template._iter_additional_parts()) == [excel]
 
