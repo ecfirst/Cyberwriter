@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import html
 import io
 import logging
 import re
@@ -462,9 +463,88 @@ class GhostwriterDocxTemplate(DocxTemplate):
             snippet = match.group(0)
             if len(snippet) > 200:
                 snippet = snippet[:197] + "..."
-            preview.append({"line": line, "statement": snippet})
+            entry: dict[str, str | int] = {"line": line, "statement": snippet}
+            context = self._build_statement_context(xml, start)
+            if context:
+                entry.update(context)
+            preview.append(entry)
 
         return preview, total
+
+    def _build_statement_context(self, xml: str, start: int) -> dict[str, str | int]:
+        """Return Word-specific context for a templating statement."""
+
+        context: dict[str, str | int] = {}
+
+        paragraph_context = self._locate_paragraph_context(xml, start)
+        if paragraph_context:
+            context.update(paragraph_context)
+
+        table_context = self._locate_table_context(xml, start)
+        if table_context:
+            context.update(table_context)
+
+        return context
+
+    def _locate_paragraph_context(self, xml: str, start: int) -> dict[str, str | int]:
+        """Return paragraph index/text surrounding ``start`` in Word XML."""
+
+        before = xml[:start]
+        paragraph_matches = list(re.finditer(r"<w:p\b", before))
+        if not paragraph_matches:
+            return {}
+
+        paragraph_index = len(paragraph_matches)
+        paragraph_start = paragraph_matches[-1].start()
+        paragraph_end = xml.find("</w:p>", start)
+        if paragraph_end == -1:
+            paragraph_end = start
+
+        paragraph_xml = xml[paragraph_start:paragraph_end]
+        paragraph_text = self._strip_word_text(paragraph_xml)
+
+        context: dict[str, str | int] = {"paragraph_index": paragraph_index}
+        if paragraph_text:
+            context["paragraph_text"] = paragraph_text
+
+        return context
+
+    def _locate_table_context(self, xml: str, start: int) -> dict[str, str | int]:
+        """Return table indices surrounding ``start`` in Word XML."""
+
+        before = xml[:start]
+        table_matches = list(re.finditer(r"<w:tbl\b", before))
+        if not table_matches:
+            return {}
+
+        context: dict[str, str | int] = {"table_index": len(table_matches)}
+
+        table_start = table_matches[-1].start()
+        table_slice = xml[table_start:start]
+
+        row_matches = list(re.finditer(r"<w:tr\b", table_slice))
+        if row_matches:
+            context["table_row_index"] = len(row_matches)
+            row_start = table_start + row_matches[-1].start()
+            row_slice = xml[row_start:start]
+            cell_matches = list(re.finditer(r"<w:tc\b", row_slice))
+            if cell_matches:
+                context["table_cell_index"] = len(cell_matches)
+
+        return context
+
+    def _strip_word_text(self, xml_snippet: str) -> str:
+        """Return simplified paragraph text for a WordprocessingML snippet."""
+
+        if not xml_snippet:
+            return ""
+
+        text = re.sub(r"<[^>]+>", " ", xml_snippet)
+        text = html.unescape(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 200:
+            return text[:197] + "..."
+        return text
 
     def _remove_relationship_entry(self, rels, rel_id: str) -> None:
         """Remove relationship ``rel_id`` from ``rels`` and any cached target maps."""

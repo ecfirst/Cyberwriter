@@ -1595,3 +1595,42 @@ def test_collect_template_statements_limits_preview_entries():
         {"line": 3, "statement": "{{ value }}"},
     ]
 
+
+def test_collect_template_statements_includes_word_context():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>"
+        "<w:p><w:r><w:t>Intro</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>{% if foo > bar %}</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>More</w:t></w:r></w:p>"
+        "<w:tbl>"
+        "<w:tr>"
+        "<w:tc><w:p><w:r><w:t>{{ row.value }}</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>{{ row.other }}</w:t></w:r></w:p></w:tc>"
+        "</w:tr>"
+        "</w:tbl>"
+        "</w:body>"
+        "</w:document>"
+    )
+
+    preview, total = template._collect_template_statements(xml, limit=5)
+
+    assert total == 3
+    assert preview[0]["paragraph_index"] == 2
+    assert preview[0]["paragraph_text"] == "{% if foo > bar %}"
+
+    first_cell = preview[1]
+    assert first_cell["paragraph_index"] == 4
+    assert first_cell["table_index"] == 1
+    assert first_cell["table_row_index"] == 1
+    assert first_cell["table_cell_index"] == 1
+    assert first_cell["paragraph_text"] == "{{ row.value }}"
+
+    second_cell = preview[2]
+    assert second_cell["paragraph_index"] == 5
+    assert second_cell["table_index"] == 1
+    assert second_cell["table_row_index"] == 1
+    assert second_cell["table_cell_index"] == 2
+    assert second_cell["paragraph_text"] == "{{ row.other }}"
+
