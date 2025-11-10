@@ -17,6 +17,7 @@ from typing import Iterator
 from docx.oxml import parse_xml
 from docxtpl.template import DocxTemplate
 from jinja2 import Environment, meta, Undefined
+from docx.opc.packuri import PackURI
 try:
     from jinja2.debug import Traceback as JinjaTraceback
 except Exception:  # pragma: no cover - depends on optional Jinja debug support
@@ -50,6 +51,10 @@ _VTYPES_NS = (
     "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
 )
 _DOCUMENT_PARTNAME = "word/document.xml"
+
+_INDEXED_PART_RE = re.compile(
+    r"^(?P<folder>word/(?:charts|embeddings))/(?P<prefix>[^/]+?)(?P<index>\d+)(?P<suffix>\.[A-Za-z0-9_.-]+)$"
+)
 
 
 logger = logging.getLogger(__name__)
@@ -141,6 +146,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self._cleanup_settings_part()
         self._render_additional_parts(context, jinja_env)
+
+        self._renumber_media_parts()
 
         self._normalise_package_content_types()
 
@@ -633,6 +640,57 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 part._blob = rendered_bytes
             self._cleanup_part_relationships(part, rendered)
 
+    def _renumber_media_parts(self) -> None:
+        """Ensure chart and embedding parts are sequentially numbered."""
+
+        parts = self._iter_package_parts()
+        if not parts:
+            return
+
+        buckets: dict[tuple[str, str, str], list[tuple[int, object, str]]] = defaultdict(list)
+
+        for part in parts:
+            try:
+                partname = self._normalise_partname(part)
+            except Exception:
+                continue
+
+            match = _INDEXED_PART_RE.match(partname)
+            if not match:
+                continue
+
+            try:
+                index = int(match.group("index"))
+            except (TypeError, ValueError):
+                continue
+
+            key = (match.group("folder"), match.group("prefix"), match.group("suffix"))
+            buckets[key].append((index, part, partname))
+
+        if not buckets:
+            return
+
+        renames: list[tuple[object, str, str]] = []
+
+        for (folder, prefix, suffix), entries in buckets.items():
+            entries.sort(key=lambda entry: entry[0])
+            if all(index == position + 1 for position, (index, _part, _name) in enumerate(entries)):
+                continue
+
+            for position, (_index, part, current_name) in enumerate(entries, start=1):
+                new_name = f"{folder}/{prefix}{position}{suffix}"
+                if current_name == new_name:
+                    continue
+                renames.append((part, current_name, new_name))
+
+        if not renames:
+            return
+
+        for part, old_name, new_name in renames:
+            self._rename_part(part, old_name, new_name)
+
+        self._update_relationship_targets(renames)
+
     def _cleanup_settings_part(self) -> None:
         doc = getattr(self, "docx", None)
         main_part = getattr(doc, "_part", None) if doc is not None else None
@@ -698,6 +756,136 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         if self._is_document_part(part):
             self._ensure_modern_comments_relationship(rels)
+
+    def _rename_part(self, part, old_name: str, new_name: str) -> None:
+        """Rename ``part`` within the OPC package to ``new_name``."""
+
+        try:
+            old_pack_uri = getattr(part, "partname", None)
+        except Exception:
+            old_pack_uri = None
+
+        old_normalised = old_name.lstrip("/")
+        if old_pack_uri is not None:
+            old_pack_uri_str = str(old_pack_uri).lstrip("/")
+        else:
+            old_pack_uri_str = old_normalised
+
+        try:
+            new_pack_uri = PackURI(f"/{new_name}")
+        except Exception:
+            return
+
+        package = getattr(part, "package", None) or self._resolve_package()
+
+        if package is not None:
+            self._update_package_mappings(
+                package, old_pack_uri, old_pack_uri_str, new_pack_uri, part
+            )
+
+        for attr in ("_partname", "partname"):
+            if hasattr(part, attr):
+                try:
+                    setattr(part, attr, new_pack_uri)
+                except Exception:
+                    pass
+
+    def _resolve_package(self):
+        doc = getattr(self, "docx", None)
+        main_part = getattr(doc, "_part", None) if doc is not None else None
+        return getattr(main_part, "package", None) if main_part is not None else None
+
+    def _update_package_mappings(
+        self,
+        package,
+        old_pack_uri,
+        old_name: str | None,
+        new_pack_uri,
+        part,
+    ) -> None:
+        mappings = [
+            getattr(package, "_parts", None),
+            getattr(package, "_partnames", None),
+        ]
+
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                continue
+            if old_pack_uri in mapping:
+                mapping.pop(old_pack_uri, None)
+            elif old_name is not None:
+                for key in list(mapping.keys()):
+                    if str(key).lstrip("/") == old_name:
+                        mapping.pop(key, None)
+            mapping[new_pack_uri] = part
+
+        content_types = getattr(package, "_content_types", None)
+        if content_types is None:
+            content_types = getattr(package, "content_types", None)
+
+        overrides = getattr(content_types, "_overrides", None) if content_types else None
+        if isinstance(overrides, dict):
+            if old_pack_uri in overrides:
+                overrides[new_pack_uri] = overrides.pop(old_pack_uri)
+            elif old_name is not None:
+                for key in list(overrides.keys()):
+                    if str(key).lstrip("/") == old_name:
+                        overrides[new_pack_uri] = overrides.pop(key)
+                        break
+
+    def _update_relationship_targets(
+        self, renames: list[tuple[object, str, str]]
+    ) -> None:
+        if not renames:
+            return
+
+        lookup = {part: new_name for part, _old, new_name in renames}
+
+        for source_part in self._iter_package_parts():
+            rels = getattr(source_part, "rels", None)
+            if not rels:
+                continue
+
+            try:
+                source_name = self._normalise_partname(source_part)
+            except Exception:
+                continue
+
+            for rel in list(getattr(rels, "values", lambda: [])()):
+                target_part = getattr(rel, "target_part", None)
+                if target_part not in lookup:
+                    continue
+                absolute_target = lookup[target_part]
+                relative_target = self._build_relationship_target(
+                    source_name, absolute_target
+                )
+                self._set_relationship_target(rel, relative_target, absolute_target)
+
+    def _build_relationship_target(self, source_name: str, target_name: str) -> str:
+        source_dir = posixpath.dirname(source_name) or "."
+        relative = posixpath.relpath(target_name, source_dir).replace("\\", "/")
+        if relative == ".":
+            return posixpath.basename(target_name)
+        return relative
+
+    def _set_relationship_target(
+        self, rel, relative_target: str, absolute_target: str
+    ) -> None:
+        for attr in ("target_ref", "_target_ref"):
+            if hasattr(rel, attr):
+                try:
+                    setattr(rel, attr, relative_target)
+                except Exception:
+                    pass
+
+        if hasattr(rel, "_target"):
+            try:
+                rel._target = PackURI(f"/{absolute_target}")
+            except Exception:
+                try:
+                    rel._target = absolute_target
+                except Exception:
+                    pass
 
     def _try_drop_relationship(self, part, rel_id: str) -> bool:
         """Attempt to drop relationship via the part API, returning ``True`` if removed."""

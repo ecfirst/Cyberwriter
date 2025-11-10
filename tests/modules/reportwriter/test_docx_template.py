@@ -853,6 +853,124 @@ def test_cleanup_word_markup_removes_unbalanced_comment_ranges():
     assert 'w:permEnd w:id="9"' not in cleaned_xml
 
 
+def test_renumber_media_parts_renames_charts_and_embeddings():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+
+    chart1 = FakeXmlPart(
+        "/word/charts/chart1.xml",
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>',
+    )
+    chart3 = FakeXmlPart(
+        "/word/charts/chart3.xml",
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>',
+    )
+    workbook1 = FakeXmlPart("/word/embeddings/Microsoft_Excel_Worksheet1.xlsx", "<root/>")
+    workbook4 = FakeXmlPart("/word/embeddings/Microsoft_Excel_Worksheet4.xlsx", "<root/>")
+
+    doc_xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body/>"
+        "</w:document>"
+    )
+    rel_chart1 = FakeRelationship(chart1)
+    rel_chart1.target_ref = "charts/chart1.xml"
+    rel_chart1._target = PackURI("/word/charts/chart1.xml")
+    rel_chart3 = FakeRelationship(chart3)
+    rel_chart3.target_ref = "charts/chart3.xml"
+    rel_chart3._target = PackURI("/word/charts/chart3.xml")
+
+    document_part = FakeRelPart(
+        "/word/document.xml",
+        doc_xml,
+        {"rId1": rel_chart1, "rId2": rel_chart3},
+    )
+
+    chart1_rel = FakeRelationship(workbook1)
+    chart1_rel.target_ref = "../embeddings/Microsoft_Excel_Worksheet1.xlsx"
+    chart1_rel._target = PackURI("/word/embeddings/Microsoft_Excel_Worksheet1.xlsx")
+    chart3_rel = FakeRelationship(workbook4)
+    chart3_rel.target_ref = "../embeddings/Microsoft_Excel_Worksheet4.xlsx"
+    chart3_rel._target = PackURI("/word/embeddings/Microsoft_Excel_Worksheet4.xlsx")
+
+    chart1.rels = FakeRelationships({"rId1": chart1_rel})
+    chart3.rels = FakeRelationships({"rId1": chart3_rel})
+
+    parts = [document_part, chart1, chart3, workbook1, workbook4]
+    overrides = {
+        part.partname: "application/test" for part in parts if hasattr(part, "partname")
+    }
+
+    package = SimpleNamespace(
+        parts=parts,
+        _parts={part.partname: part for part in parts if hasattr(part, "partname")},
+        _partnames={part.partname: part for part in parts if hasattr(part, "partname")},
+        _content_types=SimpleNamespace(_overrides=overrides),
+    )
+
+    for part in parts:
+        part.package = package
+
+    template.docx = SimpleNamespace(_part=document_part)
+    document_part.package = package
+
+    template._renumber_media_parts()
+
+    assert chart3.partname == PackURI("/word/charts/chart2.xml")
+    assert workbook4.partname == PackURI("/word/embeddings/Microsoft_Excel_Worksheet2.xlsx")
+
+    assert document_part.rels["rId2"].target_ref == "charts/chart2.xml"
+    assert document_part.rels["rId2"]._target == PackURI("/word/charts/chart2.xml")
+
+    assert chart3.rels["rId1"].target_ref == "../embeddings/Microsoft_Excel_Worksheet2.xlsx"
+    assert chart3.rels["rId1"]._target == PackURI(
+        "/word/embeddings/Microsoft_Excel_Worksheet2.xlsx"
+    )
+
+    assert PackURI("/word/charts/chart2.xml") in package._parts
+    assert PackURI("/word/charts/chart3.xml") not in package._parts
+
+    overrides_keys = package._content_types._overrides
+    assert PackURI("/word/embeddings/Microsoft_Excel_Worksheet2.xlsx") in overrides_keys
+    assert all("Worksheet4" not in str(key) for key in overrides_keys)
+
+
+def test_renumber_media_parts_is_noop_when_sequential():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+
+    chart1 = FakeXmlPart(
+        "/word/charts/chart1.xml",
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>',
+    )
+    chart2 = FakeXmlPart(
+        "/word/charts/chart2.xml",
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>',
+    )
+
+    parts = [chart1, chart2]
+    package = SimpleNamespace(
+        parts=parts,
+        _parts={chart1.partname: chart1, chart2.partname: chart2},
+        _partnames={chart1.partname: chart1, chart2.partname: chart2},
+        _content_types=SimpleNamespace(
+            _overrides={chart1.partname: "chart", chart2.partname: "chart"}
+        ),
+    )
+
+    for part in parts:
+        part.package = package
+
+    main_part = SimpleNamespace(package=package)
+    template.docx = SimpleNamespace(_part=main_part)
+
+    template._renumber_media_parts()
+
+    assert chart1.partname == PackURI("/word/charts/chart1.xml")
+    assert chart2.partname == PackURI("/word/charts/chart2.xml")
+    assert PackURI("/word/charts/chart1.xml") in package._parts
+    assert PackURI("/word/charts/chart2.xml") in package._parts
+
+
 def test_cleanup_word_markup_removes_external_file_hyperlinks():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
