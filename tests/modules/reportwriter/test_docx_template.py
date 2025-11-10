@@ -307,6 +307,36 @@ ORPHANED_HYPERLINK_PARAGRAPH = (
     '</w:p>'
 )
 
+BOOKMARK_FRAGMENT = (
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:r><w:t>Removable bookmark</w:t></w:r>'
+    '<w:bookmarkStart w:id="40" w:name="_RemoveMe"/>'
+    '</w:p>'
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:hyperlink w:anchor="_RemoveMe">'
+    '<w:r><w:t>Link to removed bookmark</w:t></w:r>'
+    '</w:hyperlink>'
+    '</w:p>'
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:bookmarkEnd w:id="41"/>'
+    '</w:p>'
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:bookmarkStart w:id="42" w:name="_KeepMe"/>'
+    '<w:r><w:t>Kept bookmark</w:t></w:r>'
+    '<w:bookmarkEnd w:id="42"/>'
+    '</w:p>'
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:hyperlink w:anchor="_KeepMe">'
+    '<w:r><w:t>Valid internal link</w:t></w:r>'
+    '</w:hyperlink>'
+    '</w:p>'
+    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:hyperlink w:anchor="_MissingAnchor">'
+    '<w:r><w:t>Broken internal link</w:t></w:r>'
+    '</w:hyperlink>'
+    '</w:p>'
+)
+
 DUPLICATE_BODY_BLOCK = (
     '<w:body>'
     '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -2606,4 +2636,43 @@ def test_render_removes_attached_template_reference(tmp_path):
 
     assert "attachedTemplate" not in settings_xml
     assert "rId555" not in rels_xml
+
+
+def test_render_repairs_orphan_bookmarks_and_hyperlinks(tmp_path):
+    base_template = Path("DOCS/sample_reports/template.docx")
+    original = base_template.read_bytes()
+
+    buffer = io.BytesIO()
+
+    with zipfile.ZipFile(io.BytesIO(original)) as src, zipfile.ZipFile(buffer, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == "word/document.xml":
+                data = data.replace(b"</w:body>", BOOKMARK_FRAGMENT.encode("utf-8") + b"</w:body>")
+            dst.writestr(info, data)
+
+    modified_template = tmp_path / "bookmark_template.docx"
+    modified_template.write_bytes(buffer.getvalue())
+
+    template = GhostwriterDocxTemplate(str(modified_template))
+    template.render({}, Environment())
+
+    output_doc = tmp_path / "rendered.docx"
+    template.save(output_doc)
+
+    with zipfile.ZipFile(output_doc) as archive:
+        document_xml = archive.read("word/document.xml")
+
+    tree = etree.fromstring(document_xml)
+    namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+    assert not tree.xpath(".//w:bookmarkStart[@w:id='40']", namespaces=namespaces)
+    assert not tree.xpath(".//w:bookmarkEnd[@w:id='41']", namespaces=namespaces)
+    assert tree.xpath(".//w:bookmarkStart[@w:id='42']", namespaces=namespaces)
+
+    anchors = tree.xpath(".//w:hyperlink/@w:anchor", namespaces=namespaces)
+    assert "_KeepMe" in anchors
+    assert "_RemoveMe" not in anchors
+    assert "_MissingAnchor" not in anchors
+    assert "Link to removed bookmark" in document_xml.decode("utf-8")
 

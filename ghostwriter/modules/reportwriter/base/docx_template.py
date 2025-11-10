@@ -20,6 +20,7 @@ _JINJA_STATEMENT_RE = re.compile(r"({[{%#].*?[}%]})", re.DOTALL)
 _INLINE_STRING_TYPES = {"inlineStr"}
 _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_WORDPROCESSING_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _MISNESTED_DRAWING_PATTERN = re.compile(
     r"</w:drawing>(?P<content>.*?)</(?P<prefix>[A-Za-z_][\w.-]*):inline>",
     re.DOTALL,
@@ -74,6 +75,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
         active_parts = self._cleanup_unused_additional_relationships()
         self._active_additional_partnames = active_parts or set()
         self._render_additional_parts(context, jinja_env, active_parts)
+        self._remove_attached_template()
+        self._remove_file_hyperlinks()
+        self._repair_bookmarks_and_hyperlinks()
         self._fix_misnested_drawing_markup()
 
         self.is_rendered = True
@@ -470,13 +474,189 @@ class GhostwriterDocxTemplate(DocxTemplate):
         while current is not None:
             qname = etree.QName(current)
             local = qname.localname
-            if local in {"drawing", "object", "pict"}:
+            if local in {"drawing", "object", "pict", "hyperlink"}:
                 removal = current
             if local == "r":
                 return current
             current = current.getparent()
 
         return removal
+
+    def _remove_attached_template(self) -> None:
+        if not self.docx:
+            return
+
+        settings_part = getattr(self.docx, "settings_part", None)
+        if not settings_part:
+            return
+
+        rels = getattr(settings_part, "rels", None)
+        rel_type = f"{_RELATIONSHIP_NS}/attachedTemplate"
+        removed = False
+
+        if rels:
+            for rel_id, rel in list(rels.items()):
+                if getattr(rel, "reltype", None) != rel_type:
+                    continue
+                drop_rel = getattr(settings_part, "drop_rel", None)
+                if callable(drop_rel):
+                    drop_rel(rel_id)
+                else:
+                    backing = getattr(rels, "_rels", None)
+                    if isinstance(backing, dict):
+                        backing.pop(rel_id, None)
+                removed = True
+
+        element = self._get_part_element(settings_part)
+        if element is None:
+            return
+
+        word_ns = element.nsmap.get("w") or _WORDPROCESSING_NS
+        namespaces = {"w": word_ns}
+        changed = False
+
+        for node in list(element.findall(".//w:attachedTemplate", namespaces=namespaces)):
+            parent = node.getparent()
+            if parent is None:
+                continue
+            parent.remove(node)
+            changed = True
+
+        if removed or changed:
+            self._update_part_xml(settings_part, element)
+
+    def _remove_file_hyperlinks(self) -> None:
+        if not self.docx:
+            return
+
+        parts = [self.docx.part]
+
+        for uri in (self.HEADER_URI, self.FOOTER_URI):
+            for _rel_key, part in self.get_headers_footers(uri):
+                parts.append(part)
+
+        for part in parts:
+            rels = getattr(part, "rels", None)
+            if not rels:
+                continue
+
+            element = self._get_part_element(part)
+            if element is None:
+                continue
+
+            removed = False
+
+            for rel_id, rel in list(rels.items()):
+                if not getattr(rel, "is_external", False):
+                    continue
+
+                target = getattr(rel, "target_ref", None)
+                if target is None:
+                    target = getattr(rel, "target", None)
+                if target is None:
+                    target = getattr(rel, "_target", None)
+
+                if isinstance(target, bytes):
+                    target = target.decode("utf-8", errors="ignore")
+
+                if not isinstance(target, str):
+                    continue
+
+                if not target.lower().startswith("file:"):
+                    continue
+
+                if self._remove_relationship_nodes(element, rel_id):
+                    removed = True
+
+                drop_rel = getattr(part, "drop_rel", None)
+                if callable(drop_rel):
+                    drop_rel(rel_id)
+                else:
+                    backing = getattr(rels, "_rels", None)
+                    if isinstance(backing, dict):
+                        backing.pop(rel_id, None)
+
+            if removed:
+                self._update_part_xml(part, element)
+
+    def _repair_bookmarks_and_hyperlinks(self) -> None:
+        if not self.docx:
+            return
+
+        part = self.docx.part
+        element = self._get_part_element(part)
+        if element is None:
+            return
+
+        word_ns = element.nsmap.get("w") or _WORDPROCESSING_NS
+        namespaces = {"w": word_ns}
+        attr_id = f"{{{word_ns}}}id"
+        attr_name = f"{{{word_ns}}}name"
+        attr_anchor = f"{{{word_ns}}}anchor"
+
+        starts: dict[str, etree._Element] = {}
+        names: dict[str, str] = {}
+        for node in element.findall(".//w:bookmarkStart", namespaces=namespaces):
+            identifier = node.get(attr_id)
+            if not identifier:
+                continue
+            starts[identifier] = node
+            name = node.get(attr_name)
+            if name:
+                names[identifier] = name
+
+        ends: dict[str, etree._Element] = {}
+        for node in element.findall(".//w:bookmarkEnd", namespaces=namespaces):
+            identifier = node.get(attr_id)
+            if not identifier:
+                continue
+            ends[identifier] = node
+
+        changed = False
+
+        for orphan_id in set(starts) - set(ends):
+            node = starts[orphan_id]
+            parent = node.getparent()
+            if parent is None:
+                continue
+            parent.remove(node)
+            changed = True
+
+        for orphan_id in set(ends) - set(starts):
+            node = ends[orphan_id]
+            parent = node.getparent()
+            if parent is None:
+                continue
+            parent.remove(node)
+            changed = True
+
+        remaining_names = set()
+        for node in element.findall(".//w:bookmarkStart", namespaces=namespaces):
+            name = node.get(attr_name)
+            if name:
+                remaining_names.add(name)
+
+        for hyperlink in list(element.findall(".//w:hyperlink", namespaces=namespaces)):
+            anchor = hyperlink.get(attr_anchor)
+            if not anchor:
+                continue
+            if anchor in remaining_names:
+                continue
+
+            parent = hyperlink.getparent()
+            if parent is None:
+                continue
+
+            index = parent.index(hyperlink)
+            for child in list(hyperlink):
+                hyperlink.remove(child)
+                parent.insert(index, child)
+                index += 1
+            parent.remove(hyperlink)
+            changed = True
+
+        if changed:
+            self._update_part_xml(part, element)
 
     def _collect_related_additional_partnames(self, part) -> set[str]:
         rels = getattr(part, "rels", None)
