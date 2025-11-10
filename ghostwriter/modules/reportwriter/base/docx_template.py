@@ -550,7 +550,24 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 if count == 0:
                     break
 
-            if total == 0 or fixed == xml:
+            removed = False
+
+            while _MISNESTED_DRAWING_PATTERN.search(fixed):
+                match = _MISNESTED_DRAWING_PATTERN.search(fixed)
+                if match is None:
+                    break
+
+                start = fixed.rfind("<w:drawing", 0, match.start())
+                if start == -1:
+                    break
+
+                tail_match = _TRAILING_CLOSING_TAGS_RE.search(match.group("content"))
+                trailing = tail_match.group("closings") if tail_match else ""
+
+                fixed = f"{fixed[:start]}{trailing}{fixed[match.end():]}"
+                removed = True
+
+            if not removed and (total == 0 or fixed == xml):
                 continue
 
             try:
