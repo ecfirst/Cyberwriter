@@ -7,7 +7,7 @@ from datetime import datetime
 import zoneinfo
 
 # Standard Libraries
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 # Django Imports
 from django.conf import settings
@@ -989,7 +989,31 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if not section:
             return {}
 
-        if not section.get("entries"):
+        entries = section.get("entries")
+        unique_soa_fields: List[str] = []
+        if isinstance(entries, list):
+            seen: Set[str] = set()
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                fields = entry.get("soa_fields")
+                if not isinstance(fields, list):
+                    continue
+                for field in fields:
+                    if field is None:
+                        continue
+                    text = str(field).strip()
+                    if not text or text in seen:
+                        continue
+                    seen.add(text)
+                    unique_soa_fields.append(text)
+
+        if isinstance(entries, list):
+            section["unique_soa_fields"] = unique_soa_fields
+        else:
+            section.pop("unique_soa_fields", None)
+
+        if not entries:
             section.pop("entries", None)
 
         return section

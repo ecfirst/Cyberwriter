@@ -3,7 +3,7 @@
 # Standard Libraries
 import os
 from datetime import time, timedelta
-from typing import Dict
+from typing import Any, Dict, List, Set
 
 # Django Imports
 from django.conf import settings
@@ -481,6 +481,35 @@ class Project(models.Model):
 
             combined_dns_section.update(workbook_dns_response)
             existing_responses["dns"] = combined_dns_section
+
+        def _collect_unique_soa_fields(entries: Any) -> List[str]:
+            unique_fields: List[str] = []
+            seen: Set[str] = set()
+            if not isinstance(entries, list):
+                return unique_fields
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                fields = entry.get("soa_fields")
+                if not isinstance(fields, list):
+                    continue
+                for field in fields:
+                    if field is None:
+                        continue
+                    text = str(field).strip()
+                    if not text or text in seen:
+                        continue
+                    seen.add(text)
+                    unique_fields.append(text)
+            return unique_fields
+
+        dns_section = existing_responses.get("dns")
+        if isinstance(dns_section, dict):
+            entries = dns_section.get("entries")
+            if isinstance(entries, list):
+                dns_section["unique_soa_fields"] = _collect_unique_soa_fields(entries)
+            else:
+                dns_section.pop("unique_soa_fields", None)
 
         self.data_responses = existing_responses
 

@@ -435,6 +435,32 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(dns_summary.get("zone_trans"), 2)
         self.assertEqual(dns_summary.get("existing"), "value")
 
+    def test_dns_unique_soa_fields_collated_from_entries(self):
+        stored_responses = {
+            "dns": {
+                "entries": [
+                    {"domain": "one.example", "soa_fields": ["serial", "refresh", "serial"]},
+                    {"domain": "two.example", "soa_fields": ["retry", " refresh ", None]},
+                    {"domain": "three.example", "soa_fields": "invalid"},
+                    "not-a-dict",
+                ]
+            }
+        }
+
+        self.project.data_responses = stored_responses
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+
+        dns_summary = responses.get("dns")
+        self.assertIsInstance(dns_summary, dict)
+        self.assertEqual(
+            dns_summary.get("unique_soa_fields"),
+            ["serial", "refresh", "retry"],
+        )
+
     def test_workbook_ad_metrics_are_exposed_without_legacy_entries(self):
         workbook_payload = {
             "ad": {

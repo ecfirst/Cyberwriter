@@ -216,7 +216,7 @@ DATA_RESPONSES_DEFAULTS: Dict[str, Any] = {
         "osint_bucket_risk": None,
         "osint_leaked_creds_risk": None,
     },
-    "dns": {"entries": []},
+    "dns": {"entries": [], "unique_soa_fields": []},
     "firewall": {"firewall_periodic_reviews": None, "entries": []},
     "ad": {"entries": [], "old_domains_str": None},
     "password": {

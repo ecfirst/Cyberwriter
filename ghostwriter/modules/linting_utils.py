@@ -383,6 +383,7 @@ LINTER_CONTEXT = {
                         "soa_fields": ["serial", "refresh"],
                     }
                 ],
+                "unique_soa_fields": ["serial", "refresh"],
             },
             "wireless": {
                 "segmentation_ssids": ["Guest", "Corp", "Production"],
