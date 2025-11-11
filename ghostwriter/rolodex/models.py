@@ -582,7 +582,18 @@ class Project(models.Model):
                     domain_entry.append(text)
             return domain_fields
 
+        dns_section_created = False
         dns_section = existing_responses.get("dns")
+        if isinstance(dns_section, dict):
+            pass
+        elif isinstance(dns_section, list):
+            dns_section = {"entries": list(dns_section)}
+            existing_responses["dns"] = dns_section
+        else:
+            dns_section = {}
+            existing_responses["dns"] = dns_section
+            dns_section_created = True
+
         if isinstance(dns_section, dict):
             entries = dns_section.get("entries")
             if isinstance(entries, list):
@@ -640,10 +651,14 @@ class Project(models.Model):
                 dns_section["dns_cap_map"] = dns_cap_map
             else:
                 dns_section.pop("dns_cap_map", None)
-        else:
-            dns_section.pop("unique_soa_fields", None)
-            dns_section.pop("soa_field_cap_map", None)
-            dns_section.pop("dns_cap_map", None)
+
+        if not dns_section:
+            if dns_section_created:
+                existing_responses.pop("dns", None)
+            else:
+                dns_section.pop("unique_soa_fields", None)
+                dns_section.pop("soa_field_cap_map", None)
+                dns_section.pop("dns_cap_map", None)
 
         self.data_responses = existing_responses
 

@@ -1032,6 +1032,44 @@ class NexposeDataParserTests(TestCase):
             },
         )
 
+    def test_dns_cap_map_added_when_dns_section_missing(self):
+        csv_lines = [
+            "Status,Info",
+            "FAIL,Less than 2 nameservers exist",
+        ]
+        upload = SimpleUploadedFile(
+            "dns_missing_section.csv",
+            "\n".join(csv_lines).encode("utf-8"),
+            content_type="text/csv",
+        )
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=upload,
+            requirement_label="dns_missing_section.csv",
+            requirement_context="missing.example",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=data_file.pk).delete())
+
+        self.project.data_responses = {}
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        dns_responses = self.project.data_responses.get("dns")
+        self.assertIsInstance(dns_responses, dict)
+        self.assertEqual(
+            dns_responses,
+            {
+                "dns_cap_map": {
+                    "missing.example": {
+                        "Less than 2 nameservers exist": "Assign a minimum of 2 nameservers for the domain",
+                    }
+                }
+            },
+        )
+
     def test_password_cap_map_uses_database(self):
         PasswordCapMapping.objects.update_or_create(
             setting="max_age",
