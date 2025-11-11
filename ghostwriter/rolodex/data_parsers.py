@@ -882,6 +882,16 @@ def _format_sample_string(samples: List[str]) -> str:
     return ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
 
 
+def _format_slash_separated_string(values: Iterable[str]) -> str:
+    """Return a slash-delimited string of single-quoted values."""
+
+    entries = [str(value).strip() for value in values if str(value).strip()]
+    if not entries:
+        return ""
+    quoted = [f"'{entry}'" for entry in entries]
+    return "/".join(quoted)
+
+
 def _format_oxford_quoted_list(values: List[str]) -> str:
     """Return a quoted list that includes an Oxford comma when needed."""
 
@@ -1187,10 +1197,15 @@ def build_workbook_ad_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[
             if domain_text not in legacy_domains:
                 legacy_domains.append(domain_text)
 
-    response: Dict[str, Any] = {"old_domains_count": len(legacy_domains)}
+    response: Dict[str, Any] = {
+        "old_domains_count": len(legacy_domains),
+        "old_domains_str": None,
+    }
 
     if legacy_domains:
         response["old_domains_string"] = _format_sample_string(legacy_domains)
+        old_domains_str = _format_slash_separated_string(legacy_domains)
+        response["old_domains_str"] = old_domains_str if old_domains_str else None
 
     if domain_metrics:
         response["domain_metrics"] = domain_metrics
@@ -1406,9 +1421,10 @@ def build_workbook_password_response(
     lanman_domains = [domain for domain in summary_domains if domain_values[domain]["lanman"]]
     no_fgpp_domains = [domain for domain in summary_domains if domain_values[domain]["no_fgpp"]]
 
+    summary_domains_str = _format_slash_separated_string(summary_domains)
     summary.update(
         {
-            "domains_str": "/".join(summary_domains),
+            "domains_str": summary_domains_str,
             "cracked_count_str": "/".join(cracked_counts),
             "cracked_finding_string": _format_plain_list(cracked_counts),
             "enabled_count_string": _format_plain_list(enabled_counts),

@@ -7,7 +7,7 @@ from datetime import datetime
 import zoneinfo
 
 # Standard Libraries
-from typing import Any, Dict
+from typing import Any, Dict, List, Set
 
 # Django Imports
 from django.conf import settings
@@ -989,7 +989,31 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if not section:
             return {}
 
-        if not section.get("entries"):
+        entries = section.get("entries")
+        unique_soa_fields: List[str] = []
+        if isinstance(entries, list):
+            seen: Set[str] = set()
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                fields = entry.get("soa_fields")
+                if not isinstance(fields, list):
+                    continue
+                for field in fields:
+                    if field is None:
+                        continue
+                    text = str(field).strip()
+                    if not text or text in seen:
+                        continue
+                    seen.add(text)
+                    unique_soa_fields.append(text)
+
+        if isinstance(entries, list):
+            section["unique_soa_fields"] = unique_soa_fields
+        else:
+            section.pop("unique_soa_fields", None)
+
+        if not entries:
             section.pop("entries", None)
 
         return section
@@ -1016,6 +1040,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         domain_entries = {}
         domain_order = []
         domain_details = {}
+        legacy_domains: List[str] = []
         workbook_response = build_workbook_ad_response(workbook_data)
 
         slug_map = {}
@@ -1033,6 +1058,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             domain_details[domain_text] = record
             domain_entries[domain_text] = {"domain": domain_text}
             domain_order.append(domain_text)
+
+            functionality_value = record.get("functionality_level")
+            functionality_text = str(functionality_value).strip() if functionality_value is not None else ""
+            if functionality_text and any(version in functionality_text for version in ("2000", "2003")):
+                if domain_text not in legacy_domains:
+                    legacy_domains.append(domain_text)
 
         ad_metrics = [metric for metric, _ in AD_DOMAIN_METRICS]
 
@@ -1126,6 +1157,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 text = str(value).strip()
                 return text.capitalize() if text else ""
 
+            def _format_domains(values):
+                entries = [value for value in values if value]
+                if not entries:
+                    return ""
+                return "/".join(f"'{entry}'" for entry in entries)
+
             for entry in ordered:
                 domain = entry.get("domain", "")
                 domains_str_parts.append(domain)
@@ -1142,7 +1179,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             summary.update(
                 {
                     "entries": ordered,
-                    "domains_str": "/".join(domains_str_parts),
+                    "domains_str": _format_domains(domains_str_parts),
                 }
             )
 
@@ -1151,6 +1188,11 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
             for field, parts in risk_parts.items():
                 summary[field] = "/".join(parts)
+
+            if legacy_domains:
+                summary["old_domains_str"] = _format_domains(legacy_domains)
+            else:
+                summary.setdefault("old_domains_str", None)
 
         risk_contrib = build_ad_risk_contrib(workbook_data, ordered)
         if summary or risk_contrib:
@@ -1287,6 +1329,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 return f"{quoted[0]} and {quoted[1]}"
             return ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
 
+        def _format_domains(values):
+            entries = [value for value in values if value]
+            if not entries:
+                return ""
+            return "/".join(f"'{entry}'" for entry in entries)
+
         domains_str_parts = []
         cracked_count_parts = []
         cracked_risk_parts = []
@@ -1326,7 +1374,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         summary = {
             "entries": ordered_entries,
-            "domains_str": "/".join(domains_str_parts),
+            "domains_str": _format_domains(domains_str_parts),
             "cracked_count_str": "/".join(cracked_count_parts),
             "cracked_risk_string": "/".join(cracked_risk_parts),
             "cracked_finding_string": _format_plain(cracked_count_parts),
