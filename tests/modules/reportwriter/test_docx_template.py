@@ -815,6 +815,7 @@ def test_cleanup_word_markup_balances_bookmarks_and_hyperlinks():
         "<w:p><w:bookmarkStart w:id=\"2\" w:name=\"_Drop\"/></w:p>"
         "<w:p><w:bookmarkEnd w:id=\"3\"/></w:p>"
         "<w:p><w:hyperlink w:anchor=\"Keep\"><w:r><w:t>Valid</w:t></w:r></w:hyperlink></w:p>"
+        "<w:p><w:hyperlink w:anchor=\"keep\"><w:r><w:t>Valid lowercase</w:t></w:r></w:hyperlink></w:p>"
         "<w:p><w:hyperlink w:anchor=\"_Missing\"><w:r><w:t>Broken</w:t></w:r></w:hyperlink></w:p>"
         "</w:body></w:document>"
     )
@@ -830,6 +831,7 @@ def test_cleanup_word_markup_balances_bookmarks_and_hyperlinks():
     assert '<w:hyperlink w:anchor="_Missing"' not in cleaned_xml
     assert "Broken" in cleaned_xml
     assert '<w:hyperlink w:anchor="Keep"' in cleaned_xml
+    assert '<w:hyperlink w:anchor="keep"' in cleaned_xml
 
 
 def test_cleanup_word_markup_removes_unbalanced_comment_ranges():
@@ -879,6 +881,8 @@ def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
         "<w:r><w:t>Intro</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p>"
         "<w:p><w:bookmarkStart w:id=\"2\" w:name=\"Keep\"/>"
         "<w:r><w:t>Duplicate</w:t></w:r><w:bookmarkEnd w:id=\"2\"/></w:p>"
+        "<w:p><w:bookmarkStart w:id=\"3\" w:name=\"keep\"/>"
+        "<w:r><w:t>Duplicate lowercase</w:t></w:r><w:bookmarkEnd w:id=\"3\"/></w:p>"
         "<w:p><w:fldSimple w:instr=\" REF Missing \\h \">"
         "<w:r><w:t>Broken simple</w:t></w:r></w:fldSimple></w:p>"
         "<w:p><w:fldSimple w:instr=\" REF Keep \\h \">"
@@ -908,6 +912,7 @@ def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
 
     assert cleaned_xml.count('w:bookmarkStart w:name="Keep"') == 1
     assert 'w:id="2"' not in cleaned_xml
+    assert 'w:id="3"' not in cleaned_xml
     assert "Broken simple" not in cleaned_xml
     assert "Broken complex" not in cleaned_xml
     assert "Valid simple" in cleaned_xml

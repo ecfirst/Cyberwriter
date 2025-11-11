@@ -1339,10 +1339,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     bookmark_key = str(bookmark_id)
                     starts[bookmark_key].append(element)
                     name = element.get(name_attr)
-                    if name and name != "_GoBack" and name in seen_names:
+                    if name == "_GoBack":
+                        continue
+                    normalised = self._normalise_bookmark_name(name)
+                    if normalised is None or normalised in seen_names:
                         duplicate_ids.add(bookmark_key)
-                    elif name:
-                        seen_names.add(name)
+                    else:
+                        seen_names.add(normalised)
             elif element.tag == end_tag:
                 bookmark_id = element.get(id_attr)
                 if bookmark_id is not None:
@@ -1381,8 +1384,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         for element in root.iter(start_tag):
             name = element.get(name_attr)
-            if name:
-                names.add(name)
+            if name == "_GoBack":
+                continue
+            normalised = self._normalise_bookmark_name(name)
+            if normalised:
+                names.add(normalised)
 
         return names
 
@@ -1443,7 +1449,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         for hyperlink in list(root.iter(hyperlink_tag)):
             anchor = hyperlink.get(anchor_attr)
-            if not anchor or anchor in bookmark_names:
+            normalised = self._normalise_bookmark_name(anchor)
+            if normalised and normalised in bookmark_names:
                 continue
             self._unwrap_element(hyperlink)
 
@@ -1537,7 +1544,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return False
 
         for name in candidates:
-            if name not in bookmark_names:
+            normalised = self._normalise_bookmark_name(name)
+            if not normalised or normalised not in bookmark_names:
                 return True
         return False
 
@@ -1548,6 +1556,16 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 return current
             current = current.getparent() if hasattr(current, "getparent") else None
         return None
+
+    def _normalise_bookmark_name(self, name: str | None) -> str | None:
+        if not name:
+            return None
+
+        cleaned = name.strip()
+        if not cleaned:
+            return None
+
+        return cleaned.casefold()
 
     def _remove_attached_template(self, part, root, word_ns: str) -> None:
         if not self._is_settings_part(part):
