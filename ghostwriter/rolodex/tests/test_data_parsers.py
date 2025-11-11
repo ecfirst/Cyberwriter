@@ -15,6 +15,7 @@ from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_ARTIFACT_DEFINITIONS,
     normalize_nexpose_artifact_payload,
     normalize_nexpose_artifacts_map,
+    load_general_cap_map,
     load_dns_soa_cap_map,
     load_password_cap_map,
     load_password_compliance_matrix,
@@ -26,6 +27,7 @@ from ghostwriter.rolodex.models import (
     DNSSOACapMapping,
     DNSFindingMapping,
     DNSRecommendationMapping,
+    GeneralCapMapping,
     PasswordCapMapping,
     ProjectDataFile,
 )
@@ -1235,6 +1237,27 @@ class DNSDataParserTests(TestCase):
                 "impact": "",
             },
         )
+
+    def test_load_general_cap_map_prefers_database(self):
+        mapping = load_general_cap_map()
+        weak_passwords = mapping.get("Weak passwords in use")
+        self.assertIsInstance(weak_passwords, dict)
+        self.assertEqual(weak_passwords.get("score"), 7)
+        self.assertIn("Force all accounts whose password was cracked", weak_passwords.get("recommendation", ""))
+
+        GeneralCapMapping.objects.update_or_create(
+            issue_text="Weak passwords in use",
+            defaults={
+                "recommendation_text": "custom weak password guidance",
+                "score": 8,
+            },
+        )
+
+        updated_mapping = load_general_cap_map()
+        updated = updated_mapping.get("Weak passwords in use")
+        self.assertIsInstance(updated, dict)
+        self.assertEqual(updated.get("recommendation"), "custom weak password guidance")
+        self.assertEqual(updated.get("score"), 8)
 
     def test_load_dns_soa_cap_map_prefers_database(self):
         mapping = load_dns_soa_cap_map()

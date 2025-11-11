@@ -222,6 +222,33 @@ class DNSRecommendationMapping(models.Model):
         return f"{self.issue_text}"
 
 
+class GeneralCapMapping(models.Model):
+    """Store general corrective action plan guidance and scoring."""
+
+    issue_text = models.TextField(
+        "Issue",
+        unique=True,
+        help_text="Exact text describing the issue that needs remediation.",
+    )
+    recommendation_text = models.TextField(
+        "Recommendation",
+        help_text="Corrective action guidance presented for this issue.",
+    )
+    score = models.PositiveSmallIntegerField(
+        "Score",
+        default=0,
+        help_text="Numeric score representing the severity or priority of the issue.",
+    )
+
+    class Meta:
+        ordering = ["issue_text"]
+        verbose_name = "General CAP mapping"
+        verbose_name_plural = "General CAP mappings"
+
+    def __str__(self):
+        return f"{self.issue_text}"
+
+
 class DNSCapMapping(models.Model):
     """Store corrective action plan (CAP) entries for DNS scanner issues."""
 
