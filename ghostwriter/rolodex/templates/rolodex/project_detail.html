@@ -184,7 +184,7 @@
       </div>
 
       <div id="supplementals" class="tab-pane">
-        <h4>Supplemental Files</h4>
+        <h4>Additional Data Files</h4>
         <hr/>
         {% if supplemental_cards %}
           <div class="offset-2 col-8 mb-4">
@@ -280,16 +280,16 @@
             {% endfor %}
           </div>
         {% else %}
-          <div class="alert alert-info offset-2 col-8 mt-4">No supplemental files have been requested for this project.</div>
+          <div class="alert alert-info offset-2 col-8 mt-4">No additional data files have been requested for this project.</div>
         {% endif %}
       </div>
 
       <div id="data" class="tab-pane">
-        <h4>Supporting Data</h4>
+        <h4>Questionnaire</h4>
         <hr/>
         <div class="offset-2 col-8 mt-4 dynamic-questions-section">
           <h5>Dynamic Reporting Questions</h5>
-          <form method="post" action="{% url 'rolodex:project_data_responses' project.id %}">
+          <form method="post" action="{% url 'rolodex:project_data_responses' project.id %}" class="project-data-responses-form">
             {% csrf_token %}
             {% regroup data_questions by section as question_sections %}
             {% for section in question_sections %}
@@ -305,7 +305,7 @@
                       {% for question in subgroup.list %}
                         {% with field=data_responses_fields|get_item:question.key %}
                           {% if field %}
-                            <div class="form-group dynamic-question-item{% if question.key == 'wireless_psk_masterpass_ssids' or question.key == 'assessment_scope_cloud_on_prem' or question.key == 'general_scope_changed' %} d-none{% endif %}" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}{% if question.key == 'wireless_psk_masterpass_ssids' %} data-masterpass-target{% endif %}{% if question.key == 'assessment_scope' %} data-scope-control{% endif %}{% if question.key == 'assessment_scope_cloud_on_prem' %} data-scope-cloud-followup{% endif %}{% if question.key == 'general_first_ca' %} data-first-ca-control{% endif %}{% if question.key == 'general_scope_changed' %} data-first-ca-followup{% endif %}>
+                            <div class="form-group dynamic-question-item{% if question.key == 'wireless_psk_masterpass_ssids' or question.key == 'assessment_scope_cloud_on_prem' or question.key == 'general_scope_changed' or question.key == 'hashes_obtained' %} d-none{% endif %}" data-question="{{ question.key }}"{% if question.key == 'wireless_segmentation_ssids' %} data-segmentation-target{% endif %}{% if question.key == 'wireless_psk_masterpass_ssids' %} data-masterpass-target{% endif %}{% if question.key == 'assessment_scope' %} data-scope-control{% endif %}{% if question.key == 'assessment_scope_cloud_on_prem' %} data-scope-cloud-followup{% endif %}{% if question.key == 'general_first_ca' %} data-first-ca-control{% endif %}{% if question.key == 'general_scope_changed' %} data-first-ca-followup{% endif %}{% if question.key == 'hashes_obtained' %} data-password-followup{% endif %}>
                               {% if field.label %}{{ field.label_tag }}{% endif %}
                               {{ field }}
                               {% if field.help_text %}<small class="form-text text-muted">{{ field.help_text }}</small>{% endif %}
@@ -478,6 +478,42 @@
   {{ block.super }}
   {% get_solo "commandcenter.ReportConfiguration" as report_config %}
   <script>
+    const PROJECT_SCROLL_STORAGE_PREFIX = 'project-detail-scroll:';
+
+    function getProjectScrollStorageKey() {
+      const path = window.location.pathname || '';
+      const hash = window.location.hash || '';
+      return PROJECT_SCROLL_STORAGE_PREFIX + path + hash;
+    }
+
+    function storeProjectScrollPosition() {
+      try {
+        const key = getProjectScrollStorageKey();
+        const position = typeof window.scrollY === 'number' ? window.scrollY : window.pageYOffset;
+        sessionStorage.setItem(key, String(position || 0));
+      } catch (error) {
+        // sessionStorage may be unavailable (e.g., private browsing modes)
+      }
+    }
+
+    function restoreProjectScrollPosition() {
+      try {
+        const key = getProjectScrollStorageKey();
+        const stored = sessionStorage.getItem(key);
+        if (stored !== null) {
+          const position = parseFloat(stored);
+          sessionStorage.removeItem(key);
+          if (!Number.isNaN(position)) {
+            window.requestAnimationFrame(function() {
+              window.scrollTo(0, position);
+            });
+          }
+        }
+      } catch (error) {
+        // sessionStorage may be unavailable (e.g., private browsing modes)
+      }
+    }
+
     (function($) {
       $(function() {
         const projectExportSelector = $("#projectExportSelector");
@@ -561,11 +597,13 @@
           };
 
           form.addEventListener('submit', function() {
+            storeProjectScrollPosition();
             setUploadingState();
           });
 
           fileInput.addEventListener('change', function() {
             if (fileInput.files && fileInput.files.length) {
+              storeProjectScrollPosition();
               setUploadingState();
               if (typeof form.requestSubmit === 'function') {
                 form.requestSubmit();
@@ -587,11 +625,19 @@
             if (form.dataset.submitting === '1') {
               return;
             }
+            storeProjectScrollPosition();
             form.dataset.submitting = '1';
             const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
             submitButton.setAttribute('data-default-text', defaultText);
             submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Saving...';
             submitButton.disabled = true;
+          });
+        });
+
+        const questionnaireForms = document.querySelectorAll('.project-data-responses-form');
+        questionnaireForms.forEach(function(form) {
+          form.addEventListener('submit', function() {
+            storeProjectScrollPosition();
           });
         });
       });
@@ -699,25 +745,48 @@
 
     function toggleScopeFollowup() {
       const control = document.querySelector('[data-scope-control]');
-      const followup = document.querySelector('[data-scope-cloud-followup]');
-      if (!control || !followup) {
+      if (!control) {
         return;
       }
       const checkboxes = control.querySelectorAll('input[name="assessment_scope"]');
       let cloudSelected = false;
+      let internalSelected = false;
       checkboxes.forEach(function(checkbox) {
-        if (checkbox.value === 'cloud' && checkbox.checked) {
+        if (!checkbox.checked) {
+          return;
+        }
+        if (checkbox.value === 'cloud') {
           cloudSelected = true;
         }
+        if (checkbox.value === 'internal') {
+          internalSelected = true;
+        }
       });
-      if (cloudSelected) {
-        followup.classList.remove('d-none');
-      } else {
-        followup.classList.add('d-none');
-        const radios = followup.querySelectorAll('input[type="radio"]');
-        radios.forEach(function(radio) {
-          radio.checked = false;
-        });
+
+      const followup = document.querySelector('[data-scope-cloud-followup]');
+      if (followup) {
+        if (cloudSelected) {
+          followup.classList.remove('d-none');
+        } else {
+          followup.classList.add('d-none');
+          const radios = followup.querySelectorAll('input[type="radio"]');
+          radios.forEach(function(radio) {
+            radio.checked = false;
+          });
+        }
+      }
+
+      const passwordFollowup = document.querySelector('[data-password-followup]');
+      if (passwordFollowup) {
+        if (cloudSelected || internalSelected) {
+          passwordFollowup.classList.remove('d-none');
+        } else {
+          passwordFollowup.classList.add('d-none');
+          const radios = passwordFollowup.querySelectorAll('input[type="radio"]');
+          radios.forEach(function(radio) {
+            radio.checked = false;
+          });
+        }
       }
     }
 
@@ -746,6 +815,7 @@
       toggleMasterpassDetails();
       toggleScopeFollowup();
       toggleFirstCAFollowup();
+      restoreProjectScrollPosition();
     });
 
     document.addEventListener('change', function(event) {
@@ -760,6 +830,12 @@
       }
       if (event.target && event.target.name === 'general_first_ca') {
         toggleFirstCAFollowup();
+      }
+    });
+
+    window.addEventListener('pageshow', function(event) {
+      if (event && event.persisted) {
+        restoreProjectScrollPosition();
       }
     });
   </script>

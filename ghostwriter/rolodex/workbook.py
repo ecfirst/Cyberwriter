@@ -365,6 +365,8 @@ def build_data_configuration(
         field_kwargs: Optional[Dict[str, Any]] = None,
         entry_slug: Optional[str] = None,
         entry_field_key: Optional[str] = None,
+        storage_section_key: Optional[str] = None,
+        storage_key: Optional[str] = None,
     ) -> None:
         base_field_kwargs: Dict[str, Any] = {
             "label": label,
@@ -380,12 +382,12 @@ def build_data_configuration(
             base_field_kwargs["initial"] = initial
         if field_kwargs:
             base_field_kwargs.update(field_kwargs)
-        section_key = SECTION_KEY_MAP.get(section, _slugify_identifier(section).replace("-", "_"))
+        derived_section_key = SECTION_KEY_MAP.get(section, _slugify_identifier(section).replace("-", "_"))
         question_definition = {
             "key": key,
             "label": label,
             "section": section,
-            "section_key": section_key,
+            "section_key": storage_section_key or derived_section_key,
             "subheading": subheading,
             "field_class": field_class,
             "field_kwargs": base_field_kwargs,
@@ -394,6 +396,8 @@ def build_data_configuration(
             question_definition["entry_slug"] = entry_slug
         if entry_field_key:
             question_definition["entry_field_key"] = entry_field_key
+        if storage_key:
+            question_definition["storage_key"] = storage_key
         questions.append(question_definition)
 
     # Project scope confirmation
@@ -446,6 +450,17 @@ def build_data_configuration(
         section="General",
         choices=YES_NO_CHOICES,
         widget=forms.RadioSelect,
+    )
+
+    add_question(
+        key="hashes_obtained",
+        label="Were password hashes obtained?",
+        field_class=forms.ChoiceField,
+        section="General",
+        choices=YES_NO_CHOICES,
+        widget=forms.RadioSelect,
+        storage_section_key="password",
+        storage_key="hashes_obtained",
     )
 
     add_question(

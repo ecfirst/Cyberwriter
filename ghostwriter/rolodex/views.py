@@ -162,8 +162,8 @@ def _build_grouped_data_responses(
                             if not entries:
                                 section.pop("entries", None)
                 else:
-                    storage_key = key
-                    if section_key == "overall_risk" and key == "overall_risk_major_issues":
+                    storage_key = definition.get("storage_key") or key
+                    if section_key == "overall_risk" and storage_key == "overall_risk_major_issues":
                         storage_key = "major_issues"
                     section.pop(storage_key, None)
                     if not section:
@@ -193,8 +193,8 @@ def _build_grouped_data_responses(
             existing[field_key] = value
         else:
             section = grouped.setdefault(section_key, {})
-            storage_key = key
-            if section_key == "overall_risk" and key == "overall_risk_major_issues":
+            storage_key = definition.get("storage_key") or key
+            if section_key == "overall_risk" and storage_key == "overall_risk_major_issues":
                 storage_key = "major_issues"
             section[storage_key] = value
 
@@ -1920,6 +1920,24 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             else:
                 reordered_requirements[burp_insert_index:burp_insert_index] = nexpose_requirements
         required_files = reordered_requirements
+
+        firewall_index = None
+        burp_cap_index = None
+        for index, requirement in enumerate(required_files):
+            label = (requirement.get("label") or "").strip().lower()
+            if label == "firewall_csv.csv" and firewall_index is None:
+                firewall_index = index
+            if label in {"burp-cap.csv", "burp_cap.csv"} and burp_cap_index is None:
+                burp_cap_index = index
+            if firewall_index is not None and burp_cap_index is not None:
+                break
+        if (
+            firewall_index is not None
+            and burp_cap_index is not None
+            and firewall_index > burp_cap_index
+        ):
+            requirement = required_files.pop(firewall_index)
+            required_files.insert(burp_cap_index, requirement)
 
         supplemental_cards = []
         inserted_ip_cards = False
