@@ -467,6 +467,7 @@ LINTER_CONTEXT = {
             "password": {
                 "password_additional_controls": "yes",
                 "password_enforce_mfa_all_accounts": "no",
+                "hashes_obtained": "yes",
                 "entries": [
                     {"domain": "corp.example.com", "risk": "medium", "bad_pass": True},
                     {"domain": "lab.example.com", "risk": "high", "bad_pass": False},

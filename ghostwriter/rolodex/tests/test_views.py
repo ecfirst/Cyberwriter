@@ -1343,6 +1343,30 @@ class ProjectDataResponsesUpdateTests(TestCase):
             ],
         )
 
+    def test_firewall_requirement_precedes_burp_cap(self):
+        workbook_payload = {
+            "web": {"combined_unique": 3},
+            "firewall": {"unique": 1},
+        }
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["workbook_data"])
+
+        response = self.client_auth.get(self.detail_url)
+
+        supplemental_cards = response.context["supplemental_cards"]
+        labels = [
+            card["data"]["label"]
+            for card in supplemental_cards
+            if card.get("card_type") == "required"
+        ]
+
+        self.assertIn("firewall_csv.csv", labels)
+        firewall_index = labels.index("firewall_csv.csv")
+        burp_candidates = [candidate for candidate in ("burp-cap.csv", "burp_cap.csv") if candidate in labels]
+        self.assertTrue(burp_candidates)
+        burp_index = min(labels.index(candidate) for candidate in burp_candidates)
+        self.assertLess(firewall_index, burp_index)
+
     def test_dns_required_entry_includes_fail_count(self):
         workbook_payload = {"dns": {"records": [{"domain": "example.com"}]}}
         self.project.workbook_data = workbook_payload

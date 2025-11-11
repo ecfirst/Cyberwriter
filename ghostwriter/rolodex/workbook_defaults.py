@@ -222,6 +222,7 @@ DATA_RESPONSES_DEFAULTS: Dict[str, Any] = {
     "password": {
         "password_additional_controls": None,
         "password_enforce_mfa_all_accounts": None,
+        "hashes_obtained": None,
         "entries": [],
     },
     "endpoint": {

@@ -1183,6 +1183,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             for extra_key in (
                 "password_additional_controls",
                 "password_enforce_mfa_all_accounts",
+                "hashes_obtained",
             ):
                 value = section.get(extra_key)
                 if value not in (None, ""):

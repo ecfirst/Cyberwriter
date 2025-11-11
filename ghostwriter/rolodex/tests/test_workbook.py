@@ -287,6 +287,8 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertIn("general", defaults)
         self.assertEqual(defaults["general"]["assessment_scope"], [])
         self.assertIn("password", defaults)
+        self.assertIn("hashes_obtained", defaults["password"])
+        self.assertIsNone(defaults["password"]["hashes_obtained"])
         self.assertEqual(defaults["password"]["entries"], [])
         self.assertIn("wireless", defaults)
         self.assertIn("overall_risk", defaults)
