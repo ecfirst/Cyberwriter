@@ -7,7 +7,7 @@ from datetime import datetime
 import zoneinfo
 
 # Standard Libraries
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 # Django Imports
 from django.conf import settings
@@ -1044,12 +1044,46 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         workbook_response = build_workbook_ad_response(workbook_data)
 
         slug_map = {}
+        total_field_map = {
+            "total_da_count": "domain_admins",
+            "total_ea_count": "ent_admins",
+            "total_ep_count": "exp_passwords",
+            "total_ne_count": "passwords_never_exp",
+            "total_ia_count": "inactive_accounts",
+            "total_ga_count": "generic_accounts",
+            "total_gl_count": "generic_logins",
+            "total_op_count": "old_passwords",
+        }
+        totals = {key: 0 for key in total_field_map}
+        domain_data_found = False
+
+        def _coerce_int(value: Any) -> Optional[int]:
+            if value in (None, ""):
+                return None
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return None
+                text = text.replace(",", "")
+                try:
+                    return int(text)
+                except ValueError:
+                    return None
+            return None
+
         for record in domains:
             if not isinstance(record, dict):
                 continue
             domain_name = record.get("domain") or record.get("name")
             if not domain_name:
                 continue
+            domain_data_found = True
             domain_text = str(domain_name)
             slug = ProjectSerializer._build_slug("ad", domain_text)
             if slug:
@@ -1064,6 +1098,11 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             if functionality_text and any(version in functionality_text for version in ("2000", "2003")):
                 if domain_text not in legacy_domains:
                     legacy_domains.append(domain_text)
+
+            for total_key, field in total_field_map.items():
+                coerced = _coerce_int(record.get(field))
+                if coerced is not None:
+                    totals[total_key] += coerced
 
         ad_metrics = [metric for metric, _ in AD_DOMAIN_METRICS]
 
@@ -1195,6 +1234,10 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 summary.setdefault("old_domains_str", None)
 
         risk_contrib = build_ad_risk_contrib(workbook_data, ordered)
+        if domain_data_found:
+            for field, value in totals.items():
+                summary[field] = value
+
         if summary or risk_contrib:
             summary["risk_contrib"] = risk_contrib
 
