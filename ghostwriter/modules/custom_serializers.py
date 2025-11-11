@@ -44,6 +44,7 @@ from ghostwriter.rolodex.data_parsers import (
     build_workbook_dns_response,
     build_workbook_firewall_response,
     build_workbook_password_response,
+    load_dns_soa_cap_map,
     normalize_nexpose_artifacts_map,
 )
 from ghostwriter.rolodex.models import (
@@ -1011,8 +1012,17 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         if isinstance(entries, list):
             section["unique_soa_fields"] = unique_soa_fields
+            if unique_soa_fields:
+                cap_map = load_dns_soa_cap_map()
+                section["soa_field_cap_map"] = {
+                    field: cap_map.get(field, "")
+                    for field in unique_soa_fields
+                }
+            else:
+                section.pop("soa_field_cap_map", None)
         else:
             section.pop("unique_soa_fields", None)
+            section.pop("soa_field_cap_map", None)
 
         if not entries:
             section.pop("entries", None)

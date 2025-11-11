@@ -10,6 +10,7 @@ from ghostwriter.rolodex.models import (
     ClientInvite,
     ClientNote,
     DNSCapMapping,
+    DNSSOACapMapping,
     DNSFindingMapping,
     DNSRecommendationMapping,
     Deconfliction,
@@ -47,6 +48,12 @@ class DNSRecommendationMappingAdmin(admin.ModelAdmin):
 class DNSCapMappingAdmin(admin.ModelAdmin):
     list_display = ("issue_text", "cap_text")
     search_fields = ("issue_text", "cap_text")
+
+
+@admin.register(DNSSOACapMapping)
+class DNSSOACapMappingAdmin(admin.ModelAdmin):
+    list_display = ("soa_field", "cap_text")
+    search_fields = ("soa_field", "cap_text")
 
 
 @admin.register(Client)

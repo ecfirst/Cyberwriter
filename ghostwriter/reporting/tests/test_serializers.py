@@ -469,6 +469,14 @@ class ProjectSerializerDataResponsesTests(TestCase):
             dns_summary.get("unique_soa_fields"),
             ["serial", "refresh", "retry"],
         )
+        self.assertEqual(
+            dns_summary.get("soa_field_cap_map"),
+            {
+                "serial": "Update to match the 'YYYYMMDDnn' scheme",
+                "refresh": "Update to a value between 1200 and 43200 seconds",
+                "retry": "Update to a value less than or equal to half the REFRESH",
+            },
+        )
 
     def test_workbook_ad_metrics_are_exposed_without_legacy_entries(self):
         workbook_payload = {

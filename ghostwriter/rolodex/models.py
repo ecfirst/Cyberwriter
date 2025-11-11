@@ -244,6 +244,29 @@ class DNSCapMapping(models.Model):
         return f"{self.issue_text}"
 
 
+class DNSSOACapMapping(models.Model):
+    """Store CAP guidance for individual DNS SOA fields."""
+
+    soa_field = models.CharField(
+        "SOA field",
+        max_length=64,
+        unique=True,
+        help_text="Name of the SOA field flagged as outside the recommended range.",
+    )
+    cap_text = models.TextField(
+        "Corrective action plan",
+        help_text="Guidance presented when the SOA field is selected in DNS responses.",
+    )
+
+    class Meta:
+        ordering = ["soa_field"]
+        verbose_name = "DNS SOA CAP mapping"
+        verbose_name_plural = "DNS SOA CAP mappings"
+
+    def __str__(self):
+        return f"{self.soa_field}"
+
+
 class Project(models.Model):
     """
     Stores an individual project, related to :model:`rolodex.Client`,
@@ -433,6 +456,7 @@ class Project(models.Model):
             build_workbook_dns_response,
             build_workbook_firewall_response,
             build_workbook_password_response,
+            load_dns_soa_cap_map,
         )
 
         artifacts = build_project_artifacts(self)
@@ -529,9 +553,19 @@ class Project(models.Model):
         if isinstance(dns_section, dict):
             entries = dns_section.get("entries")
             if isinstance(entries, list):
-                dns_section["unique_soa_fields"] = _collect_unique_soa_fields(entries)
+                unique_fields = _collect_unique_soa_fields(entries)
+                dns_section["unique_soa_fields"] = unique_fields
+                if unique_fields:
+                    cap_map = load_dns_soa_cap_map()
+                    dns_section["soa_field_cap_map"] = {
+                        field: cap_map.get(field, "")
+                        for field in unique_fields
+                    }
+                else:
+                    dns_section.pop("soa_field_cap_map", None)
             else:
                 dns_section.pop("unique_soa_fields", None)
+                dns_section.pop("soa_field_cap_map", None)
 
         self.data_responses = existing_responses
 

@@ -384,6 +384,10 @@ LINTER_CONTEXT = {
                     }
                 ],
                 "unique_soa_fields": ["serial", "refresh"],
+                "soa_field_cap_map": {
+                    "serial": "Update to match the 'YYYYMMDDnn' scheme",
+                    "refresh": "Update to a value between 1200 and 43200 seconds",
+                },
             },
             "wireless": {
                 "segmentation_ssids": ["Guest", "Corp", "Production"],

@@ -76,6 +76,15 @@ DEFAULT_DNS_CAP_MAP: Dict[str, str] = {
     "The SPF record contains the overly permissive modifier '+all'": "Remove the '+all' modifier",
 }
 
+DEFAULT_DNS_SOA_CAP_MAP: Dict[str, str] = {
+    "serial": "Update to match the 'YYYYMMDDnn' scheme",
+    "expire": "Update to a value between 1209600 to 2419200",
+    "mname": "Update to a value that is an authoritative name server",
+    "minimum": "Update to a value greater than 300",
+    "refresh": "Update to a value between 1200 and 43200 seconds",
+    "retry": "Update to a value less than or equal to half the REFRESH",
+}
+
 DEFAULT_DNS_FINDING_MAP: Dict[str, str] = {
     "One or more SOA fields are outside recommended ranges": "configuring DNS records according to best practice",
     "Less than 2 nameservers exist": "the number/availability of nameservers",
@@ -135,6 +144,8 @@ def _load_dns_mapping(
     model_name: str,
     value_field: str,
     default_map: Dict[str, str],
+    *,
+    key_field: str = "issue_text",
 ) -> Dict[str, str]:
     """Return DNS issue mappings from the database, falling back to defaults."""
 
@@ -144,12 +155,23 @@ def _load_dns_mapping(
         return default_map
 
     try:
-        values = model.objects.all().values_list("issue_text", value_field)
+        values = model.objects.all().values_list(key_field, value_field)
     except (OperationalError, ProgrammingError):  # pragma: no cover - defensive guard
         return default_map
 
     mapping = {issue: text for issue, text in values if issue}
     return mapping or default_map
+
+
+def load_dns_soa_cap_map() -> Dict[str, str]:
+    """Return SOA field CAP mappings from the database or fall back to defaults."""
+
+    return _load_dns_mapping(
+        "DNSSOACapMapping",
+        "cap_text",
+        DEFAULT_DNS_SOA_CAP_MAP,
+        key_field="soa_field",
+    )
 
 
 AD_RISK_CONTRIBUTION_PHRASES: Dict[str, str] = {

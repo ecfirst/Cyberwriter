@@ -15,10 +15,12 @@ from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_ARTIFACT_DEFINITIONS,
     normalize_nexpose_artifact_payload,
     normalize_nexpose_artifacts_map,
+    load_dns_soa_cap_map,
     parse_dns_report,
 )
 from ghostwriter.rolodex.models import (
     DNSCapMapping,
+    DNSSOACapMapping,
     DNSFindingMapping,
     DNSRecommendationMapping,
     ProjectDataFile,
@@ -801,6 +803,62 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(dns_responses.get("zone_trans"), 2)
         self.assertEqual(dns_responses.get("existing"), "value")
 
+    def test_dns_soa_cap_map_populated(self):
+        stored_responses = {
+            "dns": {
+                "entries": [
+                    {"domain": "one.example", "soa_fields": ["serial", "refresh"]},
+                    {"domain": "two.example", "soa_fields": ["retry"]},
+                ]
+            }
+        }
+
+        self.project.data_responses = stored_responses
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        dns_responses = self.project.data_responses.get("dns")
+        self.assertIsInstance(dns_responses, dict)
+        self.assertEqual(
+            dns_responses.get("soa_field_cap_map"),
+            {
+                "serial": "Update to match the 'YYYYMMDDnn' scheme",
+                "refresh": "Update to a value between 1200 and 43200 seconds",
+                "retry": "Update to a value less than or equal to half the REFRESH",
+            },
+        )
+
+    def test_dns_soa_cap_map_uses_database(self):
+        DNSSOACapMapping.objects.update_or_create(
+            soa_field="serial",
+            defaults={"cap_text": "custom serial guidance"},
+        )
+
+        stored_responses = {
+            "dns": {
+                "entries": [
+                    {"domain": "one.example", "soa_fields": ["serial"]},
+                ]
+            }
+        }
+
+        self.project.data_responses = stored_responses
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        dns_responses = self.project.data_responses.get("dns")
+        self.assertIsInstance(dns_responses, dict)
+        self.assertEqual(
+            dns_responses.get("soa_field_cap_map"),
+            {"serial": "custom serial guidance"},
+        )
+
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()
         self.project.refresh_from_db()
@@ -906,3 +964,18 @@ class DNSDataParserTests(TestCase):
                 "impact": "",
             },
         )
+
+    def test_load_dns_soa_cap_map_prefers_database(self):
+        mapping = load_dns_soa_cap_map()
+        self.assertEqual(
+            mapping.get("serial"),
+            "Update to match the 'YYYYMMDDnn' scheme",
+        )
+
+        DNSSOACapMapping.objects.update_or_create(
+            soa_field="serial",
+            defaults={"cap_text": "custom serial guidance"},
+        )
+
+        updated_mapping = load_dns_soa_cap_map()
+        self.assertEqual(updated_mapping.get("serial"), "custom serial guidance")
