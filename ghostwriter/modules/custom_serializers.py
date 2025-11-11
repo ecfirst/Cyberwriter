@@ -7,7 +7,7 @@ from datetime import datetime
 import zoneinfo
 
 # Standard Libraries
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 # Django Imports
 from django.conf import settings
@@ -871,11 +871,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         password_section = result.get("password")
         if not isinstance(password_section, dict):
-            password_section = {"entries": [], "bad_pass_count": 0}
+            password_section = {"entries": [], "bad_pass_count": 0, "total_cracked": 0}
             result["password"] = password_section
         else:
             password_section.setdefault("entries", [])
             password_section.setdefault("bad_pass_count", 0)
+            password_section.setdefault("total_cracked", 0)
 
         endpoint_section = result.get("endpoint")
         if not isinstance(endpoint_section, dict):
@@ -1044,12 +1045,46 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         workbook_response = build_workbook_ad_response(workbook_data)
 
         slug_map = {}
+        total_field_map = {
+            "total_da_count": "domain_admins",
+            "total_ea_count": "ent_admins",
+            "total_ep_count": "exp_passwords",
+            "total_ne_count": "passwords_never_exp",
+            "total_ia_count": "inactive_accounts",
+            "total_ga_count": "generic_accounts",
+            "total_gl_count": "generic_logins",
+            "total_op_count": "old_passwords",
+        }
+        totals = {key: 0 for key in total_field_map}
+        domain_data_found = False
+
+        def _coerce_int(value: Any) -> Optional[int]:
+            if value in (None, ""):
+                return None
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return None
+                text = text.replace(",", "")
+                try:
+                    return int(text)
+                except ValueError:
+                    return None
+            return None
+
         for record in domains:
             if not isinstance(record, dict):
                 continue
             domain_name = record.get("domain") or record.get("name")
             if not domain_name:
                 continue
+            domain_data_found = True
             domain_text = str(domain_name)
             slug = ProjectSerializer._build_slug("ad", domain_text)
             if slug:
@@ -1064,6 +1099,11 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             if functionality_text and any(version in functionality_text for version in ("2000", "2003")):
                 if domain_text not in legacy_domains:
                     legacy_domains.append(domain_text)
+
+            for total_key, field in total_field_map.items():
+                coerced = _coerce_int(record.get(field))
+                if coerced is not None:
+                    totals[total_key] += coerced
 
         ad_metrics = [metric for metric, _ in AD_DOMAIN_METRICS]
 
@@ -1195,6 +1235,10 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 summary.setdefault("old_domains_str", None)
 
         risk_contrib = build_ad_risk_contrib(workbook_data, ordered)
+        if domain_data_found:
+            for field, value in totals.items():
+                summary[field] = value
+
         if summary or risk_contrib:
             summary["risk_contrib"] = risk_contrib
 
@@ -1208,6 +1252,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             workbook_domains,
         ) = build_workbook_password_response(workbook_data)
         bad_pass_count = workbook_summary.get("bad_pass_count", 0)
+        total_cracked = workbook_summary.get("total_cracked", 0)
 
         entries = {}
         domain_order = []
@@ -1287,7 +1332,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         populated_domains = [name for name in domain_order if len(entries[name]) > 1]
         if not populated_domains:
-            summary = {"bad_pass_count": bad_pass_count}
+            summary = {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
             summary.update(extra_fields)
             return summary
 
@@ -1300,7 +1345,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 summary_domains.append(domain)
 
         if not summary_domains:
-            return {"bad_pass_count": bad_pass_count}
+            return {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
 
         def _format_risk(value):
             if value is None:
@@ -1370,7 +1415,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             cracked_risk_parts.append(_format_risk(entry.get("risk")))
 
         if not ordered_entries:
-            return {"bad_pass_count": bad_pass_count}
+            return {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
 
         summary = {
             "entries": ordered_entries,
@@ -1384,6 +1429,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             "lanman_list_string": _format_sample(lanman_domains),
             "no_fgpp_string": _format_sample(no_fgpp_domains),
             "bad_pass_count": bad_pass_count,
+            "total_cracked": total_cracked,
         }
 
         if not summary.get("cracked_count_str") and workbook_summary.get("cracked_count_str"):

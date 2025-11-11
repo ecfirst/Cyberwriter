@@ -337,6 +337,14 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(ad_summary["ia_count_str"], "15/4")
         self.assertEqual(ad_summary["ga_count_str"], "6/1")
         self.assertEqual(ad_summary["gl_count_str"], "3/2")
+        self.assertEqual(ad_summary["total_da_count"], 8)
+        self.assertEqual(ad_summary["total_ea_count"], 3)
+        self.assertEqual(ad_summary["total_ep_count"], 17)
+        self.assertEqual(ad_summary["total_ne_count"], 10)
+        self.assertEqual(ad_summary["total_ia_count"], 19)
+        self.assertEqual(ad_summary["total_ga_count"], 7)
+        self.assertEqual(ad_summary["total_gl_count"], 5)
+        self.assertEqual(ad_summary["total_op_count"], 0)
         self.assertEqual(ad_summary["da_risk_string"], "High/Medium")
         self.assertEqual(ad_summary["ea_risk_string"], "Medium/High")
         self.assertEqual(ad_summary["ep_risk_string"], "Low/Medium")
@@ -374,6 +382,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(password_summary["lanman_list_string"], "'corp.example.com'")
         self.assertEqual(password_summary["no_fgpp_string"], "'lab.example.com'")
         self.assertEqual(password_summary["bad_pass_count"], 2)
+        self.assertEqual(password_summary["total_cracked"], 8464)
 
         endpoint_summary = responses["endpoint"]
         self.assertIn("entries", endpoint_summary)
@@ -562,6 +571,14 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(ad_summary.get("never_expire_string"), "14, 6 and 9")
         self.assertEqual(ad_summary.get("generic_accounts_string"), "9, 2 and 5")
         self.assertEqual(ad_summary.get("generic_logins_string"), "4, 1 and 2")
+        self.assertEqual(ad_summary.get("total_da_count"), 23)
+        self.assertEqual(ad_summary.get("total_ea_count"), 10)
+        self.assertEqual(ad_summary.get("total_ep_count"), 41)
+        self.assertEqual(ad_summary.get("total_ne_count"), 29)
+        self.assertEqual(ad_summary.get("total_ia_count"), 55)
+        self.assertEqual(ad_summary.get("total_ga_count"), 16)
+        self.assertEqual(ad_summary.get("total_gl_count"), 7)
+        self.assertEqual(ad_summary.get("total_op_count"), 63)
 
     def test_ad_summary_includes_default_old_domain_count(self):
         workbook_payload = {
@@ -592,6 +609,14 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertIsNone(ad_summary.get("old_domains_str"))
         self.assertEqual(ad_summary.get("old_domains_count"), 0)
         self.assertEqual(ad_summary.get("risk_contrib"), [])
+        self.assertEqual(ad_summary.get("total_da_count"), 0)
+        self.assertEqual(ad_summary.get("total_ea_count"), 0)
+        self.assertEqual(ad_summary.get("total_ep_count"), 0)
+        self.assertEqual(ad_summary.get("total_ne_count"), 0)
+        self.assertEqual(ad_summary.get("total_ia_count"), 8)
+        self.assertEqual(ad_summary.get("total_ga_count"), 0)
+        self.assertEqual(ad_summary.get("total_gl_count"), 0)
+        self.assertEqual(ad_summary.get("total_op_count"), 10)
 
     def test_ad_summary_populates_risk_contrib_from_entries(self):
         workbook_payload = {
@@ -669,6 +694,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
                 "domains_str": "'corp.example.com'",
                 "cracked_count_str": "100",
                 "cracked_risk_string": "Low",
+                "total_cracked": 0,
             },
             "endpoint": {
                 "entries": [
@@ -757,6 +783,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
         password_section = responses["password"]
         self.assertEqual(password_section.get("entries"), [])
         self.assertEqual(password_section.get("bad_pass_count"), 0)
+        self.assertEqual(password_section.get("total_cracked"), 0)
 
     def test_iot_testing_confirm_defaults_to_no(self):
         self.project.data_responses = {}
