@@ -328,7 +328,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(corp_ad["inactive_accounts"], "medium")
         self.assertEqual(lab_ad["domain_admins"], "medium")
         self.assertEqual(lab_ad["enterprise_admins"], "high")
-        self.assertEqual(ad_summary["domains_str"], "corp.example.com/lab.example.com")
+        self.assertEqual(ad_summary["domains_str"], "'corp.example.com'/'lab.example.com'")
         self.assertEqual(ad_summary["enabled_count_str"], "220/80")
         self.assertEqual(ad_summary["da_count_str"], "5/3")
         self.assertEqual(ad_summary["ea_count_str"], "2/1")
@@ -359,7 +359,9 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(lab_password["risk"], "high")
         self.assertTrue(corp_password.get("bad_pass"))
         self.assertFalse(lab_password.get("bad_pass"))
-        self.assertEqual(password_summary["domains_str"], "corp.example.com/lab.example.com")
+        self.assertEqual(
+            password_summary["domains_str"], "'corp.example.com'/'lab.example.com'"
+        )
         self.assertEqual(password_summary["cracked_count_str"], "3589/4875")
         self.assertEqual(password_summary["cracked_risk_string"], "Medium/High")
         self.assertEqual(password_summary["cracked_finding_string"], "3589 and 4875")
@@ -493,6 +495,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
 
         self.assertIsInstance(ad_summary, dict)
         self.assertEqual(ad_summary.get("old_domains_string"), "'legacy.local' and 'ancient.local'")
+        self.assertEqual(ad_summary.get("old_domains_str"), "'legacy.local'/'ancient.local'")
         self.assertEqual(ad_summary.get("old_domains_count"), 2)
         self.assertEqual(ad_summary.get("risk_contrib"), [])
         self.assertEqual(
@@ -560,6 +563,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
 
         self.assertIsInstance(ad_summary, dict)
         self.assertNotIn("old_domains_string", ad_summary)
+        self.assertIsNone(ad_summary.get("old_domains_str"))
         self.assertEqual(ad_summary.get("old_domains_count"), 0)
         self.assertEqual(ad_summary.get("risk_contrib"), [])
 
@@ -636,7 +640,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
             "ad": [{"domain": "corp.example.com", "domain_admins": "medium"}],
             "password": {
                 "entries": [{"domain": "corp.example.com", "risk": "low"}],
-                "domains_str": "corp.example.com",
+                "domains_str": "'corp.example.com'",
                 "cracked_count_str": "100",
                 "cracked_risk_string": "Low",
             },

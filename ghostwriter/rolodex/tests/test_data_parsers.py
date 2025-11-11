@@ -458,6 +458,7 @@ class NexposeDataParserTests(TestCase):
         ad_responses = self.project.data_responses.get("ad")
         self.assertIsInstance(ad_responses, dict)
         self.assertEqual(ad_responses.get("old_domains_string"), "'legacy.local' and 'ancient.local'")
+        self.assertEqual(ad_responses.get("old_domains_str"), "'legacy.local'/'ancient.local'")
         self.assertEqual(ad_responses.get("old_domains_count"), 2)
         self.assertEqual(ad_responses.get("risk_contrib"), [])
         self.assertEqual(
@@ -524,6 +525,7 @@ class NexposeDataParserTests(TestCase):
         ad_responses = self.project.data_responses.get("ad")
         self.assertIsInstance(ad_responses, dict)
         self.assertNotIn("old_domains_string", ad_responses)
+        self.assertIsNone(ad_responses.get("old_domains_str"))
         self.assertEqual(ad_responses.get("old_domains_count"), 0)
         self.assertEqual(ad_responses.get("risk_contrib"), [])
 

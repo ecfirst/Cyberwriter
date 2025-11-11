@@ -412,7 +412,7 @@ LINTER_CONTEXT = {
                         "passwords_never_expire": "low",
                     }
                 ],
-                "domains_str": "corp.example.com",
+                "domains_str": "'corp.example.com'",
                 "enabled_count_str": "220",
                 "da_count_str": "5",
                 "ea_count_str": "2",
@@ -429,6 +429,7 @@ LINTER_CONTEXT = {
                 "ga_risk_string": "High",
                 "gl_risk_string": "Medium",
                 "old_domains_string": "'legacy.local' and 'ancient.local'",
+                "old_domains_str": "'legacy.local'/'ancient.local'",
                 "old_domains_count": 2,
                 "risk_contrib": [
                     "the number of Domain Admin accounts",
@@ -472,7 +473,7 @@ LINTER_CONTEXT = {
                     {"domain": "corp.example.com", "risk": "medium", "bad_pass": True},
                     {"domain": "lab.example.com", "risk": "high", "bad_pass": False},
                 ],
-                "domains_str": "corp.example.com/lab.example.com",
+                "domains_str": "'corp.example.com'/'lab.example.com'",
                 "cracked_count_str": "17/9",
                 "cracked_risk_string": "Medium/High",
                 "cracked_finding_string": "17 and 9",

@@ -218,7 +218,7 @@ DATA_RESPONSES_DEFAULTS: Dict[str, Any] = {
     },
     "dns": {"entries": []},
     "firewall": {"firewall_periodic_reviews": None, "entries": []},
-    "ad": {"entries": []},
+    "ad": {"entries": [], "old_domains_str": None},
     "password": {
         "password_additional_controls": None,
         "password_enforce_mfa_all_accounts": None,
