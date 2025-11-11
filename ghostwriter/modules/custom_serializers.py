@@ -45,7 +45,9 @@ from ghostwriter.rolodex.data_parsers import (
     build_workbook_firewall_response,
     build_workbook_password_response,
     load_dns_soa_cap_map,
+    load_password_cap_map,
     normalize_nexpose_artifacts_map,
+    summarize_password_cap_details,
 )
 from ghostwriter.rolodex.models import (
     Client,
@@ -1287,6 +1289,24 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     extra_fields[extra_key] = value
                 section.pop(extra_key, None)
 
+        cap_fields, cap_context = summarize_password_cap_details(workbook_domain_values)
+        password_cap_map = load_password_cap_map() if cap_fields else {}
+
+        def _inject_cap_details(summary_dict: Dict[str, Any]) -> Dict[str, Any]:
+            if cap_fields:
+                summary_dict["policy_cap_fields"] = list(cap_fields)
+                summary_dict["policy_cap_map"] = {
+                    field: password_cap_map.get(field, "")
+                    for field in cap_fields
+                }
+                if cap_context:
+                    summary_dict["policy_cap_context"] = cap_context
+            else:
+                summary_dict.pop("policy_cap_fields", None)
+                summary_dict.pop("policy_cap_map", None)
+                summary_dict.pop("policy_cap_context", None)
+            return summary_dict
+
         for domain_name in workbook_domain_values.keys():
             entry = entries.setdefault(domain_name, {"domain": domain_name})
 
@@ -1344,7 +1364,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if not populated_domains:
             summary = {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
             summary.update(extra_fields)
-            return summary
+            return _inject_cap_details(summary)
 
         summary_domains = []
         for domain in workbook_domains:
@@ -1355,7 +1375,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 summary_domains.append(domain)
 
         if not summary_domains:
-            return {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
+            return _inject_cap_details(
+                {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
+            )
 
         def _format_risk(value):
             if value is None:
@@ -1413,6 +1435,27 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
             entry["bad_pass"] = bool(domain_values.get("bad_pass"))
 
+            policy_fields = domain_values.get("policy_cap_fields")
+            if isinstance(policy_fields, list) and policy_fields:
+                entry["bad_policy_fields"] = list(policy_fields)
+            fgpp_fields = domain_values.get("fgpp_cap_fields")
+            if isinstance(fgpp_fields, dict) and fgpp_fields:
+                entry["fgpp_bad_fields"] = {
+                    name: list(fields)
+                    for name, fields in fgpp_fields.items()
+                    if isinstance(fields, list) and fields
+                }
+            policy_values = domain_values.get("policy_cap_values")
+            if isinstance(policy_values, dict) and policy_values:
+                entry["policy_cap_values"] = dict(policy_values)
+            fgpp_values = domain_values.get("fgpp_cap_values")
+            if isinstance(fgpp_values, dict) and fgpp_values:
+                entry["fgpp_cap_values"] = {
+                    name: dict(values)
+                    for name, values in fgpp_values.items()
+                    if isinstance(values, dict) and values
+                }
+
             cracked_count_parts.append(cracked_value or "0")
             enabled_count_parts.append(enabled_value or "0")
             admin_cracked_parts.append(admin_cracked_value or "0")
@@ -1446,7 +1489,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             summary["cracked_count_str"] = workbook_summary["cracked_count_str"]
 
         summary.update(extra_fields)
-        return summary
+        return _inject_cap_details(summary)
 
     @staticmethod
     def _collect_endpoint_responses(raw_responses, workbook_data):

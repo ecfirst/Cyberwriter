@@ -13,6 +13,7 @@ from ghostwriter.rolodex.models import (
     DNSSOACapMapping,
     DNSFindingMapping,
     DNSRecommendationMapping,
+    PasswordCapMapping,
     Deconfliction,
     DeconflictionStatus,
     ObjectivePriority,
@@ -54,6 +55,12 @@ class DNSCapMappingAdmin(admin.ModelAdmin):
 class DNSSOACapMappingAdmin(admin.ModelAdmin):
     list_display = ("soa_field", "cap_text")
     search_fields = ("soa_field", "cap_text")
+
+
+@admin.register(PasswordCapMapping)
+class PasswordCapMappingAdmin(admin.ModelAdmin):
+    list_display = ("setting", "cap_text")
+    search_fields = ("setting", "cap_text")
 
 
 @admin.register(Client)

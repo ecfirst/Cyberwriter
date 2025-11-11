@@ -267,6 +267,29 @@ class DNSSOACapMapping(models.Model):
         return f"{self.soa_field}"
 
 
+class PasswordCapMapping(models.Model):
+    """Store CAP guidance for workbook password policy settings."""
+
+    setting = models.CharField(
+        "Password setting",
+        max_length=64,
+        unique=True,
+        help_text="Name of the password policy setting captured from workbook data.",
+    )
+    cap_text = models.TextField(
+        "Corrective action plan",
+        help_text="Guidance presented when the setting is outside recommended bounds.",
+    )
+
+    class Meta:
+        ordering = ["setting"]
+        verbose_name = "Password CAP mapping"
+        verbose_name_plural = "Password CAP mappings"
+
+    def __str__(self):
+        return f"{self.setting}"
+
+
 class Project(models.Model):
     """
     Stores an individual project, related to :model:`rolodex.Client`,

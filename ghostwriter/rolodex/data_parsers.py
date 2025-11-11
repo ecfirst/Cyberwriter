@@ -8,7 +8,7 @@ import io
 import re
 from collections import Counter
 from collections import abc
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from django.apps import apps
 from django.core.files.base import File
@@ -76,6 +76,23 @@ DEFAULT_DNS_CAP_MAP: Dict[str, str] = {
     "The SPF record contains the overly permissive modifier '+all'": "Remove the '+all' modifier",
 }
 
+DEFAULT_PASSWORD_CAP_MAP: Dict[str, str] = {
+    "max_age": (
+        "Change 'Maximum Age' from {{ max_age }} to == 0 to align with NIST recommendations "
+        "to not force users to arbitrarily change passwords based solely on age"
+    ),
+    "min_age": "Change 'Minimum Age' from {{ min_age }} to >= 1 and < 7",
+    "min_length": "Change 'Minimum Length' from {{ min_length }} to >= 8",
+    "history": "Change 'History' from {{ history }} to >= 10",
+    "lockout_threshold": "Change 'Lockout Threshold' from {{ lockout_threshold }} to > 0 and <= 6",
+    "lockout_duration": "Change 'Lockout Duration' from {{ lockout_duration }} to >= 30 or admin unlock",
+    "lockout_reset": "Change 'Lockout Reset' from {{ lockout_reset }} to >= 30",
+    "complexity_enabled": (
+        "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection controls "
+        "such as blacklists"
+    ),
+}
+
 DEFAULT_DNS_SOA_CAP_MAP: Dict[str, str] = {
     "serial": "Update to match the 'YYYYMMDDnn' scheme",
     "expire": "Update to a value between 1209600 to 2419200",
@@ -140,14 +157,14 @@ DNS_IMPACT_MAP: Dict[str, str] = {
 }
 
 
-def _load_dns_mapping(
+def _load_mapping(
     model_name: str,
     value_field: str,
     default_map: Dict[str, str],
     *,
     key_field: str = "issue_text",
 ) -> Dict[str, str]:
-    """Return DNS issue mappings from the database, falling back to defaults."""
+    """Return mappings from the database, falling back to defaults."""
 
     try:
         model = apps.get_model("rolodex", model_name)
@@ -166,11 +183,22 @@ def _load_dns_mapping(
 def load_dns_soa_cap_map() -> Dict[str, str]:
     """Return SOA field CAP mappings from the database or fall back to defaults."""
 
-    return _load_dns_mapping(
+    return _load_mapping(
         "DNSSOACapMapping",
         "cap_text",
         DEFAULT_DNS_SOA_CAP_MAP,
         key_field="soa_field",
+    )
+
+
+def load_password_cap_map() -> Dict[str, str]:
+    """Return password policy CAP mappings from the database or fall back to defaults."""
+
+    return _load_mapping(
+        "PasswordCapMapping",
+        "cap_text",
+        DEFAULT_PASSWORD_CAP_MAP,
+        key_field="setting",
     )
 
 
@@ -507,17 +535,17 @@ def _summarize_firewall_vulnerabilities(
 def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     """Parse a dns_report.csv file, returning issue metadata for failed checks."""
 
-    finding_map = _load_dns_mapping(
+    finding_map = _load_mapping(
         "DNSFindingMapping",
         "finding_text",
         DEFAULT_DNS_FINDING_MAP,
     )
-    recommendation_map = _load_dns_mapping(
+    recommendation_map = _load_mapping(
         "DNSRecommendationMapping",
         "recommendation_text",
         DEFAULT_DNS_RECOMMENDATION_MAP,
     )
-    cap_map = _load_dns_mapping(
+    cap_map = _load_mapping(
         "DNSCapMapping",
         "cap_text",
         DEFAULT_DNS_CAP_MAP,
@@ -976,6 +1004,69 @@ def _format_plain_list(values: List[str]) -> str:
     return ", ".join(entries[:-1]) + f" and {entries[-1]}"
 
 
+def summarize_password_cap_details(
+    domain_values: Dict[str, Dict[str, Any]]
+) -> Tuple[List[str], Dict[str, Any]]:
+    """Return ordered password CAP fields and associated context values."""
+
+    unique_fields: List[str] = []
+    seen_fields: Set[str] = set()
+    context: Dict[str, Any] = {}
+
+    for domain, values in domain_values.items():
+        if not isinstance(values, dict):
+            continue
+
+        domain_context: Dict[str, Any] = {}
+
+        policy_fields = values.get("policy_cap_fields")
+        policy_values = values.get("policy_cap_values")
+        if isinstance(policy_fields, list) and policy_fields:
+            policy_context: Dict[str, Any] = {}
+            for field in policy_fields:
+                if field not in seen_fields:
+                    seen_fields.add(field)
+                    unique_fields.append(field)
+                field_value = (
+                    policy_values.get(field)
+                    if isinstance(policy_values, dict)
+                    else None
+                )
+                policy_context[field] = field_value
+            if policy_context:
+                domain_context["policy"] = policy_context
+
+        fgpp_fields = values.get("fgpp_cap_fields")
+        fgpp_values = values.get("fgpp_cap_values")
+        if isinstance(fgpp_fields, dict) and fgpp_fields:
+            fgpp_context: Dict[str, Dict[str, Any]] = {}
+            for name, field_list in fgpp_fields.items():
+                if not isinstance(field_list, list) or not field_list:
+                    continue
+                per_policy_context: Dict[str, Any] = {}
+                for field in field_list:
+                    if field not in seen_fields:
+                        seen_fields.add(field)
+                        unique_fields.append(field)
+                    value_map = (
+                        fgpp_values.get(name)
+                        if isinstance(fgpp_values, dict)
+                        else None
+                    )
+                    per_policy_context[field] = (
+                        value_map.get(field) if isinstance(value_map, dict) else None
+                    )
+                if per_policy_context:
+                    fgpp_context[name] = per_policy_context
+            if fgpp_context:
+                domain_context["fgpp"] = fgpp_context
+
+        if domain_context:
+            context[domain] = domain_context
+
+    return unique_fields, context
+
+
 def _format_integer_value(value: Optional[int]) -> str:
     """Normalize integer-like values to strings while preserving zeroes."""
 
@@ -1349,10 +1440,10 @@ def build_workbook_password_response(
         return fgpp_count is not None and fgpp_count < 1
 
     policy_metric_fields = {
-        "history",
         "max_age",
         "min_age",
         "min_length",
+        "history",
         "lockout_threshold",
         "lockout_duration",
         "lockout_reset",
@@ -1362,44 +1453,50 @@ def build_workbook_password_response(
     def _coerce_metric_int(entry: Dict[str, Any], key: str) -> Optional[int]:
         return _coerce_int(entry.get(key))
 
-    def _policy_is_bad(entry: Dict[str, Any]) -> bool:
+    def _collect_policy_failures(entry: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(entry, dict):
-            return False
+            return {}
+
+        failures: Dict[str, Any] = {}
 
         max_age = _coerce_metric_int(entry, "max_age")
         if max_age is not None and max_age != 0:
-            return True
+            failures["max_age"] = max_age
 
         min_age = _coerce_metric_int(entry, "min_age")
         if min_age is not None and (min_age < 1 or min_age >= 7):
-            return True
+            failures["min_age"] = min_age
 
         min_length = _coerce_metric_int(entry, "min_length")
         if min_length is not None and min_length < 8:
-            return True
+            failures["min_length"] = min_length
 
         history = _coerce_metric_int(entry, "history")
         if history is not None and history < 10:
-            return True
+            failures["history"] = history
 
         lockout_threshold = _coerce_metric_int(entry, "lockout_threshold")
         if lockout_threshold is not None and (
             lockout_threshold == 0 or lockout_threshold > 6
         ):
-            return True
+            failures["lockout_threshold"] = lockout_threshold
 
         lockout_duration = _coerce_metric_int(entry, "lockout_duration")
         if lockout_duration is not None and 1 <= lockout_duration <= 29:
-            return True
+            failures["lockout_duration"] = lockout_duration
 
         lockout_reset = _coerce_metric_int(entry, "lockout_reset")
         if lockout_reset is not None and lockout_reset < 30:
-            return True
+            failures["lockout_reset"] = lockout_reset
 
         if _is_yes(entry.get("complexity_enabled")):
-            return True
+            raw_value = entry.get("complexity_enabled")
+            if isinstance(raw_value, str) and raw_value.strip():
+                failures["complexity_enabled"] = raw_value.strip().upper()
+            else:
+                failures["complexity_enabled"] = "TRUE"
 
-        return False
+        return failures
 
     def _iter_fgpp_entries(entry: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
         raw_fgpp = entry.get("fgpp")
@@ -1432,6 +1529,7 @@ def build_workbook_password_response(
             policy_domain_order.append(domain_text)
 
         normalized_entry = entry if isinstance(entry, dict) else {}
+        domain_entry = domain_values.setdefault(domain_text, {})
 
         cracked_value = _coerce_int(normalized_entry.get("passwords_cracked"))
         if cracked_value is not None:
@@ -1439,28 +1537,56 @@ def build_workbook_password_response(
         enabled_value = _coerce_int(normalized_entry.get("enabled_accounts"))
         admin_cracked_value = _normalize_admin_count(normalized_entry)
 
-        policy_is_bad = _policy_is_bad(normalized_entry)
+        policy_failures = _collect_policy_failures(normalized_entry)
+        policy_is_bad = bool(policy_failures)
         if policy_is_bad:
             bad_pass_total += 1
+            policy_fields = domain_entry.setdefault("policy_cap_fields", [])
+            for field in policy_failures:
+                if field not in policy_fields:
+                    policy_fields.append(field)
+            domain_entry.setdefault("policy_cap_values", {}).update(policy_failures)
 
         fgpp_is_bad = False
-        for fgpp_entry in _iter_fgpp_entries(normalized_entry):
-            if _policy_is_bad(fgpp_entry):
-                bad_pass_total += 1
-                fgpp_is_bad = True
+        for index, fgpp_entry in enumerate(
+            _iter_fgpp_entries(normalized_entry), start=1
+        ):
+            fgpp_failures = _collect_policy_failures(fgpp_entry)
+            if not fgpp_failures:
+                continue
+            bad_pass_total += 1
+            fgpp_is_bad = True
+            fgpp_name_value = (
+                fgpp_entry.get("fgpp_name")
+                or fgpp_entry.get("name")
+                or fgpp_entry.get("policy_name")
+            )
+            fgpp_name = str(fgpp_name_value).strip() if fgpp_name_value else ""
+            if not fgpp_name:
+                fgpp_name = f"Policy {index}"
+            fgpp_fields_map = domain_entry.setdefault("fgpp_cap_fields", {})
+            fgpp_field_list = fgpp_fields_map.setdefault(fgpp_name, [])
+            for field in fgpp_failures:
+                if field not in fgpp_field_list:
+                    fgpp_field_list.append(field)
+            fgpp_values_map = domain_entry.setdefault("fgpp_cap_values", {})
+            fgpp_value_entry = fgpp_values_map.setdefault(fgpp_name, {})
+            fgpp_value_entry.update(fgpp_failures)
 
         combined_bad = policy_is_bad or fgpp_is_bad
         if combined_bad or domain_text not in domain_bad_flags:
             domain_bad_flags[domain_text] = domain_bad_flags.get(domain_text, False) or combined_bad
 
-        domain_values[domain_text] = {
-            "passwords_cracked": _format_integer_value(cracked_value),
-            "enabled_accounts": _format_integer_value(enabled_value),
-            "admin_cracked": _format_integer_value(admin_cracked_value),
-            "lanman": _is_yes(normalized_entry.get("lanman_stored")),
-            "no_fgpp": _normalize_fgpp(normalized_entry),
-            "bad_pass": domain_bad_flags.get(domain_text, False),
-        }
+        domain_entry.update(
+            {
+                "passwords_cracked": _format_integer_value(cracked_value),
+                "enabled_accounts": _format_integer_value(enabled_value),
+                "admin_cracked": _format_integer_value(admin_cracked_value),
+                "lanman": _is_yes(normalized_entry.get("lanman_stored")),
+                "no_fgpp": _normalize_fgpp(normalized_entry),
+                "bad_pass": domain_bad_flags.get(domain_text, False),
+            }
+        )
 
     summary_domains: List[str] = []
     for domain in ad_domain_order:
@@ -1470,10 +1596,28 @@ def build_workbook_password_response(
         if domain in domain_values and domain not in summary_domains:
             summary_domains.append(domain)
 
+    policy_cap_fields, policy_cap_context = summarize_password_cap_details(domain_values)
+    password_cap_map = load_password_cap_map() if policy_cap_fields else {}
+
+    def _inject_cap_details(summary_dict: Dict[str, Any]) -> Dict[str, Any]:
+        if policy_cap_fields:
+            summary_dict["policy_cap_fields"] = list(policy_cap_fields)
+            summary_dict["policy_cap_map"] = {
+                field: password_cap_map.get(field, "")
+                for field in policy_cap_fields
+            }
+            if policy_cap_context:
+                summary_dict["policy_cap_context"] = policy_cap_context
+        else:
+            summary_dict.pop("policy_cap_fields", None)
+            summary_dict.pop("policy_cap_map", None)
+            summary_dict.pop("policy_cap_context", None)
+        return summary_dict
+
     summary: Dict[str, Any] = {"bad_pass_count": bad_pass_total, "total_cracked": total_cracked}
 
     if not summary_domains:
-        return summary, domain_values, summary_domains
+        return _inject_cap_details(summary), domain_values, summary_domains
 
     cracked_counts = [domain_values[domain]["passwords_cracked"] for domain in summary_domains]
     enabled_counts = [domain_values[domain]["enabled_accounts"] for domain in summary_domains]
@@ -1495,7 +1639,7 @@ def build_workbook_password_response(
         }
     )
 
-    return summary, domain_values, summary_domains
+    return _inject_cap_details(summary), domain_values, summary_domains
 
 
 def build_workbook_dns_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:

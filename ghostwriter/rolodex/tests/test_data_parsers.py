@@ -16,6 +16,7 @@ from ghostwriter.rolodex.data_parsers import (
     normalize_nexpose_artifact_payload,
     normalize_nexpose_artifacts_map,
     load_dns_soa_cap_map,
+    load_password_cap_map,
     parse_dns_report,
 )
 from ghostwriter.rolodex.models import (
@@ -23,6 +24,7 @@ from ghostwriter.rolodex.models import (
     DNSSOACapMapping,
     DNSFindingMapping,
     DNSRecommendationMapping,
+    PasswordCapMapping,
     ProjectDataFile,
 )
 
@@ -750,6 +752,101 @@ class NexposeDataParserTests(TestCase):
             "'legacy.local'",
         )
         self.assertEqual(password_responses.get("bad_pass_count"), 3)
+        self.assertEqual(
+            password_responses.get("policy_cap_fields"),
+            [
+                "max_age",
+                "min_age",
+                "min_length",
+                "history",
+                "lockout_threshold",
+                "lockout_duration",
+                "lockout_reset",
+                "complexity_enabled",
+            ],
+        )
+        self.assertEqual(
+            password_responses.get("policy_cap_map"),
+            {
+                "max_age": (
+                    "Change 'Maximum Age' from {{ max_age }} to == 0 to align with NIST recommendations "
+                    "to not force users to arbitrarily change passwords based solely on age"
+                ),
+                "min_age": "Change 'Minimum Age' from {{ min_age }} to >= 1 and < 7",
+                "min_length": "Change 'Minimum Length' from {{ min_length }} to >= 8",
+                "history": "Change 'History' from {{ history }} to >= 10",
+                "lockout_threshold": "Change 'Lockout Threshold' from {{ lockout_threshold }} to > 0 and <= 6",
+                "lockout_duration": "Change 'Lockout Duration' from {{ lockout_duration }} to >= 30 or admin unlock",
+                "lockout_reset": "Change 'Lockout Reset' from {{ lockout_reset }} to >= 30",
+                "complexity_enabled": (
+                    "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection controls "
+                    "such as blacklists"
+                ),
+            },
+        )
+        self.assertEqual(
+            password_responses.get("policy_cap_context"),
+            {
+                "corp.example.com": {
+                    "policy": {
+                        "max_age": 90,
+                        "min_age": 0,
+                        "min_length": 7,
+                        "history": 5,
+                        "lockout_threshold": 8,
+                        "lockout_duration": 15,
+                        "lockout_reset": 20,
+                        "complexity_enabled": "TRUE",
+                    },
+                    "fgpp": {
+                        "ServiceAccounts": {
+                            "max_age": 365,
+                            "min_age": 0,
+                            "min_length": 6,
+                            "history": 5,
+                            "lockout_threshold": 8,
+                            "lockout_duration": 10,
+                            "lockout_reset": 10,
+                            "complexity_enabled": "TRUE",
+                        }
+                    },
+                },
+                "lab.example.com": {
+                    "policy": {
+                        "history": 8,
+                    }
+                },
+            },
+        )
+
+        password_entries = password_responses.get("entries")
+        self.assertIsInstance(password_entries, list)
+        corp_entry = next(
+            (entry for entry in password_entries if entry.get("domain") == "corp.example.com"),
+            {},
+        )
+        self.assertEqual(
+            corp_entry.get("bad_policy_fields"),
+            [
+                "max_age",
+                "min_age",
+                "min_length",
+                "history",
+                "lockout_threshold",
+                "lockout_duration",
+                "lockout_reset",
+                "complexity_enabled",
+            ],
+        )
+        self.assertIn("policy_cap_values", corp_entry)
+        self.assertIn("fgpp_bad_fields", corp_entry)
+        self.assertIn("fgpp_cap_values", corp_entry)
+
+        lab_entry = next(
+            (entry for entry in password_entries if entry.get("domain") == "lab.example.com"),
+            {},
+        )
+        self.assertEqual(lab_entry.get("bad_policy_fields"), ["history"])
 
     def test_firewall_ood_names_populated_from_workbook(self):
         workbook_payload = {
@@ -857,6 +954,45 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(
             dns_responses.get("soa_field_cap_map"),
             {"serial": "custom serial guidance"},
+        )
+
+    def test_password_cap_map_uses_database(self):
+        PasswordCapMapping.objects.update_or_create(
+            setting="max_age",
+            defaults={"cap_text": "custom max age guidance"},
+        )
+
+        workbook_payload = {
+            "password": {
+                "policies": [
+                    {
+                        "domain_name": "corp.example.com",
+                        "passwords_cracked": 2,
+                        "enabled_accounts": 20,
+                        "history": 5,
+                        "max_age": 90,
+                        "min_age": 0,
+                        "min_length": 6,
+                        "lockout_threshold": 8,
+                        "lockout_duration": 10,
+                        "lockout_reset": 15,
+                        "complexity_enabled": "yes",
+                    }
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        password_responses = self.project.data_responses.get("password")
+        self.assertEqual(
+            password_responses.get("policy_cap_map", {}).get("max_age"),
+            "custom max age guidance",
         )
 
     def test_nexpose_artifacts_present_without_uploads(self):
@@ -979,3 +1115,19 @@ class DNSDataParserTests(TestCase):
 
         updated_mapping = load_dns_soa_cap_map()
         self.assertEqual(updated_mapping.get("serial"), "custom serial guidance")
+
+    def test_load_password_cap_map_prefers_database(self):
+        mapping = load_password_cap_map()
+        self.assertEqual(
+            mapping.get("max_age"),
+            "Change 'Maximum Age' from {{ max_age }} to == 0 to align with NIST recommendations "
+            "to not force users to arbitrarily change passwords based solely on age",
+        )
+
+        PasswordCapMapping.objects.update_or_create(
+            setting="max_age",
+            defaults={"cap_text": "custom max age guidance"},
+        )
+
+        updated_mapping = load_password_cap_map()
+        self.assertEqual(updated_mapping.get("max_age"), "custom max age guidance")

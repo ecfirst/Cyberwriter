@@ -475,7 +475,38 @@ LINTER_CONTEXT = {
                 "password_enforce_mfa_all_accounts": "no",
                 "hashes_obtained": "yes",
                 "entries": [
-                    {"domain": "corp.example.com", "risk": "medium", "bad_pass": True},
+                    {
+                        "domain": "corp.example.com",
+                        "risk": "medium",
+                        "bad_pass": True,
+                        "bad_policy_fields": ["max_age", "complexity_enabled"],
+                        "policy_cap_values": {"max_age": 90, "complexity_enabled": "TRUE"},
+                        "fgpp_bad_fields": {
+                            "Tier0Admins": ["max_age", "lockout_reset", "lockout_duration", "complexity_enabled"],
+                            "ServiceAccounts": [
+                                "history",
+                                "max_age",
+                                "min_age",
+                                "lockout_threshold",
+                                "lockout_reset",
+                            ],
+                        },
+                        "fgpp_cap_values": {
+                            "Tier0Admins": {
+                                "max_age": 45,
+                                "lockout_reset": 15,
+                                "lockout_duration": 15,
+                                "complexity_enabled": "TRUE",
+                            },
+                            "ServiceAccounts": {
+                                "history": 5,
+                                "max_age": 365,
+                                "min_age": 0,
+                                "lockout_threshold": 0,
+                                "lockout_reset": 0,
+                            },
+                        },
+                    },
                     {"domain": "lab.example.com", "risk": "high", "bad_pass": False},
                 ],
                 "domains_str": "'corp.example.com'/'lab.example.com'",
@@ -488,6 +519,50 @@ LINTER_CONTEXT = {
                 "lanman_list_string": "'corp.example.com'",
                 "no_fgpp_string": "'lab.example.com'",
                 "bad_pass_count": 2,
+                "policy_cap_fields": [
+                    "max_age",
+                    "complexity_enabled",
+                    "lockout_reset",
+                    "lockout_duration",
+                    "history",
+                    "min_age",
+                    "lockout_threshold",
+                ],
+                "policy_cap_map": {
+                    "max_age": (
+                        "Change 'Maximum Age' from {{ max_age }} to == 0 to align with NIST recommendations "
+                        "to not force users to arbitrarily change passwords based solely on age"
+                    ),
+                    "complexity_enabled": (
+                        "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection controls "
+                        "such as blacklists"
+                    ),
+                    "lockout_reset": "Change 'Lockout Reset' from {{ lockout_reset }} to >= 30",
+                    "lockout_duration": "Change 'Lockout Duration' from {{ lockout_duration }} to >= 30 or admin unlock",
+                    "history": "Change 'History' from {{ history }} to >= 10",
+                    "min_age": "Change 'Minimum Age' from {{ min_age }} to >= 1 and < 7",
+                    "lockout_threshold": "Change 'Lockout Threshold' from {{ lockout_threshold }} to > 0 and <= 6",
+                },
+                "policy_cap_context": {
+                    "corp.example.com": {
+                        "policy": {"max_age": 90, "complexity_enabled": "TRUE"},
+                        "fgpp": {
+                            "Tier0Admins": {
+                                "max_age": 45,
+                                "lockout_reset": 15,
+                                "lockout_duration": 15,
+                                "complexity_enabled": "TRUE",
+                            },
+                            "ServiceAccounts": {
+                                "history": 5,
+                                "max_age": 365,
+                                "min_age": 0,
+                                "lockout_threshold": 0,
+                                "lockout_reset": 0,
+                            },
+                        },
+                    }
+                },
             },
             "endpoint": {
                 "entries": [
