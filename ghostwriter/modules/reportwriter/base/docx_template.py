@@ -64,7 +64,6 @@ _BOOKMARK_HYPERLINK_FIELD_RE = re.compile(
     r"""\\l\s+"?([A-Za-z0-9_:.\-]+)"?""",
     re.IGNORECASE,
 )
-_PARAGRAPH_ID_RE = re.compile(r"^[0-9A-F]{8}$")
 
 
 logger = logging.getLogger(__name__)
@@ -1399,56 +1398,15 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if not paragraphs:
             return
 
-        has_para_ids = any(paragraph.get(para_attr) for paragraph in paragraphs)
-        if not has_para_ids:
-            return
-
-        reserved: set[str] = set()
+        removed = False
         for paragraph in paragraphs:
-            current = paragraph.get(para_attr)
-            if not current:
-                continue
-            normalised = current.upper()
-            if _PARAGRAPH_ID_RE.match(normalised):
-                reserved.add(normalised)
+            if paragraph.get(para_attr) is not None:
+                paragraph.attrib.pop(para_attr, None)
+                removed = True
 
-        used: set[str] = set()
-        counter = 0
-
-        for paragraph in paragraphs:
-            current = paragraph.get(para_attr)
-            if current:
-                normalised = current.upper()
-            else:
-                normalised = None
-
-            if (
-                normalised
-                and _PARAGRAPH_ID_RE.match(normalised)
-                and normalised not in used
-            ):
-                if normalised != current:
-                    paragraph.set(para_attr, normalised)
-                used.add(normalised)
-                continue
-
-            new_id, counter = self._allocate_paragraph_id(used, reserved, counter)
-            paragraph.set(para_attr, new_id)
-
-    def _allocate_paragraph_id(
-        self,
-        used: set[str],
-        reserved: set[str],
-        counter: int,
-    ) -> tuple[str, int]:
-        while True:
-            candidate = f"{counter:08X}"
-            counter += 1
-            if candidate in used or candidate in reserved:
-                continue
-            used.add(candidate)
-            reserved.add(candidate)
-            return candidate, counter
+        if removed:
+            logger = logging.getLogger(__name__)
+            logger.debug("Stripped w14:paraId attributes from %s paragraphs", len(paragraphs))
 
     def _remove_unbalanced_bookmarks(self, root, word_ns: str) -> None:
         start_tag = f"{{{word_ns}}}bookmarkStart"

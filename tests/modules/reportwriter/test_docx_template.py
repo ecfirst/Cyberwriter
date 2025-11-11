@@ -976,7 +976,7 @@ def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
     assert "Valid complex" in cleaned_xml
 
 
-def test_cleanup_word_markup_normalises_duplicate_paragraph_ids():
+def test_cleanup_word_markup_strips_paragraph_ids():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
@@ -999,12 +999,8 @@ def test_cleanup_word_markup_normalises_duplicate_paragraph_ids():
     para_attr = f"{{{w14_ns}}}paraId"
 
     para_ids = [para.get(para_attr) for para in cleaned.iter(para_tag)]
-    non_empty = [pid for pid in para_ids if pid]
 
-    assert len(non_empty) == len(para_ids)
-    assert len(non_empty) == len(set(non_empty))
-    assert all(len(pid) == 8 for pid in non_empty)
-    assert all(pid == pid.upper() for pid in non_empty)
+    assert all(pid is None for pid in para_ids)
 
 
 def test_renumber_media_parts_renames_charts_and_embeddings():
