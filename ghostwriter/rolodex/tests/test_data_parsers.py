@@ -1001,6 +1001,7 @@ class NexposeDataParserTests(TestCase):
     def test_dns_cap_map_populated_from_artifacts(self):
         csv_lines = [
             "Status,Info",
+            "FAIL,One or more SOA fields are outside recommended ranges",
             "FAIL,Less than 2 nameservers exist",
             "FAIL,Some nameservers have duplicate addresses",
         ]
@@ -1017,6 +1018,19 @@ class NexposeDataParserTests(TestCase):
         )
         self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=data_file.pk).delete())
 
+        self.project.data_responses = {
+            "dns": {
+                "entries": [
+                    {
+                        "domain": "one.example",
+                        "soa_fields": ["serial", "refresh"],
+                    }
+                ]
+            }
+        }
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["data_responses", "workbook_data"])
+
         self.project.rebuild_data_artifacts()
         self.project.refresh_from_db()
 
@@ -1026,6 +1040,10 @@ class NexposeDataParserTests(TestCase):
             dns_responses.get("dns_cap_map"),
             {
                 "one.example": {
+                    "One or more SOA fields are outside recommended ranges": (
+                        "serial - Update to match the 'YYYYMMDDnn' scheme\n"
+                        "refresh - Update to a value between 1200 and 43200 seconds"
+                    ),
                     "Less than 2 nameservers exist": "Assign a minimum of 2 nameservers for the domain",
                     "Some nameservers have duplicate addresses": "Ensure all nameserver addresses are unique",
                 }

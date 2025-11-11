@@ -594,6 +594,8 @@ class Project(models.Model):
             existing_responses["dns"] = dns_section
             dns_section_created = True
 
+        domain_soa_cap_map: Dict[str, Dict[str, str]] = {}
+
         if isinstance(dns_section, dict):
             entries = dns_section.get("entries")
             if isinstance(entries, list):
@@ -610,18 +612,21 @@ class Project(models.Model):
 
                 if domain_soa_fields:
                     cap_map = load_dns_soa_cap_map()
-                    dns_section["soa_field_cap_map"] = {
+                    domain_soa_cap_map = {
                         domain: {
                             field: cap_map.get(field, "")
                             for field in fields
                         }
                         for domain, fields in domain_soa_fields.items()
                     }
+                    dns_section["soa_field_cap_map"] = domain_soa_cap_map
                 else:
                     dns_section.pop("soa_field_cap_map", None)
+                    domain_soa_cap_map = {}
             else:
                 dns_section.pop("unique_soa_fields", None)
                 dns_section.pop("soa_field_cap_map", None)
+                domain_soa_cap_map = {}
 
             dns_artifact_entries = artifacts.get("dns_issues")
             dns_cap_map: Dict[str, Dict[str, str]] = {}
@@ -644,9 +649,35 @@ class Project(models.Model):
                         if not issue_text:
                             continue
                         cap_text = issue_entry.get("cap")
-                        domain_map[issue_text] = (
+                        resolved_cap = (
                             str(cap_text) if cap_text is not None else ""
                         )
+                        if (
+                            issue_text
+                            == "One or more SOA fields are outside recommended ranges"
+                        ):
+                            domain_field_map = domain_soa_cap_map.get(domain_text)
+                            if not domain_field_map:
+                                soa_cap_map_section = dns_section.get(
+                                    "soa_field_cap_map", {}
+                                )
+                                if isinstance(soa_cap_map_section, dict):
+                                    potential_map = soa_cap_map_section.get(domain_text)
+                                    if isinstance(potential_map, dict):
+                                        domain_field_map = potential_map
+                            if domain_field_map:
+                                cap_lines: List[str] = []
+                                for field_name, field_cap in domain_field_map.items():
+                                    field_name_text = str(field_name)
+                                    field_cap_text = (
+                                        "" if field_cap is None else str(field_cap)
+                                    )
+                                    cap_lines.append(
+                                        f"{field_name_text} - {field_cap_text}"
+                                    )
+                                if cap_lines:
+                                    resolved_cap = "\n".join(cap_lines)
+                        domain_map[issue_text] = resolved_cap
             if dns_cap_map:
                 dns_section["dns_cap_map"] = dns_cap_map
             else:
