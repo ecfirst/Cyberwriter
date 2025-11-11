@@ -931,7 +931,8 @@ def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
-        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">'
         "<w:body>"
         "<w:p><w:bookmarkStart w:id=\"1\" w:name=\"Keep\"/>"
         "<w:r><w:t>Intro</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p>"
@@ -973,6 +974,37 @@ def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
     assert "Broken complex" not in cleaned_xml
     assert "Valid simple" in cleaned_xml
     assert "Valid complex" in cleaned_xml
+
+
+def test_cleanup_word_markup_normalises_duplicate_paragraph_ids():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">'
+        "<w:body>"
+        '<w:p w14:paraId="212d559b"><w:r><w:t>Intro</w:t></w:r></w:p>'
+        '<w:p w14:paraId="212D559B"><w:r><w:t>Duplicate</w:t></w:r></w:p>'
+        "<w:p><w:r><w:t>Missing</w:t></w:r></w:p>"
+        "</w:body></w:document>"
+    )
+
+    part = FakeRelPart("/word/document.xml", xml, {})
+    tree = parse_xml(xml.encode("utf-8"))
+
+    cleaned = template._cleanup_word_markup(part, tree)
+
+    word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    w14_ns = "http://schemas.microsoft.com/office/word/2010/wordml"
+    para_tag = f"{{{word_ns}}}p"
+    para_attr = f"{{{w14_ns}}}paraId"
+
+    para_ids = [para.get(para_attr) for para in cleaned.iter(para_tag)]
+    non_empty = [pid for pid in para_ids if pid]
+
+    assert len(non_empty) == len(para_ids)
+    assert len(non_empty) == len(set(non_empty))
+    assert all(len(pid) == 8 for pid in non_empty)
+    assert all(pid == pid.upper() for pid in non_empty)
 
 
 def test_renumber_media_parts_renames_charts_and_embeddings():

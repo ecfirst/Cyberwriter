@@ -31,6 +31,7 @@ _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _RELATIONSHIP_PREFIX = f"{{{_RELATIONSHIP_NS}}}"
 _WORDPROCESSING_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_WORD2010_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
 _HYPERLINK_RELTYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 )
@@ -63,6 +64,7 @@ _BOOKMARK_HYPERLINK_FIELD_RE = re.compile(
     r"""\\l\s+"?([A-Za-z0-9_:.\-]+)"?""",
     re.IGNORECASE,
 )
+_PARAGRAPH_ID_RE = re.compile(r"^[0-9A-F]{8}$")
 
 
 logger = logging.getLogger(__name__)
@@ -1369,16 +1371,84 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 self._remove_attached_template(part, root, word_ns)
             self._remove_external_file_hyperlinks(part, root, word_ns)
 
+        self._ensure_unique_paragraph_ids(root, word_ns)
         self._record_comment_references(root, word_ns)
 
         return self._coerce_cleaned_xml(xml, root)
 
-    def _get_word_namespace(self, root) -> str:
+    def _get_namespace(self, root, prefix: str, default: str | None = None) -> str | None:
         if hasattr(root, "nsmap") and root.nsmap:
-            ns = root.nsmap.get("w")
-            if ns:
-                return ns
-        return _WORDPROCESSING_NS
+            namespace = root.nsmap.get(prefix)
+            if namespace:
+                return namespace
+        return default
+
+    def _get_word_namespace(self, root) -> str:
+        namespace = self._get_namespace(root, "w", _WORDPROCESSING_NS)
+        return namespace or _WORDPROCESSING_NS
+
+    def _ensure_unique_paragraph_ids(self, root, word_ns: str) -> None:
+        w14_ns = self._get_namespace(root, "w14", _WORD2010_NS)
+        if not w14_ns:
+            return
+
+        para_tag = f"{{{word_ns}}}p"
+        para_attr = f"{{{w14_ns}}}paraId"
+
+        paragraphs = list(root.iter(para_tag))
+        if not paragraphs:
+            return
+
+        has_para_ids = any(paragraph.get(para_attr) for paragraph in paragraphs)
+        if not has_para_ids:
+            return
+
+        reserved: set[str] = set()
+        for paragraph in paragraphs:
+            current = paragraph.get(para_attr)
+            if not current:
+                continue
+            normalised = current.upper()
+            if _PARAGRAPH_ID_RE.match(normalised):
+                reserved.add(normalised)
+
+        used: set[str] = set()
+        counter = 0
+
+        for paragraph in paragraphs:
+            current = paragraph.get(para_attr)
+            if current:
+                normalised = current.upper()
+            else:
+                normalised = None
+
+            if (
+                normalised
+                and _PARAGRAPH_ID_RE.match(normalised)
+                and normalised not in used
+            ):
+                if normalised != current:
+                    paragraph.set(para_attr, normalised)
+                used.add(normalised)
+                continue
+
+            new_id, counter = self._allocate_paragraph_id(used, reserved, counter)
+            paragraph.set(para_attr, new_id)
+
+    def _allocate_paragraph_id(
+        self,
+        used: set[str],
+        reserved: set[str],
+        counter: int,
+    ) -> tuple[str, int]:
+        while True:
+            candidate = f"{counter:08X}"
+            counter += 1
+            if candidate in used or candidate in reserved:
+                continue
+            used.add(candidate)
+            reserved.add(candidate)
+            return candidate, counter
 
     def _remove_unbalanced_bookmarks(self, root, word_ns: str) -> None:
         start_tag = f"{{{word_ns}}}bookmarkStart"
