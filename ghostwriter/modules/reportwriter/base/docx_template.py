@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import fnmatch
+import html
 import io
+import logging
 import re
 import zipfile
 import posixpath
 from collections import defaultdict, deque
 from copy import deepcopy
+import operator
 from typing import Iterator
 
 from docx.oxml import parse_xml
 from docxtpl.template import DocxTemplate
-from jinja2 import Environment, meta
+from jinja2 import Environment, meta, Undefined
+from docx.opc.packuri import PackURI
+try:
+    from jinja2.debug import Traceback as JinjaTraceback
+except Exception:  # pragma: no cover - depends on optional Jinja debug support
+    JinjaTraceback = None  # type: ignore[assignment]
 from lxml import etree
 
 
@@ -23,9 +31,42 @@ _XML_TAG_GAP = r"(?:\s|</?(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*[^>]*>)*"
 _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _RELATIONSHIP_PREFIX = f"{{{_RELATIONSHIP_NS}}}"
 _WORDPROCESSING_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_WORD2010_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
 _HYPERLINK_RELTYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 )
+_COMMENTS_EXTENDED_PART = "word/commentsExtended.xml"
+_COMMENTS_EXTENDED_RELTYPE_2011 = (
+    "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
+)
+_COMMENTS_EXTENDED_RELTYPE_2017 = (
+    "http://schemas.microsoft.com/office/2017/06/relationships/commentsExtended"
+)
+_MS_COMMENTS_EXTENDED_CONTENT_TYPE = "application/vnd.ms-word.commentsExtended+xml"
+_SETTINGS_PARTNAME = "word/settings.xml"
+_APP_PROPERTIES_PART = "docProps/app.xml"
+_APP_PROPERTIES_NS = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+)
+_VTYPES_NS = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
+)
+_DOCUMENT_PARTNAME = "word/document.xml"
+
+_INDEXED_PART_RE = re.compile(
+    r"^(?P<folder>word/(?:charts|embeddings))/(?P<prefix>[^/]+?)(?P<index>\d+)(?P<suffix>\.[A-Za-z0-9_.-]+)$"
+)
+_BOOKMARK_FIELD_RE = re.compile(
+    r"""\b(?:REF|PAGEREF|NOTEREF)\b[^\w"']*(?:"([A-Za-z0-9_:.\-]+)"|([A-Za-z0-9_:.\-]+))""",
+    re.IGNORECASE,
+)
+_BOOKMARK_HYPERLINK_FIELD_RE = re.compile(
+    r"""\\l\s+"?([A-Za-z0-9_:.\-]+)"?""",
+    re.IGNORECASE,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 class GhostwriterDocxTemplate(DocxTemplate):
@@ -60,7 +101,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
             f"{_RELATIONSHIP_NS}/footnotes",
             f"{_RELATIONSHIP_NS}/endnotes",
             f"{_RELATIONSHIP_NS}/people",
-            "http://schemas.microsoft.com/office/2011/relationships/commentsExtended",
+            _COMMENTS_EXTENDED_RELTYPE_2011,
+            _COMMENTS_EXTENDED_RELTYPE_2017,
             "http://schemas.microsoft.com/office/2011/relationships/comments",
         }
     )
@@ -78,6 +120,14 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 jinja_env = Environment(autoescape=autoescape)
             else:
                 jinja_env.autoescape = autoescape
+
+        active_env = jinja_env or getattr(self, "jinja_env", None)
+        if active_env is None:
+            active_env = Environment(autoescape=autoescape) if autoescape else Environment()
+        jinja_env = active_env
+        self._install_numeric_tests(active_env)
+        self.jinja_env = active_env
+        self._referenced_comment_ids: set[str] = set()
 
         xml_src = self.build_xml(context, jinja_env)
         tree = self.fix_tables(xml_src)
@@ -104,9 +154,17 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if footer_part:
                 self._cleanup_part_relationships(footer_part, cleaned_xml)
 
+        self._cleanup_settings_part()
         self._render_additional_parts(context, jinja_env)
+        self._cleanup_comments_part()
+
+        self._renumber_media_parts()
+
+        self._normalise_package_content_types()
 
         self.render_properties(context, jinja_env)
+
+        self._repair_app_properties()
 
         self.is_rendered = True
 
@@ -318,6 +376,236 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 seen.add(target)
                 queue.append(target)
 
+    def _normalise_package_content_types(self) -> None:
+        parts = self._iter_package_parts()
+        if not parts:
+            return
+
+        for part in parts:
+            if self._normalise_partname(part) != _COMMENTS_EXTENDED_PART:
+                continue
+            current = getattr(part, "content_type", None)
+            if current == _MS_COMMENTS_EXTENDED_CONTENT_TYPE:
+                return
+            setattr(part, "_content_type", _MS_COMMENTS_EXTENDED_CONTENT_TYPE)
+            return
+
+    def _repair_app_properties(self) -> None:
+        parts = self._iter_package_parts()
+        if not parts:
+            return
+
+        app_part = None
+        for part in parts:
+            try:
+                partname = self._normalise_partname(part)
+            except Exception:
+                continue
+            if partname == _APP_PROPERTIES_PART:
+                app_part = part
+                break
+
+        if app_part is None:
+            return
+
+        raw_xml = self.get_part_xml(app_part)
+        if isinstance(raw_xml, bytes):
+            xml_text = raw_xml.decode("utf-8", errors="ignore")
+        else:
+            xml_text = raw_xml
+
+        try:
+            root = etree.fromstring(xml_text.encode("utf-8"))
+        except (etree.XMLSyntaxError, AttributeError):
+            return
+
+        namespaces = {k or "ep": v for k, v in root.nsmap.items() if v}
+        namespaces.setdefault("ep", _APP_PROPERTIES_NS)
+        namespaces.setdefault("vt", _VTYPES_NS)
+
+        titles_vector = root.find(".//ep:TitlesOfParts/vt:vector", namespaces)
+        if titles_vector is None:
+            return
+
+        heading_vector = root.find(".//ep:HeadingPairs/vt:vector", namespaces)
+        vt_ns = namespaces.get("vt")
+        vt_prefix = f"{{{vt_ns}}}" if vt_ns else ""
+
+        lpstr_nodes: list = []
+        for child in list(titles_vector):
+            qname = etree.QName(child)
+            if qname.namespace == vt_ns and qname.localname == "lpstr":
+                lpstr_nodes.append(child)
+                continue
+            if qname.namespace == vt_ns and qname.localname == "variant":
+                inner = child.find(f".//{vt_prefix}lpstr")
+                if inner is not None:
+                    lpstr_nodes.append(inner)
+
+        expected_count = 0
+        if heading_vector is not None:
+            for variant in heading_vector.findall(f"{vt_prefix}variant"):
+                count_node = variant.find(f".//{vt_prefix}i4")
+                if count_node is None or count_node.text is None:
+                    continue
+                try:
+                    expected_count += int(count_node.text)
+                except ValueError:
+                    continue
+
+        fallback_total = max(len(lpstr_nodes), expected_count)
+        fallback_label = "Document {}" if fallback_total > 1 else "Document"
+
+        if not lpstr_nodes:
+            new_node = etree.SubElement(titles_vector, f"{vt_prefix}lpstr")
+            new_node.text = (
+                fallback_label.format(1)
+                if "{}" in fallback_label
+                else fallback_label
+            )
+            lpstr_nodes.append(new_node)
+
+        for index, node in enumerate(lpstr_nodes):
+            text = (node.text or "").strip()
+            if text:
+                continue
+            node.text = (
+                fallback_label.format(index + 1)
+                if "{}" in fallback_label
+                else fallback_label
+            )
+
+        while expected_count and len(lpstr_nodes) < expected_count:
+            new_node = etree.SubElement(titles_vector, f"{vt_prefix}lpstr")
+            new_node.text = (
+                fallback_label.format(len(lpstr_nodes) + 1)
+                if "{}" in fallback_label
+                else fallback_label
+            )
+            lpstr_nodes.append(new_node)
+
+        titles_vector.set("size", str(len(lpstr_nodes)))
+
+        if (
+            heading_vector is not None
+            and expected_count
+            and lpstr_nodes
+        ):
+            i4_nodes = [
+                variant.find(f".//{vt_prefix}i4")
+                for variant in heading_vector.findall(f"{vt_prefix}variant")
+            ]
+            i4_nodes = [node for node in i4_nodes if node is not None]
+            if len(i4_nodes) == 1:
+                i4_nodes[0].text = str(len(lpstr_nodes))
+
+        output_bytes = etree.tostring(root, encoding="utf-8")
+        output_xml = output_bytes.decode("utf-8")
+
+        if hasattr(app_part, "_element"):
+            try:
+                app_part._element = parse_xml(output_xml)
+            except Exception:
+                app_part._element = etree.fromstring(output_bytes)
+
+        if hasattr(app_part, "_blob"):
+            app_part._blob = output_bytes
+
+    def _iter_package_parts(self) -> list:
+        doc = getattr(self, "docx", None)
+        main_part = getattr(doc, "_part", None) if doc is not None else None
+        package = getattr(main_part, "package", None)
+        if package is None:
+            return []
+
+        iter_parts = getattr(package, "iter_parts", None)
+        parts: list = []
+
+        if callable(iter_parts):
+            try:
+                parts = list(iter_parts())
+            except Exception:
+                parts = []
+
+        if not parts:
+            parts_source = getattr(package, "parts", None)
+            if isinstance(parts_source, dict):
+                parts = list(parts_source.values())
+            elif parts_source is not None:
+                try:
+                    parts = list(parts_source)
+                except TypeError:
+                    try:
+                        parts = list(parts_source())  # type: ignore[operator]
+                    except Exception:
+                        parts = []
+
+        return [part for part in parts if not isinstance(part, PackURI)]
+
+    def _is_document_part(self, part) -> bool:
+        partname = getattr(part, "partname", None)
+        if not partname:
+            return False
+        try:
+            normalised = str(partname).lstrip("/")
+        except Exception:
+            return False
+        return normalised == _DOCUMENT_PARTNAME
+
+    def _ensure_modern_comments_relationship(self, rels) -> None:
+        if not rels:
+            return
+
+        for rel in rels.values():
+            reltype = getattr(rel, "reltype", "")
+            if reltype != _COMMENTS_EXTENDED_RELTYPE_2011:
+                continue
+            self._set_relationship_type(rel, _COMMENTS_EXTENDED_RELTYPE_2017)
+
+    @staticmethod
+    def _set_relationship_type(rel, reltype: str) -> None:
+        if hasattr(rel, "_reltype"):
+            try:
+                setattr(rel, "_reltype", reltype)
+            except Exception:
+                pass
+        try:
+            setattr(rel, "reltype", reltype)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _install_numeric_tests(env: Environment) -> None:
+        """Install numeric comparison tests that tolerate ``None`` and undefined values."""
+
+        comparators = {
+            "gt": operator.gt,
+            "ge": operator.ge,
+            "lt": operator.lt,
+            "le": operator.le,
+        }
+
+        for name, comparator in comparators.items():
+            env.tests[name] = GhostwriterDocxTemplate._make_numeric_test(comparator)
+
+    @staticmethod
+    def _make_numeric_test(comparator):
+        def _test(value, other):
+            coerced_value = GhostwriterDocxTemplate._coerce_numeric(value)
+            coerced_other = GhostwriterDocxTemplate._coerce_numeric(other)
+            try:
+                return comparator(coerced_value, coerced_other)
+            except TypeError:
+                return False
+
+        return _test
+
+    @staticmethod
+    def _coerce_numeric(value):
+        if isinstance(value, Undefined) or value is None:
+            return 0
+        return value
+
     def _matches_extra_template(self, partname: str) -> bool:
         return any(fnmatch.fnmatch(partname, pattern) for pattern in self._EXTRA_TEMPLATED_PATTERNS)
 
@@ -326,6 +614,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
     def _is_excel_part(self, partname: str) -> bool:
         return partname.endswith(".xlsx")
+
+    def _is_settings_part(self, part) -> bool:
+        try:
+            partname = self._normalise_partname(part)
+        except Exception:
+            return False
+        return partname == _SETTINGS_PARTNAME
 
     def _render_additional_parts(self, context, jinja_env) -> None:
         parts = list(self._iter_additional_parts())
@@ -364,6 +659,153 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 part._blob = rendered_bytes
             self._cleanup_part_relationships(part, rendered)
 
+    def _renumber_media_parts(self) -> None:
+        """Ensure chart and embedding parts are sequentially numbered."""
+
+        parts = self._iter_package_parts()
+        if not parts:
+            return
+
+        buckets: dict[tuple[str, str, str], list[tuple[int, object, str]]] = defaultdict(list)
+
+        for part in parts:
+            try:
+                partname = self._normalise_partname(part)
+            except Exception:
+                continue
+
+            match = _INDEXED_PART_RE.match(partname)
+            if not match:
+                continue
+
+            try:
+                index = int(match.group("index"))
+            except (TypeError, ValueError):
+                continue
+
+            key = (match.group("folder"), match.group("prefix"), match.group("suffix"))
+            buckets[key].append((index, part, partname))
+
+        if not buckets:
+            return
+
+        renames: list[tuple[object, str, str]] = []
+
+        for (folder, prefix, suffix), entries in buckets.items():
+            entries.sort(key=lambda entry: entry[0])
+            if all(index == position + 1 for position, (index, _part, _name) in enumerate(entries)):
+                continue
+
+            for position, (_index, part, current_name) in enumerate(entries, start=1):
+                new_name = f"{folder}/{prefix}{position}{suffix}"
+                if current_name == new_name:
+                    continue
+                renames.append((part, current_name, new_name))
+
+        if not renames:
+            return
+
+        for part, old_name, new_name in renames:
+            self._rename_part(part, old_name, new_name)
+
+        self._update_relationship_targets(renames)
+
+    def _cleanup_settings_part(self) -> None:
+        doc = getattr(self, "docx", None)
+        main_part = getattr(doc, "_part", None) if doc is not None else None
+        if main_part is None:
+            return
+
+        try:
+            settings_part = main_part.part_related_by(f"{_RELATIONSHIP_NS}/settings")
+        except Exception:
+            return
+
+        raw_xml = self.get_part_xml(settings_part)
+        if isinstance(raw_xml, bytes):
+            xml_text = raw_xml.decode("utf-8")
+        else:
+            xml_text = raw_xml
+
+        cleaned = self._cleanup_word_markup(settings_part, xml_text)
+
+        if isinstance(cleaned, bytes):
+            cleaned_bytes = cleaned
+            cleaned_xml = cleaned.decode("utf-8", errors="ignore")
+            parsed_root = parse_xml(cleaned_bytes)
+        elif isinstance(cleaned, str):
+            cleaned_xml = cleaned
+            cleaned_bytes = cleaned.encode("utf-8")
+            parsed_root = parse_xml(cleaned_bytes)
+        else:
+            parsed_root = self._ensure_xml_root(cleaned)
+            if parsed_root is None:
+                return
+            cleaned_bytes = etree.tostring(parsed_root)
+            cleaned_xml = cleaned_bytes.decode("utf-8", errors="ignore")
+
+        if hasattr(settings_part, "_element"):
+            settings_part._element = parsed_root
+        if hasattr(settings_part, "_blob"):
+            settings_part._blob = cleaned_bytes
+
+        self._cleanup_part_relationships(settings_part, cleaned_xml)
+
+    def _cleanup_comments_part(self) -> None:
+        referenced = getattr(self, "_referenced_comment_ids", None)
+        if referenced is None:
+            return
+
+        doc = getattr(self, "docx", None)
+        main_part = getattr(doc, "_part", None) if doc is not None else None
+        if main_part is None:
+            return
+
+        try:
+            comments_part = main_part.part_related_by(f"{_RELATIONSHIP_NS}/comments")
+        except Exception:
+            return
+
+        try:
+            xml = self.get_part_xml(comments_part)
+        except Exception:
+            return
+
+        root = self._ensure_xml_root(xml)
+        if root is None:
+            return
+
+        word_ns = self._get_word_namespace(root)
+        comment_tag = f"{{{word_ns}}}comment"
+        id_attr = f"{{{word_ns}}}id"
+        updated = False
+
+        for comment in list(root.findall(comment_tag)):
+            comment_id = comment.get(id_attr)
+            if comment_id is None or str(comment_id) in referenced:
+                continue
+            self._remove_element(comment)
+            updated = True
+
+        if not updated:
+            return
+
+        cleaned = self._coerce_cleaned_xml(xml, root)
+
+        if isinstance(cleaned, bytes):
+            blob = cleaned
+        elif isinstance(cleaned, str):
+            blob = cleaned.encode("utf-8")
+        else:
+            blob = etree.tostring(cleaned)
+
+        element = parse_xml(blob)
+
+        if hasattr(comments_part, "_element"):
+            comments_part._element = element
+        if hasattr(comments_part, "_blob"):
+            comments_part._blob = blob
+
     def _cleanup_part_relationships(self, part, xml) -> None:
         """Remove relationships not referenced in the rendered ``xml``."""
 
@@ -382,10 +824,506 @@ class GhostwriterDocxTemplate(DocxTemplate):
             reltype = getattr(rel, "reltype", "")
             if reltype in required_types:
                 continue
-            part.drop_rel(rel_id)
-            targets = getattr(rels, "_target_parts_by_rId", None)
-            if targets is not None:
-                targets.pop(rel_id, None)
+            if self._try_drop_relationship(part, rel_id):
+                continue
+            self._remove_relationship_entry(rels, rel_id)
+
+        if self._is_document_part(part):
+            self._ensure_modern_comments_relationship(rels)
+
+    def _rename_part(self, part, old_name: str, new_name: str) -> None:
+        """Rename ``part`` within the OPC package to ``new_name``."""
+
+        try:
+            old_pack_uri = getattr(part, "partname", None)
+        except Exception:
+            old_pack_uri = None
+
+        old_normalised = old_name.lstrip("/")
+        if old_pack_uri is not None:
+            old_pack_uri_str = str(old_pack_uri).lstrip("/")
+        else:
+            old_pack_uri_str = old_normalised
+
+        try:
+            new_pack_uri = PackURI(f"/{new_name}")
+        except Exception:
+            return
+
+        package = getattr(part, "package", None) or self._resolve_package()
+
+        if package is not None:
+            self._update_package_mappings(
+                package, old_pack_uri, old_pack_uri_str, new_pack_uri, part
+            )
+
+        for attr in ("_partname", "partname"):
+            if hasattr(part, attr):
+                try:
+                    setattr(part, attr, new_pack_uri)
+                except Exception:
+                    pass
+
+    def _resolve_package(self):
+        doc = getattr(self, "docx", None)
+        main_part = getattr(doc, "_part", None) if doc is not None else None
+        return getattr(main_part, "package", None) if main_part is not None else None
+
+    def _update_package_mappings(
+        self,
+        package,
+        old_pack_uri,
+        old_name: str | None,
+        new_pack_uri,
+        part,
+    ) -> None:
+        mappings = [
+            getattr(package, "_parts", None),
+            getattr(package, "_partnames", None),
+        ]
+
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                continue
+            if old_pack_uri in mapping:
+                mapping.pop(old_pack_uri, None)
+            elif old_name is not None:
+                for key in list(mapping.keys()):
+                    if str(key).lstrip("/") == old_name:
+                        mapping.pop(key, None)
+            mapping[new_pack_uri] = part
+
+        content_types = getattr(package, "_content_types", None)
+        if content_types is None:
+            content_types = getattr(package, "content_types", None)
+
+        overrides = getattr(content_types, "_overrides", None) if content_types else None
+        if isinstance(overrides, dict):
+            if old_pack_uri in overrides:
+                overrides[new_pack_uri] = overrides.pop(old_pack_uri)
+            elif old_name is not None:
+                for key in list(overrides.keys()):
+                    if str(key).lstrip("/") == old_name:
+                        overrides[new_pack_uri] = overrides.pop(key)
+                        break
+
+    def _update_relationship_targets(
+        self, renames: list[tuple[object, str, str]]
+    ) -> None:
+        if not renames:
+            return
+
+        lookup = {part: new_name for part, _old, new_name in renames}
+
+        for source_part in self._iter_package_parts():
+            rels = getattr(source_part, "rels", None)
+            if not rels:
+                continue
+
+            try:
+                source_name = self._normalise_partname(source_part)
+            except Exception:
+                continue
+
+            for rel in list(getattr(rels, "values", lambda: [])()):
+                try:
+                    target_part = getattr(rel, "target_part", None)
+                except ValueError:
+                    # External relationships do not expose a ``target_part``;
+                    # they reference an absolute target and are unaffected by
+                    # part renames within the package.
+                    continue
+                if target_part not in lookup:
+                    continue
+                absolute_target = lookup[target_part]
+                relative_target = self._build_relationship_target(
+                    source_name, absolute_target
+                )
+                self._set_relationship_target(rel, relative_target, target_part)
+
+                targets_map = getattr(rels, "_target_parts_by_rId", None)
+                if isinstance(targets_map, dict):
+                    targets_map[rel.rId] = target_part
+
+    def _build_relationship_target(self, source_name: str, target_name: str) -> str:
+        source_dir = posixpath.dirname(source_name) or "."
+        relative = posixpath.relpath(target_name, source_dir).replace("\\", "/")
+        if relative == ".":
+            return posixpath.basename(target_name)
+        return relative
+
+    def _set_relationship_target(
+        self, rel, relative_target: str, target_part
+    ) -> None:
+        for attr in ("target_ref", "_target_ref"):
+            if hasattr(rel, attr):
+                try:
+                    setattr(rel, attr, relative_target)
+                except Exception:
+                    pass
+
+        if hasattr(rel, "_target") and not getattr(rel, "is_external", False):
+            try:
+                rel._target = target_part
+            except Exception:
+                pass
+
+    def _try_drop_relationship(self, part, rel_id: str) -> bool:
+        """Attempt to drop relationship via the part API, returning ``True`` if removed."""
+
+        drop_rel = getattr(part, "drop_rel", None)
+        if not callable(drop_rel):
+            return False
+
+        rels = getattr(part, "rels", None)
+
+        try:
+            drop_rel(rel_id)
+        except KeyError:
+            removed = True
+        except Exception:
+            return False
+        else:
+            removed = rel_id not in rels if rels else True
+
+        if not removed:
+            return False
+
+        targets = getattr(rels, "_target_parts_by_rId", None) if rels is not None else None
+        if targets is not None:
+            targets.pop(rel_id, None)
+
+        return True
+
+    def render_xml_part(self, xml, part, context, jinja_env):  # type: ignore[override]
+        """Render ``xml`` for ``part`` and log detailed failures."""
+
+        try:
+            return super().render_xml_part(xml, part, context, jinja_env)
+        except Exception as exc:
+            part_label = self._describe_part(part)
+            error_line = self._extract_template_error_line(exc)
+            context_line, error_context = self._extract_template_debug_context(exc)
+            if error_line is None and context_line is not None:
+                error_line = context_line
+            statements, total = self._collect_template_statements(
+                xml, focus_line=error_line
+            )
+            preview_summary = self._format_statement_preview(statements, total)
+            message_parts: list[str] = []
+            if error_line is not None:
+                message_parts.append(f"error near template line {error_line}")
+            if error_context:
+                message_parts.append(
+                    self._format_template_context(error_context, error_line)
+                )
+            message_parts.append(preview_summary)
+            message_detail = "; ".join(message_parts)
+            logger.exception(
+                "Failed to render DOCX template part %s. %s",
+                part_label,
+                message_detail,
+                extra={
+                    "docx_template_part": part_label,
+                    "docx_template_statement_count": total,
+                    "docx_template_statements_preview": statements,
+                    "docx_template_error_line": error_line,
+                    **(
+                        {
+                            "docx_template_error_context": [
+                                {"line": line, "text": text}
+                                for line, text in error_context
+                            ]
+                        }
+                        if error_context
+                        else {}
+                    ),
+                },
+            )
+            raise
+
+    def _describe_part(self, part) -> str:
+        if part is None:
+            return "<document>"
+        partname = getattr(part, "partname", None)
+        if partname:
+            return str(partname).lstrip("/") or "<document>"
+        reltype = getattr(part, "reltype", None)
+        if reltype:
+            return f"<{reltype}>"
+        return "<unknown>"
+
+    def _collect_template_statements(
+        self, xml: str, limit: int = 10, *, focus_line: int | None = None
+    ) -> tuple[list[dict[str, str | int]], int]:
+        """Return a preview of templating statements found in ``xml``."""
+
+        preview: list[dict[str, str | int]] = []
+        total = 0
+        matches: list[tuple[int, str, int]] = []
+
+        for match in _JINJA_STATEMENT_RE.finditer(xml):
+            total += 1
+            start = match.start()
+            line = xml.count("\n", 0, start) + 1
+            snippet = match.group(0)
+            if len(snippet) > 200:
+                snippet = snippet[:197] + "..."
+
+            matches.append((line, snippet, start))
+
+        if not matches:
+            return [], total
+
+        selected: list[tuple[int, str, int]]
+        if focus_line is not None:
+            focus_index: int | None = None
+            for index, (line, _snippet, _start) in enumerate(matches):
+                if line >= focus_line:
+                    focus_index = index
+                    break
+            if focus_index is None:
+                start_index = max(0, len(matches) - limit)
+            else:
+                start_index = focus_index - (limit // 2)
+                if start_index < 0:
+                    start_index = 0
+                if start_index + limit > len(matches):
+                    start_index = max(0, len(matches) - limit)
+            selected = matches[start_index : start_index + limit]
+        else:
+            selected = matches[:limit]
+
+        for line, snippet, start in selected:
+            entry: dict[str, str | int] = {"line": line, "statement": snippet}
+            context = self._build_statement_context(xml, start)
+            if context:
+                entry.update(context)
+            preview.append(entry)
+
+        return preview, total
+
+    def _extract_template_error_line(self, exc: BaseException) -> int | None:
+        """Return the line number within the Jinja template that raised ``exc``."""
+
+        tb = exc.__traceback__
+        last_line: int | None = None
+
+        while tb is not None:
+            frame = tb.tb_frame
+            if frame.f_code.co_filename == "<template>":
+                last_line = tb.tb_lineno
+            tb = tb.tb_next
+
+        return last_line
+
+    def _extract_template_debug_context(
+        self,
+        exc: BaseException,
+        *,
+        before: int = 2,
+        after: int = 2,
+    ) -> tuple[int | None, list[tuple[int, str]]]:
+        """Return contextual template lines surrounding the error."""
+
+        if JinjaTraceback is None:
+            return None, []
+
+        try:
+            traceback = JinjaTraceback.from_exception(exc)
+        except Exception:
+            return None, []
+
+        context_line: int | None = None
+        context: list[tuple[int, str]] = []
+
+        for frame in traceback.frames:
+            filename = getattr(frame, "filename", getattr(frame, "name", None))
+            if filename != "<template>":
+                continue
+
+            context_line = getattr(frame, "lineno", None)
+            source = getattr(frame, "source", None)
+            if not source:
+                break
+
+            lines = source.splitlines()
+            if context_line is None:
+                break
+
+            start = max(context_line - 1 - before, 0)
+            end = min(context_line - 1 + after + 1, len(lines))
+
+            for index in range(start, end):
+                line_text = self._trim_template_text(lines[index])
+                context.append((index + 1, line_text))
+            break
+
+        return context_line, context
+
+    def _format_statement_preview(
+        self, statements: list[dict[str, str | int]], total: int
+    ) -> str:
+        """Summarise templating statements for logging."""
+
+        if not statements:
+            if total:
+                return (
+                    "Collected %d templating statements but preview is limited to 0 entries."
+                    % total
+                )
+            return "No templating statements were found in the templated XML."
+
+        formatted_entries: list[str] = []
+        for entry in statements:
+            parts: list[str] = []
+
+            line = entry.get("line")
+            if isinstance(line, int):
+                parts.append(f"line {line}")
+
+            statement = entry.get("statement")
+            if isinstance(statement, str):
+                parts.append(f"statement={statement!r}")
+
+            paragraph = entry.get("paragraph_index")
+            if isinstance(paragraph, int):
+                parts.append(f"paragraph {paragraph}")
+
+            paragraph_text = entry.get("paragraph_text")
+            if isinstance(paragraph_text, str) and paragraph_text:
+                parts.append(f"text={paragraph_text!r}")
+
+            table = entry.get("table_index")
+            if isinstance(table, int):
+                table_parts = [f"table {table}"]
+                row = entry.get("table_row_index")
+                if isinstance(row, int):
+                    table_parts.append(f"row {row}")
+                cell = entry.get("table_cell_index")
+                if isinstance(cell, int):
+                    table_parts.append(f"cell {cell}")
+                parts.append(", ".join(table_parts))
+
+            formatted_entries.append("; ".join(parts))
+
+        if len(statements) < total:
+            formatted_entries.append(
+                f"…and {total - len(statements)} more templating statements not shown"
+            )
+
+        return " | ".join(formatted_entries)
+
+    def _format_template_context(
+        self, context_lines: list[tuple[int, str]], error_line: int | None
+    ) -> str:
+        """Format template source context for inclusion in log messages."""
+
+        if not context_lines:
+            return ""
+
+        formatted: list[str] = []
+        for line_number, text in context_lines:
+            label = f"line {line_number}"
+            if error_line is not None and line_number == error_line:
+                label += " (error)"
+            formatted.append(f"{label}={text!r}")
+
+        return "template context: " + " | ".join(formatted)
+
+    def _build_statement_context(self, xml: str, start: int) -> dict[str, str | int]:
+        """Return Word-specific context for a templating statement."""
+
+        context: dict[str, str | int] = {}
+
+        paragraph_context = self._locate_paragraph_context(xml, start)
+        if paragraph_context:
+            context.update(paragraph_context)
+
+        table_context = self._locate_table_context(xml, start)
+        if table_context:
+            context.update(table_context)
+
+        return context
+
+    def _locate_paragraph_context(self, xml: str, start: int) -> dict[str, str | int]:
+        """Return paragraph index/text surrounding ``start`` in Word XML."""
+
+        before = xml[:start]
+        paragraph_matches = list(re.finditer(r"<w:p\b", before))
+        if not paragraph_matches:
+            return {}
+
+        paragraph_index = len(paragraph_matches)
+        paragraph_start = paragraph_matches[-1].start()
+        paragraph_end = xml.find("</w:p>", start)
+        if paragraph_end == -1:
+            paragraph_end = start
+
+        paragraph_xml = xml[paragraph_start:paragraph_end]
+        paragraph_text = self._strip_word_text(paragraph_xml)
+
+        context: dict[str, str | int] = {"paragraph_index": paragraph_index}
+        if paragraph_text:
+            context["paragraph_text"] = paragraph_text
+
+        return context
+
+    def _locate_table_context(self, xml: str, start: int) -> dict[str, str | int]:
+        """Return table indices surrounding ``start`` in Word XML."""
+
+        before = xml[:start]
+        table_matches = list(re.finditer(r"<w:tbl\b", before))
+        if not table_matches:
+            return {}
+
+        context: dict[str, str | int] = {"table_index": len(table_matches)}
+
+        table_start = table_matches[-1].start()
+        table_slice = xml[table_start:start]
+
+        row_matches = list(re.finditer(r"<w:tr\b", table_slice))
+        if row_matches:
+            context["table_row_index"] = len(row_matches)
+            row_start = table_start + row_matches[-1].start()
+            row_slice = xml[row_start:start]
+            cell_matches = list(re.finditer(r"<w:tc\b", row_slice))
+            if cell_matches:
+                context["table_cell_index"] = len(cell_matches)
+
+        return context
+
+    def _strip_word_text(self, xml_snippet: str) -> str:
+        """Return simplified paragraph text for a WordprocessingML snippet."""
+
+        if not xml_snippet:
+            return ""
+
+        text = re.sub(r"<[^>]+>", " ", xml_snippet)
+        text = html.unescape(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 200:
+            return text[:197] + "..."
+        return text
+
+    def _trim_template_text(self, text: str) -> str:
+        """Normalise whitespace and length for template context lines."""
+
+        cleaned = text.strip("\r\n")
+        if len(cleaned) > 200:
+            return cleaned[:197] + "..."
+        return cleaned
+
+    def _remove_relationship_entry(self, rels, rel_id: str) -> None:
+        """Remove relationship ``rel_id`` from ``rels`` and any cached target maps."""
+
+        if rels is None:
+            return
+
+        rels.pop(rel_id, None)
+        targets = getattr(rels, "_target_parts_by_rId", None)
+        if targets is not None:
+            targets.pop(rel_id, None)
 
     def _get_required_relationship_types(self, part) -> set[str]:
         partname = getattr(part, "partname", None)
@@ -393,7 +1331,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return set()
 
         normalised = str(partname).lstrip("/")
-        if normalised == "word/document.xml":
+        if normalised == _DOCUMENT_PARTNAME:
             return set(self._DOCUMENT_REQUIRED_RELATIONSHIP_TYPES)
         return set()
 
@@ -407,33 +1345,94 @@ class GhostwriterDocxTemplate(DocxTemplate):
         word_ns = self._get_word_namespace(root)
 
         self._remove_unbalanced_bookmarks(root, word_ns)
+        self._remove_unbalanced_range_elements(
+            root,
+            word_ns,
+            (
+                ("commentRangeStart", "commentRangeEnd"),
+                ("moveFromRangeStart", "moveFromRangeEnd"),
+                ("moveToRangeStart", "moveToRangeEnd"),
+                ("customXmlDelRangeStart", "customXmlDelRangeEnd"),
+                ("customXmlInsRangeStart", "customXmlInsRangeEnd"),
+                (
+                    "customXmlMoveFromRangeStart",
+                    "customXmlMoveFromRangeEnd",
+                ),
+                ("customXmlMoveToRangeStart", "customXmlMoveToRangeEnd"),
+                ("permStart", "permEnd"),
+            ),
+        )
         bookmark_names = self._collect_bookmark_names(root, word_ns)
         self._remove_missing_anchor_hyperlinks(root, word_ns, bookmark_names)
+        self._remove_missing_bookmark_fields(root, word_ns, bookmark_names)
         if part is not None:
+            if self._is_settings_part(part):
+                self._remove_attached_template(part, root, word_ns)
             self._remove_external_file_hyperlinks(part, root, word_ns)
+
+        self._ensure_unique_paragraph_ids(root, word_ns)
+        self._record_comment_references(root, word_ns)
 
         return self._coerce_cleaned_xml(xml, root)
 
-    def _get_word_namespace(self, root) -> str:
+    def _get_namespace(self, root, prefix: str, default: str | None = None) -> str | None:
         if hasattr(root, "nsmap") and root.nsmap:
-            ns = root.nsmap.get("w")
-            if ns:
-                return ns
-        return _WORDPROCESSING_NS
+            namespace = root.nsmap.get(prefix)
+            if namespace:
+                return namespace
+        return default
+
+    def _get_word_namespace(self, root) -> str:
+        namespace = self._get_namespace(root, "w", _WORDPROCESSING_NS)
+        return namespace or _WORDPROCESSING_NS
+
+    def _ensure_unique_paragraph_ids(self, root, word_ns: str) -> None:
+        w14_ns = self._get_namespace(root, "w14", _WORD2010_NS)
+        if not w14_ns:
+            return
+
+        para_tag = f"{{{word_ns}}}p"
+        para_attr = f"{{{w14_ns}}}paraId"
+
+        paragraphs = list(root.iter(para_tag))
+        if not paragraphs:
+            return
+
+        removed = False
+        for paragraph in paragraphs:
+            if paragraph.get(para_attr) is not None:
+                paragraph.attrib.pop(para_attr, None)
+                removed = True
+
+        if removed:
+            logger = logging.getLogger(__name__)
+            logger.debug("Stripped w14:paraId attributes from %s paragraphs", len(paragraphs))
 
     def _remove_unbalanced_bookmarks(self, root, word_ns: str) -> None:
         start_tag = f"{{{word_ns}}}bookmarkStart"
         end_tag = f"{{{word_ns}}}bookmarkEnd"
         id_attr = f"{{{word_ns}}}id"
+        name_attr = f"{{{word_ns}}}name"
 
         starts: dict[str, list] = defaultdict(list)
         ends: dict[str, list] = defaultdict(list)
+        duplicate_ids: set[str] = set()
+        seen_names: set[str] = set()
 
         for element in root.iter():
             if element.tag == start_tag:
                 bookmark_id = element.get(id_attr)
                 if bookmark_id is not None:
-                    starts[str(bookmark_id)].append(element)
+                    bookmark_key = str(bookmark_id)
+                    starts[bookmark_key].append(element)
+                    name = element.get(name_attr)
+                    if name == "_GoBack":
+                        continue
+                    normalised = self._normalise_bookmark_name(name)
+                    if normalised is None or normalised in seen_names:
+                        duplicate_ids.add(bookmark_key)
+                    else:
+                        seen_names.add(normalised)
             elif element.tag == end_tag:
                 bookmark_id = element.get(id_attr)
                 if bookmark_id is not None:
@@ -459,6 +1458,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
             for element in end_elements[pair_count:]:
                 self._remove_element(element)
 
+        for bookmark_id in duplicate_ids:
+            for element in starts.get(bookmark_id, []):
+                self._remove_element(element)
+            for element in ends.get(bookmark_id, []):
+                self._remove_element(element)
+
     def _collect_bookmark_names(self, root, word_ns: str) -> set[str]:
         start_tag = f"{{{word_ns}}}bookmarkStart"
         name_attr = f"{{{word_ns}}}name"
@@ -466,10 +1471,78 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         for element in root.iter(start_tag):
             name = element.get(name_attr)
-            if name:
-                names.add(name)
+            if name == "_GoBack":
+                continue
+            normalised = self._normalise_bookmark_name(name)
+            if normalised:
+                names.add(normalised)
 
         return names
+
+    def _record_comment_references(self, root, word_ns: str) -> None:
+        referenced = getattr(self, "_referenced_comment_ids", None)
+        if referenced is None:
+            referenced = set()
+            self._referenced_comment_ids = referenced
+
+        id_attr = f"{{{word_ns}}}id"
+        tags = (
+            f"{{{word_ns}}}commentRangeStart",
+            f"{{{word_ns}}}commentRangeEnd",
+            f"{{{word_ns}}}commentReference",
+        )
+
+        for tag in tags:
+            for element in root.iter(tag):
+                comment_id = element.get(id_attr)
+                if comment_id is not None:
+                    referenced.add(str(comment_id))
+
+    def _remove_unbalanced_range_elements(
+        self,
+        root,
+        word_ns: str,
+        pairs: tuple[tuple[str, str], ...],
+    ) -> None:
+        id_attr = f"{{{word_ns}}}id"
+
+        for start_local, end_local in pairs:
+            start_tag = f"{{{word_ns}}}{start_local}"
+            end_tag = f"{{{word_ns}}}{end_local}"
+
+            starts: dict[str, list] = defaultdict(list)
+            ends: dict[str, list] = defaultdict(list)
+
+            for element in root.iter(start_tag):
+                marker_id = element.get(id_attr)
+                if marker_id is not None:
+                    starts[str(marker_id)].append(element)
+
+            for element in root.iter(end_tag):
+                marker_id = element.get(id_attr)
+                if marker_id is not None:
+                    ends[str(marker_id)].append(element)
+
+            start_ids = set(starts)
+            end_ids = set(ends)
+
+            for marker_id in start_ids - end_ids:
+                for element in starts[marker_id]:
+                    self._remove_element(element)
+
+            for marker_id in end_ids - start_ids:
+                for element in ends[marker_id]:
+                    self._remove_element(element)
+
+            for marker_id in start_ids & end_ids:
+                start_elements = starts[marker_id]
+                end_elements = ends[marker_id]
+                pair_count = min(len(start_elements), len(end_elements))
+
+                for element in start_elements[pair_count:]:
+                    self._remove_element(element)
+                for element in end_elements[pair_count:]:
+                    self._remove_element(element)
 
     def _remove_missing_anchor_hyperlinks(
         self,
@@ -482,9 +1555,137 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         for hyperlink in list(root.iter(hyperlink_tag)):
             anchor = hyperlink.get(anchor_attr)
-            if not anchor or anchor in bookmark_names:
+            normalised = self._normalise_bookmark_name(anchor)
+            if normalised and normalised in bookmark_names:
                 continue
             self._unwrap_element(hyperlink)
+
+    def _remove_missing_bookmark_fields(
+        self,
+        root,
+        word_ns: str,
+        bookmark_names: set[str],
+    ) -> None:
+        fld_simple_tag = f"{{{word_ns}}}fldSimple"
+        instr_attr = f"{{{word_ns}}}instr"
+
+        for field in list(root.iter(fld_simple_tag)):
+            instr = field.get(instr_attr, "")
+            if self._field_references_missing_bookmark(instr, bookmark_names):
+                self._remove_element(field)
+
+        fld_char_tag = f"{{{word_ns}}}fldChar"
+        fld_char_type_attr = f"{{{word_ns}}}fldCharType"
+        instr_text_tag = f"{{{word_ns}}}instrText"
+        run_tag = f"{{{word_ns}}}r"
+
+        runs_to_remove: set[object] = set()
+        field_state: dict[str, object] | None = None
+
+        for element in root.iter():
+            if element.tag == fld_char_tag:
+                fld_type = element.get(fld_char_type_attr)
+                if fld_type == "begin":
+                    field_state = {
+                        "instr_parts": [],
+                        "runs": set(),
+                        "remove": False,
+                    }
+                if field_state is not None:
+                    run = self._find_ancestor(element, run_tag)
+                    if run is not None:
+                        field_state["runs"].add(run)
+                    if fld_type == "end":
+                        if field_state["remove"]:
+                            runs_to_remove.update(field_state["runs"])
+                        field_state = None
+                continue
+
+            if field_state is None:
+                continue
+
+            run = self._find_ancestor(element, run_tag)
+            if run is not None:
+                field_state["runs"].add(run)
+
+            if element.tag != instr_text_tag:
+                continue
+
+            text = element.text or ""
+            if not text:
+                continue
+
+            field_state["instr_parts"].append(text)
+            if field_state["remove"]:
+                continue
+
+            instr_text = "".join(field_state["instr_parts"])
+            if self._field_references_missing_bookmark(instr_text, bookmark_names):
+                field_state["remove"] = True
+
+        for run in runs_to_remove:
+            self._remove_element(run)
+
+    def _field_references_missing_bookmark(
+        self,
+        instruction: str,
+        bookmark_names: set[str],
+    ) -> bool:
+        if not instruction:
+            return False
+
+        candidates: set[str] = set()
+
+        for match in _BOOKMARK_FIELD_RE.finditer(instruction):
+            name = match.group(1) or match.group(2)
+            if name:
+                candidates.add(name)
+
+        for match in _BOOKMARK_HYPERLINK_FIELD_RE.finditer(instruction):
+            name = match.group(1)
+            if name:
+                candidates.add(name)
+
+        if not candidates:
+            return False
+
+        for name in candidates:
+            normalised = self._normalise_bookmark_name(name)
+            if not normalised or normalised not in bookmark_names:
+                return True
+        return False
+
+    def _find_ancestor(self, element, tag: str):
+        current = element
+        while current is not None:
+            if current.tag == tag:
+                return current
+            current = current.getparent() if hasattr(current, "getparent") else None
+        return None
+
+    def _normalise_bookmark_name(self, name: str | None) -> str | None:
+        if not name:
+            return None
+
+        cleaned = name.strip()
+        if not cleaned:
+            return None
+
+        return cleaned.casefold()
+
+    def _remove_attached_template(self, part, root, word_ns: str) -> None:
+        if not self._is_settings_part(part):
+            return
+
+        attached_tag = f"{{{word_ns}}}attachedTemplate"
+        rel_attr = f"{{{_RELATIONSHIP_NS}}}id"
+        rels = getattr(part, "rels", None)
+
+        for element in list(root.iter(attached_tag)):
+            rel_id = element.get(rel_attr)
+            self._remove_element(element)
+            if rel_id and rels is not None:
+                self._remove_relationship_entry(rels, rel_id)
 
     def _remove_external_file_hyperlinks(self, part, root, word_ns: str) -> None:
         rels = getattr(part, "rels", None)
@@ -1596,10 +2797,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
         part,
         excel_values: dict[str, dict[str, dict[str, str]]],
     ) -> str:
-        workbook_data = self._resolve_chart_workbook(part, excel_values)
-        if not workbook_data:
-            return xml
-
         try:
             tree = etree.fromstring(xml.encode("utf-8"))
         except etree.XMLSyntaxError:
@@ -1607,31 +2804,36 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         updated = False
 
-        for num_ref in tree.findall(".//{*}numRef"):
-            formula = self._find_chart_formula(num_ref)
-            if not formula:
-                continue
-            values = self._extract_range_values(formula, workbook_data)
-            if values is None:
-                continue
-            cache = self._find_or_create_cache(num_ref, "numCache")
-            self._write_cache(cache, values)
-            self._write_literal_cache(num_ref, "numLit", values)
-            updated = True
+        workbook_data = self._resolve_chart_workbook(part, excel_values)
 
-        for str_ref in tree.findall(".//{*}strRef"):
-            formula = self._find_chart_formula(str_ref)
-            if not formula:
-                continue
-            values = self._extract_range_values(formula, workbook_data)
-            if values is None:
-                continue
-            cache = self._find_or_create_cache(str_ref, "strCache")
-            self._write_cache(cache, values)
-            self._write_literal_cache(str_ref, "strLit", values)
-            updated = True
+        if workbook_data:
+            for num_ref in tree.findall(".//{*}numRef"):
+                formula = self._find_chart_formula(num_ref)
+                if not formula:
+                    continue
+                values = self._extract_range_values(formula, workbook_data)
+                if values is None:
+                    continue
+                cache = self._find_or_create_cache(num_ref, "numCache")
+                self._write_cache(cache, values)
+                self._write_literal_cache(num_ref, "numLit", values)
+                updated = True
 
-        if not updated:
+            for str_ref in tree.findall(".//{*}strRef"):
+                formula = self._find_chart_formula(str_ref)
+                if not formula:
+                    continue
+                values = self._extract_range_values(formula, workbook_data)
+                if values is None:
+                    continue
+                cache = self._find_or_create_cache(str_ref, "strCache")
+                self._write_cache(cache, values)
+                self._write_literal_cache(str_ref, "strLit", values)
+                updated = True
+
+        repaired = self._repair_chart_caches(tree)
+
+        if not updated and not repaired:
             return xml
 
         return etree.tostring(tree, encoding="unicode")
@@ -2043,4 +3245,70 @@ class GhostwriterDocxTemplate(DocxTemplate):
             pt = etree.SubElement(cache, f"{prefix}pt", idx=str(idx))
             v = etree.SubElement(pt, f"{prefix}v")
             v.text = "" if value is None else str(value)
+
+    def _repair_chart_caches(self, tree: etree._Element) -> bool:
+        """Ensure declared chart cache counts match the cached point entries."""
+
+        repaired = False
+        for cache in tree.findall(".//{*}numCache") + tree.findall(".//{*}numLit"):
+            if self._repair_single_chart_cache(cache, fill_value="0"):
+                repaired = True
+
+        for cache in tree.findall(".//{*}strCache") + tree.findall(".//{*}strLit"):
+            if self._repair_single_chart_cache(cache, fill_value=""):
+                repaired = True
+
+        return repaired
+
+    def _repair_single_chart_cache(self, cache, fill_value: str) -> bool:
+        namespace = etree.QName(cache).namespace
+        prefix = f"{{{namespace}}}" if namespace else ""
+
+        changed = False
+
+        pts = list(cache.findall(f"{prefix}pt"))
+        for idx, pt in enumerate(pts):
+            if pt.get("idx") != str(idx):
+                pt.set("idx", str(idx))
+                changed = True
+            value_node = pt.find(f"{prefix}v")
+            if value_node is None:
+                value_node = etree.SubElement(pt, f"{prefix}v")
+                changed = True
+            if value_node.text is None:
+                value_node.text = fill_value
+                changed = True
+
+        pt_count = cache.find(f"{prefix}ptCount")
+        declared = None
+        if pt_count is not None:
+            val_attr = pt_count.get("val")
+            try:
+                declared = int(val_attr) if val_attr is not None else None
+            except (TypeError, ValueError):
+                declared = None
+
+        actual = len(pts)
+
+        if pt_count is None:
+            pt_count = etree.SubElement(cache, f"{prefix}ptCount")
+            changed = True
+
+        if declared is None:
+            declared = actual
+        if declared < actual:
+            declared = actual
+        elif declared > actual:
+            for idx in range(actual, declared):
+                pt = etree.SubElement(cache, f"{prefix}pt", idx=str(idx))
+                value_node = etree.SubElement(pt, f"{prefix}v")
+                value_node.text = fill_value
+            actual = declared
+            changed = True
+
+        if pt_count.get("val") != str(actual):
+            pt_count.set("val", str(actual))
+            changed = True
+
+        return changed
 
