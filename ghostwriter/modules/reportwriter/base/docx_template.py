@@ -126,6 +126,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         jinja_env = active_env
         self._install_numeric_tests(active_env)
         self.jinja_env = active_env
+        self._referenced_comment_ids: set[str] = set()
 
         xml_src = self.build_xml(context, jinja_env)
         tree = self.fix_tables(xml_src)
@@ -154,6 +155,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         self._cleanup_settings_part()
         self._render_additional_parts(context, jinja_env)
+        self._cleanup_comments_part()
 
         self._renumber_media_parts()
 
@@ -647,7 +649,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
             patched = self.patch_xml(xml)
             rendered = self.render_xml_part(patched, part, context, jinja_env)
             if self._is_chart_part(partname):
-                rendered = self._sync_chart_cache(rendered, part, excel_values)
+                rendered, has_workbook = self._sync_chart_cache(
+                    rendered, part, excel_values
+                )
+                rendered = self._ensure_chart_cache_integrity(rendered, has_workbook)
 
             rendered_bytes = rendered.encode("utf-8")
             if hasattr(part, "_element"):
@@ -747,6 +752,61 @@ class GhostwriterDocxTemplate(DocxTemplate):
             settings_part._blob = cleaned_bytes
 
         self._cleanup_part_relationships(settings_part, cleaned_xml)
+
+    def _cleanup_comments_part(self) -> None:
+        referenced = getattr(self, "_referenced_comment_ids", None)
+        if referenced is None:
+            return
+
+        doc = getattr(self, "docx", None)
+        main_part = getattr(doc, "_part", None) if doc is not None else None
+        if main_part is None:
+            return
+
+        try:
+            comments_part = main_part.part_related_by(f"{_RELATIONSHIP_NS}/comments")
+        except Exception:
+            return
+
+        try:
+            xml = self.get_part_xml(comments_part)
+        except Exception:
+            return
+
+        root = self._ensure_xml_root(xml)
+        if root is None:
+            return
+
+        word_ns = self._get_word_namespace(root)
+        comment_tag = f"{{{word_ns}}}comment"
+        id_attr = f"{{{word_ns}}}id"
+        updated = False
+
+        for comment in list(root.findall(comment_tag)):
+            comment_id = comment.get(id_attr)
+            if comment_id is None or str(comment_id) in referenced:
+                continue
+            self._remove_element(comment)
+            updated = True
+
+        if not updated:
+            return
+
+        cleaned = self._coerce_cleaned_xml(xml, root)
+
+        if isinstance(cleaned, bytes):
+            blob = cleaned
+        elif isinstance(cleaned, str):
+            blob = cleaned.encode("utf-8")
+        else:
+            blob = etree.tostring(cleaned)
+
+        element = parse_xml(blob)
+
+        if hasattr(comments_part, "_element"):
+            comments_part._element = element
+        if hasattr(comments_part, "_blob"):
+            comments_part._blob = blob
 
     def _cleanup_part_relationships(self, part, xml) -> None:
         """Remove relationships not referenced in the rendered ``xml``."""
@@ -1312,6 +1372,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 self._remove_attached_template(part, root, word_ns)
             self._remove_external_file_hyperlinks(part, root, word_ns)
 
+        self._record_comment_references(root, word_ns)
+
         return self._coerce_cleaned_xml(xml, root)
 
     def _get_word_namespace(self, root) -> str:
@@ -1391,6 +1453,25 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 names.add(normalised)
 
         return names
+
+    def _record_comment_references(self, root, word_ns: str) -> None:
+        referenced = getattr(self, "_referenced_comment_ids", None)
+        if referenced is None:
+            referenced = set()
+            self._referenced_comment_ids = referenced
+
+        id_attr = f"{{{word_ns}}}id"
+        tags = (
+            f"{{{word_ns}}}commentRangeStart",
+            f"{{{word_ns}}}commentRangeEnd",
+            f"{{{word_ns}}}commentReference",
+        )
+
+        for tag in tags:
+            for element in root.iter(tag):
+                comment_id = element.get(id_attr)
+                if comment_id is not None:
+                    referenced.add(str(comment_id))
 
     def _remove_unbalanced_range_elements(
         self,
@@ -2690,10 +2771,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
         xml: str,
         part,
         excel_values: dict[str, dict[str, dict[str, str]]],
-    ) -> str:
+    ) -> tuple[str, bool]:
         workbook_data = self._resolve_chart_workbook(part, excel_values)
         if not workbook_data:
-            return xml
+            return xml, False
 
         try:
             tree = etree.fromstring(xml.encode("utf-8"))
@@ -2727,9 +2808,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
             updated = True
 
         if not updated:
-            return xml
+            return xml, True
 
-        return etree.tostring(tree, encoding="unicode")
+        return etree.tostring(tree, encoding="unicode"), True
 
     def _resolve_chart_workbook(
         self,
@@ -2789,6 +2870,161 @@ class GhostwriterDocxTemplate(DocxTemplate):
             literal = etree.SubElement(parent, tag)
 
         self._write_cache(literal, values)
+
+    def _ensure_chart_cache_integrity(self, xml: str, has_workbook: bool) -> str:
+        try:
+            tree = etree.fromstring(xml.encode("utf-8"))
+        except etree.XMLSyntaxError:
+            return xml
+
+        updated = False
+
+        for external in tree.findall(".//{*}externalData"):
+            if has_workbook:
+                continue
+            parent = external.getparent()
+            if parent is not None:
+                parent.remove(external)
+                updated = True
+
+        for series in tree.findall(".//{*}ser"):
+            expected = self._determine_series_point_count(series)
+            if self._ensure_series_category_cache(series, expected):
+                updated = True
+
+        if not updated:
+            return xml
+
+        return etree.tostring(tree, encoding="unicode")
+
+    def _determine_series_point_count(self, series) -> int | None:
+        value = series.find(".{*}val")
+        if value is None:
+            return None
+        return self._count_points_from_value_node(value)
+
+    def _count_points_from_value_node(self, node) -> int | None:
+        for child in node:
+            local = etree.QName(child).localname
+            if local in {"numLit", "strLit"}:
+                return self._count_points_in_cache(child)
+            if local in {"numRef", "strRef"}:
+                count = self._count_points_in_ref(child)
+                if count is not None:
+                    return count
+        return None
+
+    def _count_points_in_ref(self, ref_node) -> int | None:
+        for child in ref_node:
+            if etree.QName(child).localname in {"numCache", "strCache"}:
+                return self._count_points_in_cache(child)
+        return None
+
+    def _count_points_in_cache(self, cache_node) -> int:
+        prefix = self._namespace_prefix(cache_node)
+        return len(cache_node.findall(f"{prefix}pt"))
+
+    def _ensure_series_category_cache(self, series, expected_count: int | None) -> bool:
+        category = series.find(".{*}cat")
+        if category is None:
+            return False
+
+        inferred = expected_count
+        if inferred is None:
+            inferred = self._count_points_from_category(category)
+        if inferred is None:
+            inferred = 0
+
+        updated = False
+
+        for child in category:
+            local = etree.QName(child).localname
+            if local == "strRef":
+                if self._ensure_ref_cache_entries(child, "strCache", inferred, ""):
+                    updated = True
+            elif local == "numRef":
+                if self._ensure_ref_cache_entries(child, "numCache", inferred, "0"):
+                    updated = True
+            elif local == "strLit":
+                if self._ensure_cache_entries(child, inferred, ""):
+                    updated = True
+            elif local == "numLit":
+                if self._ensure_cache_entries(child, inferred, "0"):
+                    updated = True
+
+        return updated
+
+    def _count_points_from_category(self, category_node) -> int | None:
+        for child in category_node:
+            local = etree.QName(child).localname
+            if local in {"strLit", "numLit"}:
+                return self._count_points_in_cache(child)
+            if local in {"strRef", "numRef"}:
+                count = self._count_points_in_ref(child)
+                if count is not None:
+                    return count
+        return None
+
+    def _ensure_ref_cache_entries(
+        self,
+        ref_node,
+        cache_name: str,
+        expected_count: int,
+        fill_value: str,
+    ) -> bool:
+        cache = None
+        for child in ref_node:
+            if etree.QName(child).localname == cache_name:
+                cache = child
+                break
+
+        if cache is None:
+            namespace = etree.QName(ref_node).namespace
+            tag = f"{{{namespace}}}{cache_name}" if namespace else cache_name
+            cache = etree.SubElement(ref_node, tag)
+            self._write_cache(cache, [fill_value] * expected_count)
+            return True
+
+        return self._ensure_cache_entries(cache, expected_count, fill_value)
+
+    def _ensure_cache_entries(
+        self,
+        cache_node,
+        expected_count: int,
+        fill_value: str,
+    ) -> bool:
+        values = self._collect_cache_values(cache_node)
+        current_count = len(values)
+        changed = False
+
+        if current_count < expected_count:
+            values.extend([fill_value] * (expected_count - current_count))
+            changed = True
+        elif current_count > expected_count:
+            values = values[:expected_count]
+            changed = True
+
+        prefix = self._namespace_prefix(cache_node)
+        pt_count = cache_node.find(f"{prefix}ptCount")
+        if pt_count is None or pt_count.get("val") != str(expected_count):
+            changed = True
+
+        if changed:
+            self._write_cache(cache_node, values)
+
+        return changed
+
+    def _collect_cache_values(self, cache_node) -> list[str]:
+        prefix = self._namespace_prefix(cache_node)
+        values: list[str] = []
+        for point in cache_node.findall(f"{prefix}pt"):
+            value_node = point.find(f"{prefix}v")
+            values.append("" if value_node is None or value_node.text is None else value_node.text)
+        return values
+
+    def _namespace_prefix(self, node) -> str:
+        namespace = etree.QName(node).namespace
+        return f"{{{namespace}}}" if namespace else ""
 
     def _extract_range_values(
         self,

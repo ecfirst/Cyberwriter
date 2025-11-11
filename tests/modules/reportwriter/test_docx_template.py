@@ -341,6 +341,27 @@ CHART_XML = (
     "</c:chartSpace>"
 )
 
+CHART_EXTERNAL_MISSING_CAT_CACHE_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<c:chart>"
+    "<c:plotArea>"
+    "<c:lineChart>"
+    "<c:ser>"
+    "<c:val><c:numRef><c:f>Sheet1!$C$2:$C$3</c:f>"
+    "<c:numCache><c:ptCount val=\"2\"/>"
+    "<c:pt idx=\"0\"><c:v>10</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>20</c:v></c:pt>"
+    "</c:numCache></c:numRef></c:val>"
+    "<c:cat><c:strRef><c:f>Sheet1!$A$2:$A$3</c:f></c:strRef></c:cat>"
+    "</c:ser>"
+    "</c:lineChart>"
+    "</c:plotArea>"
+    "</c:chart>"
+    "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"1\"/></c:externalData>"
+    "</c:chartSpace>"
+)
+
 CHART_RICH_TEXT_SPLIT_XML = (
     '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
     'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
@@ -871,6 +892,35 @@ def test_cleanup_word_markup_removes_unbalanced_comment_ranges():
     assert 'w:permEnd w:id="9"' not in cleaned_xml
 
 
+def test_cleanup_comments_part_removes_orphan_entries():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    template._referenced_comment_ids = {"1", "3"}
+
+    comments_xml = (
+        '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:comment w:id=\"1\"><w:p/></w:comment>"
+        "<w:comment w:id=\"2\"><w:p/></w:comment>"
+        "<w:comment w:id=\"3\"><w:p/></w:comment>"
+        "</w:comments>"
+    )
+    comments_part = FakeXmlPart("/word/comments.xml", comments_xml)
+
+    def part_related_by(reltype):
+        if reltype == f"{docx_template._RELATIONSHIP_NS}/comments":
+            return comments_part
+        raise KeyError(reltype)
+
+    template.docx = SimpleNamespace(_part=SimpleNamespace(part_related_by=part_related_by))
+    template.get_part_xml = lambda part: part._blob.decode("utf-8")
+
+    template._cleanup_comments_part()
+
+    updated_xml = comments_part._blob.decode("utf-8")
+    assert 'w:id="1"' in updated_xml
+    assert 'w:id="3"' in updated_xml
+    assert 'w:id="2"' not in updated_xml
+
+
 def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
@@ -1396,6 +1446,28 @@ def test_render_additional_parts_updates_chart_cache_extensions(monkeypatch):
     assert "<x14:pt idx=\"1\"><x14:v>Beta</x14:v></x14:pt>" in chart_xml
     assert "<c:autoUpdate val=\"0\"/>" in chart_xml
     assert "{{" not in chart_xml
+
+
+def test_render_additional_parts_repairs_missing_category_cache(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    workbook = FakeWorkbookPart("/word/embeddings/Microsoft_Excel_Worksheet1.xlsx")
+    chart = FakeChartPart(
+        "/word/charts/chart1.xml",
+        CHART_EXTERNAL_MISSING_CAT_CACHE_XML,
+        workbook,
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([chart]))
+
+    template._render_additional_parts({}, None)
+
+    chart_xml = etree.tostring(chart._element, encoding="unicode")
+    assert "<c:externalData" not in chart_xml
+    assert "<c:strCache" in chart_xml
+    assert '<c:ptCount val="2"/>' in chart_xml
+    assert chart.rels == {}
 
 
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
