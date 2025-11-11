@@ -17,6 +17,8 @@ from ghostwriter.rolodex.data_parsers import (
     normalize_nexpose_artifacts_map,
     load_dns_soa_cap_map,
     load_password_cap_map,
+    load_password_compliance_matrix,
+    build_workbook_password_response,
     parse_dns_report,
 )
 from ghostwriter.rolodex.models import (
@@ -27,6 +29,7 @@ from ghostwriter.rolodex.models import (
     PasswordCapMapping,
     ProjectDataFile,
 )
+from ghostwriter.reporting.models import PasswordComplianceMapping
 
 
 NEXPOSE_HEADERS: Iterable[str] = (
@@ -1131,3 +1134,70 @@ class DNSDataParserTests(TestCase):
 
         updated_mapping = load_password_cap_map()
         self.assertEqual(updated_mapping.get("max_age"), "custom max age guidance")
+
+    def test_load_password_compliance_matrix_prefers_database(self):
+        matrix = load_password_compliance_matrix()
+        self.assertEqual(matrix.get("max_age", {}).get("data_type"), "numeric")
+        self.assertEqual(matrix.get("complexity_enabled", {}).get("data_type"), "string")
+
+        PasswordComplianceMapping.objects.update_or_create(
+            setting="max_age",
+            defaults={
+                "data_type": "numeric",
+                "rule": {"operator": "lt", "value": 30},
+            },
+        )
+
+        updated_matrix = load_password_compliance_matrix()
+        self.assertEqual(
+            updated_matrix.get("max_age", {}).get("rule", {}).get("value"),
+            30,
+        )
+
+    def test_password_compliance_matrix_override_adjusts_failures(self):
+        workbook_payload = {
+            "password": {
+                "policies": [
+                    {
+                        "domain_name": "corp.example.com",
+                        "passwords_cracked": 5,
+                        "enabled_accounts": 100,
+                        "admin_cracked": {"confirm": "Yes", "count": 1},
+                        "max_age": 90,
+                        "min_age": 0,
+                        "min_length": 7,
+                        "history": 5,
+                        "lockout_threshold": 8,
+                        "lockout_duration": 10,
+                        "lockout_reset": 20,
+                        "complexity_enabled": "TRUE",
+                    }
+                ]
+            }
+        }
+
+        _summary, domain_values, _domains = build_workbook_password_response(
+            workbook_payload
+        )
+        corp_entry = domain_values.get("corp.example.com")
+        self.assertIsInstance(corp_entry, dict)
+        self.assertIn("max_age", corp_entry.get("policy_cap_fields", []))
+        self.assertEqual(
+            corp_entry.get("policy_cap_values", {}).get("max_age"),
+            90,
+        )
+
+        PasswordComplianceMapping.objects.update_or_create(
+            setting="max_age",
+            defaults={
+                "data_type": "numeric",
+                "rule": {"operator": "lt", "value": 30},
+            },
+        )
+
+        _summary, updated_domain_values, _domains = build_workbook_password_response(
+            workbook_payload
+        )
+        updated_entry = updated_domain_values.get("corp.example.com")
+        self.assertIsInstance(updated_entry, dict)
+        self.assertNotIn("max_age", updated_entry.get("policy_cap_fields", []))

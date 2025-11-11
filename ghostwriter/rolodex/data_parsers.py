@@ -93,6 +93,71 @@ DEFAULT_PASSWORD_CAP_MAP: Dict[str, str] = {
     ),
 }
 
+DEFAULT_PASSWORD_COMPLIANCE_MATRIX: Dict[str, Dict[str, Any]] = {
+    "max_age": {
+        "data_type": "numeric",
+        "rule": {
+            "operator": "any",
+            "rules": [
+                {"operator": "ne", "value": 0},
+                {"operator": "lt", "value": 365},
+            ],
+        },
+    },
+    "min_age": {
+        "data_type": "numeric",
+        "rule": {
+            "operator": "any",
+            "rules": [
+                {"operator": "lt", "value": 1},
+                {"operator": "gt", "value": 7},
+            ],
+        },
+    },
+    "min_length": {
+        "data_type": "numeric",
+        "rule": {"operator": "lt", "value": 8},
+    },
+    "history": {
+        "data_type": "numeric",
+        "rule": {"operator": "lt", "value": 10},
+    },
+    "lockout_threshold": {
+        "data_type": "numeric",
+        "rule": {
+            "operator": "any",
+            "rules": [
+                {"operator": "eq", "value": 0},
+                {"operator": "gt", "value": 6},
+            ],
+        },
+    },
+    "lockout_duration": {
+        "data_type": "numeric",
+        "rule": {
+            "operator": "all",
+            "rules": [
+                {"operator": "gte", "value": 1},
+                {"operator": "lte", "value": 29},
+            ],
+        },
+    },
+    "lockout_reset": {
+        "data_type": "numeric",
+        "rule": {"operator": "lt", "value": 30},
+    },
+    "complexity_enabled": {
+        "data_type": "string",
+        "rule": {
+            "operator": "any",
+            "rules": [
+                {"operator": "eq", "value": "TRUE"},
+                {"operator": "eq", "value": "YES"},
+            ],
+        },
+    },
+}
+
 DEFAULT_DNS_SOA_CAP_MAP: Dict[str, str] = {
     "serial": "Update to match the 'YYYYMMDDnn' scheme",
     "expire": "Update to a value between 1209600 to 2419200",
@@ -200,6 +265,47 @@ def load_password_cap_map() -> Dict[str, str]:
         DEFAULT_PASSWORD_CAP_MAP,
         key_field="setting",
     )
+
+
+def _default_password_compliance_matrix() -> Dict[str, Dict[str, Any]]:
+    """Return a sanitized copy of the default password compliance matrix."""
+
+    return {
+        setting: {
+            "data_type": str(definition.get("data_type", "numeric")).lower()
+            if isinstance(definition, dict)
+            else "numeric",
+            "rule": definition.get("rule", {}) if isinstance(definition, dict) else {},
+        }
+        for setting, definition in DEFAULT_PASSWORD_COMPLIANCE_MATRIX.items()
+    }
+
+
+def load_password_compliance_matrix() -> Dict[str, Dict[str, Any]]:
+    """Return password compliance rules from the database or fall back to defaults."""
+
+    try:
+        model = apps.get_model("reporting", "PasswordComplianceMapping")
+    except LookupError:
+        return _default_password_compliance_matrix()
+
+    try:
+        entries = model.objects.all().values("setting", "data_type", "rule")
+    except (OperationalError, ProgrammingError):  # pragma: no cover - defensive guard
+        return _default_password_compliance_matrix()
+
+    matrix: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        setting = entry.get("setting")
+        if not setting:
+            continue
+        data_type = str(entry.get("data_type", "numeric") or "numeric").lower()
+        if data_type not in {"numeric", "string"}:
+            data_type = "numeric"
+        rule = entry.get("rule") if isinstance(entry.get("rule"), (dict, list)) else {}
+        matrix[setting] = {"data_type": data_type, "rule": rule}
+
+    return matrix or _default_password_compliance_matrix()
 
 
 AD_RISK_CONTRIBUTION_PHRASES: Dict[str, str] = {
@@ -412,6 +518,86 @@ def _coerce_int(value: Any) -> Optional[int]:
             return int(float(normalized))
         except (TypeError, ValueError):
             return None
+
+
+def _normalize_policy_string(value: Any) -> str:
+    """Return a normalized string representation for password policy values."""
+
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip().upper()
+    return str(value).strip().upper()
+
+
+def _evaluate_compliance_rule(rule: Any, value: Any, data_type: str) -> bool:
+    """Evaluate a compliance rule against ``value`` using the provided ``data_type``."""
+
+    if isinstance(rule, list):
+        return any(_evaluate_compliance_rule(entry, value, data_type) for entry in rule)
+
+    if not isinstance(rule, dict):
+        return False
+
+    operator = str(rule.get("operator", "")).lower()
+
+    if operator in {"any", "or"}:
+        sub_rules = rule.get("rules") or rule.get("conditions") or []
+        return any(
+            _evaluate_compliance_rule(sub_rule, value, data_type)
+            for sub_rule in sub_rules
+            if isinstance(sub_rule, (dict, list))
+        )
+
+    if operator in {"all", "and"}:
+        sub_rules = rule.get("rules") or rule.get("conditions") or []
+        relevant = [
+            sub_rule
+            for sub_rule in sub_rules
+            if isinstance(sub_rule, (dict, list))
+        ]
+        if not relevant:
+            return False
+        return all(
+            _evaluate_compliance_rule(sub_rule, value, data_type)
+            for sub_rule in relevant
+        )
+
+    if value is None:
+        return False
+
+    if data_type == "numeric":
+        try:
+            numeric_value = float(value)
+            comparator = float(rule.get("value"))
+        except (TypeError, ValueError):
+            return False
+
+        if operator in {"lt", "<"}:
+            return numeric_value < comparator
+        if operator in {"lte", "<="}:
+            return numeric_value <= comparator
+        if operator in {"gt", ">"}:
+            return numeric_value > comparator
+        if operator in {"gte", ">="}:
+            return numeric_value >= comparator
+        if operator in {"eq", "=="}:
+            return numeric_value == comparator
+        if operator in {"ne", "!=", "<>"}:
+            return numeric_value != comparator
+        return False
+
+    normalized_value = _normalize_policy_string(value)
+    comparator_text = _normalize_policy_string(rule.get("value"))
+
+    if operator in {"eq", "=="}:
+        return normalized_value == comparator_text
+    if operator in {"ne", "!=", "<>"}:
+        return normalized_value != comparator_text
+
+    return False
 
 
 def _calculate_percentage(numerator: Optional[int], denominator: Optional[int]) -> Optional[float]:
@@ -1439,19 +1625,26 @@ def build_workbook_password_response(
             fgpp_count = _coerce_int(raw_fgpp)
         return fgpp_count is not None and fgpp_count < 1
 
-    policy_metric_fields = {
-        "max_age",
-        "min_age",
-        "min_length",
-        "history",
-        "lockout_threshold",
-        "lockout_duration",
-        "lockout_reset",
-        "complexity_enabled",
+    compliance_matrix = load_password_compliance_matrix()
+    policy_field_order: List[str] = list(compliance_matrix.keys())
+    policy_fields: Set[str] = set(policy_field_order)
+    numeric_policy_fields: Set[str] = {
+        field
+        for field, definition in compliance_matrix.items()
+        if definition.get("data_type") == "numeric"
     }
 
-    def _coerce_metric_int(entry: Dict[str, Any], key: str) -> Optional[int]:
-        return _coerce_int(entry.get(key))
+    def _normalize_policy_value(entry: Dict[str, Any], key: str) -> Any:
+        value = entry.get(key)
+        if key in numeric_policy_fields:
+            return _coerce_int(value)
+        return _normalize_policy_string(value)
+
+    def _value_is_non_compliant(setting: str, normalized_value: Any) -> bool:
+        definition = compliance_matrix.get(setting) or {}
+        data_type = definition.get("data_type", "numeric")
+        rule = definition.get("rule")
+        return _evaluate_compliance_rule(rule, normalized_value, data_type)
 
     def _collect_policy_failures(entry: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(entry, dict):
@@ -1459,42 +1652,12 @@ def build_workbook_password_response(
 
         failures: Dict[str, Any] = {}
 
-        max_age = _coerce_metric_int(entry, "max_age")
-        if max_age is not None and max_age != 0:
-            failures["max_age"] = max_age
-
-        min_age = _coerce_metric_int(entry, "min_age")
-        if min_age is not None and (min_age < 1 or min_age >= 7):
-            failures["min_age"] = min_age
-
-        min_length = _coerce_metric_int(entry, "min_length")
-        if min_length is not None and min_length < 8:
-            failures["min_length"] = min_length
-
-        history = _coerce_metric_int(entry, "history")
-        if history is not None and history < 10:
-            failures["history"] = history
-
-        lockout_threshold = _coerce_metric_int(entry, "lockout_threshold")
-        if lockout_threshold is not None and (
-            lockout_threshold == 0 or lockout_threshold > 6
-        ):
-            failures["lockout_threshold"] = lockout_threshold
-
-        lockout_duration = _coerce_metric_int(entry, "lockout_duration")
-        if lockout_duration is not None and 1 <= lockout_duration <= 29:
-            failures["lockout_duration"] = lockout_duration
-
-        lockout_reset = _coerce_metric_int(entry, "lockout_reset")
-        if lockout_reset is not None and lockout_reset < 30:
-            failures["lockout_reset"] = lockout_reset
-
-        if _is_yes(entry.get("complexity_enabled")):
-            raw_value = entry.get("complexity_enabled")
-            if isinstance(raw_value, str) and raw_value.strip():
-                failures["complexity_enabled"] = raw_value.strip().upper()
-            else:
-                failures["complexity_enabled"] = "TRUE"
+        for setting in policy_field_order:
+            normalized_value = _normalize_policy_value(entry, setting)
+            if setting in numeric_policy_fields and normalized_value is None:
+                continue
+            if _value_is_non_compliant(setting, normalized_value):
+                failures[setting] = normalized_value
 
         return failures
 
@@ -1505,7 +1668,7 @@ def build_workbook_password_response(
                 if isinstance(item, dict):
                     yield item
         elif isinstance(raw_fgpp, dict):
-            if any(key in raw_fgpp for key in policy_metric_fields):
+            if any(key in raw_fgpp for key in policy_fields):
                 yield raw_fgpp
 
     for policy in policies:
@@ -1541,10 +1704,10 @@ def build_workbook_password_response(
         policy_is_bad = bool(policy_failures)
         if policy_is_bad:
             bad_pass_total += 1
-            policy_fields = domain_entry.setdefault("policy_cap_fields", [])
+            policy_field_list = domain_entry.setdefault("policy_cap_fields", [])
             for field in policy_failures:
-                if field not in policy_fields:
-                    policy_fields.append(field)
+                if field not in policy_field_list:
+                    policy_field_list.append(field)
             domain_entry.setdefault("policy_cap_values", {}).update(policy_failures)
 
         fgpp_is_bad = False

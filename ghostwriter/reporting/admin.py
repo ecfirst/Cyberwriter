@@ -23,6 +23,7 @@ from ghostwriter.reporting.models import (
     ReportObservationLink,
     ReportTemplate,
     GradeRiskMapping,
+    PasswordComplianceMapping,
     Severity,
 )
 from ghostwriter.reporting.resources import FindingResource, ObservationResource
@@ -226,6 +227,13 @@ class GradeRiskMappingAdmin(admin.ModelAdmin):
     list_display = ("grade", "risk")
     list_editable = ("risk",)
     ordering = ("grade",)
+
+
+@admin.register(PasswordComplianceMapping)
+class PasswordComplianceMappingAdmin(admin.ModelAdmin):
+    list_display = ("setting", "data_type")
+    list_editable = ("data_type",)
+    search_fields = ("setting",)
 
 
 @admin.register(ReportTemplate)
