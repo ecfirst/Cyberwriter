@@ -2769,10 +2769,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
         part,
         excel_values: dict[str, dict[str, dict[str, str]]],
     ) -> str:
-        workbook_data = self._resolve_chart_workbook(part, excel_values)
-        if not workbook_data:
-            return xml
-
         try:
             tree = etree.fromstring(xml.encode("utf-8"))
         except etree.XMLSyntaxError:
@@ -2780,31 +2776,36 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         updated = False
 
-        for num_ref in tree.findall(".//{*}numRef"):
-            formula = self._find_chart_formula(num_ref)
-            if not formula:
-                continue
-            values = self._extract_range_values(formula, workbook_data)
-            if values is None:
-                continue
-            cache = self._find_or_create_cache(num_ref, "numCache")
-            self._write_cache(cache, values)
-            self._write_literal_cache(num_ref, "numLit", values)
-            updated = True
+        workbook_data = self._resolve_chart_workbook(part, excel_values)
 
-        for str_ref in tree.findall(".//{*}strRef"):
-            formula = self._find_chart_formula(str_ref)
-            if not formula:
-                continue
-            values = self._extract_range_values(formula, workbook_data)
-            if values is None:
-                continue
-            cache = self._find_or_create_cache(str_ref, "strCache")
-            self._write_cache(cache, values)
-            self._write_literal_cache(str_ref, "strLit", values)
-            updated = True
+        if workbook_data:
+            for num_ref in tree.findall(".//{*}numRef"):
+                formula = self._find_chart_formula(num_ref)
+                if not formula:
+                    continue
+                values = self._extract_range_values(formula, workbook_data)
+                if values is None:
+                    continue
+                cache = self._find_or_create_cache(num_ref, "numCache")
+                self._write_cache(cache, values)
+                self._write_literal_cache(num_ref, "numLit", values)
+                updated = True
 
-        if not updated:
+            for str_ref in tree.findall(".//{*}strRef"):
+                formula = self._find_chart_formula(str_ref)
+                if not formula:
+                    continue
+                values = self._extract_range_values(formula, workbook_data)
+                if values is None:
+                    continue
+                cache = self._find_or_create_cache(str_ref, "strCache")
+                self._write_cache(cache, values)
+                self._write_literal_cache(str_ref, "strLit", values)
+                updated = True
+
+        repaired = self._repair_chart_caches(tree)
+
+        if not updated and not repaired:
             return xml
 
         return etree.tostring(tree, encoding="unicode")
@@ -3216,4 +3217,70 @@ class GhostwriterDocxTemplate(DocxTemplate):
             pt = etree.SubElement(cache, f"{prefix}pt", idx=str(idx))
             v = etree.SubElement(pt, f"{prefix}v")
             v.text = "" if value is None else str(value)
+
+    def _repair_chart_caches(self, tree: etree._Element) -> bool:
+        """Ensure declared chart cache counts match the cached point entries."""
+
+        repaired = False
+        for cache in tree.findall(".//{*}numCache") + tree.findall(".//{*}numLit"):
+            if self._repair_single_chart_cache(cache, fill_value="0"):
+                repaired = True
+
+        for cache in tree.findall(".//{*}strCache") + tree.findall(".//{*}strLit"):
+            if self._repair_single_chart_cache(cache, fill_value=""):
+                repaired = True
+
+        return repaired
+
+    def _repair_single_chart_cache(self, cache, fill_value: str) -> bool:
+        namespace = etree.QName(cache).namespace
+        prefix = f"{{{namespace}}}" if namespace else ""
+
+        changed = False
+
+        pts = list(cache.findall(f"{prefix}pt"))
+        for idx, pt in enumerate(pts):
+            if pt.get("idx") != str(idx):
+                pt.set("idx", str(idx))
+                changed = True
+            value_node = pt.find(f"{prefix}v")
+            if value_node is None:
+                value_node = etree.SubElement(pt, f"{prefix}v")
+                changed = True
+            if value_node.text is None:
+                value_node.text = fill_value
+                changed = True
+
+        pt_count = cache.find(f"{prefix}ptCount")
+        declared = None
+        if pt_count is not None:
+            val_attr = pt_count.get("val")
+            try:
+                declared = int(val_attr) if val_attr is not None else None
+            except (TypeError, ValueError):
+                declared = None
+
+        actual = len(pts)
+
+        if pt_count is None:
+            pt_count = etree.SubElement(cache, f"{prefix}ptCount")
+            changed = True
+
+        if declared is None:
+            declared = actual
+        if declared < actual:
+            declared = actual
+        elif declared > actual:
+            for idx in range(actual, declared):
+                pt = etree.SubElement(cache, f"{prefix}pt", idx=str(idx))
+                value_node = etree.SubElement(pt, f"{prefix}v")
+                value_node.text = fill_value
+            actual = declared
+            changed = True
+
+        if pt_count.get("val") != str(actual):
+            pt_count.set("val", str(actual))
+            changed = True
+
+        return changed
 

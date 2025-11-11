@@ -567,6 +567,33 @@ CHART_TABLE_XML = (
     "</c:chartSpace>"
 )
 
+CHART_NUMCACHE_MISMATCH_XML = (
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    "<c:chart>"
+    "<c:plotArea>"
+    "<c:barChart>"
+    "<c:ser>"
+    "<c:tx><c:strRef><c:f>Sheet1!$B$1</c:f>"
+    "<c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>High Risk</c:v></c:pt></c:strCache>"
+    "</c:strRef></c:tx>"
+    "<c:val><c:numRef><c:f>Sheet1!$B$2:$B$4</c:f>"
+    "<c:numCache><c:ptCount val=\"3\"/><c:pt idx=\"0\"><c:v>12</c:v></c:pt></c:numCache>"
+    "</c:numRef></c:val>"
+    "<c:cat><c:strRef><c:f>Sheet1!$A$2:$A$4</c:f>"
+    "<c:strCache><c:ptCount val=\"3\"/>"
+    "<c:pt idx=\"0\"><c:v>High</c:v></c:pt>"
+    "<c:pt idx=\"1\"><c:v>Medium</c:v></c:pt>"
+    "<c:pt idx=\"2\"><c:v>Low</c:v></c:pt>"
+    "</c:strCache></c:strRef></c:cat>"
+    "</c:ser>"
+    "</c:barChart>"
+    "</c:plotArea>"
+    "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"0\"/></c:externalData>"
+    "</c:chart>"
+    "</c:chartSpace>"
+)
+
 
 class FakeXmlPart:
     """Minimal XML part used to exercise templating helpers."""
@@ -1425,6 +1452,35 @@ def test_render_additional_parts_updates_chart_cache_extensions(monkeypatch):
     assert "<x14:pt idx=\"1\"><x14:v>Beta</x14:v></x14:pt>" in chart_xml
     assert "<c:autoUpdate val=\"0\"/>" in chart_xml
     assert "{{" not in chart_xml
+
+
+def test_sync_chart_cache_repairs_mismatched_point_counts():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    workbook = FakeWorkbookPart("/word/embeddings/Microsoft_Excel_Worksheet1.xlsx")
+    chart = FakeChartPart(
+        "/word/charts/chart1.xml",
+        CHART_NUMCACHE_MISMATCH_XML,
+        workbook,
+    )
+
+    repaired_xml = template._sync_chart_cache(
+        CHART_NUMCACHE_MISMATCH_XML,
+        chart,
+        {},
+    )
+
+    tree = etree.fromstring(repaired_xml.encode("utf-8"))
+    num_cache = tree.find(".//{*}numCache")
+    assert num_cache is not None
+    pts = num_cache.findall("{*}pt")
+    assert len(pts) == 3
+    assert [pt.get("idx") for pt in pts] == ["0", "1", "2"]
+    assert [pt.findtext("{*}v") for pt in pts] == ["12", "0", "0"]
+    pt_count = num_cache.find("{*}ptCount")
+    assert pt_count is not None
+    assert pt_count.get("val") == "3"
 
 
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
