@@ -529,19 +529,42 @@ LINTER_CONTEXT = {
                     "lockout_threshold",
                 ],
                 "policy_cap_map": {
-                    "max_age": (
-                        "Change 'Maximum Age' from {{ max_age }} to == 0 to align with NIST recommendations "
-                        "to not force users to arbitrarily change passwords based solely on age"
-                    ),
-                    "complexity_enabled": (
-                        "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection controls "
-                        "such as blacklists"
-                    ),
-                    "lockout_reset": "Change 'Lockout Reset' from {{ lockout_reset }} to >= 30",
-                    "lockout_duration": "Change 'Lockout Duration' from {{ lockout_duration }} to >= 30 or admin unlock",
-                    "history": "Change 'History' from {{ history }} to >= 10",
-                    "min_age": "Change 'Minimum Age' from {{ min_age }} to >= 1 and < 7",
-                    "lockout_threshold": "Change 'Lockout Threshold' from {{ lockout_threshold }} to > 0 and <= 6",
+                    "corp.example.com": {
+                        "policy": {
+                            "max_age": (
+                                "Change 'Maximum Age' from 90 to == 0 to align with NIST recommendations "
+                                "to not force users to arbitrarily change passwords based solely on age"
+                            ),
+                            "complexity_enabled": (
+                                "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                                "controls such as blacklists"
+                            ),
+                        },
+                        "fgpp": {
+                            "Tier0Admins": {
+                                "max_age": (
+                                    "Change 'Maximum Age' from 45 to == 0 to align with NIST recommendations "
+                                    "to not force users to arbitrarily change passwords based solely on age"
+                                ),
+                                "lockout_reset": "Change 'Lockout Reset' from 15 to >= 30",
+                                "lockout_duration": "Change 'Lockout Duration' from 15 to >= 30 or admin unlock",
+                                "complexity_enabled": (
+                                    "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                                    "controls such as blacklists"
+                                ),
+                            },
+                            "ServiceAccounts": {
+                                "history": "Change 'History' from 5 to >= 10",
+                                "max_age": (
+                                    "Change 'Maximum Age' from 365 to == 0 to align with NIST recommendations "
+                                    "to not force users to arbitrarily change passwords based solely on age"
+                                ),
+                                "min_age": "Change 'Minimum Age' from 0 to >= 1 and < 7",
+                                "lockout_threshold": "Change 'Lockout Threshold' from 0 to > 0 and <= 6",
+                                "lockout_reset": "Change 'Lockout Reset' from 0 to >= 30",
+                            },
+                        },
+                    }
                 },
                 "policy_cap_context": {
                     "corp.example.com": {

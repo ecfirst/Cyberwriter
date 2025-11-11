@@ -93,6 +93,8 @@ DEFAULT_PASSWORD_CAP_MAP: Dict[str, str] = {
     ),
 }
 
+_CAP_PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
+
 DEFAULT_PASSWORD_COMPLIANCE_MATRIX: Dict[str, Dict[str, Any]] = {
     "max_age": {
         "data_type": "numeric",
@@ -1253,6 +1255,85 @@ def summarize_password_cap_details(
     return unique_fields, context
 
 
+def _stringify_cap_value(value: Any) -> str:
+    """Return a string representation suitable for CAP placeholder substitution."""
+
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _render_cap_template(template: str, values: Dict[str, Any]) -> str:
+    """Render ``template`` by replacing ``{{ key }}`` placeholders with ``values``."""
+
+    if not template:
+        return ""
+
+    def _replace(match: "re.Match[str]") -> str:
+        key = match.group(1)
+        for candidate in (key, key.lower(), key.upper()):
+            if candidate in values:
+                return _stringify_cap_value(values[candidate])
+        return ""
+
+    return _CAP_PLACEHOLDER_PATTERN.sub(_replace, template)
+
+
+def build_password_cap_display_map(
+    context: Dict[str, Any], template_map: Dict[str, str]
+) -> Dict[str, Any]:
+    """Return domain-scoped CAP guidance using ``template_map`` and ``context`` values."""
+
+    domain_map: Dict[str, Any] = {}
+
+    for domain, domain_context in context.items():
+        if not isinstance(domain_context, dict):
+            continue
+
+        domain_entry: Dict[str, Any] = {}
+
+        policy_values = domain_context.get("policy")
+        if isinstance(policy_values, dict) and policy_values:
+            policy_map: Dict[str, str] = {}
+            for field, value in policy_values.items():
+                template = template_map.get(field, "")
+                replacements = {
+                    field: value,
+                    field.lower(): value,
+                    field.upper(): value,
+                }
+                policy_map[field] = _render_cap_template(template, replacements)
+            if policy_map:
+                domain_entry["policy"] = policy_map
+
+        fgpp_values = domain_context.get("fgpp")
+        if isinstance(fgpp_values, dict) and fgpp_values:
+            fgpp_map: Dict[str, Dict[str, str]] = {}
+            for name, fgpp_field_values in fgpp_values.items():
+                if not isinstance(fgpp_field_values, dict) or not fgpp_field_values:
+                    continue
+                per_policy_map: Dict[str, str] = {}
+                for field, value in fgpp_field_values.items():
+                    template = template_map.get(field, "")
+                    replacements = {
+                        field: value,
+                        field.lower(): value,
+                        field.upper(): value,
+                    }
+                    per_policy_map[field] = _render_cap_template(template, replacements)
+                if per_policy_map:
+                    fgpp_map[name] = per_policy_map
+            if fgpp_map:
+                domain_entry["fgpp"] = fgpp_map
+
+        if domain_entry:
+            domain_map[domain] = domain_entry
+
+    return domain_map
+
+
 def _format_integer_value(value: Optional[int]) -> str:
     """Normalize integer-like values to strings while preserving zeroes."""
 
@@ -1760,17 +1841,23 @@ def build_workbook_password_response(
             summary_domains.append(domain)
 
     policy_cap_fields, policy_cap_context = summarize_password_cap_details(domain_values)
-    password_cap_map = load_password_cap_map() if policy_cap_fields else {}
+    password_cap_templates = load_password_cap_map() if policy_cap_fields else {}
 
     def _inject_cap_details(summary_dict: Dict[str, Any]) -> Dict[str, Any]:
         if policy_cap_fields:
             summary_dict["policy_cap_fields"] = list(policy_cap_fields)
-            summary_dict["policy_cap_map"] = {
-                field: password_cap_map.get(field, "")
-                for field in policy_cap_fields
-            }
             if policy_cap_context:
                 summary_dict["policy_cap_context"] = policy_cap_context
+                domain_cap_map = build_password_cap_display_map(
+                    policy_cap_context, password_cap_templates
+                )
+                if domain_cap_map:
+                    summary_dict["policy_cap_map"] = domain_cap_map
+                else:
+                    summary_dict.pop("policy_cap_map", None)
+            else:
+                summary_dict.pop("policy_cap_context", None)
+                summary_dict.pop("policy_cap_map", None)
         else:
             summary_dict.pop("policy_cap_fields", None)
             summary_dict.pop("policy_cap_map", None)

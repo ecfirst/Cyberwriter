@@ -768,25 +768,60 @@ class NexposeDataParserTests(TestCase):
                 "complexity_enabled",
             ],
         )
-        self.assertEqual(
-            password_responses.get("policy_cap_map"),
-            {
-                "max_age": (
-                    "Change 'Maximum Age' from {{ max_age }} to == 0 to align with NIST recommendations "
-                    "to not force users to arbitrarily change passwords based solely on age"
-                ),
-                "min_age": "Change 'Minimum Age' from {{ min_age }} to >= 1 and < 7",
-                "min_length": "Change 'Minimum Length' from {{ min_length }} to >= 8",
-                "history": "Change 'History' from {{ history }} to >= 10",
-                "lockout_threshold": "Change 'Lockout Threshold' from {{ lockout_threshold }} to > 0 and <= 6",
-                "lockout_duration": "Change 'Lockout Duration' from {{ lockout_duration }} to >= 30 or admin unlock",
-                "lockout_reset": "Change 'Lockout Reset' from {{ lockout_reset }} to >= 30",
-                "complexity_enabled": (
-                    "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection controls "
-                    "such as blacklists"
-                ),
+        expected_cap_map = {
+            "corp.example.com": {
+                "policy": {
+                    "max_age": (
+                        "Change 'Maximum Age' from 90 to == 0 to align with NIST recommendations "
+                        "to not force users to arbitrarily change passwords based solely on age"
+                    ),
+                    "min_age": "Change 'Minimum Age' from 0 to >= 1 and < 7",
+                    "min_length": "Change 'Minimum Length' from 7 to >= 8",
+                    "history": "Change 'History' from 5 to >= 10",
+                    "lockout_threshold": "Change 'Lockout Threshold' from 8 to > 0 and <= 6",
+                    "lockout_duration": "Change 'Lockout Duration' from 15 to >= 30 or admin unlock",
+                    "lockout_reset": "Change 'Lockout Reset' from 20 to >= 30",
+                    "complexity_enabled": (
+                        "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                        "controls such as blacklists"
+                    ),
+                },
+                "fgpp": {
+                    "ServiceAccounts": {
+                        "max_age": (
+                            "Change 'Maximum Age' from 365 to == 0 to align with NIST recommendations "
+                            "to not force users to arbitrarily change passwords based solely on age"
+                        ),
+                        "min_age": "Change 'Minimum Age' from 0 to >= 1 and < 7",
+                        "min_length": "Change 'Minimum Length' from 6 to >= 8",
+                        "history": "Change 'History' from 5 to >= 10",
+                        "lockout_threshold": "Change 'Lockout Threshold' from 8 to > 0 and <= 6",
+                        "lockout_duration": "Change 'Lockout Duration' from 10 to >= 30 or admin unlock",
+                        "lockout_reset": "Change 'Lockout Reset' from 10 to >= 30",
+                        "complexity_enabled": (
+                            "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                            "controls such as blacklists"
+                        ),
+                    },
+                    "Tier0Admins": {
+                        "max_age": (
+                            "Change 'Maximum Age' from 45 to == 0 to align with NIST recommendations "
+                            "to not force users to arbitrarily change passwords based solely on age"
+                        ),
+                        "lockout_reset": "Change 'Lockout Reset' from 15 to >= 30",
+                        "lockout_duration": "Change 'Lockout Duration' from 15 to >= 30 or admin unlock",
+                        "complexity_enabled": (
+                            "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                            "controls such as blacklists"
+                        ),
+                    },
+                },
             },
-        )
+            "lab.example.com": {
+                "policy": {"history": "Change 'History' from 8 to >= 10"},
+            },
+        }
+        self.assertEqual(password_responses.get("policy_cap_map"), expected_cap_map)
         self.assertEqual(
             password_responses.get("policy_cap_context"),
             {
@@ -925,9 +960,13 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(
             dns_responses.get("soa_field_cap_map"),
             {
-                "serial": "Update to match the 'YYYYMMDDnn' scheme",
-                "refresh": "Update to a value between 1200 and 43200 seconds",
-                "retry": "Update to a value less than or equal to half the REFRESH",
+                "one.example": {
+                    "serial": "Update to match the 'YYYYMMDDnn' scheme",
+                    "refresh": "Update to a value between 1200 and 43200 seconds",
+                },
+                "two.example": {
+                    "retry": "Update to a value less than or equal to half the REFRESH",
+                },
             },
         )
 
@@ -956,7 +995,41 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(dns_responses, dict)
         self.assertEqual(
             dns_responses.get("soa_field_cap_map"),
-            {"serial": "custom serial guidance"},
+            {"one.example": {"serial": "custom serial guidance"}},
+        )
+
+    def test_dns_cap_map_populated_from_artifacts(self):
+        csv_lines = [
+            "Status,Info",
+            "FAIL,Less than 2 nameservers exist",
+            "FAIL,Some nameservers have duplicate addresses",
+        ]
+        upload = SimpleUploadedFile(
+            "dns_report.csv",
+            "\n".join(csv_lines).encode("utf-8"),
+            content_type="text/csv",
+        )
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=upload,
+            requirement_label="dns_report.csv",
+            requirement_context="one.example",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=data_file.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        dns_responses = self.project.data_responses.get("dns")
+        self.assertIsInstance(dns_responses, dict)
+        self.assertEqual(
+            dns_responses.get("dns_cap_map"),
+            {
+                "one.example": {
+                    "Less than 2 nameservers exist": "Assign a minimum of 2 nameservers for the domain",
+                    "Some nameservers have duplicate addresses": "Ensure all nameserver addresses are unique",
+                }
+            },
         )
 
     def test_password_cap_map_uses_database(self):
@@ -993,8 +1066,11 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         password_responses = self.project.data_responses.get("password")
+        policy_cap_map = password_responses.get("policy_cap_map", {})
         self.assertEqual(
-            password_responses.get("policy_cap_map", {}).get("max_age"),
+            policy_cap_map.get("corp.example.com", {})
+            .get("policy", {})
+            .get("max_age"),
             "custom max age guidance",
         )
 

@@ -396,11 +396,48 @@ class ProjectSerializerDataResponsesTests(TestCase):
                 "complexity_enabled",
             ],
         )
-        self.assertEqual(
-            password_summary.get("policy_cap_map", {}).get("max_age"),
-            "Change 'Maximum Age' from {{ max_age }} to == 0 to align with NIST recommendations "
-            "to not force users to arbitrarily change passwords based solely on age",
-        )
+        expected_cap_map = {
+            "corp.example.com": {
+                "policy": {
+                    "max_age": (
+                        "Change 'Maximum Age' from 90 to == 0 to align with NIST recommendations "
+                        "to not force users to arbitrarily change passwords based solely on age"
+                    ),
+                    "min_age": "Change 'Minimum Age' from 0 to >= 1 and < 7",
+                    "min_length": "Change 'Minimum Length' from 7 to >= 8",
+                    "history": "Change 'History' from 6 to >= 10",
+                    "lockout_threshold": "Change 'Lockout Threshold' from 8 to > 0 and <= 6",
+                    "lockout_duration": "Change 'Lockout Duration' from 15 to >= 30 or admin unlock",
+                    "lockout_reset": "Change 'Lockout Reset' from 20 to >= 30",
+                    "complexity_enabled": (
+                        "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                        "controls such as blacklists"
+                    ),
+                },
+                "fgpp": {
+                    "ServiceAccounts": {
+                        "max_age": (
+                            "Change 'Maximum Age' from 365 to == 0 to align with NIST recommendations "
+                            "to not force users to arbitrarily change passwords based solely on age"
+                        ),
+                        "min_age": "Change 'Minimum Age' from 0 to >= 1 and < 7",
+                        "min_length": "Change 'Minimum Length' from 6 to >= 8",
+                        "history": "Change 'History' from 5 to >= 10",
+                        "lockout_threshold": "Change 'Lockout Threshold' from 8 to > 0 and <= 6",
+                        "lockout_duration": "Change 'Lockout Duration' from 10 to >= 30 or admin unlock",
+                        "lockout_reset": "Change 'Lockout Reset' from 10 to >= 30",
+                        "complexity_enabled": (
+                            "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                            "controls such as blacklists"
+                        ),
+                    }
+                },
+            },
+            "lab.example.com": {
+                "policy": {"history": "Change 'History' from 15 to >= 10"},
+            },
+        }
+        self.assertEqual(password_summary.get("policy_cap_map"), expected_cap_map)
         self.assertEqual(
             password_summary.get("policy_cap_context"),
             {

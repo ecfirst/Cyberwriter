@@ -551,44 +551,99 @@ class Project(models.Model):
             combined_dns_section.update(workbook_dns_response)
             existing_responses["dns"] = combined_dns_section
 
-        def _collect_unique_soa_fields(entries: Any) -> List[str]:
-            unique_fields: List[str] = []
-            seen: Set[str] = set()
+        def _collect_domain_soa_fields(entries: Any) -> Dict[str, List[str]]:
+            domain_fields: Dict[str, List[str]] = {}
             if not isinstance(entries, list):
-                return unique_fields
+                return domain_fields
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
                 fields = entry.get("soa_fields")
                 if not isinstance(fields, list):
                     continue
+                domain_value = (
+                    entry.get("domain")
+                    or entry.get("name")
+                    or entry.get("zone")
+                    or entry.get("fqdn")
+                )
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if not domain_text:
+                    continue
+                domain_entry = domain_fields.setdefault(domain_text, [])
+                seen_fields = set(domain_entry)
                 for field in fields:
                     if field is None:
                         continue
                     text = str(field).strip()
-                    if not text or text in seen:
+                    if not text or text in seen_fields:
                         continue
-                    seen.add(text)
-                    unique_fields.append(text)
-            return unique_fields
+                    seen_fields.add(text)
+                    domain_entry.append(text)
+            return domain_fields
 
         dns_section = existing_responses.get("dns")
         if isinstance(dns_section, dict):
             entries = dns_section.get("entries")
             if isinstance(entries, list):
-                unique_fields = _collect_unique_soa_fields(entries)
-                dns_section["unique_soa_fields"] = unique_fields
+                domain_soa_fields = _collect_domain_soa_fields(entries)
+                unique_fields: List[str] = []
+                for field_list in domain_soa_fields.values():
+                    for field in field_list:
+                        if field not in unique_fields:
+                            unique_fields.append(field)
                 if unique_fields:
+                    dns_section["unique_soa_fields"] = unique_fields
+                else:
+                    dns_section.pop("unique_soa_fields", None)
+
+                if domain_soa_fields:
                     cap_map = load_dns_soa_cap_map()
                     dns_section["soa_field_cap_map"] = {
-                        field: cap_map.get(field, "")
-                        for field in unique_fields
+                        domain: {
+                            field: cap_map.get(field, "")
+                            for field in fields
+                        }
+                        for domain, fields in domain_soa_fields.items()
                     }
                 else:
                     dns_section.pop("soa_field_cap_map", None)
             else:
                 dns_section.pop("unique_soa_fields", None)
                 dns_section.pop("soa_field_cap_map", None)
+
+            dns_artifact_entries = artifacts.get("dns_issues")
+            dns_cap_map: Dict[str, Dict[str, str]] = {}
+            if isinstance(dns_artifact_entries, list):
+                for artifact_entry in dns_artifact_entries:
+                    if not isinstance(artifact_entry, dict):
+                        continue
+                    domain_value = artifact_entry.get("domain")
+                    domain_text = str(domain_value).strip() if domain_value else ""
+                    if not domain_text:
+                        continue
+                    issues = artifact_entry.get("issues")
+                    if not isinstance(issues, list) or not issues:
+                        continue
+                    domain_map = dns_cap_map.setdefault(domain_text, {})
+                    for issue_entry in issues:
+                        if not isinstance(issue_entry, dict):
+                            continue
+                        issue_text = str(issue_entry.get("issue") or "").strip()
+                        if not issue_text:
+                            continue
+                        cap_text = issue_entry.get("cap")
+                        domain_map[issue_text] = (
+                            str(cap_text) if cap_text is not None else ""
+                        )
+            if dns_cap_map:
+                dns_section["dns_cap_map"] = dns_cap_map
+            else:
+                dns_section.pop("dns_cap_map", None)
+        else:
+            dns_section.pop("unique_soa_fields", None)
+            dns_section.pop("soa_field_cap_map", None)
+            dns_section.pop("dns_cap_map", None)
 
         self.data_responses = existing_responses
 

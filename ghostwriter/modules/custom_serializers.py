@@ -40,6 +40,7 @@ from ghostwriter.reporting.models import (
 )
 from ghostwriter.rolodex.data_parsers import (
     build_ad_risk_contrib,
+    build_password_cap_display_map,
     build_workbook_ad_response,
     build_workbook_dns_response,
     build_workbook_firewall_response,
@@ -994,31 +995,51 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             return {}
 
         entries = section.get("entries")
+        domain_soa_fields: Dict[str, List[str]] = {}
         unique_soa_fields: List[str] = []
         if isinstance(entries, list):
-            seen: Set[str] = set()
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
                 fields = entry.get("soa_fields")
                 if not isinstance(fields, list):
                     continue
+                domain_value = (
+                    entry.get("domain")
+                    or entry.get("name")
+                    or entry.get("zone")
+                    or entry.get("fqdn")
+                )
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if not domain_text:
+                    continue
+                domain_entry = domain_soa_fields.setdefault(domain_text, [])
+                seen_fields = set(domain_entry)
                 for field in fields:
                     if field is None:
                         continue
                     text = str(field).strip()
-                    if not text or text in seen:
+                    if not text or text in seen_fields:
                         continue
-                    seen.add(text)
-                    unique_soa_fields.append(text)
+                    seen_fields.add(text)
+                    domain_entry.append(text)
+                    if text not in unique_soa_fields:
+                        unique_soa_fields.append(text)
 
         if isinstance(entries, list):
-            section["unique_soa_fields"] = unique_soa_fields
             if unique_soa_fields:
+                section["unique_soa_fields"] = unique_soa_fields
+            else:
+                section.pop("unique_soa_fields", None)
+
+            if domain_soa_fields:
                 cap_map = load_dns_soa_cap_map()
                 section["soa_field_cap_map"] = {
-                    field: cap_map.get(field, "")
-                    for field in unique_soa_fields
+                    domain: {
+                        field: cap_map.get(field, "")
+                        for field in fields
+                    }
+                    for domain, fields in domain_soa_fields.items()
                 }
             else:
                 section.pop("soa_field_cap_map", None)
@@ -1290,17 +1311,23 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 section.pop(extra_key, None)
 
         cap_fields, cap_context = summarize_password_cap_details(workbook_domain_values)
-        password_cap_map = load_password_cap_map() if cap_fields else {}
+        password_cap_templates = load_password_cap_map() if cap_fields else {}
 
         def _inject_cap_details(summary_dict: Dict[str, Any]) -> Dict[str, Any]:
             if cap_fields:
                 summary_dict["policy_cap_fields"] = list(cap_fields)
-                summary_dict["policy_cap_map"] = {
-                    field: password_cap_map.get(field, "")
-                    for field in cap_fields
-                }
                 if cap_context:
                     summary_dict["policy_cap_context"] = cap_context
+                    domain_cap_map = build_password_cap_display_map(
+                        cap_context, password_cap_templates
+                    )
+                    if domain_cap_map:
+                        summary_dict["policy_cap_map"] = domain_cap_map
+                    else:
+                        summary_dict.pop("policy_cap_map", None)
+                else:
+                    summary_dict.pop("policy_cap_context", None)
+                    summary_dict.pop("policy_cap_map", None)
             else:
                 summary_dict.pop("policy_cap_fields", None)
                 summary_dict.pop("policy_cap_map", None)
