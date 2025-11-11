@@ -1261,6 +1261,7 @@ def build_workbook_password_response(
     policy_domain_order: List[str] = []
     domain_bad_flags: Dict[str, bool] = {}
     bad_pass_total = 0
+    total_cracked = 0
 
     def _is_yes(value: Any) -> bool:
         if isinstance(value, str):
@@ -1376,6 +1377,8 @@ def build_workbook_password_response(
         normalized_entry = entry if isinstance(entry, dict) else {}
 
         cracked_value = _coerce_int(normalized_entry.get("passwords_cracked"))
+        if cracked_value is not None:
+            total_cracked += cracked_value
         enabled_value = _coerce_int(normalized_entry.get("enabled_accounts"))
         admin_cracked_value = _normalize_admin_count(normalized_entry)
 
@@ -1410,7 +1413,7 @@ def build_workbook_password_response(
         if domain in domain_values and domain not in summary_domains:
             summary_domains.append(domain)
 
-    summary: Dict[str, Any] = {"bad_pass_count": bad_pass_total}
+    summary: Dict[str, Any] = {"bad_pass_count": bad_pass_total, "total_cracked": total_cracked}
 
     if not summary_domains:
         return summary, domain_values, summary_domains

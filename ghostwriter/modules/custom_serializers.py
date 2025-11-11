@@ -871,11 +871,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         password_section = result.get("password")
         if not isinstance(password_section, dict):
-            password_section = {"entries": [], "bad_pass_count": 0}
+            password_section = {"entries": [], "bad_pass_count": 0, "total_cracked": 0}
             result["password"] = password_section
         else:
             password_section.setdefault("entries", [])
             password_section.setdefault("bad_pass_count", 0)
+            password_section.setdefault("total_cracked", 0)
 
         endpoint_section = result.get("endpoint")
         if not isinstance(endpoint_section, dict):
@@ -1251,6 +1252,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             workbook_domains,
         ) = build_workbook_password_response(workbook_data)
         bad_pass_count = workbook_summary.get("bad_pass_count", 0)
+        total_cracked = workbook_summary.get("total_cracked", 0)
 
         entries = {}
         domain_order = []
@@ -1330,7 +1332,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         populated_domains = [name for name in domain_order if len(entries[name]) > 1]
         if not populated_domains:
-            summary = {"bad_pass_count": bad_pass_count}
+            summary = {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
             summary.update(extra_fields)
             return summary
 
@@ -1343,7 +1345,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 summary_domains.append(domain)
 
         if not summary_domains:
-            return {"bad_pass_count": bad_pass_count}
+            return {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
 
         def _format_risk(value):
             if value is None:
@@ -1413,7 +1415,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             cracked_risk_parts.append(_format_risk(entry.get("risk")))
 
         if not ordered_entries:
-            return {"bad_pass_count": bad_pass_count}
+            return {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
 
         summary = {
             "entries": ordered_entries,
@@ -1427,6 +1429,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             "lanman_list_string": _format_sample(lanman_domains),
             "no_fgpp_string": _format_sample(no_fgpp_domains),
             "bad_pass_count": bad_pass_count,
+            "total_cracked": total_cracked,
         }
 
         if not summary.get("cracked_count_str") and workbook_summary.get("cracked_count_str"):

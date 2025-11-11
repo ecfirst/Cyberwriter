@@ -382,6 +382,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(password_summary["lanman_list_string"], "'corp.example.com'")
         self.assertEqual(password_summary["no_fgpp_string"], "'lab.example.com'")
         self.assertEqual(password_summary["bad_pass_count"], 2)
+        self.assertEqual(password_summary["total_cracked"], 8464)
 
         endpoint_summary = responses["endpoint"]
         self.assertIn("entries", endpoint_summary)
@@ -693,6 +694,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
                 "domains_str": "'corp.example.com'",
                 "cracked_count_str": "100",
                 "cracked_risk_string": "Low",
+                "total_cracked": 0,
             },
             "endpoint": {
                 "entries": [
@@ -781,6 +783,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
         password_section = responses["password"]
         self.assertEqual(password_section.get("entries"), [])
         self.assertEqual(password_section.get("bad_pass_count"), 0)
+        self.assertEqual(password_section.get("total_cracked"), 0)
 
     def test_iot_testing_confirm_defaults_to_no(self):
         self.project.data_responses = {}
