@@ -18,6 +18,7 @@ from ghostwriter.rolodex.data_parsers import (
     parse_dns_report,
 )
 from ghostwriter.rolodex.models import (
+    DNSCapMapping,
     DNSFindingMapping,
     DNSRecommendationMapping,
     ProjectDataFile,
@@ -881,6 +882,10 @@ class DNSDataParserTests(TestCase):
             issue_text=issue_text,
             recommendation_text="custom recommendation language",
         )
+        DNSCapMapping.objects.create(
+            issue_text=issue_text,
+            cap_text="custom cap language",
+        )
 
         upload = SimpleUploadedFile(
             "dns_report.csv",
@@ -897,6 +902,7 @@ class DNSDataParserTests(TestCase):
                 "issue": issue_text,
                 "finding": "custom finding language",
                 "recommendation": "custom recommendation language",
+                "cap": "custom cap language",
                 "impact": "",
             },
         )

@@ -535,6 +535,7 @@ LINTER_CONTEXT = {
                             "issue": "The domain does not have an SPF record",
                             "finding": "email delivery for the domain",
                             "recommendation": "consider implementing a SPF record",
+                            "cap": "Consider implementing a SPF record",
                             "impact": "Lack of SPF allows attackers to spoof emails from the domain, enabling phishing or spam campaigns.",
                         }
                     ],

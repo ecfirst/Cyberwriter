@@ -222,6 +222,28 @@ class DNSRecommendationMapping(models.Model):
         return f"{self.issue_text}"
 
 
+class DNSCapMapping(models.Model):
+    """Store corrective action plan (CAP) entries for DNS scanner issues."""
+
+    issue_text = models.TextField(
+        "DNS issue",
+        unique=True,
+        help_text="Exact text of the DNS check failure (matches dns_report.csv entries).",
+    )
+    cap_text = models.TextField(
+        "Corrective action plan",
+        help_text="Prescribed DNS CAP guidance displayed with the DNS finding.",
+    )
+
+    class Meta:
+        ordering = ["issue_text"]
+        verbose_name = "DNS CAP mapping"
+        verbose_name_plural = "DNS CAP mappings"
+
+    def __str__(self):
+        return f"{self.issue_text}"
+
+
 class Project(models.Model):
     """
     Stores an individual project, related to :model:`rolodex.Client`,
