@@ -869,6 +869,51 @@ def test_cleanup_word_markup_removes_unbalanced_comment_ranges():
     assert 'w:permEnd w:id="9"' not in cleaned_xml
 
 
+def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body>"
+        "<w:p><w:bookmarkStart w:id=\"1\" w:name=\"Keep\"/>"
+        "<w:r><w:t>Intro</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p>"
+        "<w:p><w:bookmarkStart w:id=\"2\" w:name=\"Keep\"/>"
+        "<w:r><w:t>Duplicate</w:t></w:r><w:bookmarkEnd w:id=\"2\"/></w:p>"
+        "<w:p><w:fldSimple w:instr=\" REF Missing \\h \">"
+        "<w:r><w:t>Broken simple</w:t></w:r></w:fldSimple></w:p>"
+        "<w:p><w:fldSimple w:instr=\" REF Keep \\h \">"
+        "<w:r><w:t>Valid simple</w:t></w:r></w:fldSimple></w:p>"
+        "<w:p>"
+        "<w:r><w:fldChar w:fldCharType=\"begin\"/></w:r>"
+        "<w:r><w:instrText xml:space=\"preserve\"> REF Missing \\h </w:instrText></w:r>"
+        "<w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>"
+        "<w:r><w:t>Broken complex</w:t></w:r>"
+        "<w:r><w:fldChar w:fldCharType=\"end\"/></w:r>"
+        "</w:p>"
+        "<w:p>"
+        "<w:r><w:fldChar w:fldCharType=\"begin\"/></w:r>"
+        "<w:r><w:instrText xml:space=\"preserve\"> REF Keep \\h </w:instrText></w:r>"
+        "<w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>"
+        "<w:r><w:t>Valid complex</w:t></w:r>"
+        "<w:r><w:fldChar w:fldCharType=\"end\"/></w:r>"
+        "</w:p>"
+        "</w:body></w:document>"
+    )
+
+    part = FakeRelPart("/word/document.xml", xml, {})
+    tree = parse_xml(xml.encode("utf-8"))
+
+    cleaned = template._cleanup_word_markup(part, tree)
+    cleaned_xml = etree.tostring(cleaned, encoding="unicode")
+
+    assert cleaned_xml.count('w:bookmarkStart w:name="Keep"') == 1
+    assert 'w:id="2"' not in cleaned_xml
+    assert "Broken simple" not in cleaned_xml
+    assert "Broken complex" not in cleaned_xml
+    assert "Valid simple" in cleaned_xml
+    assert "Valid complex" in cleaned_xml
+
+
 def test_renumber_media_parts_renames_charts_and_embeddings():
     template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
 

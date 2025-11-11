@@ -55,6 +55,14 @@ _DOCUMENT_PARTNAME = "word/document.xml"
 _INDEXED_PART_RE = re.compile(
     r"^(?P<folder>word/(?:charts|embeddings))/(?P<prefix>[^/]+?)(?P<index>\d+)(?P<suffix>\.[A-Za-z0-9_.-]+)$"
 )
+_BOOKMARK_FIELD_RE = re.compile(
+    r"""\b(?:REF|PAGEREF|NOTEREF)\b[^\w"']*(?:"([A-Za-z0-9_:.\-]+)"|([A-Za-z0-9_:.\-]+))""",
+    re.IGNORECASE,
+)
+_BOOKMARK_HYPERLINK_FIELD_RE = re.compile(
+    r"""\\l\s+"?([A-Za-z0-9_:.\-]+)"?""",
+    re.IGNORECASE,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1298,6 +1306,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         )
         bookmark_names = self._collect_bookmark_names(root, word_ns)
         self._remove_missing_anchor_hyperlinks(root, word_ns, bookmark_names)
+        self._remove_missing_bookmark_fields(root, word_ns, bookmark_names)
         if part is not None:
             if self._is_settings_part(part):
                 self._remove_attached_template(part, root, word_ns)
@@ -1316,15 +1325,24 @@ class GhostwriterDocxTemplate(DocxTemplate):
         start_tag = f"{{{word_ns}}}bookmarkStart"
         end_tag = f"{{{word_ns}}}bookmarkEnd"
         id_attr = f"{{{word_ns}}}id"
+        name_attr = f"{{{word_ns}}}name"
 
         starts: dict[str, list] = defaultdict(list)
         ends: dict[str, list] = defaultdict(list)
+        duplicate_ids: set[str] = set()
+        seen_names: set[str] = set()
 
         for element in root.iter():
             if element.tag == start_tag:
                 bookmark_id = element.get(id_attr)
                 if bookmark_id is not None:
-                    starts[str(bookmark_id)].append(element)
+                    bookmark_key = str(bookmark_id)
+                    starts[bookmark_key].append(element)
+                    name = element.get(name_attr)
+                    if name and name != "_GoBack" and name in seen_names:
+                        duplicate_ids.add(bookmark_key)
+                    elif name:
+                        seen_names.add(name)
             elif element.tag == end_tag:
                 bookmark_id = element.get(id_attr)
                 if bookmark_id is not None:
@@ -1348,6 +1366,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
             for element in start_elements[pair_count:]:
                 self._remove_element(element)
             for element in end_elements[pair_count:]:
+                self._remove_element(element)
+
+        for bookmark_id in duplicate_ids:
+            for element in starts.get(bookmark_id, []):
+                self._remove_element(element)
+            for element in ends.get(bookmark_id, []):
                 self._remove_element(element)
 
     def _collect_bookmark_names(self, root, word_ns: str) -> set[str]:
@@ -1422,6 +1446,108 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if not anchor or anchor in bookmark_names:
                 continue
             self._unwrap_element(hyperlink)
+
+    def _remove_missing_bookmark_fields(
+        self,
+        root,
+        word_ns: str,
+        bookmark_names: set[str],
+    ) -> None:
+        fld_simple_tag = f"{{{word_ns}}}fldSimple"
+        instr_attr = f"{{{word_ns}}}instr"
+
+        for field in list(root.iter(fld_simple_tag)):
+            instr = field.get(instr_attr, "")
+            if self._field_references_missing_bookmark(instr, bookmark_names):
+                self._remove_element(field)
+
+        fld_char_tag = f"{{{word_ns}}}fldChar"
+        fld_char_type_attr = f"{{{word_ns}}}fldCharType"
+        instr_text_tag = f"{{{word_ns}}}instrText"
+        run_tag = f"{{{word_ns}}}r"
+
+        runs_to_remove: set[object] = set()
+        field_state: dict[str, object] | None = None
+
+        for element in root.iter():
+            if element.tag == fld_char_tag:
+                fld_type = element.get(fld_char_type_attr)
+                if fld_type == "begin":
+                    field_state = {
+                        "instr_parts": [],
+                        "runs": set(),
+                        "remove": False,
+                    }
+                if field_state is not None:
+                    run = self._find_ancestor(element, run_tag)
+                    if run is not None:
+                        field_state["runs"].add(run)
+                    if fld_type == "end":
+                        if field_state["remove"]:
+                            runs_to_remove.update(field_state["runs"])
+                        field_state = None
+                continue
+
+            if field_state is None:
+                continue
+
+            run = self._find_ancestor(element, run_tag)
+            if run is not None:
+                field_state["runs"].add(run)
+
+            if element.tag != instr_text_tag:
+                continue
+
+            text = element.text or ""
+            if not text:
+                continue
+
+            field_state["instr_parts"].append(text)
+            if field_state["remove"]:
+                continue
+
+            instr_text = "".join(field_state["instr_parts"])
+            if self._field_references_missing_bookmark(instr_text, bookmark_names):
+                field_state["remove"] = True
+
+        for run in runs_to_remove:
+            self._remove_element(run)
+
+    def _field_references_missing_bookmark(
+        self,
+        instruction: str,
+        bookmark_names: set[str],
+    ) -> bool:
+        if not instruction:
+            return False
+
+        candidates: set[str] = set()
+
+        for match in _BOOKMARK_FIELD_RE.finditer(instruction):
+            name = match.group(1) or match.group(2)
+            if name:
+                candidates.add(name)
+
+        for match in _BOOKMARK_HYPERLINK_FIELD_RE.finditer(instruction):
+            name = match.group(1)
+            if name:
+                candidates.add(name)
+
+        if not candidates:
+            return False
+
+        for name in candidates:
+            if name not in bookmark_names:
+                return True
+        return False
+
+    def _find_ancestor(self, element, tag: str):
+        current = element
+        while current is not None:
+            if current.tag == tag:
+                return current
+            current = current.getparent() if hasattr(current, "getparent") else None
+        return None
 
     def _remove_attached_template(self, part, root, word_ns: str) -> None:
         if not self._is_settings_part(part):
