@@ -649,10 +649,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
             patched = self.patch_xml(xml)
             rendered = self.render_xml_part(patched, part, context, jinja_env)
             if self._is_chart_part(partname):
-                rendered, has_workbook = self._sync_chart_cache(
-                    rendered, part, excel_values
-                )
-                rendered = self._ensure_chart_cache_integrity(rendered, has_workbook)
+                rendered = self._sync_chart_cache(rendered, part, excel_values)
 
             rendered_bytes = rendered.encode("utf-8")
             if hasattr(part, "_element"):
@@ -2771,10 +2768,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
         xml: str,
         part,
         excel_values: dict[str, dict[str, dict[str, str]]],
-    ) -> tuple[str, bool]:
+    ) -> str:
         workbook_data = self._resolve_chart_workbook(part, excel_values)
         if not workbook_data:
-            return xml, False
+            return xml
 
         try:
             tree = etree.fromstring(xml.encode("utf-8"))
@@ -2808,9 +2805,9 @@ class GhostwriterDocxTemplate(DocxTemplate):
             updated = True
 
         if not updated:
-            return xml, True
+            return xml
 
-        return etree.tostring(tree, encoding="unicode"), True
+        return etree.tostring(tree, encoding="unicode")
 
     def _resolve_chart_workbook(
         self,
@@ -2870,161 +2867,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
             literal = etree.SubElement(parent, tag)
 
         self._write_cache(literal, values)
-
-    def _ensure_chart_cache_integrity(self, xml: str, has_workbook: bool) -> str:
-        try:
-            tree = etree.fromstring(xml.encode("utf-8"))
-        except etree.XMLSyntaxError:
-            return xml
-
-        updated = False
-
-        for external in tree.findall(".//{*}externalData"):
-            if has_workbook:
-                continue
-            parent = external.getparent()
-            if parent is not None:
-                parent.remove(external)
-                updated = True
-
-        for series in tree.findall(".//{*}ser"):
-            expected = self._determine_series_point_count(series)
-            if self._ensure_series_category_cache(series, expected):
-                updated = True
-
-        if not updated:
-            return xml
-
-        return etree.tostring(tree, encoding="unicode")
-
-    def _determine_series_point_count(self, series) -> int | None:
-        value = series.find(".{*}val")
-        if value is None:
-            return None
-        return self._count_points_from_value_node(value)
-
-    def _count_points_from_value_node(self, node) -> int | None:
-        for child in node:
-            local = etree.QName(child).localname
-            if local in {"numLit", "strLit"}:
-                return self._count_points_in_cache(child)
-            if local in {"numRef", "strRef"}:
-                count = self._count_points_in_ref(child)
-                if count is not None:
-                    return count
-        return None
-
-    def _count_points_in_ref(self, ref_node) -> int | None:
-        for child in ref_node:
-            if etree.QName(child).localname in {"numCache", "strCache"}:
-                return self._count_points_in_cache(child)
-        return None
-
-    def _count_points_in_cache(self, cache_node) -> int:
-        prefix = self._namespace_prefix(cache_node)
-        return len(cache_node.findall(f"{prefix}pt"))
-
-    def _ensure_series_category_cache(self, series, expected_count: int | None) -> bool:
-        category = series.find(".{*}cat")
-        if category is None:
-            return False
-
-        inferred = expected_count
-        if inferred is None:
-            inferred = self._count_points_from_category(category)
-        if inferred is None:
-            inferred = 0
-
-        updated = False
-
-        for child in category:
-            local = etree.QName(child).localname
-            if local == "strRef":
-                if self._ensure_ref_cache_entries(child, "strCache", inferred, ""):
-                    updated = True
-            elif local == "numRef":
-                if self._ensure_ref_cache_entries(child, "numCache", inferred, "0"):
-                    updated = True
-            elif local == "strLit":
-                if self._ensure_cache_entries(child, inferred, ""):
-                    updated = True
-            elif local == "numLit":
-                if self._ensure_cache_entries(child, inferred, "0"):
-                    updated = True
-
-        return updated
-
-    def _count_points_from_category(self, category_node) -> int | None:
-        for child in category_node:
-            local = etree.QName(child).localname
-            if local in {"strLit", "numLit"}:
-                return self._count_points_in_cache(child)
-            if local in {"strRef", "numRef"}:
-                count = self._count_points_in_ref(child)
-                if count is not None:
-                    return count
-        return None
-
-    def _ensure_ref_cache_entries(
-        self,
-        ref_node,
-        cache_name: str,
-        expected_count: int,
-        fill_value: str,
-    ) -> bool:
-        cache = None
-        for child in ref_node:
-            if etree.QName(child).localname == cache_name:
-                cache = child
-                break
-
-        if cache is None:
-            namespace = etree.QName(ref_node).namespace
-            tag = f"{{{namespace}}}{cache_name}" if namespace else cache_name
-            cache = etree.SubElement(ref_node, tag)
-            self._write_cache(cache, [fill_value] * expected_count)
-            return True
-
-        return self._ensure_cache_entries(cache, expected_count, fill_value)
-
-    def _ensure_cache_entries(
-        self,
-        cache_node,
-        expected_count: int,
-        fill_value: str,
-    ) -> bool:
-        values = self._collect_cache_values(cache_node)
-        current_count = len(values)
-        changed = False
-
-        if current_count < expected_count:
-            values.extend([fill_value] * (expected_count - current_count))
-            changed = True
-        elif current_count > expected_count:
-            values = values[:expected_count]
-            changed = True
-
-        prefix = self._namespace_prefix(cache_node)
-        pt_count = cache_node.find(f"{prefix}ptCount")
-        if pt_count is None or pt_count.get("val") != str(expected_count):
-            changed = True
-
-        if changed:
-            self._write_cache(cache_node, values)
-
-        return changed
-
-    def _collect_cache_values(self, cache_node) -> list[str]:
-        prefix = self._namespace_prefix(cache_node)
-        values: list[str] = []
-        for point in cache_node.findall(f"{prefix}pt"):
-            value_node = point.find(f"{prefix}v")
-            values.append("" if value_node is None or value_node.text is None else value_node.text)
-        return values
-
-    def _namespace_prefix(self, node) -> str:
-        namespace = etree.QName(node).namespace
-        return f"{{{namespace}}}" if namespace else ""
 
     def _extract_range_values(
         self,
