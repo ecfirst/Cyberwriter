@@ -1520,6 +1520,108 @@ class NexposeDataParserTests(TestCase):
 
         self.assertNotIn("endpoint", self.project.cap)
 
+    def test_wireless_cap_map_populated_from_workbook(self):
+        workbook_payload = {
+            "wireless": {
+                "domains": [
+                    {
+                        "domain": "corp.example.com",
+                        "psk_count": 4,
+                        "rogue_count": 0,
+                        "wep_inuse": {"confirm": "yes"},
+                        "internal_access": "yes",
+                        "802_1x_used": "no",
+                        "weak_psks": "yes",
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "psk_count": 0,
+                        "rogue_count": 2,
+                        "wep_inuse": {"confirm": "no"},
+                        "internal_access": "no",
+                        "802_1x_used": "yes",
+                        "weak_psks": "no",
+                    },
+                ]
+            }
+        }
+
+        self.project.cap = {}
+        self.project.data_responses = {}
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["cap", "data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_wireless_map = {
+            "corp.example.com": {
+                "PSK’s in use on wireless networks": general_map.get(
+                    "PSK’s in use on wireless networks"
+                ),
+                "WEP in use on wireless networks": general_map.get(
+                    "WEP in use on wireless networks"
+                ),
+                "Open wireless network connected to the Internal network": general_map.get(
+                    "Open wireless network connected to the Internal network"
+                ),
+                "802.1x authentication not implemented for wireless networks": general_map.get(
+                    "802.1x authentication not implemented for wireless networks"
+                ),
+                "Weak PSK's in use": general_map.get("Weak PSK's in use"),
+            },
+            "lab.example.com": {
+                "Potentially Rogue Access Points": general_map.get(
+                    "Potentially Rogue Access Points"
+                )
+            },
+        }
+
+        wireless_cap = self.project.cap.get("wireless")
+        self.assertIsInstance(wireless_cap, dict)
+        self.assertEqual(wireless_cap.get("wireless_cap_map"), expected_wireless_map)
+
+    def test_wireless_cap_map_removed_when_conditions_not_met(self):
+        general_map = load_general_cap_map()
+        existing_cap = {
+            "wireless": {
+                "wireless_cap_map": {
+                    "corp.example.com": {
+                        "PSK’s in use on wireless networks": general_map.get(
+                            "PSK’s in use on wireless networks"
+                        )
+                    }
+                }
+            }
+        }
+
+        workbook_payload = {
+            "wireless": {
+                "domains": [
+                    {
+                        "domain": "corp.example.com",
+                        "psk_count": 0,
+                        "rogue_count": 0,
+                        "wep_inuse": {"confirm": "no"},
+                        "internal_access": "no",
+                        "802_1x_used": "yes",
+                        "weak_psks": "no",
+                    }
+                ]
+            }
+        }
+
+        self.project.cap = existing_cap
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("wireless", self.project.cap)
+
     def test_sql_cap_map_populated_from_workbook(self):
         workbook_payload = {"sql": {"total_open": 3}}
 

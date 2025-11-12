@@ -557,6 +557,16 @@ class Project(models.Model):
                 return bool(value)
             return bool(value)
 
+        def _is_explicit_no(value: Any) -> bool:
+            if isinstance(value, bool):
+                return value is False
+            if not isinstance(value, str):
+                return False
+            text = value.strip().lower()
+            if not text:
+                return False
+            return text in {"no", "false", "0", "n"}
+
         def _extract_domains(value: Any) -> List[str]:
             if not isinstance(value, str):
                 return []
@@ -1169,6 +1179,127 @@ class Project(models.Model):
             existing_cap["endpoint"] = endpoint_section
         else:
             existing_cap.pop("endpoint", None)
+
+        wireless_section = existing_cap.get("wireless")
+        if isinstance(wireless_section, dict):
+            wireless_section = dict(wireless_section)
+        else:
+            wireless_section = {}
+
+        wireless_cap_map: Dict[str, Dict[str, Any]] = {}
+
+        if isinstance(workbook_payload, dict):
+            wireless_data = workbook_payload.get("wireless")
+        else:
+            wireless_data = None
+
+        base_wireless_values = (
+            wireless_data if isinstance(wireless_data, dict) else {}
+        )
+
+        if isinstance(existing_responses.get("wireless"), dict):
+            existing_wireless_section = existing_responses.get("wireless")
+        else:
+            existing_wireless_section = None
+
+        domain_sources: Dict[str, Dict[str, Any]] = {}
+
+        if isinstance(wireless_data, dict):
+            wireless_domains = wireless_data.get("domains")
+        else:
+            wireless_domains = None
+
+        if isinstance(wireless_domains, list):
+            for domain_entry in wireless_domains:
+                if not isinstance(domain_entry, dict):
+                    continue
+                domain_value = domain_entry.get("domain") or domain_entry.get("name")
+                domain = str(domain_value).strip() if domain_value else ""
+                if not domain:
+                    continue
+                domain_sources[domain] = domain_entry
+
+        if not domain_sources and isinstance(existing_wireless_section, dict):
+            for domain in _extract_domains(existing_wireless_section.get("domains_str")):
+                domain_sources.setdefault(domain, {})
+
+        if not domain_sources and base_wireless_values:
+            domain_sources["global"] = {}
+
+        def _resolve_wireless_value(
+            domain_entry: Optional[Dict[str, Any]], key: str
+        ) -> Any:
+            if isinstance(domain_entry, dict):
+                if key in domain_entry and domain_entry[key] is not None:
+                    return domain_entry[key]
+            if key in base_wireless_values:
+                return base_wireless_values.get(key)
+            if isinstance(domain_entry, dict):
+                return domain_entry.get(key)
+            return None
+
+        for domain, domain_entry in domain_sources.items():
+            domain_key = domain or "global"
+            domain_cap_entries: Dict[str, Dict[str, Any]] = {}
+
+            if _safe_int(_resolve_wireless_value(domain_entry, "psk_count")) > 0:
+                entry = _clone_cap_entry("PSK’s in use on wireless networks")
+                if entry:
+                    domain_cap_entries["PSK’s in use on wireless networks"] = entry
+
+            if _safe_int(_resolve_wireless_value(domain_entry, "rogue_count")) > 0:
+                entry = _clone_cap_entry("Potentially Rogue Access Points")
+                if entry:
+                    domain_cap_entries["Potentially Rogue Access Points"] = entry
+
+            wep_values = _resolve_wireless_value(domain_entry, "wep_inuse")
+            if isinstance(wep_values, dict):
+                wep_confirm = wep_values.get("confirm")
+            else:
+                wep_confirm = wep_values
+            if _is_truthy(wep_confirm):
+                entry = _clone_cap_entry("WEP in use on wireless networks")
+                if entry:
+                    domain_cap_entries["WEP in use on wireless networks"] = entry
+
+            if _is_truthy(_resolve_wireless_value(domain_entry, "internal_access")):
+                entry = _clone_cap_entry(
+                    "Open wireless network connected to the Internal network"
+                )
+                if entry:
+                    domain_cap_entries[
+                        "Open wireless network connected to the Internal network"
+                    ] = entry
+
+            if _is_explicit_no(_resolve_wireless_value(domain_entry, "802_1x_used")):
+                entry = _clone_cap_entry(
+                    "802.1x authentication not implemented for wireless networks"
+                )
+                if entry:
+                    domain_cap_entries[
+                        "802.1x authentication not implemented for wireless networks"
+                    ] = entry
+
+            if _is_truthy(_resolve_wireless_value(domain_entry, "weak_psks")):
+                entry = _clone_cap_entry("Weak PSK's in use")
+                if entry:
+                    domain_cap_entries["Weak PSK's in use"] = entry
+
+            if domain_cap_entries:
+                wireless_cap_map[domain_key] = domain_cap_entries
+
+        if wireless_cap_map:
+            wireless_section["wireless_cap_map"] = {
+                domain: dict(entries)
+                for domain, entries in sorted(wireless_cap_map.items())
+            }
+        else:
+            wireless_section.pop("wireless_cap_map", None)
+
+        if wireless_section:
+            existing_cap["wireless"] = wireless_section
+        else:
+            existing_cap.pop("wireless", None)
 
         sql_section = existing_cap.get("sql")
         if isinstance(sql_section, dict):
