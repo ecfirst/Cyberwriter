@@ -608,6 +608,17 @@ class Project(models.Model):
             else:
                 combined_password_section = {}
 
+            existing_additional_controls = (
+                existing_password_section.get("password_additional_controls")
+                if isinstance(existing_password_section, dict)
+                else None
+            )
+            existing_enforce_mfa = (
+                existing_password_section.get("password_enforce_mfa_all_accounts")
+                if isinstance(existing_password_section, dict)
+                else None
+            )
+
             combined_password_section.update(workbook_password_response)
             existing_responses["password"] = combined_password_section
 
@@ -691,11 +702,27 @@ class Project(models.Model):
             else:
                 password_cap_section.pop("entries", None)
 
+            workbook_additional_controls = (
+                workbook_password_response.get("password_additional_controls")
+                if isinstance(workbook_password_response, dict)
+                else None
+            )
+            workbook_enforce_mfa = (
+                workbook_password_response.get("password_enforce_mfa_all_accounts")
+                if isinstance(workbook_password_response, dict)
+                else None
+            )
+
+            def _coalesce_flag(primary: Any, secondary: Any) -> Any:
+                if primary not in (None, ""):
+                    return primary
+                return secondary
+
             additional_controls_missing = not _is_truthy(
-                combined_password_section.get("password_additional_controls")
+                _coalesce_flag(existing_additional_controls, workbook_additional_controls)
             )
             enforce_mfa_missing = not _is_truthy(
-                combined_password_section.get("password_enforce_mfa_all_accounts")
+                _coalesce_flag(existing_enforce_mfa, workbook_enforce_mfa)
             )
 
             badpass_cap_map: Dict[str, Dict[str, Any]] = {}

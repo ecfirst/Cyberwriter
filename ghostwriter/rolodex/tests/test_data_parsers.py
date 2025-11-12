@@ -4,6 +4,7 @@
 import csv
 import io
 from typing import Dict, Iterable
+from unittest import mock
 
 # Django Imports
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -21,6 +22,7 @@ from ghostwriter.rolodex.data_parsers import (
     load_password_compliance_matrix,
     build_workbook_password_response,
     parse_dns_report,
+    DEFAULT_GENERAL_CAP_MAP,
 )
 from ghostwriter.rolodex.models import (
     DNSCapMapping,
@@ -1018,6 +1020,70 @@ class NexposeDataParserTests(TestCase):
             lab_cap_entry.get("policy_cap_values"),
             lab_entry.get("policy_cap_values"),
         )
+
+    def test_badpass_cap_prefers_existing_response_flags(self):
+        general_cap_map = {
+            issue: {"recommendation": recommendation, "score": score}
+            for issue, (recommendation, score) in DEFAULT_GENERAL_CAP_MAP.items()
+        }
+
+        existing_password_responses = {
+            "password_additional_controls": "no",
+            "password_enforce_mfa_all_accounts": "no",
+        }
+
+        workbook_password_response = {
+            "password_additional_controls": "yes",
+            "password_enforce_mfa_all_accounts": "yes",
+        }
+        workbook_domain_values = {
+            "corp.example.com": {
+                "passwords_cracked": 3,
+                "lanman": False,
+                "no_fgpp": False,
+            }
+        }
+
+        self.project.data_responses = {"password": existing_password_responses}
+        self.project.workbook_data = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["data_responses", "workbook_data", "cap"])
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch("ghostwriter.rolodex.models.build_workbook_ad_response", return_value={}):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_dns_response",
+                    return_value={},
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                        return_value={},
+                    ):
+                        with mock.patch(
+                            "ghostwriter.rolodex.models.build_workbook_password_response",
+                            return_value=(
+                                workbook_password_response,
+                                workbook_domain_values,
+                                [],
+                            ),
+                        ):
+                            with mock.patch(
+                                "ghostwriter.rolodex.models.load_general_cap_map",
+                                return_value=general_cap_map,
+                            ):
+                                self.project.rebuild_data_artifacts()
+
+        self.project.refresh_from_db()
+
+        password_cap = self.project.cap.get("password")
+        self.assertIsInstance(password_cap, dict)
+        badpass_cap_map = password_cap.get("badpass_cap_map")
+        self.assertIsInstance(badpass_cap_map, dict)
+        corp_entries = badpass_cap_map.get("corp.example.com")
+        self.assertIsInstance(corp_entries, dict)
+        self.assertIn("Weak passwords in use", corp_entries)
+        self.assertIn("Additional password controls not implemented", corp_entries)
+        self.assertIn("MFA not enforced for all accounts", corp_entries)
 
     def test_firewall_ood_names_populated_from_workbook(self):
         workbook_payload = {
