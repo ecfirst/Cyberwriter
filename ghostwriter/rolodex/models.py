@@ -1112,6 +1112,64 @@ class Project(models.Model):
         else:
             existing_cap.pop("osint", None)
 
+        endpoint_section = existing_cap.get("endpoint")
+        if isinstance(endpoint_section, dict):
+            endpoint_section = dict(endpoint_section)
+        else:
+            endpoint_section = {}
+
+        endpoint_cap_map: Dict[str, Dict[str, Any]] = {}
+        if isinstance(workbook_payload, dict):
+            endpoint_data = workbook_payload.get("endpoint")
+        else:
+            endpoint_data = None
+
+        if isinstance(endpoint_data, dict):
+            endpoint_domains = endpoint_data.get("domains")
+        else:
+            endpoint_domains = None
+
+        if isinstance(endpoint_domains, list):
+            for domain_entry in endpoint_domains:
+                if not isinstance(domain_entry, dict):
+                    continue
+
+                domain_value = domain_entry.get("domain") or domain_entry.get("name")
+                domain = str(domain_value).strip() if domain_value else ""
+                if not domain:
+                    continue
+
+                domain_cap_entries: Dict[str, Dict[str, Any]] = {}
+
+                if _safe_int(domain_entry.get("systems_ood")) > 0:
+                    entry = _clone_cap_entry(
+                        "Systems without active up-to-date security software"
+                    )
+                    if entry:
+                        domain_cap_entries[
+                            "Systems without active up-to-date security software"
+                        ] = entry
+
+                if _safe_int(domain_entry.get("open_wifi")) > 0:
+                    entry = _clone_cap_entry("Systems connecting to Open WiFi networks")
+                    if entry:
+                        domain_cap_entries[
+                            "Systems connecting to Open WiFi networks"
+                        ] = entry
+
+                if domain_cap_entries:
+                    endpoint_cap_map[domain] = domain_cap_entries
+
+        if endpoint_cap_map:
+            endpoint_section["endpoint_cap_map"] = endpoint_cap_map
+        else:
+            endpoint_section.pop("endpoint_cap_map", None)
+
+        if endpoint_section:
+            existing_cap["endpoint"] = endpoint_section
+        else:
+            existing_cap.pop("endpoint", None)
+
         sql_section = existing_cap.get("sql")
         if isinstance(sql_section, dict):
             sql_section = dict(sql_section)

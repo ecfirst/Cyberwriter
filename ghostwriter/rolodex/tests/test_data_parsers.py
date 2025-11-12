@@ -1455,6 +1455,71 @@ class NexposeDataParserTests(TestCase):
 
         self.assertNotIn("osint", self.project.cap)
 
+    def test_endpoint_cap_map_populated_from_workbook(self):
+        workbook_payload = {
+            "endpoint": {
+                "domains": [
+                    {"domain": "corp.example.com", "systems_ood": 3, "open_wifi": 0},
+                    {"domain": "lab.example.com", "systems_ood": 0, "open_wifi": 4},
+                    {"domain": "legacy.local", "systems_ood": 0, "open_wifi": 0},
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_endpoint_map = {
+            "corp.example.com": {
+                "Systems without active up-to-date security software": general_map.get(
+                    "Systems without active up-to-date security software"
+                ),
+            },
+            "lab.example.com": {
+                "Systems connecting to Open WiFi networks": general_map.get(
+                    "Systems connecting to Open WiFi networks"
+                ),
+            },
+        }
+
+        endpoint_cap = self.project.cap.get("endpoint")
+        self.assertIsInstance(endpoint_cap, dict)
+        self.assertEqual(endpoint_cap.get("endpoint_cap_map"), expected_endpoint_map)
+
+    def test_endpoint_cap_map_removed_when_conditions_not_met(self):
+        general_map = load_general_cap_map()
+        existing_cap = {
+            "endpoint": {
+                "endpoint_cap_map": {
+                    "corp.example.com": {
+                        "Systems without active up-to-date security software": general_map.get(
+                            "Systems without active up-to-date security software"
+                        )
+                    }
+                }
+            }
+        }
+
+        workbook_payload = {
+            "endpoint": {"domains": [{"domain": "corp.example.com", "systems_ood": 0, "open_wifi": 0}]}
+        }
+
+        self.project.cap = existing_cap
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("endpoint", self.project.cap)
+
     def test_sql_cap_map_populated_from_workbook(self):
         workbook_payload = {"sql": {"total_open": 3}}
 
