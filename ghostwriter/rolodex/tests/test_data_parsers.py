@@ -1135,6 +1135,68 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(dns_cap, dict)
         self.assertEqual(dns_cap.get("dns_cap_map"), expected_missing["dns_cap_map"])
 
+    def test_osint_cap_map_populated_from_workbook(self):
+        workbook_payload = {
+            "osint": {
+                "total_ips": 1,
+                "total_domains": 1,
+                "total_hostnames": 0,
+                "total_buckets": 2,
+                "total_leaks": 3,
+                "total_squat": 4,
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_osint_map = {
+            "OSINT identified assets": general_map.get("OSINT identified assets"),
+            "Exposed buckets identified": general_map.get("Exposed buckets identified"),
+            "Exposed Credentials identified": general_map.get("Exposed Credentials identified"),
+            "Potential domain squatters identified": general_map.get("Potential domain squatters identified"),
+        }
+
+        osint_cap = self.project.cap.get("osint")
+        self.assertIsInstance(osint_cap, dict)
+        self.assertEqual(osint_cap.get("osint_cap_map"), expected_osint_map)
+
+    def test_osint_cap_map_removed_when_conditions_not_met(self):
+        general_map = load_general_cap_map()
+        existing_cap = {
+            "osint": {
+                "osint_cap_map": {
+                    "OSINT identified assets": general_map.get("OSINT identified assets"),
+                }
+            }
+        }
+
+        workbook_payload = {
+            "osint": {
+                "total_ips": 0,
+                "total_domains": 0,
+                "total_hostnames": 0,
+                "total_buckets": 0,
+                "total_leaks": 0,
+                "total_squat": 0,
+            }
+        }
+
+        self.project.cap = existing_cap
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["cap", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("osint", self.project.cap)
+
     def test_password_cap_map_uses_database(self):
         PasswordCapMapping.objects.update_or_create(
             setting="max_age",

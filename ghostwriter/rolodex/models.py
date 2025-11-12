@@ -512,6 +512,7 @@ class Project(models.Model):
             build_workbook_firewall_response,
             build_workbook_password_response,
             load_dns_soa_cap_map,
+            load_general_cap_map,
         )
 
         artifacts = build_project_artifacts(self)
@@ -843,6 +844,87 @@ class Project(models.Model):
                 dns_section.pop("unique_soa_fields", None)
                 dns_section.pop("soa_field_cap_map", None)
                 dns_section.pop("dns_cap_map", None)
+
+        workbook_payload = getattr(self, "workbook_data", None)
+        osint_section = existing_cap.get("osint")
+        if isinstance(osint_section, dict):
+            osint_section = dict(osint_section)
+        else:
+            osint_section = {}
+
+        osint_cap_map: Dict[str, Dict[str, Any]] = {}
+        if isinstance(workbook_payload, dict):
+            osint_data = workbook_payload.get("osint")
+        else:
+            osint_data = None
+
+        if isinstance(osint_data, dict):
+            general_cap_map = load_general_cap_map()
+
+            def _safe_int(value: Any) -> int:
+                if value in (None, ""):
+                    return 0
+                if isinstance(value, bool):
+                    return int(value)
+                if isinstance(value, (int, float)):
+                    return int(value)
+                if isinstance(value, str):
+                    text = value.strip()
+                    if not text:
+                        return 0
+                    try:
+                        return int(float(text))
+                    except ValueError:
+                        return 0
+                return 0
+
+            def _clone_cap_entry(issue: str) -> Dict[str, Any]:
+                entry = general_cap_map.get(issue)
+                if not isinstance(entry, dict):
+                    return {}
+                recommendation = entry.get("recommendation")
+                score = entry.get("score")
+                payload: Dict[str, Any] = {}
+                if recommendation is not None:
+                    payload["recommendation"] = recommendation
+                if score is not None:
+                    payload["score"] = score
+                return payload
+
+            total_assets = (
+                _safe_int(osint_data.get("total_ips"))
+                + _safe_int(osint_data.get("total_domains"))
+                + _safe_int(osint_data.get("total_hostnames"))
+            )
+            if total_assets >= 2:
+                entry = _clone_cap_entry("OSINT identified assets")
+                if entry:
+                    osint_cap_map["OSINT identified assets"] = entry
+
+            if _safe_int(osint_data.get("total_buckets")) > 0:
+                entry = _clone_cap_entry("Exposed buckets identified")
+                if entry:
+                    osint_cap_map["Exposed buckets identified"] = entry
+
+            if _safe_int(osint_data.get("total_leaks")) > 0:
+                entry = _clone_cap_entry("Exposed Credentials identified")
+                if entry:
+                    osint_cap_map["Exposed Credentials identified"] = entry
+
+            if _safe_int(osint_data.get("total_squat")) > 0:
+                entry = _clone_cap_entry("Potential domain squatters identified")
+                if entry:
+                    osint_cap_map["Potential domain squatters identified"] = entry
+
+        if osint_cap_map:
+            osint_section["osint_cap_map"] = osint_cap_map
+        else:
+            osint_section.pop("osint_cap_map", None)
+
+        if osint_section:
+            existing_cap["osint"] = osint_section
+        else:
+            existing_cap.pop("osint", None)
 
         self.data_responses = existing_responses
         self.cap = existing_cap
