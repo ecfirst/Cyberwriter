@@ -108,6 +108,11 @@ DEFAULT_GENERAL_CAPS = {
         "knowledge of the keys leaves the company",
         3,
     ),
+    "Weak PSK's in use": (
+        "Change the PSK's to be of sufficient length & entropy; ensure PSK's are not based on Company information or "
+        "dictionary words",
+        4,
+    ),
     "Potentially Rogue Access Points": (
         "Investigate the potentially rogue access points identified to ensure they are not connected to the internal network",
         5,

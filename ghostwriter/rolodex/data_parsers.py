@@ -203,8 +203,9 @@ DEFAULT_GENERAL_CAP_MAP: Dict[str, Tuple[str, int]] = {
         3,
     ),
     "Weak PSK's in use": (
-        "Replace weak wireless pre-shared keys with strong, unique values that align with organizational complexity requirements",
-        5,
+        "Change the PSK's to be of sufficient length & entropy; ensure PSK's are not "
+        "based on Company information or dictionary words",
+        4,
     ),
     "Potentially Rogue Access Points": (
         "Investigate the potentially rogue access points identified to ensure they are not connected to the internal network",

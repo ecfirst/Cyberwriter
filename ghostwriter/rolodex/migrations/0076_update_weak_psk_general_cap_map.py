@@ -1,25 +1,25 @@
 from django.db import migrations
 
 
-WIRELESS_WEAK_PSK_ISSUE = "Weak PSK's in use"
-WIRELESS_WEAK_PSK_RECOMMENDATION = (
+ISSUE_TEXT = "Weak PSK's in use"
+RECOMMENDATION_TEXT = (
     "Change the PSK's to be of sufficient length & entropy; ensure PSK's are not "
     "based on Company information or dictionary words"
 )
-WIRELESS_WEAK_PSK_SCORE = 4
+SCORE = 4
 
 
-def ensure_wireless_cap_entries(apps, schema_editor):
+def update_general_cap(apps, schema_editor):
     try:
         general_model = apps.get_model("rolodex", "GeneralCapMapping")
     except LookupError:
         return
 
     general_model.objects.update_or_create(
-        issue_text=WIRELESS_WEAK_PSK_ISSUE,
+        issue_text=ISSUE_TEXT,
         defaults={
-            "recommendation_text": WIRELESS_WEAK_PSK_RECOMMENDATION,
-            "score": WIRELESS_WEAK_PSK_SCORE,
+            "recommendation_text": RECOMMENDATION_TEXT,
+            "score": SCORE,
         },
     )
 
@@ -40,10 +40,11 @@ def rebuild_project_cap(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("rolodex", "0074_populate_endpoint_cap_map"),
+        ("rolodex", "0075_populate_wireless_cap_map"),
     ]
 
     operations = [
-        migrations.RunPython(ensure_wireless_cap_entries, migrations.RunPython.noop),
+        migrations.RunPython(update_general_cap, migrations.RunPython.noop),
         migrations.RunPython(rebuild_project_cap, migrations.RunPython.noop),
     ]
+
