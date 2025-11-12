@@ -908,6 +908,50 @@ class NexposeDataParserTests(TestCase):
             password_cap.get("policy_cap_context"),
             password_responses.get("policy_cap_context"),
         )
+        expected_badpass_cap_map = {
+            "corp.example.com": {
+                "Weak passwords in use": {
+                    "recommendation": (
+                        "Force all accounts whose password was cracked to change their password. "
+                        "Provide training on secure password creation"
+                    ),
+                    "score": 7,
+                },
+                "LANMAN password hashing enabled": {
+                    "recommendation": (
+                        "Configure the domain to disable LANMAN password hashing. "
+                        "Force accounts with stored LANMAN password hashes to change their password"
+                    ),
+                    "score": 5,
+                },
+            },
+            "legacy.local": {
+                "Weak passwords in use": {
+                    "recommendation": (
+                        "Force all accounts whose password was cracked to change their password. "
+                        "Provide training on secure password creation"
+                    ),
+                    "score": 7,
+                }
+            },
+            "lab.example.com": {
+                "Weak passwords in use": {
+                    "recommendation": (
+                        "Force all accounts whose password was cracked to change their password. "
+                        "Provide training on secure password creation"
+                    ),
+                    "score": 7,
+                },
+                "LANMAN password hashing enabled": {
+                    "recommendation": (
+                        "Configure the domain to disable LANMAN password hashing. "
+                        "Force accounts with stored LANMAN password hashes to change their password"
+                    ),
+                    "score": 5,
+                },
+            },
+        }
+        self.assertEqual(password_cap.get("badpass_cap_map"), expected_badpass_cap_map)
         cap_entries = password_cap.get("entries")
         self.assertIsInstance(cap_entries, list)
         corp_cap_entry = next(

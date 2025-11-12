@@ -523,7 +523,61 @@ class Project(models.Model):
         for key in NEXPOSE_ARTIFACT_KEYS:
             existing_responses.pop(key, None)
 
-        workbook_ad_response = build_workbook_ad_response(getattr(self, "workbook_data", None))
+        workbook_payload = getattr(self, "workbook_data", None)
+
+        def _safe_int(value: Any) -> int:
+            if value in (None, ""):
+                return 0
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, (int, float)):
+                return int(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return 0
+                try:
+                    return int(float(text))
+                except ValueError:
+                    return 0
+            return 0
+
+        def _is_truthy(value: Any) -> bool:
+            if isinstance(value, bool):
+                return value
+            if value in (None, ""):
+                return False
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if not text:
+                    return False
+                return text in {"true", "1", "yes", "y"}
+            if isinstance(value, (int, float)):
+                return bool(value)
+            return bool(value)
+
+        general_cap_map: Dict[str, Dict[str, Any]] = {}
+        if isinstance(workbook_payload, dict):
+            general_cap_map = load_general_cap_map()
+
+        def _clone_cap_entry(issue: str) -> Dict[str, Any]:
+            entry = (
+                general_cap_map.get(issue)
+                if isinstance(general_cap_map, dict)
+                else None
+            )
+            if not isinstance(entry, dict):
+                return {}
+            payload: Dict[str, Any] = {}
+            recommendation = entry.get("recommendation")
+            score = entry.get("score")
+            if recommendation is not None:
+                payload["recommendation"] = recommendation
+            if score is not None:
+                payload["score"] = score
+            return payload
+
+        workbook_ad_response = build_workbook_ad_response(workbook_payload)
         if workbook_ad_response:
             existing_ad_section = existing_responses.get("ad")
             if isinstance(existing_ad_section, dict):
@@ -535,7 +589,7 @@ class Project(models.Model):
 
             combined_ad_section.update(workbook_ad_response)
             combined_ad_section["risk_contrib"] = build_ad_risk_contrib(
-                getattr(self, "workbook_data", None),
+                workbook_payload,
                 combined_ad_section.get("entries"),
             )
             existing_responses["ad"] = combined_ad_section
@@ -544,9 +598,7 @@ class Project(models.Model):
             workbook_password_response,
             workbook_password_domain_values,
             _,
-        ) = build_workbook_password_response(
-            getattr(self, "workbook_data", None)
-        )
+        ) = build_workbook_password_response(workbook_payload)
         if workbook_password_response:
             existing_password_section = existing_responses.get("password")
             if isinstance(existing_password_section, dict):
@@ -639,14 +691,33 @@ class Project(models.Model):
             else:
                 password_cap_section.pop("entries", None)
 
+            badpass_cap_map: Dict[str, Dict[str, Any]] = {}
+            if isinstance(workbook_password_domain_values, dict):
+                for domain, values in workbook_password_domain_values.items():
+                    if not isinstance(values, dict):
+                        continue
+                    domain_entries: Dict[str, Dict[str, Any]] = {}
+                    if _safe_int(values.get("passwords_cracked")) > 0:
+                        entry = _clone_cap_entry("Weak passwords in use")
+                        if entry:
+                            domain_entries["Weak passwords in use"] = entry
+                    if _is_truthy(values.get("lanman")):
+                        entry = _clone_cap_entry("LANMAN password hashing enabled")
+                        if entry:
+                            domain_entries["LANMAN password hashing enabled"] = entry
+                    if domain_entries:
+                        badpass_cap_map[domain] = domain_entries
+            if badpass_cap_map:
+                password_cap_section["badpass_cap_map"] = badpass_cap_map
+            else:
+                password_cap_section.pop("badpass_cap_map", None)
+
             if password_cap_section:
                 existing_cap["password"] = password_cap_section
             else:
                 existing_cap.pop("password", None)
 
-        workbook_firewall_response = build_workbook_firewall_response(
-            getattr(self, "workbook_data", None)
-        )
+        workbook_firewall_response = build_workbook_firewall_response(workbook_payload)
         if workbook_firewall_response:
             existing_firewall_section = existing_responses.get("firewall")
             if isinstance(existing_firewall_section, dict):
@@ -659,9 +730,7 @@ class Project(models.Model):
             combined_firewall_section.update(workbook_firewall_response)
             existing_responses["firewall"] = combined_firewall_section
 
-        workbook_dns_response = build_workbook_dns_response(
-            getattr(self, "workbook_data", None)
-        )
+        workbook_dns_response = build_workbook_dns_response(workbook_payload)
         if workbook_dns_response:
             existing_dns_section = existing_responses.get("dns")
             if isinstance(existing_dns_section, dict):
@@ -847,46 +916,6 @@ class Project(models.Model):
                 dns_section.pop("unique_soa_fields", None)
                 dns_section.pop("soa_field_cap_map", None)
                 dns_section.pop("dns_cap_map", None)
-
-        workbook_payload = getattr(self, "workbook_data", None)
-
-        def _safe_int(value: Any) -> int:
-            if value in (None, ""):
-                return 0
-            if isinstance(value, bool):
-                return int(value)
-            if isinstance(value, (int, float)):
-                return int(value)
-            if isinstance(value, str):
-                text = value.strip()
-                if not text:
-                    return 0
-                try:
-                    return int(float(text))
-                except ValueError:
-                    return 0
-            return 0
-
-        general_cap_map: Dict[str, Dict[str, Any]] = {}
-        if isinstance(workbook_payload, dict):
-            general_cap_map = load_general_cap_map()
-
-        def _clone_cap_entry(issue: str) -> Dict[str, Any]:
-            entry = (
-                general_cap_map.get(issue)
-                if isinstance(general_cap_map, dict)
-                else None
-            )
-            if not isinstance(entry, dict):
-                return {}
-            payload: Dict[str, Any] = {}
-            recommendation = entry.get("recommendation")
-            score = entry.get("score")
-            if recommendation is not None:
-                payload["recommendation"] = recommendation
-            if score is not None:
-                payload["score"] = score
-            return payload
 
         osint_section = existing_cap.get("osint")
         if isinstance(osint_section, dict):
