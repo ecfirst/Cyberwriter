@@ -888,6 +888,39 @@ class NexposeDataParserTests(TestCase):
         )
         self.assertEqual(lab_entry.get("bad_policy_fields"), ["history"])
 
+        password_cap = self.project.cap.get("password")
+        self.assertIsInstance(password_cap, dict)
+        self.assertEqual(
+            password_cap.get("policy_cap_fields"),
+            password_responses.get("policy_cap_fields"),
+        )
+        self.assertEqual(
+            password_cap.get("policy_cap_map"),
+            password_responses.get("policy_cap_map"),
+        )
+        self.assertEqual(
+            password_cap.get("policy_cap_context"),
+            password_responses.get("policy_cap_context"),
+        )
+        cap_entries = password_cap.get("entries")
+        self.assertIsInstance(cap_entries, list)
+        corp_cap_entry = next(
+            (entry for entry in cap_entries if entry.get("domain") == "corp.example.com"),
+            {},
+        )
+        self.assertEqual(
+            corp_cap_entry.get("policy_cap_values"),
+            corp_entry.get("policy_cap_values"),
+        )
+        lab_cap_entry = next(
+            (entry for entry in cap_entries if entry.get("domain") == "lab.example.com"),
+            {},
+        )
+        self.assertEqual(
+            lab_cap_entry.get("policy_cap_values"),
+            lab_entry.get("policy_cap_values"),
+        )
+
     def test_firewall_ood_names_populated_from_workbook(self):
         workbook_payload = {
             "firewall": {
@@ -959,18 +992,20 @@ class NexposeDataParserTests(TestCase):
 
         dns_responses = self.project.data_responses.get("dns")
         self.assertIsInstance(dns_responses, dict)
-        self.assertEqual(
-            dns_responses.get("soa_field_cap_map"),
-            {
-                "one.example": {
-                    "serial": "Update to match the 'YYYYMMDDnn' scheme",
-                    "refresh": "Update to a value between 1200 and 43200 seconds",
-                },
-                "two.example": {
-                    "retry": "Update to a value less than or equal to half the REFRESH",
-                },
+        expected_soa_cap = {
+            "one.example": {
+                "serial": "Update to match the 'YYYYMMDDnn' scheme",
+                "refresh": "Update to a value between 1200 and 43200 seconds",
             },
-        )
+            "two.example": {
+                "retry": "Update to a value less than or equal to half the REFRESH",
+            },
+        }
+        self.assertEqual(dns_responses.get("soa_field_cap_map"), expected_soa_cap)
+
+        dns_cap = self.project.cap.get("dns")
+        self.assertIsInstance(dns_cap, dict)
+        self.assertEqual(dns_cap.get("soa_field_cap_map"), expected_soa_cap)
 
     def test_dns_soa_cap_map_uses_database(self):
         DNSSOACapMapping.objects.update_or_create(
@@ -995,10 +1030,12 @@ class NexposeDataParserTests(TestCase):
 
         dns_responses = self.project.data_responses.get("dns")
         self.assertIsInstance(dns_responses, dict)
-        self.assertEqual(
-            dns_responses.get("soa_field_cap_map"),
-            {"one.example": {"serial": "custom serial guidance"}},
-        )
+        expected_override = {"one.example": {"serial": "custom serial guidance"}}
+        self.assertEqual(dns_responses.get("soa_field_cap_map"), expected_override)
+
+        dns_cap = self.project.cap.get("dns")
+        self.assertIsInstance(dns_cap, dict)
+        self.assertEqual(dns_cap.get("soa_field_cap_map"), expected_override)
 
     def test_dns_cap_map_populated_from_artifacts(self):
         csv_lines = [
@@ -1038,18 +1075,24 @@ class NexposeDataParserTests(TestCase):
 
         dns_responses = self.project.data_responses.get("dns")
         self.assertIsInstance(dns_responses, dict)
+        expected_dns_cap = {
+            "one.example": {
+                "One or more SOA fields are outside recommended ranges": (
+                    "serial - Update to match the 'YYYYMMDDnn' scheme\n"
+                    "refresh - Update to a value between 1200 and 43200 seconds"
+                ),
+                "Less than 2 nameservers exist": "Assign a minimum of 2 nameservers for the domain",
+                "Some nameservers have duplicate addresses": "Ensure all nameserver addresses are unique",
+            }
+        }
+        self.assertEqual(dns_responses.get("dns_cap_map"), expected_dns_cap)
+
+        dns_cap = self.project.cap.get("dns")
+        self.assertIsInstance(dns_cap, dict)
+        self.assertEqual(dns_cap.get("dns_cap_map"), expected_dns_cap)
         self.assertEqual(
-            dns_responses.get("dns_cap_map"),
-            {
-                "one.example": {
-                    "One or more SOA fields are outside recommended ranges": (
-                        "serial - Update to match the 'YYYYMMDDnn' scheme\n"
-                        "refresh - Update to a value between 1200 and 43200 seconds"
-                    ),
-                    "Less than 2 nameservers exist": "Assign a minimum of 2 nameservers for the domain",
-                    "Some nameservers have duplicate addresses": "Ensure all nameserver addresses are unique",
-                }
-            },
+            dns_cap.get("soa_field_cap_map"),
+            dns_responses.get("soa_field_cap_map"),
         )
 
     def test_dns_cap_map_added_when_dns_section_missing(self):
@@ -1079,16 +1122,18 @@ class NexposeDataParserTests(TestCase):
 
         dns_responses = self.project.data_responses.get("dns")
         self.assertIsInstance(dns_responses, dict)
-        self.assertEqual(
-            dns_responses,
-            {
-                "dns_cap_map": {
-                    "missing.example": {
-                        "Less than 2 nameservers exist": "Assign a minimum of 2 nameservers for the domain",
-                    }
+        expected_missing = {
+            "dns_cap_map": {
+                "missing.example": {
+                    "Less than 2 nameservers exist": "Assign a minimum of 2 nameservers for the domain",
                 }
-            },
-        )
+            }
+        }
+        self.assertEqual(dns_responses, expected_missing)
+
+        dns_cap = self.project.cap.get("dns")
+        self.assertIsInstance(dns_cap, dict)
+        self.assertEqual(dns_cap.get("dns_cap_map"), expected_missing["dns_cap_map"])
 
     def test_password_cap_map_uses_database(self):
         PasswordCapMapping.objects.update_or_create(

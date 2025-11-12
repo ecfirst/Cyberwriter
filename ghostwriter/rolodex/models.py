@@ -355,6 +355,11 @@ class Project(models.Model):
         blank=True,
         help_text="Parsed supporting data derived from uploaded artifacts",
     )
+    cap = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Corrective action plan values derived from workbook responses and supporting data",
+    )
     data_responses = models.JSONField(
         default=dict,
         blank=True,
@@ -513,6 +518,7 @@ class Project(models.Model):
         self.data_artifacts = artifacts
 
         existing_responses = dict(self.data_responses or {})
+        existing_cap = dict(self.cap or {})
         for key in NEXPOSE_ARTIFACT_KEYS:
             existing_responses.pop(key, None)
 
@@ -533,7 +539,11 @@ class Project(models.Model):
             )
             existing_responses["ad"] = combined_ad_section
 
-        workbook_password_response, _, _ = build_workbook_password_response(
+        (
+            workbook_password_response,
+            workbook_password_domain_values,
+            _,
+        ) = build_workbook_password_response(
             getattr(self, "workbook_data", None)
         )
         if workbook_password_response:
@@ -547,6 +557,91 @@ class Project(models.Model):
 
             combined_password_section.update(workbook_password_response)
             existing_responses["password"] = combined_password_section
+
+            password_cap_section = existing_cap.get("password")
+            if isinstance(password_cap_section, dict):
+                password_cap_section = dict(password_cap_section)
+            else:
+                password_cap_section = {}
+
+            cap_fields = combined_password_section.get("policy_cap_fields")
+            if isinstance(cap_fields, list) and cap_fields:
+                password_cap_section["policy_cap_fields"] = list(cap_fields)
+            else:
+                password_cap_section.pop("policy_cap_fields", None)
+
+            cap_context = combined_password_section.get("policy_cap_context")
+            if isinstance(cap_context, dict) and cap_context:
+                password_cap_section["policy_cap_context"] = dict(cap_context)
+            else:
+                password_cap_section.pop("policy_cap_context", None)
+
+            cap_map = combined_password_section.get("policy_cap_map")
+            if isinstance(cap_map, dict) and cap_map:
+                password_cap_section["policy_cap_map"] = dict(cap_map)
+            else:
+                password_cap_section.pop("policy_cap_map", None)
+
+            cap_entries: List[Dict[str, Any]] = []
+            existing_cap_entries = password_cap_section.get("entries")
+            if isinstance(existing_cap_entries, list):
+                for entry in existing_cap_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    domain_value = entry.get("domain") or entry.get("name")
+                    domain = str(domain_value).strip() if domain_value else ""
+                    if not domain:
+                        continue
+                    entry_payload: Dict[str, Any] = {}
+                    stored_values = entry.get("policy_cap_values")
+                    if isinstance(stored_values, dict) and stored_values:
+                        entry_payload["policy_cap_values"] = dict(stored_values)
+                    if entry_payload:
+                        entry_payload["domain"] = domain
+                        cap_entries.append(entry_payload)
+
+            entry_index: Dict[str, Dict[str, Any]] = {
+                entry["domain"]: entry
+                for entry in cap_entries
+                if isinstance(entry, dict) and entry.get("domain")
+            }
+
+            password_entries = combined_password_section.get("entries")
+            if isinstance(password_entries, list):
+                for entry in password_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    domain_value = entry.get("domain") or entry.get("name")
+                    domain = str(domain_value).strip() if domain_value else ""
+                    if not domain:
+                        continue
+                    policy_values = entry.get("policy_cap_values")
+                    if not isinstance(policy_values, dict) or not policy_values:
+                        # fall back to workbook derived values when missing from entry
+                        workbook_values = (
+                            workbook_password_domain_values.get(domain, {})
+                            if isinstance(workbook_password_domain_values, dict)
+                            else {}
+                        )
+                        policy_values = workbook_values.get("policy_cap_values")
+                    if not isinstance(policy_values, dict) or not policy_values:
+                        entry_index.pop(domain, None)
+                        continue
+                    stored_entry = entry_index.get(domain)
+                    if stored_entry is None:
+                        stored_entry = {"domain": domain}
+                        entry_index[domain] = stored_entry
+                    stored_entry["policy_cap_values"] = dict(policy_values)
+
+            if entry_index:
+                password_cap_section["entries"] = [entry_index[key] for key in sorted(entry_index.keys())]
+            else:
+                password_cap_section.pop("entries", None)
+
+            if password_cap_section:
+                existing_cap["password"] = password_cap_section
+            else:
+                existing_cap.pop("password", None)
 
         workbook_firewall_response = build_workbook_firewall_response(
             getattr(self, "workbook_data", None)
@@ -710,6 +805,37 @@ class Project(models.Model):
             else:
                 dns_section.pop("dns_cap_map", None)
 
+            dns_cap_section = existing_cap.get("dns")
+            if isinstance(dns_cap_section, dict):
+                dns_cap_section = dict(dns_cap_section)
+            else:
+                dns_cap_section = {}
+
+            soa_cap_map = dns_section.get("soa_field_cap_map")
+            if isinstance(soa_cap_map, dict) and soa_cap_map:
+                dns_cap_section["soa_field_cap_map"] = {
+                    domain: dict(fields)
+                    for domain, fields in soa_cap_map.items()
+                    if isinstance(fields, dict) and fields
+                }
+            else:
+                dns_cap_section.pop("soa_field_cap_map", None)
+
+            dns_cap_values = dns_section.get("dns_cap_map")
+            if isinstance(dns_cap_values, dict) and dns_cap_values:
+                dns_cap_section["dns_cap_map"] = {
+                    domain: dict(issues)
+                    for domain, issues in dns_cap_values.items()
+                    if isinstance(issues, dict) and issues
+                }
+            else:
+                dns_cap_section.pop("dns_cap_map", None)
+
+            if dns_cap_section:
+                existing_cap["dns"] = dns_cap_section
+            else:
+                existing_cap.pop("dns", None)
+
         if not dns_section:
             if dns_section_created:
                 existing_responses.pop("dns", None)
@@ -719,8 +845,9 @@ class Project(models.Model):
                 dns_section.pop("dns_cap_map", None)
 
         self.data_responses = existing_responses
+        self.cap = existing_cap
 
-        self.save(update_fields=["data_artifacts", "data_responses"])
+        self.save(update_fields=["data_artifacts", "data_responses", "cap"])
 
 
 class ProjectDataFile(models.Model):
