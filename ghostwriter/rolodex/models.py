@@ -585,9 +585,11 @@ class Project(models.Model):
                     domains.append(text)
             return domains
 
-        general_cap_map: Dict[str, Dict[str, Any]] = {}
-        if isinstance(workbook_payload, dict):
-            general_cap_map = load_general_cap_map()
+        # General CAP guidance is database managed, so always load the latest
+        # definitions regardless of whether workbook data is present. This
+        # allows CAP generation to respect admin overrides (for example, the
+        # "Weak PSK's in use" guidance comes from the General CAP mappings).
+        general_cap_map: Dict[str, Dict[str, Any]] = load_general_cap_map()
 
         def _clone_cap_entry(issue: str) -> Dict[str, Any]:
             entry = (
