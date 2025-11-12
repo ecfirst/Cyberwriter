@@ -3,7 +3,7 @@
 # Standard Libraries
 import csv
 import io
-from typing import Dict, Iterable
+from typing import Any, Dict, Iterable
 from unittest import mock
 
 # Django Imports
@@ -1062,6 +1062,109 @@ class NexposeDataParserTests(TestCase):
         self.assertNotIn("MFA not enforced for all accounts", corp_entries)
         self.assertIn("Additional password controls not implemented", badpass_cap_map)
         self.assertIn("MFA not enforced for all accounts", badpass_cap_map)
+
+    def test_rebuild_populates_ad_cap_map(self):
+        workbook_payload = {
+            "ad": {
+                "domains": [
+                    {
+                        "domain": "legacy.local",
+                        "functionality_level": "Windows Server 2003",
+                        "total_accounts": 200,
+                        "enabled_accounts": 150,
+                        "generic_accounts": 20,
+                        "inactive_accounts": 20,
+                        "passwords_never_exp": 20,
+                        "exp_passwords": 16,
+                        "domain_admins": 10,
+                        "ent_admins": 3,
+                    },
+                    {
+                        "domain": "modern.local",
+                        "functionality_level": "Windows Server 2019",
+                        "total_accounts": 180,
+                        "enabled_accounts": 175,
+                        "generic_accounts": 4,
+                        "inactive_accounts": 3,
+                        "passwords_never_exp": 2,
+                        "exp_passwords": 1,
+                        "domain_admins": 4,
+                        "ent_admins": 1,
+                    },
+                    {
+                        "domain": "ancient.local",
+                        "functionality_level": "Windows 2000 Mixed",
+                        "total_accounts": 80,
+                        "enabled_accounts": 80,
+                        "generic_accounts": 0,
+                        "inactive_accounts": 0,
+                        "passwords_never_exp": 0,
+                        "exp_passwords": 0,
+                        "domain_admins": 2,
+                        "ent_admins": 1,
+                    },
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch(
+                "ghostwriter.rolodex.models.build_workbook_password_response",
+                return_value=({}, {}, []),
+            ):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                    return_value={},
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_dns_response",
+                        return_value={},
+                    ):
+                        self.project.rebuild_data_artifacts()
+
+        self.project.refresh_from_db()
+
+        ad_cap = self.project.cap.get("ad")
+        self.assertIsInstance(ad_cap, dict)
+        ad_cap_map = ad_cap.get("ad_cap_map")
+        self.assertIsInstance(ad_cap_map, dict)
+
+        def _expected(issue: str) -> Dict[str, Any]:
+            recommendation, score = DEFAULT_GENERAL_CAP_MAP[issue]
+            return {"recommendation": recommendation, "score": score}
+
+        expected_legacy = {
+            "Domain Functionality Level less than 2008": _expected(
+                "Domain Functionality Level less than 2008"
+            ),
+            "Number of Disabled Accounts": _expected("Number of Disabled Accounts"),
+            "Number of 'Generic Accounts'": _expected("Number of 'Generic Accounts'"),
+            "Potentially Inactive Accounts": _expected(
+                "Potentially Inactive Accounts"
+            ),
+            "Accounts with Passwords that Never Expire": _expected(
+                "Accounts with Passwords that Never Expire"
+            ),
+            "Accounts with Expired Passwords": _expected(
+                "Accounts with Expired Passwords"
+            ),
+            "Number of Domain Admins": _expected("Number of Domain Admins"),
+            "Number of Enterprise Admins": _expected("Number of Enterprise Admins"),
+        }
+        self.assertEqual(ad_cap_map.get("legacy.local"), expected_legacy)
+
+        expected_ancient = {
+            "Domain Functionality Level less than 2008": _expected(
+                "Domain Functionality Level less than 2008"
+            )
+        }
+        self.assertEqual(ad_cap_map.get("ancient.local"), expected_ancient)
+        self.assertNotIn("modern.local", ad_cap_map)
 
     def test_firewall_ood_names_populated_from_workbook(self):
         workbook_payload = {

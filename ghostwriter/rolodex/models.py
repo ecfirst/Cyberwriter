@@ -2,6 +2,7 @@
 
 # Standard Libraries
 import os
+import re
 from datetime import time, timedelta
 from typing import Any, Dict, List, Set
 
@@ -556,6 +557,24 @@ class Project(models.Model):
                 return bool(value)
             return bool(value)
 
+        def _extract_domains(value: Any) -> List[str]:
+            if not isinstance(value, str):
+                return []
+
+            domains: List[str] = []
+            seen: Set[str] = set()
+            for token in re.split(r"[\\/,]", value):
+                text = token.strip()
+                if not text:
+                    continue
+                text = text.strip("'\" ")
+                if not text or text.lower() == "and":
+                    continue
+                if text not in seen:
+                    seen.add(text)
+                    domains.append(text)
+            return domains
+
         general_cap_map: Dict[str, Dict[str, Any]] = {}
         if isinstance(workbook_payload, dict):
             general_cap_map = load_general_cap_map()
@@ -593,6 +612,88 @@ class Project(models.Model):
                 combined_ad_section.get("entries"),
             )
             existing_responses["ad"] = combined_ad_section
+
+        ad_cap_section = existing_cap.get("ad")
+        if isinstance(ad_cap_section, dict):
+            ad_cap_section = dict(ad_cap_section)
+        else:
+            ad_cap_section = {}
+
+        ad_cap_map: Dict[str, Dict[str, Any]] = {}
+
+        combined_ad_section = existing_responses.get("ad")
+        if isinstance(combined_ad_section, dict):
+            for domain in _extract_domains(
+                combined_ad_section.get("old_domains_str")
+            ):
+                entry = _clone_cap_entry("Domain Functionality Level less than 2008")
+                if entry:
+                    domain_entries = ad_cap_map.setdefault(domain, {})
+                    domain_entries[
+                        "Domain Functionality Level less than 2008"
+                    ] = entry
+
+        workbook_ad_data = (
+            workbook_payload.get("ad") if isinstance(workbook_payload, dict) else None
+        )
+        workbook_ad_domains = (
+            workbook_ad_data.get("domains")
+            if isinstance(workbook_ad_data, dict)
+            else None
+        )
+        if isinstance(workbook_ad_domains, list):
+            for domain_entry in workbook_ad_domains:
+                if not isinstance(domain_entry, dict):
+                    continue
+
+                domain_value = domain_entry.get("domain") or domain_entry.get("name")
+                domain = str(domain_value).strip() if domain_value else ""
+                if not domain:
+                    continue
+
+                def _record_ad_issue(issue: str) -> None:
+                    entry = _clone_cap_entry(issue)
+                    if entry:
+                        domain_issues = ad_cap_map.setdefault(domain, {})
+                        domain_issues[issue] = entry
+
+                total_accounts = _safe_int(domain_entry.get("total_accounts"))
+                enabled_accounts = _safe_int(domain_entry.get("enabled_accounts"))
+                if total_accounts > 0:
+                    enabled_ratio = enabled_accounts / float(total_accounts)
+                    if enabled_ratio < 0.9:
+                        _record_ad_issue("Number of Disabled Accounts")
+
+                enabled_for_threshold = max(enabled_accounts, 0)
+                threshold = enabled_for_threshold * 0.05
+
+                if _safe_int(domain_entry.get("generic_accounts")) > threshold:
+                    _record_ad_issue("Number of 'Generic Accounts'")
+
+                if _safe_int(domain_entry.get("inactive_accounts")) > threshold:
+                    _record_ad_issue("Potentially Inactive Accounts")
+
+                if _safe_int(domain_entry.get("passwords_never_exp")) > threshold:
+                    _record_ad_issue("Accounts with Passwords that Never Expire")
+
+                if _safe_int(domain_entry.get("exp_passwords")) > threshold:
+                    _record_ad_issue("Accounts with Expired Passwords")
+
+                if _safe_int(domain_entry.get("domain_admins")) > threshold:
+                    _record_ad_issue("Number of Domain Admins")
+
+                if _safe_int(domain_entry.get("ent_admins")) > 1:
+                    _record_ad_issue("Number of Enterprise Admins")
+
+        if ad_cap_map:
+            ad_cap_section["ad_cap_map"] = ad_cap_map
+        else:
+            ad_cap_section.pop("ad_cap_map", None)
+
+        if ad_cap_section:
+            existing_cap["ad"] = ad_cap_section
+        else:
+            existing_cap.pop("ad", None)
 
         (
             workbook_password_response,
