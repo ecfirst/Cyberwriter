@@ -732,7 +732,12 @@ class NexposeDataParserTests(TestCase):
         }
 
         self.project.workbook_data = workbook_payload
-        self.project.data_responses = {}
+        self.project.data_responses = {
+            "password": {
+                "password_additional_controls": "no",
+                "password_enforce_mfa_all_accounts": "no",
+            }
+        }
         self.project.save(update_fields=["workbook_data", "data_responses"])
 
         self.project.rebuild_data_artifacts()
@@ -924,6 +929,18 @@ class NexposeDataParserTests(TestCase):
                     ),
                     "score": 5,
                 },
+                "Additional password controls not implemented": {
+                    "recommendation": (
+                        "Implement additional password controls as recommended by NIST for blacklisting and/or "
+                        "repetitive/sequential characters, which are not available natively in Active Directory\n"
+                        "(Secure Password policy & procedures)"
+                    ),
+                    "score": 4,
+                },
+                "MFA not enforced for all accounts": {
+                    "recommendation": "Enforce MFA for all accounts as recommended by NIST",
+                    "score": 4,
+                },
             },
             "legacy.local": {
                 "Weak passwords in use": {
@@ -932,7 +949,26 @@ class NexposeDataParserTests(TestCase):
                         "Provide training on secure password creation"
                     ),
                     "score": 7,
-                }
+                },
+                "Fine-grained Password Policies not defined": {
+                    "recommendation": (
+                        "Define and assign Fine-grained Password Policies for security groups based on the risk "
+                        "associated with an account compromise.\n(Secure Password policy & procedures)"
+                    ),
+                    "score": 4,
+                },
+                "Additional password controls not implemented": {
+                    "recommendation": (
+                        "Implement additional password controls as recommended by NIST for blacklisting and/or "
+                        "repetitive/sequential characters, which are not available natively in Active Directory\n"
+                        "(Secure Password policy & procedures)"
+                    ),
+                    "score": 4,
+                },
+                "MFA not enforced for all accounts": {
+                    "recommendation": "Enforce MFA for all accounts as recommended by NIST",
+                    "score": 4,
+                },
             },
             "lab.example.com": {
                 "Weak passwords in use": {
@@ -948,6 +984,18 @@ class NexposeDataParserTests(TestCase):
                         "Force accounts with stored LANMAN password hashes to change their password"
                     ),
                     "score": 5,
+                },
+                "Additional password controls not implemented": {
+                    "recommendation": (
+                        "Implement additional password controls as recommended by NIST for blacklisting and/or "
+                        "repetitive/sequential characters, which are not available natively in Active Directory\n"
+                        "(Secure Password policy & procedures)"
+                    ),
+                    "score": 4,
+                },
+                "MFA not enforced for all accounts": {
+                    "recommendation": "Enforce MFA for all accounts as recommended by NIST",
+                    "score": 4,
                 },
             },
         }

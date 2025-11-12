@@ -691,6 +691,13 @@ class Project(models.Model):
             else:
                 password_cap_section.pop("entries", None)
 
+            additional_controls_missing = not _is_truthy(
+                combined_password_section.get("password_additional_controls")
+            )
+            enforce_mfa_missing = not _is_truthy(
+                combined_password_section.get("password_enforce_mfa_all_accounts")
+            )
+
             badpass_cap_map: Dict[str, Dict[str, Any]] = {}
             if isinstance(workbook_password_domain_values, dict):
                 for domain, values in workbook_password_domain_values.items():
@@ -705,6 +712,18 @@ class Project(models.Model):
                         entry = _clone_cap_entry("LANMAN password hashing enabled")
                         if entry:
                             domain_entries["LANMAN password hashing enabled"] = entry
+                    if _is_truthy(values.get("no_fgpp")):
+                        entry = _clone_cap_entry("Fine-grained Password Policies not defined")
+                        if entry:
+                            domain_entries["Fine-grained Password Policies not defined"] = entry
+                    if additional_controls_missing:
+                        entry = _clone_cap_entry("Additional password controls not implemented")
+                        if entry:
+                            domain_entries["Additional password controls not implemented"] = entry
+                    if enforce_mfa_missing:
+                        entry = _clone_cap_entry("MFA not enforced for all accounts")
+                        if entry:
+                            domain_entries["MFA not enforced for all accounts"] = entry
                     if domain_entries:
                         badpass_cap_map[domain] = domain_entries
             if badpass_cap_map:
