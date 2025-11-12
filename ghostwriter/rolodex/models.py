@@ -725,7 +725,7 @@ class Project(models.Model):
                 _coalesce_flag(existing_enforce_mfa, workbook_enforce_mfa)
             )
 
-            badpass_cap_map: Dict[str, Dict[str, Any]] = {}
+            badpass_cap_map: Dict[str, Any] = {}
             if isinstance(workbook_password_domain_values, dict):
                 for domain, values in workbook_password_domain_values.items():
                     if not isinstance(values, dict):
@@ -743,16 +743,16 @@ class Project(models.Model):
                         entry = _clone_cap_entry("Fine-grained Password Policies not defined")
                         if entry:
                             domain_entries["Fine-grained Password Policies not defined"] = entry
-                    if additional_controls_missing:
-                        entry = _clone_cap_entry("Additional password controls not implemented")
-                        if entry:
-                            domain_entries["Additional password controls not implemented"] = entry
-                    if enforce_mfa_missing:
-                        entry = _clone_cap_entry("MFA not enforced for all accounts")
-                        if entry:
-                            domain_entries["MFA not enforced for all accounts"] = entry
                     if domain_entries:
                         badpass_cap_map[domain] = domain_entries
+            if additional_controls_missing:
+                entry = _clone_cap_entry("Additional password controls not implemented")
+                if entry:
+                    badpass_cap_map["Additional password controls not implemented"] = entry
+            if enforce_mfa_missing:
+                entry = _clone_cap_entry("MFA not enforced for all accounts")
+                if entry:
+                    badpass_cap_map["MFA not enforced for all accounts"] = entry
             if badpass_cap_map:
                 password_cap_section["badpass_cap_map"] = badpass_cap_map
             else:

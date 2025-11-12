@@ -931,18 +931,6 @@ class NexposeDataParserTests(TestCase):
                     ),
                     "score": 5,
                 },
-                "Additional password controls not implemented": {
-                    "recommendation": (
-                        "Implement additional password controls as recommended by NIST for blacklisting and/or "
-                        "repetitive/sequential characters, which are not available natively in Active Directory\n"
-                        "(Secure Password policy & procedures)"
-                    ),
-                    "score": 4,
-                },
-                "MFA not enforced for all accounts": {
-                    "recommendation": "Enforce MFA for all accounts as recommended by NIST",
-                    "score": 4,
-                },
             },
             "legacy.local": {
                 "Weak passwords in use": {
@@ -957,18 +945,6 @@ class NexposeDataParserTests(TestCase):
                         "Define and assign Fine-grained Password Policies for security groups based on the risk "
                         "associated with an account compromise.\n(Secure Password policy & procedures)"
                     ),
-                    "score": 4,
-                },
-                "Additional password controls not implemented": {
-                    "recommendation": (
-                        "Implement additional password controls as recommended by NIST for blacklisting and/or "
-                        "repetitive/sequential characters, which are not available natively in Active Directory\n"
-                        "(Secure Password policy & procedures)"
-                    ),
-                    "score": 4,
-                },
-                "MFA not enforced for all accounts": {
-                    "recommendation": "Enforce MFA for all accounts as recommended by NIST",
                     "score": 4,
                 },
             },
@@ -987,18 +963,18 @@ class NexposeDataParserTests(TestCase):
                     ),
                     "score": 5,
                 },
-                "Additional password controls not implemented": {
-                    "recommendation": (
-                        "Implement additional password controls as recommended by NIST for blacklisting and/or "
-                        "repetitive/sequential characters, which are not available natively in Active Directory\n"
-                        "(Secure Password policy & procedures)"
-                    ),
-                    "score": 4,
-                },
-                "MFA not enforced for all accounts": {
-                    "recommendation": "Enforce MFA for all accounts as recommended by NIST",
-                    "score": 4,
-                },
+            },
+            "Additional password controls not implemented": {
+                "recommendation": (
+                    "Implement additional password controls as recommended by NIST for blacklisting and/or "
+                    "repetitive/sequential characters, which are not available natively in Active Directory\n"
+                    "(Secure Password policy & procedures)"
+                ),
+                "score": 4,
+            },
+            "MFA not enforced for all accounts": {
+                "recommendation": "Enforce MFA for all accounts as recommended by NIST",
+                "score": 4,
             },
         }
         self.assertEqual(password_cap.get("badpass_cap_map"), expected_badpass_cap_map)
@@ -1082,8 +1058,10 @@ class NexposeDataParserTests(TestCase):
         corp_entries = badpass_cap_map.get("corp.example.com")
         self.assertIsInstance(corp_entries, dict)
         self.assertIn("Weak passwords in use", corp_entries)
-        self.assertIn("Additional password controls not implemented", corp_entries)
-        self.assertIn("MFA not enforced for all accounts", corp_entries)
+        self.assertNotIn("Additional password controls not implemented", corp_entries)
+        self.assertNotIn("MFA not enforced for all accounts", corp_entries)
+        self.assertIn("Additional password controls not implemented", badpass_cap_map)
+        self.assertIn("MFA not enforced for all accounts", badpass_cap_map)
 
     def test_firewall_ood_names_populated_from_workbook(self):
         workbook_payload = {
