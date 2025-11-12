@@ -1208,12 +1208,105 @@ class NexposeDataParserTests(TestCase):
 
         self.project.cap = existing_cap
         self.project.workbook_data = workbook_payload
-        self.project.save(update_fields=["cap", "workbook_data"])
+        self.project.data_responses = {}
+        self.project.save(update_fields=["cap", "workbook_data", "data_responses"])
 
         self.project.rebuild_data_artifacts()
         self.project.refresh_from_db()
 
         self.assertNotIn("osint", self.project.cap)
+
+    def test_sql_cap_map_populated_from_workbook(self):
+        workbook_payload = {"sql": {"total_open": 3}}
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_sql_map = {
+            "Databases allowing open access": general_map.get(
+                "Databases allowing open access"
+            )
+        }
+
+        sql_cap = self.project.cap.get("sql")
+        self.assertIsInstance(sql_cap, dict)
+        self.assertEqual(sql_cap.get("sql_cap_map"), expected_sql_map)
+
+    def test_sql_cap_map_removed_when_conditions_not_met(self):
+        general_map = load_general_cap_map()
+        existing_cap = {
+            "sql": {
+                "sql_cap_map": {
+                    "Databases allowing open access": general_map.get(
+                        "Databases allowing open access"
+                    )
+                }
+            }
+        }
+
+        workbook_payload = {"sql": {"total_open": 0}}
+
+        self.project.cap = existing_cap
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("sql", self.project.cap)
+
+    def test_snmp_cap_map_populated_from_workbook(self):
+        workbook_payload = {"snmp": {"total_strings": 2}}
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_snmp_map = {
+            "Default SNMP community strings & default credentials in use": general_map.get(
+                "Default SNMP community strings & default credentials in use"
+            )
+        }
+
+        snmp_cap = self.project.cap.get("snmp")
+        self.assertIsInstance(snmp_cap, dict)
+        self.assertEqual(snmp_cap.get("snmp_cap_map"), expected_snmp_map)
+
+    def test_snmp_cap_map_removed_when_conditions_not_met(self):
+        general_map = load_general_cap_map()
+        existing_cap = {
+            "snmp": {
+                "snmp_cap_map": {
+                    "Default SNMP community strings & default credentials in use": general_map.get(
+                        "Default SNMP community strings & default credentials in use"
+                    )
+                }
+            }
+        }
+
+        workbook_payload = {"snmp": {"total_strings": 0}}
+
+        self.project.cap = existing_cap
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("snmp", self.project.cap)
 
     def test_password_cap_map_uses_database(self):
         PasswordCapMapping.objects.update_or_create(

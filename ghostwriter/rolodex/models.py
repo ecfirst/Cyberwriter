@@ -849,6 +849,45 @@ class Project(models.Model):
                 dns_section.pop("dns_cap_map", None)
 
         workbook_payload = getattr(self, "workbook_data", None)
+
+        def _safe_int(value: Any) -> int:
+            if value in (None, ""):
+                return 0
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, (int, float)):
+                return int(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return 0
+                try:
+                    return int(float(text))
+                except ValueError:
+                    return 0
+            return 0
+
+        general_cap_map: Dict[str, Dict[str, Any]] = {}
+        if isinstance(workbook_payload, dict):
+            general_cap_map = load_general_cap_map()
+
+        def _clone_cap_entry(issue: str) -> Dict[str, Any]:
+            entry = (
+                general_cap_map.get(issue)
+                if isinstance(general_cap_map, dict)
+                else None
+            )
+            if not isinstance(entry, dict):
+                return {}
+            payload: Dict[str, Any] = {}
+            recommendation = entry.get("recommendation")
+            score = entry.get("score")
+            if recommendation is not None:
+                payload["recommendation"] = recommendation
+            if score is not None:
+                payload["score"] = score
+            return payload
+
         osint_section = existing_cap.get("osint")
         if isinstance(osint_section, dict):
             osint_section = dict(osint_section)
@@ -862,38 +901,6 @@ class Project(models.Model):
             osint_data = None
 
         if isinstance(osint_data, dict):
-            general_cap_map = load_general_cap_map()
-
-            def _safe_int(value: Any) -> int:
-                if value in (None, ""):
-                    return 0
-                if isinstance(value, bool):
-                    return int(value)
-                if isinstance(value, (int, float)):
-                    return int(value)
-                if isinstance(value, str):
-                    text = value.strip()
-                    if not text:
-                        return 0
-                    try:
-                        return int(float(text))
-                    except ValueError:
-                        return 0
-                return 0
-
-            def _clone_cap_entry(issue: str) -> Dict[str, Any]:
-                entry = general_cap_map.get(issue)
-                if not isinstance(entry, dict):
-                    return {}
-                recommendation = entry.get("recommendation")
-                score = entry.get("score")
-                payload: Dict[str, Any] = {}
-                if recommendation is not None:
-                    payload["recommendation"] = recommendation
-                if score is not None:
-                    payload["score"] = score
-                return payload
-
             total_assets = (
                 _safe_int(osint_data.get("total_ips"))
                 + _safe_int(osint_data.get("total_domains"))
@@ -928,6 +935,66 @@ class Project(models.Model):
             existing_cap["osint"] = osint_section
         else:
             existing_cap.pop("osint", None)
+
+        sql_section = existing_cap.get("sql")
+        if isinstance(sql_section, dict):
+            sql_section = dict(sql_section)
+        else:
+            sql_section = {}
+
+        sql_cap_map: Dict[str, Dict[str, Any]] = {}
+        if isinstance(workbook_payload, dict):
+            sql_data = workbook_payload.get("sql")
+        else:
+            sql_data = None
+
+        if isinstance(sql_data, dict):
+            if _safe_int(sql_data.get("total_open")) > 0:
+                entry = _clone_cap_entry("Databases allowing open access")
+                if entry:
+                    sql_cap_map["Databases allowing open access"] = entry
+
+        if sql_cap_map:
+            sql_section["sql_cap_map"] = sql_cap_map
+        else:
+            sql_section.pop("sql_cap_map", None)
+
+        if sql_section:
+            existing_cap["sql"] = sql_section
+        else:
+            existing_cap.pop("sql", None)
+
+        snmp_section = existing_cap.get("snmp")
+        if isinstance(snmp_section, dict):
+            snmp_section = dict(snmp_section)
+        else:
+            snmp_section = {}
+
+        snmp_cap_map: Dict[str, Dict[str, Any]] = {}
+        if isinstance(workbook_payload, dict):
+            snmp_data = workbook_payload.get("snmp")
+        else:
+            snmp_data = None
+
+        if isinstance(snmp_data, dict):
+            if _safe_int(snmp_data.get("total_strings")) > 0:
+                entry = _clone_cap_entry(
+                    "Default SNMP community strings & default credentials in use"
+                )
+                if entry:
+                    snmp_cap_map[
+                        "Default SNMP community strings & default credentials in use"
+                    ] = entry
+
+        if snmp_cap_map:
+            snmp_section["snmp_cap_map"] = snmp_cap_map
+        else:
+            snmp_section.pop("snmp_cap_map", None)
+
+        if snmp_section:
+            existing_cap["snmp"] = snmp_section
+        else:
+            existing_cap.pop("snmp", None)
 
         self.data_responses = existing_responses
         self.cap = existing_cap
