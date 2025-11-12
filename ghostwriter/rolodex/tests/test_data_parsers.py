@@ -773,6 +773,7 @@ class NexposeDataParserTests(TestCase):
         expected_cap_map = {
             "corp.example.com": {
                 "policy": {
+                    "score": 4,
                     "max_age": (
                         "Change 'Maximum Age' from 90 to == 0 to align with NIST recommendations "
                         "to not force users to arbitrarily change passwords based solely on age"
@@ -790,6 +791,7 @@ class NexposeDataParserTests(TestCase):
                 },
                 "fgpp": {
                     "ServiceAccounts": {
+                        "score": 4,
                         "max_age": (
                             "Change 'Maximum Age' from 365 to == 0 to align with NIST recommendations "
                             "to not force users to arbitrarily change passwords based solely on age"
@@ -806,6 +808,7 @@ class NexposeDataParserTests(TestCase):
                         ),
                     },
                     "Tier0Admins": {
+                        "score": 4,
                         "max_age": (
                             "Change 'Maximum Age' from 45 to == 0 to align with NIST recommendations "
                             "to not force users to arbitrarily change passwords based solely on age"
@@ -820,7 +823,10 @@ class NexposeDataParserTests(TestCase):
                 },
             },
             "lab.example.com": {
-                "policy": {"history": "Change 'History' from 8 to >= 10"},
+                "policy": {
+                    "score": 4,
+                    "history": "Change 'History' from 8 to >= 10",
+                },
             },
         }
         self.assertEqual(password_responses.get("policy_cap_map"), expected_cap_map)
@@ -1077,12 +1083,21 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(dns_responses, dict)
         expected_dns_cap = {
             "one.example": {
-                "One or more SOA fields are outside recommended ranges": (
-                    "serial - Update to match the 'YYYYMMDDnn' scheme\n"
-                    "refresh - Update to a value between 1200 and 43200 seconds"
-                ),
-                "Less than 2 nameservers exist": "Assign a minimum of 2 nameservers for the domain",
-                "Some nameservers have duplicate addresses": "Ensure all nameserver addresses are unique",
+                "One or more SOA fields are outside recommended ranges": {
+                    "score": 2,
+                    "recommendation": (
+                        "serial - Update to match the 'YYYYMMDDnn' scheme\n"
+                        "refresh - Update to a value between 1200 and 43200 seconds"
+                    ),
+                },
+                "Less than 2 nameservers exist": {
+                    "score": 2,
+                    "recommendation": "Assign a minimum of 2 nameservers for the domain",
+                },
+                "Some nameservers have duplicate addresses": {
+                    "score": 2,
+                    "recommendation": "Ensure all nameserver addresses are unique",
+                },
             }
         }
         self.assertEqual(dns_responses.get("dns_cap_map"), expected_dns_cap)
@@ -1125,7 +1140,10 @@ class NexposeDataParserTests(TestCase):
         expected_missing = {
             "dns_cap_map": {
                 "missing.example": {
-                    "Less than 2 nameservers exist": "Assign a minimum of 2 nameservers for the domain",
+                    "Less than 2 nameservers exist": {
+                        "score": 2,
+                        "recommendation": "Assign a minimum of 2 nameservers for the domain",
+                    },
                 }
             }
         }

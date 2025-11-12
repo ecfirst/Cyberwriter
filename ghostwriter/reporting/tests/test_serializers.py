@@ -399,6 +399,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
         expected_cap_map = {
             "corp.example.com": {
                 "policy": {
+                    "score": 4,
                     "max_age": (
                         "Change 'Maximum Age' from 90 to == 0 to align with NIST recommendations "
                         "to not force users to arbitrarily change passwords based solely on age"
@@ -416,6 +417,7 @@ class ProjectSerializerDataResponsesTests(TestCase):
                 },
                 "fgpp": {
                     "ServiceAccounts": {
+                        "score": 4,
                         "max_age": (
                             "Change 'Maximum Age' from 365 to == 0 to align with NIST recommendations "
                             "to not force users to arbitrarily change passwords based solely on age"
@@ -434,7 +436,10 @@ class ProjectSerializerDataResponsesTests(TestCase):
                 },
             },
             "lab.example.com": {
-                "policy": {"history": "Change 'History' from 15 to >= 10"},
+                "policy": {
+                    "score": 4,
+                    "history": "Change 'History' from 15 to >= 10",
+                },
             },
         }
         self.assertEqual(password_summary.get("policy_cap_map"), expected_cap_map)

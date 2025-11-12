@@ -800,7 +800,10 @@ class Project(models.Model):
                                     )
                                 if cap_lines:
                                     resolved_cap = "\n".join(cap_lines)
-                        domain_map[issue_text] = resolved_cap
+                        domain_map[issue_text] = {
+                            "score": 2,
+                            "recommendation": resolved_cap,
+                        }
             if dns_cap_map:
                 dns_section["dns_cap_map"] = dns_cap_map
             else:

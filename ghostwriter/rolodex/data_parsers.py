@@ -1474,7 +1474,7 @@ def build_password_cap_display_map(
                 }
                 policy_map[field] = _render_cap_template(template, replacements)
             if policy_map:
-                domain_entry["policy"] = policy_map
+                domain_entry["policy"] = {"score": 4, **policy_map}
 
         fgpp_values = domain_context.get("fgpp")
         if isinstance(fgpp_values, dict) and fgpp_values:
@@ -1492,7 +1492,7 @@ def build_password_cap_display_map(
                     }
                     per_policy_map[field] = _render_cap_template(template, replacements)
                 if per_policy_map:
-                    fgpp_map[name] = per_policy_map
+                    fgpp_map[name] = {"score": 4, **per_policy_map}
             if fgpp_map:
                 domain_entry["fgpp"] = fgpp_map
 

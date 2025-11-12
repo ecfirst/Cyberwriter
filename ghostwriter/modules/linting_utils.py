@@ -531,6 +531,7 @@ LINTER_CONTEXT = {
                 "policy_cap_map": {
                     "corp.example.com": {
                         "policy": {
+                            "score": 4,
                             "max_age": (
                                 "Change 'Maximum Age' from 90 to == 0 to align with NIST recommendations "
                                 "to not force users to arbitrarily change passwords based solely on age"
@@ -542,6 +543,7 @@ LINTER_CONTEXT = {
                         },
                         "fgpp": {
                             "Tier0Admins": {
+                                "score": 4,
                                 "max_age": (
                                     "Change 'Maximum Age' from 45 to == 0 to align with NIST recommendations "
                                     "to not force users to arbitrarily change passwords based solely on age"
@@ -554,6 +556,7 @@ LINTER_CONTEXT = {
                                 ),
                             },
                             "ServiceAccounts": {
+                                "score": 4,
                                 "history": "Change 'History' from 5 to >= 10",
                                 "max_age": (
                                     "Change 'Maximum Age' from 365 to == 0 to align with NIST recommendations "
