@@ -55,12 +55,15 @@ class ExportReportXlsx(ExportXlsxBase, ExportReportBase):
         rows_by_priority = self._collect_cap_entries(cap_data)
 
         workbook = self.workbook
+        base_font = {"font_name": "Aptos Narrow", "font_size": 12}
+
         for sheet_config in self.SHEET_CONFIGS:
             worksheet = workbook.add_worksheet(sheet_config["name"])
             worksheet.set_tab_color(sheet_config["tab_color"])
 
             header_format = workbook.add_format(
                 {
+                    **base_font,
                     "bold": True,
                     "bg_color": sheet_config["header_fill"],
                     "font_color": sheet_config.get("header_font", "#000000"),
@@ -69,9 +72,9 @@ class ExportReportXlsx(ExportXlsxBase, ExportReportBase):
                     "text_wrap": True,
                 }
             )
-            default_row_format = workbook.add_format({"text_wrap": True, "valign": "top"})
+            default_row_format = workbook.add_format({**base_font, "text_wrap": True, "valign": "top"})
             banded_row_format = workbook.add_format(
-                {"text_wrap": True, "valign": "top", "bg_color": sheet_config["banded_fill"]}
+                {**base_font, "text_wrap": True, "valign": "top", "bg_color": sheet_config["banded_fill"]}
             )
 
             for col_idx, title in enumerate(self.HEADERS):
@@ -84,10 +87,13 @@ class ExportReportXlsx(ExportXlsxBase, ExportReportBase):
             worksheet.set_column(4, len(self.HEADERS) - 1, 18)
             worksheet.freeze_panes(1, 0)
 
-            data_rows = rows_by_priority.get(sheet_config["name"], [])
+            data_rows = sorted(
+                rows_by_priority.get(sheet_config["name"], []),
+                key=self._row_sort_key,
+                reverse=True,
+            )
             for row_idx, row in enumerate(data_rows, start=1):
                 row_format = banded_row_format if row_idx % 2 == 0 else default_row_format
-                worksheet.set_row(row_idx, None, row_format)
                 worksheet.write_string(row_idx, 0, row["Sev"], row_format)
                 worksheet.write_string(row_idx, 1, row["Issue"], row_format)
                 worksheet.write_string(row_idx, 2, row["System(s)/Resource"], row_format)
@@ -384,18 +390,19 @@ class ExportReportXlsx(ExportXlsxBase, ExportReportBase):
         issue_text: str,
         recommendation: str,
     ):
-        priority = self._determine_priority(section_name, score)
+        numeric_score = self._coerce_score(score)
+        priority = self._determine_priority(section_name, numeric_score)
         rows.setdefault(priority, []).append(
             {
                 "Sev": self._format_severity(score),
                 "Issue": issue_text,
                 "System(s)/Resource": system_value,
                 "Recommendation": recommendation,
+                "_score": numeric_score,
             }
         )
 
-    def _determine_priority(self, section_name: str, score) -> str:
-        numeric_score = self._coerce_score(score)
+    def _determine_priority(self, section_name: str, numeric_score: Optional[float]) -> str:
         if numeric_score is None:
             return "Lower Priority"
         rules = self.PRIORITY_OVERRIDES.get(section_name, self.DEFAULT_PRIORITY_RULES)
@@ -404,6 +411,12 @@ class ExportReportXlsx(ExportXlsxBase, ExportReportBase):
         if numeric_score >= rules["med"]:
             return "Med Priority"
         return "Lower Priority"
+
+    def _row_sort_key(self, row: Dict[str, Any]) -> float:
+        score = row.get("_score")
+        if isinstance(score, (int, float)):
+            return float(score)
+        return float("-inf")
 
     def _coerce_score(self, score) -> Optional[float]:
         if isinstance(score, (int, float)):
