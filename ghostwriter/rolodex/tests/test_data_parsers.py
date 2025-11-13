@@ -131,6 +131,12 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(self.project.data_responses, {"custom": "value"})
 
     def test_firewall_csv_adds_vulnerability_summary(self):
+        self.project.workbook_data = {
+            "firewall": {"firewall_periodic_reviews": "No"},
+        }
+        self.project.data_responses = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
         headers = [
             "Risk",
             "Issue",
@@ -302,6 +308,66 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(first_entry.get("finding_score"), 8.0)
         self.assertEqual(first_entry.get("recommendation"), expected_recommendation)
         self.assertEqual(first_entry.get("score"), expected_score)
+
+        global_entries = firewall_cap.get("global")
+        self.assertIsInstance(global_entries, dict)
+        justification_entry = global_entries.get(
+            "Business justification for firewall rules"
+        )
+        self.assertIsInstance(justification_entry, dict)
+        self.assertEqual(
+            justification_entry.get("recommendation"), expected_recommendation
+        )
+        self.assertEqual(justification_entry.get("score"), expected_score)
+
+    def test_firewall_global_entry_created_from_workbook_response(self):
+        workbook_payload = {
+            "firewall": {"firewall_periodic_reviews": "no"},
+        }
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        cap_payload = self.project.cap or {}
+        firewall_cap = cap_payload.get("firewall")
+        self.assertIsInstance(firewall_cap, dict)
+        global_entries = firewall_cap.get("global")
+        self.assertIsInstance(global_entries, dict)
+        justification_entry = global_entries.get(
+            "Business justification for firewall rules"
+        )
+        self.assertIsInstance(justification_entry, dict)
+        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[
+            "Business justification for firewall rules"
+        ]
+        self.assertEqual(
+            justification_entry.get("recommendation"), expected_recommendation
+        )
+        self.assertEqual(justification_entry.get("score"), expected_score)
+
+        responses = self.project.data_responses.get("firewall")
+        self.assertIsInstance(responses, dict)
+        self.assertEqual(responses.get("firewall_periodic_reviews"), "no")
+
+    def test_firewall_global_entry_skipped_when_reviews_performed(self):
+        workbook_payload = {
+            "firewall": {"firewall_periodic_reviews": "Yes"},
+        }
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        cap_payload = self.project.cap or {}
+        self.assertNotIn("firewall", cap_payload)
+        responses = self.project.data_responses.get("firewall")
+        self.assertIsInstance(responses, dict)
+        self.assertEqual(responses.get("firewall_periodic_reviews"), "Yes")
 
     def test_normalize_web_issue_artifacts(self):
         payload = {
@@ -975,17 +1041,19 @@ class NexposeDataParserTests(TestCase):
                     "score": 5,
                 },
             },
-            "Additional password controls not implemented": {
-                "recommendation": (
-                    "Implement additional password controls as recommended by NIST for blacklisting and/or "
-                    "repetitive/sequential characters, which are not available natively in Active Directory\n"
-                    "(Secure Password policy & procedures)"
-                ),
-                "score": 4,
-            },
-            "MFA not enforced for all accounts": {
-                "recommendation": "Enforce MFA for all accounts as recommended by NIST",
-                "score": 4,
+            "global": {
+                "Additional password controls not implemented": {
+                    "recommendation": (
+                        "Implement additional password controls as recommended by NIST for blacklisting and/or "
+                        "repetitive/sequential characters, which are not available natively in Active Directory\n"
+                        "(Secure Password policy & procedures)"
+                    ),
+                    "score": 4,
+                },
+                "MFA not enforced for all accounts": {
+                    "recommendation": "Enforce MFA for all accounts as recommended by NIST",
+                    "score": 4,
+                },
             },
         }
         self.assertEqual(password_cap.get("badpass_cap_map"), expected_badpass_cap_map)
@@ -1071,8 +1139,10 @@ class NexposeDataParserTests(TestCase):
         self.assertIn("Weak passwords in use", corp_entries)
         self.assertNotIn("Additional password controls not implemented", corp_entries)
         self.assertNotIn("MFA not enforced for all accounts", corp_entries)
-        self.assertIn("Additional password controls not implemented", badpass_cap_map)
-        self.assertIn("MFA not enforced for all accounts", badpass_cap_map)
+        global_entries = badpass_cap_map.get("global")
+        self.assertIsInstance(global_entries, dict)
+        self.assertIn("Additional password controls not implemented", global_entries)
+        self.assertIn("MFA not enforced for all accounts", global_entries)
 
     def test_rebuild_populates_ad_cap_map(self):
         workbook_payload = {
