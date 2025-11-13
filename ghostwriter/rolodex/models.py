@@ -1225,9 +1225,6 @@ class Project(models.Model):
             for domain in _extract_domains(existing_wireless_section.get("domains_str")):
                 domain_sources.setdefault(domain, {})
 
-        if not domain_sources and base_wireless_values:
-            domain_sources["global"] = {}
-
         def _resolve_wireless_value(
             domain_entry: Optional[Dict[str, Any]], key: str
         ) -> Any:
@@ -1240,8 +1237,9 @@ class Project(models.Model):
                 return domain_entry.get(key)
             return None
 
-        for domain, domain_entry in domain_sources.items():
-            domain_key = domain or "global"
+        def _collect_wireless_cap_entries(
+            domain_entry: Optional[Dict[str, Any]]
+        ) -> Dict[str, Dict[str, Any]]:
             domain_cap_entries: Dict[str, Dict[str, Any]] = {}
 
             if _safe_int(_resolve_wireless_value(domain_entry, "psk_count")) > 0:
@@ -1287,8 +1285,12 @@ class Project(models.Model):
                 if entry:
                     domain_cap_entries["Weak PSK's in use"] = entry
 
+            return domain_cap_entries
+
+        for domain, domain_entry in domain_sources.items():
+            domain_cap_entries = _collect_wireless_cap_entries(domain_entry)
             if domain_cap_entries:
-                wireless_cap_map[domain_key] = domain_cap_entries
+                wireless_cap_map[domain] = domain_cap_entries
 
         if wireless_cap_map:
             wireless_section["wireless_cap_map"] = {
@@ -1296,7 +1298,14 @@ class Project(models.Model):
                 for domain, entries in sorted(wireless_cap_map.items())
             }
         else:
-            wireless_section.pop("wireless_cap_map", None)
+            global_cap_entries = _collect_wireless_cap_entries(None)
+            if global_cap_entries:
+                wireless_section["wireless_cap_map"] = {
+                    issue: dict(entry)
+                    for issue, entry in sorted(global_cap_entries.items())
+                }
+            else:
+                wireless_section.pop("wireless_cap_map", None)
 
         if wireless_section:
             existing_cap["wireless"] = wireless_section

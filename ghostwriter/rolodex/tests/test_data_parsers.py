@@ -1582,6 +1582,44 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(wireless_cap, dict)
         self.assertEqual(wireless_cap.get("wireless_cap_map"), expected_wireless_map)
 
+    def test_wireless_cap_map_without_domains(self):
+        workbook_payload = {
+            "wireless": {
+                "psk_count": 2,
+                "rogue_count": 0,
+                "wep_inuse": {"confirm": "yes"},
+                "internal_access": "no",
+                "802_1x_used": "no",
+                "weak_psks": "yes",
+            }
+        }
+
+        self.project.cap = {}
+        self.project.data_responses = {}
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["cap", "data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_wireless_map = {
+            "PSK’s in use on wireless networks": general_map.get(
+                "PSK’s in use on wireless networks"
+            ),
+            "WEP in use on wireless networks": general_map.get(
+                "WEP in use on wireless networks"
+            ),
+            "802.1x authentication not implemented for wireless networks": general_map.get(
+                "802.1x authentication not implemented for wireless networks"
+            ),
+            "Weak PSK's in use": general_map.get("Weak PSK's in use"),
+        }
+
+        wireless_cap = self.project.cap.get("wireless")
+        self.assertIsInstance(wireless_cap, dict)
+        self.assertEqual(wireless_cap.get("wireless_cap_map"), expected_wireless_map)
+
     def test_wireless_cap_map_removed_when_conditions_not_met(self):
         general_map = load_general_cap_map()
         existing_cap = {
