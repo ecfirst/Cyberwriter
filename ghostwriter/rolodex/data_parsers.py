@@ -2233,9 +2233,17 @@ def build_workbook_firewall_response(workbook_data: Optional[Dict[str, Any]]) ->
     if not isinstance(firewall_data, dict):
         return {}
 
+    response: Dict[str, Any] = {}
+
+    periodic_reviews = firewall_data.get("firewall_periodic_reviews")
+    if periodic_reviews not in (None, ""):
+        reviews_text = str(periodic_reviews).strip()
+        if reviews_text:
+            response["firewall_periodic_reviews"] = reviews_text
+
     devices = firewall_data.get("devices", [])
     if not isinstance(devices, list):
-        return {}
+        devices = []
 
     def _normalize_name(raw_value: Any, index: int) -> str:
         if raw_value is None:
@@ -2266,7 +2274,8 @@ def build_workbook_firewall_response(workbook_data: Optional[Dict[str, Any]]) ->
             ood_names.append(normalized_name)
 
     formatted_names = _format_oxford_quoted_list(ood_names)
-    if not formatted_names:
-        return {}
+    if formatted_names:
+        response["ood_name_list"] = formatted_names
+        response["ood_count"] = len(ood_names)
 
-    return {"ood_name_list": formatted_names, "ood_count": len(ood_names)}
+    return response
