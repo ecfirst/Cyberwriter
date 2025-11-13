@@ -7,6 +7,9 @@ from ghostwriter.modules.reportwriter.report.base import ExportReportBase
 
 
 class ExportReportXlsx(ExportXlsxBase, ExportReportBase):
+    FILENAME_TEMPLATE = (
+        "{{ now }} - {{ client.name }} Cybersecurity Report Corrective Action Plan {{ project.end_year }}"
+    )
     HEADERS = [
         "Sev",
         "Issue",
