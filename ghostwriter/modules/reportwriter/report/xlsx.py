@@ -58,7 +58,7 @@ class ExportReportXlsx(ExportXlsxBase, ExportReportBase):
         rows_by_priority = self._collect_cap_entries(cap_data)
 
         workbook = self.workbook
-        base_font = {"font_name": "Aptos Narrow", "font_size": 12}
+        base_font = {"font_name": "Arial", "font_size": 12}
 
         for sheet_config in self.SHEET_CONFIGS:
             worksheet = workbook.add_worksheet(sheet_config["name"])
