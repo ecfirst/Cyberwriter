@@ -384,6 +384,10 @@ LINTER_CONTEXT = {
                     }
                 ],
                 "unique_soa_fields": ["serial", "refresh"],
+                "soa_field_cap_map": {
+                    "serial": "Update to match the 'YYYYMMDDnn' scheme",
+                    "refresh": "Update to a value between 1200 and 43200 seconds",
+                },
             },
             "wireless": {
                 "segmentation_ssids": ["Guest", "Corp", "Production"],
@@ -471,7 +475,38 @@ LINTER_CONTEXT = {
                 "password_enforce_mfa_all_accounts": "no",
                 "hashes_obtained": "yes",
                 "entries": [
-                    {"domain": "corp.example.com", "risk": "medium", "bad_pass": True},
+                    {
+                        "domain": "corp.example.com",
+                        "risk": "medium",
+                        "bad_pass": True,
+                        "bad_policy_fields": ["max_age", "complexity_enabled"],
+                        "policy_cap_values": {"max_age": 90, "complexity_enabled": "TRUE"},
+                        "fgpp_bad_fields": {
+                            "Tier0Admins": ["max_age", "lockout_reset", "lockout_duration", "complexity_enabled"],
+                            "ServiceAccounts": [
+                                "history",
+                                "max_age",
+                                "min_age",
+                                "lockout_threshold",
+                                "lockout_reset",
+                            ],
+                        },
+                        "fgpp_cap_values": {
+                            "Tier0Admins": {
+                                "max_age": 45,
+                                "lockout_reset": 15,
+                                "lockout_duration": 15,
+                                "complexity_enabled": "TRUE",
+                            },
+                            "ServiceAccounts": {
+                                "history": 5,
+                                "max_age": 365,
+                                "min_age": 0,
+                                "lockout_threshold": 0,
+                                "lockout_reset": 0,
+                            },
+                        },
+                    },
                     {"domain": "lab.example.com", "risk": "high", "bad_pass": False},
                 ],
                 "domains_str": "'corp.example.com'/'lab.example.com'",
@@ -484,6 +519,76 @@ LINTER_CONTEXT = {
                 "lanman_list_string": "'corp.example.com'",
                 "no_fgpp_string": "'lab.example.com'",
                 "bad_pass_count": 2,
+                "policy_cap_fields": [
+                    "max_age",
+                    "complexity_enabled",
+                    "lockout_reset",
+                    "lockout_duration",
+                    "history",
+                    "min_age",
+                    "lockout_threshold",
+                ],
+                "policy_cap_map": {
+                    "corp.example.com": {
+                        "policy": {
+                            "score": 4,
+                            "max_age": (
+                                "Change 'Maximum Age' from 90 to == 0 to align with NIST recommendations "
+                                "to not force users to arbitrarily change passwords based solely on age"
+                            ),
+                            "complexity_enabled": (
+                                "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                                "controls such as blacklists"
+                            ),
+                        },
+                        "fgpp": {
+                            "Tier0Admins": {
+                                "score": 4,
+                                "max_age": (
+                                    "Change 'Maximum Age' from 45 to == 0 to align with NIST recommendations "
+                                    "to not force users to arbitrarily change passwords based solely on age"
+                                ),
+                                "lockout_reset": "Change 'Lockout Reset' from 15 to >= 30",
+                                "lockout_duration": "Change 'Lockout Duration' from 15 to >= 30 or admin unlock",
+                                "complexity_enabled": (
+                                    "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                                    "controls such as blacklists"
+                                ),
+                            },
+                            "ServiceAccounts": {
+                                "score": 4,
+                                "history": "Change 'History' from 5 to >= 10",
+                                "max_age": (
+                                    "Change 'Maximum Age' from 365 to == 0 to align with NIST recommendations "
+                                    "to not force users to arbitrarily change passwords based solely on age"
+                                ),
+                                "min_age": "Change 'Minimum Age' from 0 to >= 1 and < 7",
+                                "lockout_threshold": "Change 'Lockout Threshold' from 0 to > 0 and <= 6",
+                                "lockout_reset": "Change 'Lockout Reset' from 0 to >= 30",
+                            },
+                        },
+                    }
+                },
+                "policy_cap_context": {
+                    "corp.example.com": {
+                        "policy": {"max_age": 90, "complexity_enabled": "TRUE"},
+                        "fgpp": {
+                            "Tier0Admins": {
+                                "max_age": 45,
+                                "lockout_reset": 15,
+                                "lockout_duration": 15,
+                                "complexity_enabled": "TRUE",
+                            },
+                            "ServiceAccounts": {
+                                "history": 5,
+                                "max_age": 365,
+                                "min_age": 0,
+                                "lockout_threshold": 0,
+                                "lockout_reset": 0,
+                            },
+                        },
+                    }
+                },
             },
             "endpoint": {
                 "entries": [
@@ -535,6 +640,7 @@ LINTER_CONTEXT = {
                             "issue": "The domain does not have an SPF record",
                             "finding": "email delivery for the domain",
                             "recommendation": "consider implementing a SPF record",
+                            "cap": "Consider implementing a SPF record",
                             "impact": "Lack of SPF allows attackers to spoof emails from the domain, enabling phishing or spam campaigns.",
                         }
                     ],
@@ -581,32 +687,6 @@ LINTER_CONTEXT = {
                 "172.16.50.5",
             ],
             "firewall_findings": {
-                "findings": [
-                    {
-                        "risk": "High",
-                        "issue": "Overly permissive inbound access",
-                        "devices": "Edge-FW01",
-                        "solution": "Restrict inbound rules to required services",
-                        "impact": "Increases the exposed attack surface for external actors.",
-                        "details": "Inbound rules allow any source to reach management interfaces.",
-                        "reference": "https://example.com/firewall-hardening",
-                        "score": 8.5,
-                        "accepted": "No",
-                        "type": "Configuration",
-                    },
-                    {
-                        "risk": "Medium",
-                        "issue": "Stale decommissioned network objects",
-                        "devices": "Core-FW02",
-                        "solution": "Remove unused objects from rule base",
-                        "impact": "Obsolete objects complicate reviews and obscure risky rules.",
-                        "details": "Multiple inactive objects remain referenced by disabled policies.",
-                        "reference": "",
-                        "score": 5.0,
-                        "accepted": "Yes",
-                        "type": "Operations",
-                    },
-                ],
                 "vulnerabilities": {
                     "high": {
                         "total_unique": 1,
@@ -737,6 +817,30 @@ LINTER_CONTEXT = {
                     ],
                 },
             },
+        },
+        "cap": {
+            "firewall": {
+                "firewall_cap_map": [
+                    {
+                        "issue": "Overly permissive inbound access",
+                        "devices": "Edge-FW01",
+                        "risk": "High",
+                        "finding_score": 8.5,
+                        "recommendation": "Review all firewall rules to ensure there is a valid business justification; document the business justification and network access requirements",
+                        "score": 5,
+                        "solution": "Restrict inbound rules to required services",
+                    },
+                    {
+                        "issue": "Stale decommissioned network objects",
+                        "devices": "Core-FW02",
+                        "risk": "Medium",
+                        "finding_score": 5.0,
+                        "recommendation": "Review all firewall rules to ensure there is a valid business justification; document the business justification and network access requirements",
+                        "score": 5,
+                        "solution": "Remove unused objects from rule base",
+                    },
+                ],
+            }
         },
         "extra_fields": {},
     },

@@ -228,7 +228,15 @@
                             <label class="sr-only" for="id_required_file_{{ requirement.slug }}">{{ requirement.label }}{% if requirement.context %} for {{ requirement.context }}{% endif %}</label>
                             <input type="file" name="file" class="form-control-file project-required-data-input" id="id_required_file_{{ requirement.slug }}" accept=".csv,text/csv" required>
                           </div>
-                          <button type="submit" class="btn btn-primary btn-sm" data-default-text="Upload">Upload</button>
+                          <div class="d-flex flex-column flex-md-row align-items-md-center">
+                            <button type="submit" class="btn btn-primary btn-sm" data-default-text="Upload">Upload</button>
+                            {% if requirement.label == 'nexpose_cap.csv' %}
+                              <div class="custom-control custom-switch mt-2 mt-md-0 ml-md-3">
+                                <input type="checkbox" class="custom-control-input" id="id_distilled_{{ requirement.slug }}" name="nexpose_distilled" value="1">
+                                <label class="custom-control-label" for="id_distilled_{{ requirement.slug }}">Distilled</label>
+                              </div>
+                            {% endif %}
+                          </div>
                         </form>
                       </div>
                     </div>

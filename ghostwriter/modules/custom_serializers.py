@@ -40,11 +40,15 @@ from ghostwriter.reporting.models import (
 )
 from ghostwriter.rolodex.data_parsers import (
     build_ad_risk_contrib,
+    build_password_cap_display_map,
     build_workbook_ad_response,
     build_workbook_dns_response,
     build_workbook_firewall_response,
     build_workbook_password_response,
+    load_dns_soa_cap_map,
+    load_password_cap_map,
     normalize_nexpose_artifacts_map,
+    summarize_password_cap_details,
 )
 from ghostwriter.rolodex.models import (
     Client,
@@ -991,28 +995,57 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             return {}
 
         entries = section.get("entries")
+        domain_soa_fields: Dict[str, List[str]] = {}
         unique_soa_fields: List[str] = []
         if isinstance(entries, list):
-            seen: Set[str] = set()
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
                 fields = entry.get("soa_fields")
                 if not isinstance(fields, list):
                     continue
+                domain_value = (
+                    entry.get("domain")
+                    or entry.get("name")
+                    or entry.get("zone")
+                    or entry.get("fqdn")
+                )
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if not domain_text:
+                    continue
+                domain_entry = domain_soa_fields.setdefault(domain_text, [])
+                seen_fields = set(domain_entry)
                 for field in fields:
                     if field is None:
                         continue
                     text = str(field).strip()
-                    if not text or text in seen:
+                    if not text or text in seen_fields:
                         continue
-                    seen.add(text)
-                    unique_soa_fields.append(text)
+                    seen_fields.add(text)
+                    domain_entry.append(text)
+                    if text not in unique_soa_fields:
+                        unique_soa_fields.append(text)
 
         if isinstance(entries, list):
-            section["unique_soa_fields"] = unique_soa_fields
+            if unique_soa_fields:
+                section["unique_soa_fields"] = unique_soa_fields
+            else:
+                section.pop("unique_soa_fields", None)
+
+            if domain_soa_fields:
+                cap_map = load_dns_soa_cap_map()
+                section["soa_field_cap_map"] = {
+                    domain: {
+                        field: cap_map.get(field, "")
+                        for field in fields
+                    }
+                    for domain, fields in domain_soa_fields.items()
+                }
+            else:
+                section.pop("soa_field_cap_map", None)
         else:
             section.pop("unique_soa_fields", None)
+            section.pop("soa_field_cap_map", None)
 
         if not entries:
             section.pop("entries", None)
@@ -1277,6 +1310,30 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     extra_fields[extra_key] = value
                 section.pop(extra_key, None)
 
+        cap_fields, cap_context = summarize_password_cap_details(workbook_domain_values)
+        password_cap_templates = load_password_cap_map() if cap_fields else {}
+
+        def _inject_cap_details(summary_dict: Dict[str, Any]) -> Dict[str, Any]:
+            if cap_fields:
+                summary_dict["policy_cap_fields"] = list(cap_fields)
+                if cap_context:
+                    summary_dict["policy_cap_context"] = cap_context
+                    domain_cap_map = build_password_cap_display_map(
+                        cap_context, password_cap_templates
+                    )
+                    if domain_cap_map:
+                        summary_dict["policy_cap_map"] = domain_cap_map
+                    else:
+                        summary_dict.pop("policy_cap_map", None)
+                else:
+                    summary_dict.pop("policy_cap_context", None)
+                    summary_dict.pop("policy_cap_map", None)
+            else:
+                summary_dict.pop("policy_cap_fields", None)
+                summary_dict.pop("policy_cap_map", None)
+                summary_dict.pop("policy_cap_context", None)
+            return summary_dict
+
         for domain_name in workbook_domain_values.keys():
             entry = entries.setdefault(domain_name, {"domain": domain_name})
 
@@ -1334,7 +1391,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if not populated_domains:
             summary = {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
             summary.update(extra_fields)
-            return summary
+            return _inject_cap_details(summary)
 
         summary_domains = []
         for domain in workbook_domains:
@@ -1345,7 +1402,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 summary_domains.append(domain)
 
         if not summary_domains:
-            return {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
+            return _inject_cap_details(
+                {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
+            )
 
         def _format_risk(value):
             if value is None:
@@ -1403,6 +1462,27 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
             entry["bad_pass"] = bool(domain_values.get("bad_pass"))
 
+            policy_fields = domain_values.get("policy_cap_fields")
+            if isinstance(policy_fields, list) and policy_fields:
+                entry["bad_policy_fields"] = list(policy_fields)
+            fgpp_fields = domain_values.get("fgpp_cap_fields")
+            if isinstance(fgpp_fields, dict) and fgpp_fields:
+                entry["fgpp_bad_fields"] = {
+                    name: list(fields)
+                    for name, fields in fgpp_fields.items()
+                    if isinstance(fields, list) and fields
+                }
+            policy_values = domain_values.get("policy_cap_values")
+            if isinstance(policy_values, dict) and policy_values:
+                entry["policy_cap_values"] = dict(policy_values)
+            fgpp_values = domain_values.get("fgpp_cap_values")
+            if isinstance(fgpp_values, dict) and fgpp_values:
+                entry["fgpp_cap_values"] = {
+                    name: dict(values)
+                    for name, values in fgpp_values.items()
+                    if isinstance(values, dict) and values
+                }
+
             cracked_count_parts.append(cracked_value or "0")
             enabled_count_parts.append(enabled_value or "0")
             admin_cracked_parts.append(admin_cracked_value or "0")
@@ -1436,7 +1516,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             summary["cracked_count_str"] = workbook_summary["cracked_count_str"]
 
         summary.update(extra_fields)
-        return summary
+        return _inject_cap_details(summary)
 
     @staticmethod
     def _collect_endpoint_responses(raw_responses, workbook_data):

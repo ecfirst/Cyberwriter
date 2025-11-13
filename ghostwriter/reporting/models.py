@@ -1089,6 +1089,54 @@ class ReportObservationLink(models.Model):
         return self.report.user_can_edit(user)
 
 
+class PasswordComplianceMapping(models.Model):
+    """Store workbook password policy compliance rules."""
+
+    DATA_TYPE_NUMERIC = "numeric"
+    DATA_TYPE_STRING = "string"
+
+    DATA_TYPE_CHOICES = (
+        (DATA_TYPE_NUMERIC, "Numeric"),
+        (DATA_TYPE_STRING, "String"),
+    )
+
+    setting = models.CharField(
+        "Password setting",
+        max_length=64,
+        unique=True,
+        help_text="Name of the password policy setting captured from workbook data.",
+    )
+    data_type = models.CharField(
+        "Value type",
+        max_length=16,
+        choices=DATA_TYPE_CHOICES,
+        default=DATA_TYPE_NUMERIC,
+        help_text="How the policy value should be interpreted when evaluating compliance.",
+    )
+    rule = models.JSONField(
+        "Non-compliance rule",
+        default=dict,
+        help_text=(
+            "Definition describing when the password setting is considered out of compliance. "
+            "Rules may include logical groupings (any/all) and comparison operators."
+        ),
+    )
+
+    class Meta:
+        ordering = ["setting"]
+        verbose_name = "Password setting compliance rule"
+        verbose_name_plural = "Password Setting Compliance matrix"
+
+    def __str__(self):
+        return self.setting
+
+    @property
+    def serialized_rule(self):
+        """Return the stored rule with a guaranteed dictionary shape."""
+
+        return self.rule if isinstance(self.rule, dict) else {}
+
+
 class GradeRiskMapping(models.Model):
     """Map a workbook letter grade to a report risk level."""
 

@@ -2,8 +2,9 @@
 
 # Standard Libraries
 import os
+import re
 from datetime import time, timedelta
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 # Django Imports
 from django.conf import settings
@@ -222,6 +223,101 @@ class DNSRecommendationMapping(models.Model):
         return f"{self.issue_text}"
 
 
+class GeneralCapMapping(models.Model):
+    """Store general corrective action plan guidance and scoring."""
+
+    issue_text = models.TextField(
+        "Issue",
+        unique=True,
+        help_text="Exact text describing the issue that needs remediation.",
+    )
+    recommendation_text = models.TextField(
+        "Recommendation",
+        help_text="Corrective action guidance presented for this issue.",
+    )
+    score = models.PositiveSmallIntegerField(
+        "Score",
+        default=0,
+        help_text="Numeric score representing the severity or priority of the issue.",
+    )
+
+    class Meta:
+        ordering = ["issue_text"]
+        verbose_name = "General CAP mapping"
+        verbose_name_plural = "General CAP mappings"
+
+    def __str__(self):
+        return f"{self.issue_text}"
+
+
+class DNSCapMapping(models.Model):
+    """Store corrective action plan (CAP) entries for DNS scanner issues."""
+
+    issue_text = models.TextField(
+        "DNS issue",
+        unique=True,
+        help_text="Exact text of the DNS check failure (matches dns_report.csv entries).",
+    )
+    cap_text = models.TextField(
+        "Corrective action plan",
+        help_text="Prescribed DNS CAP guidance displayed with the DNS finding.",
+    )
+
+    class Meta:
+        ordering = ["issue_text"]
+        verbose_name = "DNS CAP mapping"
+        verbose_name_plural = "DNS CAP mappings"
+
+    def __str__(self):
+        return f"{self.issue_text}"
+
+
+class DNSSOACapMapping(models.Model):
+    """Store CAP guidance for individual DNS SOA fields."""
+
+    soa_field = models.CharField(
+        "SOA field",
+        max_length=64,
+        unique=True,
+        help_text="Name of the SOA field flagged as outside the recommended range.",
+    )
+    cap_text = models.TextField(
+        "Corrective action plan",
+        help_text="Guidance presented when the SOA field is selected in DNS responses.",
+    )
+
+    class Meta:
+        ordering = ["soa_field"]
+        verbose_name = "DNS SOA CAP mapping"
+        verbose_name_plural = "DNS SOA CAP mappings"
+
+    def __str__(self):
+        return f"{self.soa_field}"
+
+
+class PasswordCapMapping(models.Model):
+    """Store CAP guidance for workbook password policy settings."""
+
+    setting = models.CharField(
+        "Password setting",
+        max_length=64,
+        unique=True,
+        help_text="Name of the password policy setting captured from workbook data.",
+    )
+    cap_text = models.TextField(
+        "Corrective action plan",
+        help_text="Guidance presented when the setting is outside recommended bounds.",
+    )
+
+    class Meta:
+        ordering = ["setting"]
+        verbose_name = "Password CAP mapping"
+        verbose_name_plural = "Password CAP mappings"
+
+    def __str__(self):
+        return f"{self.setting}"
+
+
 class Project(models.Model):
     """
     Stores an individual project, related to :model:`rolodex.Client`,
@@ -259,6 +355,11 @@ class Project(models.Model):
         default=dict,
         blank=True,
         help_text="Parsed supporting data derived from uploaded artifacts",
+    )
+    cap = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Corrective action plan values derived from workbook responses and supporting data",
     )
     data_responses = models.JSONField(
         default=dict,
@@ -411,16 +512,108 @@ class Project(models.Model):
             build_workbook_dns_response,
             build_workbook_firewall_response,
             build_workbook_password_response,
+            coerce_cap_score,
+            load_dns_soa_cap_map,
+            load_general_cap_map,
         )
 
         artifacts = build_project_artifacts(self)
-        self.data_artifacts = artifacts
 
         existing_responses = dict(self.data_responses or {})
+        existing_cap = dict(self.cap or {})
         for key in NEXPOSE_ARTIFACT_KEYS:
             existing_responses.pop(key, None)
 
-        workbook_ad_response = build_workbook_ad_response(getattr(self, "workbook_data", None))
+        workbook_payload = getattr(self, "workbook_data", None)
+
+        def _safe_int(value: Any) -> int:
+            if value in (None, ""):
+                return 0
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, (int, float)):
+                return int(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return 0
+                try:
+                    return int(float(text))
+                except ValueError:
+                    return 0
+            return 0
+
+        def _normalize_cap_value(value: Any) -> str:
+            if value in (None, ""):
+                return ""
+            return str(value).strip()
+
+        def _is_truthy(value: Any) -> bool:
+            if isinstance(value, bool):
+                return value
+            if value in (None, ""):
+                return False
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if not text:
+                    return False
+                return text in {"true", "1", "yes", "y"}
+            if isinstance(value, (int, float)):
+                return bool(value)
+            return bool(value)
+
+        def _is_explicit_no(value: Any) -> bool:
+            if isinstance(value, bool):
+                return value is False
+            if not isinstance(value, str):
+                return False
+            text = value.strip().lower()
+            if not text:
+                return False
+            return text in {"no", "false", "0", "n"}
+
+        def _extract_domains(value: Any) -> List[str]:
+            if not isinstance(value, str):
+                return []
+
+            domains: List[str] = []
+            seen: Set[str] = set()
+            for token in re.split(r"[\\/,]", value):
+                text = token.strip()
+                if not text:
+                    continue
+                text = text.strip("'\" ")
+                if not text or text.lower() == "and":
+                    continue
+                if text not in seen:
+                    seen.add(text)
+                    domains.append(text)
+            return domains
+
+        # General CAP guidance is database managed, so always load the latest
+        # definitions regardless of whether workbook data is present. This
+        # allows CAP generation to respect admin overrides (for example, the
+        # "Weak PSK's in use" guidance comes from the General CAP mappings).
+        general_cap_map: Dict[str, Dict[str, Any]] = load_general_cap_map()
+
+        def _clone_cap_entry(issue: str) -> Dict[str, Any]:
+            entry = (
+                general_cap_map.get(issue)
+                if isinstance(general_cap_map, dict)
+                else None
+            )
+            if not isinstance(entry, dict):
+                return {}
+            payload: Dict[str, Any] = {}
+            recommendation = entry.get("recommendation")
+            score = entry.get("score")
+            if recommendation is not None:
+                payload["recommendation"] = recommendation
+            if score is not None:
+                payload["score"] = score
+            return payload
+
+        workbook_ad_response = build_workbook_ad_response(workbook_payload)
         if workbook_ad_response:
             existing_ad_section = existing_responses.get("ad")
             if isinstance(existing_ad_section, dict):
@@ -432,14 +625,98 @@ class Project(models.Model):
 
             combined_ad_section.update(workbook_ad_response)
             combined_ad_section["risk_contrib"] = build_ad_risk_contrib(
-                getattr(self, "workbook_data", None),
+                workbook_payload,
                 combined_ad_section.get("entries"),
             )
             existing_responses["ad"] = combined_ad_section
 
-        workbook_password_response, _, _ = build_workbook_password_response(
-            getattr(self, "workbook_data", None)
+        ad_cap_section = existing_cap.get("ad")
+        if isinstance(ad_cap_section, dict):
+            ad_cap_section = dict(ad_cap_section)
+        else:
+            ad_cap_section = {}
+
+        ad_cap_map: Dict[str, Dict[str, Any]] = {}
+
+        combined_ad_section = existing_responses.get("ad")
+        if isinstance(combined_ad_section, dict):
+            for domain in _extract_domains(
+                combined_ad_section.get("old_domains_str")
+            ):
+                entry = _clone_cap_entry("Domain Functionality Level less than 2008")
+                if entry:
+                    domain_entries = ad_cap_map.setdefault(domain, {})
+                    domain_entries[
+                        "Domain Functionality Level less than 2008"
+                    ] = entry
+
+        workbook_ad_data = (
+            workbook_payload.get("ad") if isinstance(workbook_payload, dict) else None
         )
+        workbook_ad_domains = (
+            workbook_ad_data.get("domains")
+            if isinstance(workbook_ad_data, dict)
+            else None
+        )
+        if isinstance(workbook_ad_domains, list):
+            for domain_entry in workbook_ad_domains:
+                if not isinstance(domain_entry, dict):
+                    continue
+
+                domain_value = domain_entry.get("domain") or domain_entry.get("name")
+                domain = str(domain_value).strip() if domain_value else ""
+                if not domain:
+                    continue
+
+                def _record_ad_issue(issue: str) -> None:
+                    entry = _clone_cap_entry(issue)
+                    if entry:
+                        domain_issues = ad_cap_map.setdefault(domain, {})
+                        domain_issues[issue] = entry
+
+                total_accounts = _safe_int(domain_entry.get("total_accounts"))
+                enabled_accounts = _safe_int(domain_entry.get("enabled_accounts"))
+                if total_accounts > 0:
+                    enabled_ratio = enabled_accounts / float(total_accounts)
+                    if enabled_ratio < 0.9:
+                        _record_ad_issue("Number of Disabled Accounts")
+
+                enabled_for_threshold = max(enabled_accounts, 0)
+                threshold = enabled_for_threshold * 0.05
+
+                if _safe_int(domain_entry.get("generic_accounts")) > threshold:
+                    _record_ad_issue("Number of 'Generic Accounts'")
+
+                if _safe_int(domain_entry.get("inactive_accounts")) > threshold:
+                    _record_ad_issue("Potentially Inactive Accounts")
+
+                if _safe_int(domain_entry.get("passwords_never_exp")) > threshold:
+                    _record_ad_issue("Accounts with Passwords that Never Expire")
+
+                if _safe_int(domain_entry.get("exp_passwords")) > threshold:
+                    _record_ad_issue("Accounts with Expired Passwords")
+
+                if _safe_int(domain_entry.get("domain_admins")) > threshold:
+                    _record_ad_issue("Number of Domain Admins")
+
+                if _safe_int(domain_entry.get("ent_admins")) > 1:
+                    _record_ad_issue("Number of Enterprise Admins")
+
+        if ad_cap_map:
+            ad_cap_section["ad_cap_map"] = ad_cap_map
+        else:
+            ad_cap_section.pop("ad_cap_map", None)
+
+        if ad_cap_section:
+            existing_cap["ad"] = ad_cap_section
+        else:
+            existing_cap.pop("ad", None)
+
+        (
+            workbook_password_response,
+            workbook_password_domain_values,
+            _,
+        ) = build_workbook_password_response(workbook_payload)
         if workbook_password_response:
             existing_password_section = existing_responses.get("password")
             if isinstance(existing_password_section, dict):
@@ -449,12 +726,162 @@ class Project(models.Model):
             else:
                 combined_password_section = {}
 
+            existing_additional_controls = (
+                existing_password_section.get("password_additional_controls")
+                if isinstance(existing_password_section, dict)
+                else None
+            )
+            existing_enforce_mfa = (
+                existing_password_section.get("password_enforce_mfa_all_accounts")
+                if isinstance(existing_password_section, dict)
+                else None
+            )
+
             combined_password_section.update(workbook_password_response)
             existing_responses["password"] = combined_password_section
 
-        workbook_firewall_response = build_workbook_firewall_response(
-            getattr(self, "workbook_data", None)
-        )
+            password_cap_section = existing_cap.get("password")
+            if isinstance(password_cap_section, dict):
+                password_cap_section = dict(password_cap_section)
+            else:
+                password_cap_section = {}
+
+            cap_fields = combined_password_section.get("policy_cap_fields")
+            if isinstance(cap_fields, list) and cap_fields:
+                password_cap_section["policy_cap_fields"] = list(cap_fields)
+            else:
+                password_cap_section.pop("policy_cap_fields", None)
+
+            cap_context = combined_password_section.get("policy_cap_context")
+            if isinstance(cap_context, dict) and cap_context:
+                password_cap_section["policy_cap_context"] = dict(cap_context)
+            else:
+                password_cap_section.pop("policy_cap_context", None)
+
+            cap_map = combined_password_section.get("policy_cap_map")
+            if isinstance(cap_map, dict) and cap_map:
+                password_cap_section["policy_cap_map"] = dict(cap_map)
+            else:
+                password_cap_section.pop("policy_cap_map", None)
+
+            cap_entries: List[Dict[str, Any]] = []
+            existing_cap_entries = password_cap_section.get("entries")
+            if isinstance(existing_cap_entries, list):
+                for entry in existing_cap_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    domain_value = entry.get("domain") or entry.get("name")
+                    domain = str(domain_value).strip() if domain_value else ""
+                    if not domain:
+                        continue
+                    entry_payload: Dict[str, Any] = {}
+                    stored_values = entry.get("policy_cap_values")
+                    if isinstance(stored_values, dict) and stored_values:
+                        entry_payload["policy_cap_values"] = dict(stored_values)
+                    if entry_payload:
+                        entry_payload["domain"] = domain
+                        cap_entries.append(entry_payload)
+
+            entry_index: Dict[str, Dict[str, Any]] = {
+                entry["domain"]: entry
+                for entry in cap_entries
+                if isinstance(entry, dict) and entry.get("domain")
+            }
+
+            password_entries = combined_password_section.get("entries")
+            if isinstance(password_entries, list):
+                for entry in password_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    domain_value = entry.get("domain") or entry.get("name")
+                    domain = str(domain_value).strip() if domain_value else ""
+                    if not domain:
+                        continue
+                    policy_values = entry.get("policy_cap_values")
+                    if not isinstance(policy_values, dict) or not policy_values:
+                        # fall back to workbook derived values when missing from entry
+                        workbook_values = (
+                            workbook_password_domain_values.get(domain, {})
+                            if isinstance(workbook_password_domain_values, dict)
+                            else {}
+                        )
+                        policy_values = workbook_values.get("policy_cap_values")
+                    if not isinstance(policy_values, dict) or not policy_values:
+                        entry_index.pop(domain, None)
+                        continue
+                    stored_entry = entry_index.get(domain)
+                    if stored_entry is None:
+                        stored_entry = {"domain": domain}
+                        entry_index[domain] = stored_entry
+                    stored_entry["policy_cap_values"] = dict(policy_values)
+
+            if entry_index:
+                password_cap_section["entries"] = [entry_index[key] for key in sorted(entry_index.keys())]
+            else:
+                password_cap_section.pop("entries", None)
+
+            workbook_additional_controls = (
+                workbook_password_response.get("password_additional_controls")
+                if isinstance(workbook_password_response, dict)
+                else None
+            )
+            workbook_enforce_mfa = (
+                workbook_password_response.get("password_enforce_mfa_all_accounts")
+                if isinstance(workbook_password_response, dict)
+                else None
+            )
+
+            def _coalesce_flag(primary: Any, secondary: Any) -> Any:
+                if primary not in (None, ""):
+                    return primary
+                return secondary
+
+            additional_controls_missing = not _is_truthy(
+                _coalesce_flag(existing_additional_controls, workbook_additional_controls)
+            )
+            enforce_mfa_missing = not _is_truthy(
+                _coalesce_flag(existing_enforce_mfa, workbook_enforce_mfa)
+            )
+
+            badpass_cap_map: Dict[str, Any] = {}
+            if isinstance(workbook_password_domain_values, dict):
+                for domain, values in workbook_password_domain_values.items():
+                    if not isinstance(values, dict):
+                        continue
+                    domain_entries: Dict[str, Dict[str, Any]] = {}
+                    if _safe_int(values.get("passwords_cracked")) > 0:
+                        entry = _clone_cap_entry("Weak passwords in use")
+                        if entry:
+                            domain_entries["Weak passwords in use"] = entry
+                    if _is_truthy(values.get("lanman")):
+                        entry = _clone_cap_entry("LANMAN password hashing enabled")
+                        if entry:
+                            domain_entries["LANMAN password hashing enabled"] = entry
+                    if _is_truthy(values.get("no_fgpp")):
+                        entry = _clone_cap_entry("Fine-grained Password Policies not defined")
+                        if entry:
+                            domain_entries["Fine-grained Password Policies not defined"] = entry
+                    if domain_entries:
+                        badpass_cap_map[domain] = domain_entries
+            if additional_controls_missing:
+                entry = _clone_cap_entry("Additional password controls not implemented")
+                if entry:
+                    badpass_cap_map["Additional password controls not implemented"] = entry
+            if enforce_mfa_missing:
+                entry = _clone_cap_entry("MFA not enforced for all accounts")
+                if entry:
+                    badpass_cap_map["MFA not enforced for all accounts"] = entry
+            if badpass_cap_map:
+                password_cap_section["badpass_cap_map"] = badpass_cap_map
+            else:
+                password_cap_section.pop("badpass_cap_map", None)
+
+            if password_cap_section:
+                existing_cap["password"] = password_cap_section
+            else:
+                existing_cap.pop("password", None)
+
+        workbook_firewall_response = build_workbook_firewall_response(workbook_payload)
         if workbook_firewall_response:
             existing_firewall_section = existing_responses.get("firewall")
             if isinstance(existing_firewall_section, dict):
@@ -467,9 +894,83 @@ class Project(models.Model):
             combined_firewall_section.update(workbook_firewall_response)
             existing_responses["firewall"] = combined_firewall_section
 
-        workbook_dns_response = build_workbook_dns_response(
-            getattr(self, "workbook_data", None)
-        )
+        firewall_cap_section = existing_cap.get("firewall")
+        if isinstance(firewall_cap_section, dict):
+            firewall_cap_section = dict(firewall_cap_section)
+        else:
+            firewall_cap_section = {}
+
+        firewall_cap_entries: List[Dict[str, Any]] = []
+        firewall_artifact = artifacts.get("firewall_findings")
+        if isinstance(firewall_artifact, dict):
+            firewall_findings = firewall_artifact.get("findings")
+        else:
+            firewall_findings = None
+
+        def _normalize_firewall_value(value: Any) -> Optional[str]:
+            if value in (None, ""):
+                return None
+            if isinstance(value, str):
+                text = value.strip()
+                return text or None
+            return str(value)
+
+        def _coerce_finding_score(value: Any) -> Optional[Any]:
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return None
+                normalized = text.replace(",", "")
+                try:
+                    return float(normalized)
+                except ValueError:
+                    return text
+            return None
+
+        if isinstance(firewall_findings, list):
+            for entry in firewall_findings:
+                if not isinstance(entry, dict):
+                    continue
+
+                normalized_entry: Dict[str, Any] = {}
+                cap_defaults = _clone_cap_entry(
+                    "Business justification for firewall rules"
+                )
+                if cap_defaults:
+                    normalized_entry.update(cap_defaults)
+
+                for key, value in entry.items():
+                    if key == "score":
+                        score_value = _coerce_finding_score(value)
+                        if score_value is not None:
+                            normalized_entry["finding_score"] = score_value
+                        continue
+
+                    normalized_value = _normalize_firewall_value(value)
+                    if normalized_value is not None:
+                        normalized_entry[key] = normalized_value
+
+                if normalized_entry:
+                    firewall_cap_entries.append(normalized_entry)
+
+        if firewall_cap_entries:
+            firewall_cap_section["firewall_cap_map"] = firewall_cap_entries
+        else:
+            firewall_cap_section.pop("firewall_cap_map", None)
+
+        if firewall_cap_section:
+            existing_cap["firewall"] = firewall_cap_section
+        else:
+            existing_cap.pop("firewall", None)
+
+        if isinstance(firewall_artifact, dict):
+            firewall_artifact.pop("findings", None)
+            if not firewall_artifact.get("vulnerabilities"):
+                artifacts.pop("firewall_findings", None)
+
+        workbook_dns_response = build_workbook_dns_response(workbook_payload)
         if workbook_dns_response:
             existing_dns_section = existing_responses.get("dns")
             if isinstance(existing_dns_section, dict):
@@ -482,38 +983,580 @@ class Project(models.Model):
             combined_dns_section.update(workbook_dns_response)
             existing_responses["dns"] = combined_dns_section
 
-        def _collect_unique_soa_fields(entries: Any) -> List[str]:
-            unique_fields: List[str] = []
-            seen: Set[str] = set()
+        def _collect_domain_soa_fields(entries: Any) -> Dict[str, List[str]]:
+            domain_fields: Dict[str, List[str]] = {}
             if not isinstance(entries, list):
-                return unique_fields
+                return domain_fields
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
                 fields = entry.get("soa_fields")
                 if not isinstance(fields, list):
                     continue
+                domain_value = (
+                    entry.get("domain")
+                    or entry.get("name")
+                    or entry.get("zone")
+                    or entry.get("fqdn")
+                )
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if not domain_text:
+                    continue
+                domain_entry = domain_fields.setdefault(domain_text, [])
+                seen_fields = set(domain_entry)
                 for field in fields:
                     if field is None:
                         continue
                     text = str(field).strip()
-                    if not text or text in seen:
+                    if not text or text in seen_fields:
                         continue
-                    seen.add(text)
-                    unique_fields.append(text)
-            return unique_fields
+                    seen_fields.add(text)
+                    domain_entry.append(text)
+            return domain_fields
 
+        dns_section_created = False
         dns_section = existing_responses.get("dns")
+        if isinstance(dns_section, dict):
+            pass
+        elif isinstance(dns_section, list):
+            dns_section = {"entries": list(dns_section)}
+            existing_responses["dns"] = dns_section
+        else:
+            dns_section = {}
+            existing_responses["dns"] = dns_section
+            dns_section_created = True
+
+        domain_soa_cap_map: Dict[str, Dict[str, str]] = {}
+
         if isinstance(dns_section, dict):
             entries = dns_section.get("entries")
             if isinstance(entries, list):
-                dns_section["unique_soa_fields"] = _collect_unique_soa_fields(entries)
+                domain_soa_fields = _collect_domain_soa_fields(entries)
+                unique_fields: List[str] = []
+                for field_list in domain_soa_fields.values():
+                    for field in field_list:
+                        if field not in unique_fields:
+                            unique_fields.append(field)
+                if unique_fields:
+                    dns_section["unique_soa_fields"] = unique_fields
+                else:
+                    dns_section.pop("unique_soa_fields", None)
+
+                if domain_soa_fields:
+                    cap_map = load_dns_soa_cap_map()
+                    domain_soa_cap_map = {
+                        domain: {
+                            field: cap_map.get(field, "")
+                            for field in fields
+                        }
+                        for domain, fields in domain_soa_fields.items()
+                    }
+                    dns_section["soa_field_cap_map"] = domain_soa_cap_map
+                else:
+                    dns_section.pop("soa_field_cap_map", None)
+                    domain_soa_cap_map = {}
             else:
                 dns_section.pop("unique_soa_fields", None)
+                dns_section.pop("soa_field_cap_map", None)
+                domain_soa_cap_map = {}
 
+            dns_artifact_entries = artifacts.get("dns_issues")
+            dns_cap_map: Dict[str, Dict[str, str]] = {}
+            if isinstance(dns_artifact_entries, list):
+                for artifact_entry in dns_artifact_entries:
+                    if not isinstance(artifact_entry, dict):
+                        continue
+                    domain_value = artifact_entry.get("domain")
+                    domain_text = str(domain_value).strip() if domain_value else ""
+                    if not domain_text:
+                        continue
+                    issues = artifact_entry.get("issues")
+                    if not isinstance(issues, list) or not issues:
+                        continue
+                    domain_map = dns_cap_map.setdefault(domain_text, {})
+                    for issue_entry in issues:
+                        if not isinstance(issue_entry, dict):
+                            continue
+                        issue_text = str(issue_entry.get("issue") or "").strip()
+                        if not issue_text:
+                            continue
+                        cap_text = issue_entry.get("cap")
+                        resolved_cap = (
+                            str(cap_text) if cap_text is not None else ""
+                        )
+                        if (
+                            issue_text
+                            == "One or more SOA fields are outside recommended ranges"
+                        ):
+                            domain_field_map = domain_soa_cap_map.get(domain_text)
+                            if not domain_field_map:
+                                soa_cap_map_section = dns_section.get(
+                                    "soa_field_cap_map", {}
+                                )
+                                if isinstance(soa_cap_map_section, dict):
+                                    potential_map = soa_cap_map_section.get(domain_text)
+                                    if isinstance(potential_map, dict):
+                                        domain_field_map = potential_map
+                            if domain_field_map:
+                                cap_lines: List[str] = []
+                                for field_name, field_cap in domain_field_map.items():
+                                    field_name_text = str(field_name)
+                                    field_cap_text = (
+                                        "" if field_cap is None else str(field_cap)
+                                    )
+                                    cap_lines.append(
+                                        f"{field_name_text} - {field_cap_text}"
+                                    )
+                                if cap_lines:
+                                    resolved_cap = "\n".join(cap_lines)
+                        domain_map[issue_text] = {
+                            "score": 2,
+                            "recommendation": resolved_cap,
+                        }
+            if dns_cap_map:
+                dns_section["dns_cap_map"] = dns_cap_map
+            else:
+                dns_section.pop("dns_cap_map", None)
+
+            dns_cap_section = existing_cap.get("dns")
+            if isinstance(dns_cap_section, dict):
+                dns_cap_section = dict(dns_cap_section)
+            else:
+                dns_cap_section = {}
+
+            soa_cap_map = dns_section.get("soa_field_cap_map")
+            if isinstance(soa_cap_map, dict) and soa_cap_map:
+                dns_cap_section["soa_field_cap_map"] = {
+                    domain: dict(fields)
+                    for domain, fields in soa_cap_map.items()
+                    if isinstance(fields, dict) and fields
+                }
+            else:
+                dns_cap_section.pop("soa_field_cap_map", None)
+
+            dns_cap_values = dns_section.get("dns_cap_map")
+            if isinstance(dns_cap_values, dict) and dns_cap_values:
+                dns_cap_section["dns_cap_map"] = {
+                    domain: dict(issues)
+                    for domain, issues in dns_cap_values.items()
+                    if isinstance(issues, dict) and issues
+                }
+            else:
+                dns_cap_section.pop("dns_cap_map", None)
+
+            if dns_cap_section:
+                existing_cap["dns"] = dns_cap_section
+            else:
+                existing_cap.pop("dns", None)
+
+        if not dns_section:
+            if dns_section_created:
+                existing_responses.pop("dns", None)
+            else:
+                dns_section.pop("unique_soa_fields", None)
+                dns_section.pop("soa_field_cap_map", None)
+                dns_section.pop("dns_cap_map", None)
+
+        osint_section = existing_cap.get("osint")
+        if isinstance(osint_section, dict):
+            osint_section = dict(osint_section)
+        else:
+            osint_section = {}
+
+        osint_cap_map: Dict[str, Dict[str, Any]] = {}
+        if isinstance(workbook_payload, dict):
+            osint_data = workbook_payload.get("osint")
+        else:
+            osint_data = None
+
+        if isinstance(osint_data, dict):
+            total_assets = (
+                _safe_int(osint_data.get("total_ips"))
+                + _safe_int(osint_data.get("total_domains"))
+                + _safe_int(osint_data.get("total_hostnames"))
+            )
+            if total_assets >= 2:
+                entry = _clone_cap_entry("OSINT identified assets")
+                if entry:
+                    osint_cap_map["OSINT identified assets"] = entry
+
+            if _safe_int(osint_data.get("total_buckets")) > 0:
+                entry = _clone_cap_entry("Exposed buckets identified")
+                if entry:
+                    osint_cap_map["Exposed buckets identified"] = entry
+
+            if _safe_int(osint_data.get("total_leaks")) > 0:
+                entry = _clone_cap_entry("Exposed Credentials identified")
+                if entry:
+                    osint_cap_map["Exposed Credentials identified"] = entry
+
+            if _safe_int(osint_data.get("total_squat")) > 0:
+                entry = _clone_cap_entry("Potential domain squatters identified")
+                if entry:
+                    osint_cap_map["Potential domain squatters identified"] = entry
+
+        if osint_cap_map:
+            osint_section["osint_cap_map"] = osint_cap_map
+        else:
+            osint_section.pop("osint_cap_map", None)
+
+        if osint_section:
+            existing_cap["osint"] = osint_section
+        else:
+            existing_cap.pop("osint", None)
+
+        endpoint_section = existing_cap.get("endpoint")
+        if isinstance(endpoint_section, dict):
+            endpoint_section = dict(endpoint_section)
+        else:
+            endpoint_section = {}
+
+        endpoint_cap_map: Dict[str, Dict[str, Any]] = {}
+        if isinstance(workbook_payload, dict):
+            endpoint_data = workbook_payload.get("endpoint")
+        else:
+            endpoint_data = None
+
+        if isinstance(endpoint_data, dict):
+            endpoint_domains = endpoint_data.get("domains")
+        else:
+            endpoint_domains = None
+
+        if isinstance(endpoint_domains, list):
+            for domain_entry in endpoint_domains:
+                if not isinstance(domain_entry, dict):
+                    continue
+
+                domain_value = domain_entry.get("domain") or domain_entry.get("name")
+                domain = str(domain_value).strip() if domain_value else ""
+                if not domain:
+                    continue
+
+                domain_cap_entries: Dict[str, Dict[str, Any]] = {}
+
+                if _safe_int(domain_entry.get("systems_ood")) > 0:
+                    entry = _clone_cap_entry(
+                        "Systems without active up-to-date security software"
+                    )
+                    if entry:
+                        domain_cap_entries[
+                            "Systems without active up-to-date security software"
+                        ] = entry
+
+                if _safe_int(domain_entry.get("open_wifi")) > 0:
+                    entry = _clone_cap_entry("Systems connecting to Open WiFi networks")
+                    if entry:
+                        domain_cap_entries[
+                            "Systems connecting to Open WiFi networks"
+                        ] = entry
+
+                if domain_cap_entries:
+                    endpoint_cap_map[domain] = domain_cap_entries
+
+        if endpoint_cap_map:
+            endpoint_section["endpoint_cap_map"] = endpoint_cap_map
+        else:
+            endpoint_section.pop("endpoint_cap_map", None)
+
+        if endpoint_section:
+            existing_cap["endpoint"] = endpoint_section
+        else:
+            existing_cap.pop("endpoint", None)
+
+        wireless_section = existing_cap.get("wireless")
+        if isinstance(wireless_section, dict):
+            wireless_section = dict(wireless_section)
+        else:
+            wireless_section = {}
+
+        wireless_cap_map: Dict[str, Dict[str, Any]] = {}
+
+        if isinstance(workbook_payload, dict):
+            wireless_data = workbook_payload.get("wireless")
+        else:
+            wireless_data = None
+
+        base_wireless_values = (
+            wireless_data if isinstance(wireless_data, dict) else {}
+        )
+
+        if isinstance(existing_responses.get("wireless"), dict):
+            existing_wireless_section = existing_responses.get("wireless")
+        else:
+            existing_wireless_section = None
+
+        domain_sources: Dict[str, Dict[str, Any]] = {}
+
+        if isinstance(wireless_data, dict):
+            wireless_domains = wireless_data.get("domains")
+        else:
+            wireless_domains = None
+
+        if isinstance(wireless_domains, list):
+            for domain_entry in wireless_domains:
+                if not isinstance(domain_entry, dict):
+                    continue
+                domain_value = domain_entry.get("domain") or domain_entry.get("name")
+                domain = str(domain_value).strip() if domain_value else ""
+                if not domain:
+                    continue
+                domain_sources[domain] = domain_entry
+
+        if not domain_sources and isinstance(existing_wireless_section, dict):
+            for domain in _extract_domains(existing_wireless_section.get("domains_str")):
+                domain_sources.setdefault(domain, {})
+
+        def _resolve_wireless_value(
+            domain_entry: Optional[Dict[str, Any]], key: str
+        ) -> Any:
+            if isinstance(domain_entry, dict):
+                if key in domain_entry and domain_entry[key] is not None:
+                    return domain_entry[key]
+            if key in base_wireless_values:
+                return base_wireless_values.get(key)
+            if isinstance(domain_entry, dict):
+                return domain_entry.get(key)
+            return None
+
+        def _collect_wireless_cap_entries(
+            domain_entry: Optional[Dict[str, Any]]
+        ) -> Dict[str, Dict[str, Any]]:
+            domain_cap_entries: Dict[str, Dict[str, Any]] = {}
+
+            if _safe_int(_resolve_wireless_value(domain_entry, "psk_count")) > 0:
+                entry = _clone_cap_entry("PSK’s in use on wireless networks")
+                if entry:
+                    domain_cap_entries["PSK’s in use on wireless networks"] = entry
+
+            if _safe_int(_resolve_wireless_value(domain_entry, "rogue_count")) > 0:
+                entry = _clone_cap_entry("Potentially Rogue Access Points")
+                if entry:
+                    domain_cap_entries["Potentially Rogue Access Points"] = entry
+
+            wep_values = _resolve_wireless_value(domain_entry, "wep_inuse")
+            if isinstance(wep_values, dict):
+                wep_confirm = wep_values.get("confirm")
+            else:
+                wep_confirm = wep_values
+            if _is_truthy(wep_confirm):
+                entry = _clone_cap_entry("WEP in use on wireless networks")
+                if entry:
+                    domain_cap_entries["WEP in use on wireless networks"] = entry
+
+            if _is_truthy(_resolve_wireless_value(domain_entry, "internal_access")):
+                entry = _clone_cap_entry(
+                    "Open wireless network connected to the Internal network"
+                )
+                if entry:
+                    domain_cap_entries[
+                        "Open wireless network connected to the Internal network"
+                    ] = entry
+
+            if _is_explicit_no(_resolve_wireless_value(domain_entry, "802_1x_used")):
+                entry = _clone_cap_entry(
+                    "802.1x authentication not implemented for wireless networks"
+                )
+                if entry:
+                    domain_cap_entries[
+                        "802.1x authentication not implemented for wireless networks"
+                    ] = entry
+
+            if _is_truthy(_resolve_wireless_value(domain_entry, "weak_psks")):
+                entry = _clone_cap_entry("Weak PSK's in use")
+                if entry:
+                    domain_cap_entries["Weak PSK's in use"] = entry
+
+            return domain_cap_entries
+
+        for domain, domain_entry in domain_sources.items():
+            domain_cap_entries = _collect_wireless_cap_entries(domain_entry)
+            if domain_cap_entries:
+                wireless_cap_map[domain] = domain_cap_entries
+
+        if wireless_cap_map:
+            wireless_section["wireless_cap_map"] = {
+                domain: dict(entries)
+                for domain, entries in sorted(wireless_cap_map.items())
+            }
+        else:
+            global_cap_entries = _collect_wireless_cap_entries(None)
+            if global_cap_entries:
+                wireless_section["wireless_cap_map"] = {
+                    issue: dict(entry)
+                    for issue, entry in sorted(global_cap_entries.items())
+                }
+            else:
+                wireless_section.pop("wireless_cap_map", None)
+
+        if wireless_section:
+            existing_cap["wireless"] = wireless_section
+        else:
+            existing_cap.pop("wireless", None)
+
+        sql_section = existing_cap.get("sql")
+        if isinstance(sql_section, dict):
+            sql_section = dict(sql_section)
+        else:
+            sql_section = {}
+
+        sql_cap_map: Dict[str, Dict[str, Any]] = {}
+        if isinstance(workbook_payload, dict):
+            sql_data = workbook_payload.get("sql")
+        else:
+            sql_data = None
+
+        if isinstance(sql_data, dict):
+            if _safe_int(sql_data.get("total_open")) > 0:
+                entry = _clone_cap_entry("Databases allowing open access")
+                if entry:
+                    sql_cap_map["Databases allowing open access"] = entry
+
+        if sql_cap_map:
+            sql_section["sql_cap_map"] = sql_cap_map
+        else:
+            sql_section.pop("sql_cap_map", None)
+
+        if sql_section:
+            existing_cap["sql"] = sql_section
+        else:
+            existing_cap.pop("sql", None)
+
+        snmp_section = existing_cap.get("snmp")
+        if isinstance(snmp_section, dict):
+            snmp_section = dict(snmp_section)
+        else:
+            snmp_section = {}
+
+        snmp_cap_map: Dict[str, Dict[str, Any]] = {}
+        if isinstance(workbook_payload, dict):
+            snmp_data = workbook_payload.get("snmp")
+        else:
+            snmp_data = None
+
+        if isinstance(snmp_data, dict):
+            if _safe_int(snmp_data.get("total_strings")) > 0:
+                entry = _clone_cap_entry(
+                    "Default SNMP community strings & default credentials in use"
+                )
+                if entry:
+                    snmp_cap_map[
+                        "Default SNMP community strings & default credentials in use"
+                    ] = entry
+
+        if snmp_cap_map:
+            snmp_section["snmp_cap_map"] = snmp_cap_map
+        else:
+            snmp_section.pop("snmp_cap_map", None)
+
+        if snmp_section:
+            existing_cap["snmp"] = snmp_section
+        else:
+            existing_cap.pop("snmp", None)
+
+        web_section = existing_cap.get("web")
+        if isinstance(web_section, dict):
+            web_section = dict(web_section)
+        else:
+            web_section = {}
+
+        web_cap_entries = artifacts.get("web_cap_map")
+        if web_cap_entries is None:
+            web_cap_entries = artifacts.get("web_cap_entries")
+        normalized_web_entries: List[Dict[str, Any]] = []
+        if isinstance(web_cap_entries, list):
+            for entry in web_cap_entries:
+                if not isinstance(entry, dict):
+                    continue
+
+                normalized_entry: Dict[str, Any] = {}
+                for field in ("issue", "hosts", "action", "ecfirst", "severity"):
+                    value = entry.get(field)
+                    if value in (None, ""):
+                        continue
+                    text = str(value).strip()
+                    if text:
+                        normalized_entry[field] = text
+
+                score_value = entry.get("score")
+                if isinstance(score_value, (int, float)):
+                    normalized_entry["score"] = int(score_value)
+                elif isinstance(score_value, str):
+                    score_text = score_value.strip()
+                    if score_text:
+                        normalized_entry["score"] = score_text
+
+                if normalized_entry:
+                    normalized_web_entries.append(normalized_entry)
+
+        if normalized_web_entries:
+            web_section["web_cap_map"] = normalized_web_entries
+        else:
+            web_section.pop("web_cap_map", None)
+        # Clean up any legacy key so stored CAP data remains normalized.
+        web_section.pop("web_cap_entries", None)
+
+        if web_section:
+            existing_cap["web"] = web_section
+        else:
+            existing_cap.pop("web", None)
+
+        web_response_section = existing_responses.get("web")
+        if isinstance(web_response_section, dict):
+            web_response_section.pop("web_cap_entries", None)
+            web_response_section.pop("web_cap_map", None)
+
+        nexpose_section = existing_cap.get("nexpose")
+        if isinstance(nexpose_section, dict):
+            nexpose_section = dict(nexpose_section)
+        else:
+            nexpose_section = {}
+
+        raw_nexpose_entries = artifacts.get("nexpose_cap_map")
+        normalized_nexpose_entries: List[Dict[str, Any]] = []
+        if isinstance(raw_nexpose_entries, list):
+            for entry in raw_nexpose_entries:
+                if not isinstance(entry, dict):
+                    continue
+                normalized_entry: Dict[str, Any] = {}
+                for key in ("systems", "action", "issue", "ecfirst"):
+                    text = _normalize_cap_value(entry.get(key))
+                    if text:
+                        normalized_entry[key] = text
+                score_value = entry.get("score")
+                if score_value is None:
+                    score_value = entry.get("severity")
+                score = coerce_cap_score(score_value)
+                if score is not None:
+                    normalized_entry["score"] = score
+                if normalized_entry:
+                    normalized_nexpose_entries.append(normalized_entry)
+
+        if normalized_nexpose_entries:
+            nexpose_section["nexpose_cap_map"] = normalized_nexpose_entries
+        else:
+            nexpose_section.pop("nexpose_cap_map", None)
+
+        if "distilled" in nexpose_section:
+            nexpose_section["distilled"] = bool(
+                _is_truthy(nexpose_section.get("distilled"))
+            )
+        else:
+            nexpose_section["distilled"] = False
+
+        existing_cap["nexpose"] = nexpose_section
+
+        # CAP data for Burp/Nexpose uploads lives exclusively under ``project.cap``.
+        # Remove the intermediate artifacts so ``project.data_artifacts`` only
+        # contains fields required by reporting templates and views.
+        artifacts.pop("web_cap_map", None)
+        artifacts.pop("web_cap_entries", None)
+        artifacts.pop("nexpose_cap_map", None)
+
+        self.data_artifacts = artifacts
         self.data_responses = existing_responses
+        self.cap = existing_cap
 
-        self.save(update_fields=["data_artifacts", "data_responses"])
+        self.save(update_fields=["data_artifacts", "data_responses", "cap"])
 
 
 class ProjectDataFile(models.Model):

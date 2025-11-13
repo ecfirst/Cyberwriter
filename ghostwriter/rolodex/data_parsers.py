@@ -8,7 +8,7 @@ import io
 import re
 from collections import Counter
 from collections import abc
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from django.apps import apps
 from django.core.files.base import File
@@ -46,6 +46,263 @@ DEFAULT_DNS_RECOMMENDATION_MAP: Dict[str, str] = {
     "The domain does not have an SPF record": "consider implementing a SPF record",
     "The SPF value does not allow mail delivery from all mailservers in the domain": "update the SPF record to include all authorized mail servers",
     "The SPF record contains the overly permissive modifier '+all'": "remove the '+all' modifier",
+}
+
+DEFAULT_DNS_CAP_MAP: Dict[str, str] = {
+    "One or more SOA fields are outside recommended ranges": "Get-SOA $domname",
+    "Less than 2 nameservers exist": "Assign a minimum of 2 nameservers for the domain",
+    "More than 8 nameservers exist": "Limit the number of nameservers to less than 8",
+    "Some nameservers have duplicate addresses": "Ensure all nameserver addresses are unique",
+    "Some nameservers did not respond": "Ensure all nameservers respond to queries",
+    "Some nameservers respond recursive queries": "Configure nameservers to not respond to recursive queries",
+    "Some nameservers do not respond to TCP queries": "Ensure all nameservers respond to TCP queries",
+    "Some nameservers return version numbers": "Configure nameservers to not return version numbers",
+    "Some nameservers provide a differing list of nameservers": "Ensure all nameservers provide the same list of nameservers",
+    "Some nameserver addresses are private": "Ensure all nameserver addresses are public",
+    "Some nameservers do not provide a SOA record for the zone": "Ensure all nameservers provide a SOA record for the zone",
+    "Some nameserver SOAs have differing serial numbers": "Ensure all nameserver SOA serial numbers match",
+    "No MX records exist within the zone": "Implement an MX record and corrisponding mail server",
+    "Only one MX record exists within the zone": "Consider implementing a secondary MX record and corresponding mail server",
+    "MX record resolves to a single IP address": "Consider implementing a secondary mail server and corresponding MX record",
+    "Hostnames referenced by MX records resolve to the same IP address": "Consider implementing a secondary mail server and corresponding MX record",
+    "Some addresses referenced by MX records do not have matching reverse DNS entries": "Create PTR records for MX IP addresses",
+    "Some mailserver IP addresses are private": "Ensure all listed mailserver IP addresses are public",
+    "Some connections to Mailservers port 25 failed": "Ensure all mailservers allow access",
+    "Some mailservers appear to be open relays": "Configure mailservers to not allow open relaying",
+    "This domain does not have DNSSEC records": "Consider implementing DNSSEC",
+    "The DNSKEY does not appear to be valid for the domain": "Ensure a valid DNSKEY record exists",
+    "The domain does not have an SPF record": "Consider implementing a SPF record",
+    "The SPF value does not allow mail delivery from all mailservers in the domain": "Update the SPF record to include all authorized mail servers",
+    "The SPF record contains the overly permissive modifier '+all'": "Remove the '+all' modifier",
+}
+
+DEFAULT_PASSWORD_CAP_MAP: Dict[str, str] = {
+    "max_age": (
+        "Change 'Maximum Age' from {{ max_age }} to == 0 to align with NIST recommendations "
+        "to not force users to arbitrarily change passwords based solely on age"
+    ),
+    "min_age": "Change 'Minimum Age' from {{ min_age }} to >= 1 and < 7",
+    "min_length": "Change 'Minimum Length' from {{ min_length }} to >= 8",
+    "history": "Change 'History' from {{ history }} to >= 10",
+    "lockout_threshold": "Change 'Lockout Threshold' from {{ lockout_threshold }} to > 0 and <= 6",
+    "lockout_duration": "Change 'Lockout Duration' from {{ lockout_duration }} to >= 30 or admin unlock",
+    "lockout_reset": "Change 'Lockout Reset' from {{ lockout_reset }} to >= 30",
+    "complexity_enabled": (
+        "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection controls "
+        "such as blacklists"
+    ),
+}
+
+_CAP_PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
+
+DEFAULT_GENERAL_CAP_MAP: Dict[str, Tuple[str, int]] = {
+    "Weak passwords in use": (
+        "Force all accounts whose password was cracked to change their password. "
+        "Provide training on secure password creation",
+        7,
+    ),
+    "LANMAN password hashing enabled": (
+        "Configure the domain to disable LANMAN password hashing. Force accounts with stored "
+        "LANMAN password hashes to change their password",
+        5,
+    ),
+    "Fine-grained Password Policies not defined": (
+        "Define and assign Fine-grained Password Policies for security groups based on the risk "
+        "associated with an account compromise.\n(Secure Password policy & procedures)",
+        4,
+    ),
+    "Additional password controls not implemented": (
+        "Implement additional password controls as recommended by NIST for blacklisting and/or "
+        "repetitive/sequential characters, which are not available natively in Active Directory\n"
+        "(Secure Password policy & procedures)",
+        4,
+    ),
+    "MFA not enforced for all accounts": (
+        "Enforce MFA for all accounts as recommended by NIST",
+        4,
+    ),
+    "Systems without active up-to-date security software": (
+        "Review the systems identified without active, current security software and remediate as appropriate",
+        5,
+    ),
+    "Systems connecting to Open WiFi networks": (
+        "Review the systems that have connected to Open WiFi networks to ensure appropriate protections are in place",
+        5,
+    ),
+    "Domain Functionality Level less than 2008": (
+        "Upgrade the domain functionality level to 2008 or greater.",
+        5,
+    ),
+    "Number of Disabled Accounts": (
+        "Delete accounts that are no longer needed. Additionally, develop a policy and procedure to delete accounts "
+        "that have remained disabled for 90 or more days.\r(Account Management policy & procedures)",
+        5,
+    ),
+    "Number of 'Generic Accounts'": (
+        "Unique user accounts should always be used to access data and systems; deviations from this must be documented "
+        "including a valid business justification. Additionally, extra security controls should be enforced on any "
+        "shared or generic accounts as appropriate.\r(Account Management policy & procedures)",
+        5,
+    ),
+    "Potentially Inactive Accounts": (
+        "Review the potentially inactive accounts and disable or delete those no longer needed. Additionally, it should be "
+        "recorded why valid account users have not logged into the domain in a timely fashion.\r(Account Management policy "
+        "& procedures)",
+        5,
+    ),
+    "Accounts with Passwords that Never Expire": (
+        "Company policy should force users to change their passwords minimally every 90 days. All groups should follow this "
+        "policy (except service accounts which should typically force or remind administrators to change these account "
+        "passwords every six to twelve months). If service account password expiration dates are handled differently from "
+        "user accounts, company policy must dictate that in writing.\r(Account Management policy & procedures)",
+        5,
+    ),
+    "Accounts with Expired Passwords": (
+        "Review accounts with expired passwords and disable or delete those no longer needed.\r(Account Management policy "
+        "& procedures)",
+        5,
+    ),
+    "Number of Enterprise Admins": (
+        "Members of the Enterprise Admins group should be restricted to no more than 3 accounts.\r(Account Management "
+        "policy & procedures)",
+        5,
+    ),
+    "Number of Domain Admins": (
+        "Members of the Domain Admins group should be restricted to the least number of accounts possible.\r(Account "
+        "Management policy & procedures)",
+        5,
+    ),
+    "Databases allowing open access": (
+        "Review the data contained in databases allowing open access to determine the sensitivity level and thus additional "
+        "security controls.",
+        5,
+    ),
+    "Default SNMP community strings & default credentials in use": (
+        "Configure all systems to use unique credentials, including SNMP community strings",
+        5,
+    ),
+    "OSINT identified assets": (
+        "Review the assets identified to ensure they are known and managed appropriately",
+        1,
+    ),
+    "Exposed buckets identified": (
+        "Review the identified buckets to ensure they are not exposing sensitive information",
+        1,
+    ),
+    "Exposed Credentials identified": (
+        "Review the exposed credentials identified and take appropriate action",
+        1,
+    ),
+    "Potential domain squatters identified": (
+        "Review the domains identified as potentially being used for domain typo-squatting and take appropriate action",
+        1,
+    ),
+    "PSK’s in use on wireless networks": (
+        "Ensure all Pre-Shared Keys (PSK) in use for wireless networks are changed periodically or whenever someone with "
+        "knowledge of the keys leaves the company",
+        3,
+    ),
+    "Weak PSK's in use": (
+        "Change the PSK's to be of sufficient length & entropy; ensure PSK's are not "
+        "based on Company information or dictionary words",
+        4,
+    ),
+    "Potentially Rogue Access Points": (
+        "Investigate the potentially rogue access points identified to ensure they are not connected to the internal network",
+        5,
+    ),
+    "WEP in use on wireless networks": (
+        "Disable WEP and utilize WPA2 at a minimum",
+        9,
+    ),
+    "Open wireless network connected to the Internal network": (
+        "Properly segment the open wireless network from the Internal network",
+        9,
+    ),
+    "802.1x authentication not implemented for wireless networks": (
+        "Review if 802.1x authentication is possible with the existing Access Points in use. If so, transition SSID’s to utilize "
+        "802.1x authentication instead of the PSK’s. If not, investigate replacing the devices",
+        3,
+    ),
+    "Business justification for firewall rules": (
+        "Review all firewall rules to ensure there is a valid business justification; document the business justification and "
+        "network access requirements",
+        5,
+    ),
+}
+
+DEFAULT_PASSWORD_COMPLIANCE_MATRIX: Dict[str, Dict[str, Any]] = {
+    "max_age": {
+        "data_type": "numeric",
+        "rule": {
+            "operator": "any",
+            "rules": [
+                {"operator": "ne", "value": 0},
+                {"operator": "lt", "value": 365},
+            ],
+        },
+    },
+    "min_age": {
+        "data_type": "numeric",
+        "rule": {
+            "operator": "any",
+            "rules": [
+                {"operator": "lt", "value": 1},
+                {"operator": "gt", "value": 7},
+            ],
+        },
+    },
+    "min_length": {
+        "data_type": "numeric",
+        "rule": {"operator": "lt", "value": 8},
+    },
+    "history": {
+        "data_type": "numeric",
+        "rule": {"operator": "lt", "value": 10},
+    },
+    "lockout_threshold": {
+        "data_type": "numeric",
+        "rule": {
+            "operator": "any",
+            "rules": [
+                {"operator": "eq", "value": 0},
+                {"operator": "gt", "value": 6},
+            ],
+        },
+    },
+    "lockout_duration": {
+        "data_type": "numeric",
+        "rule": {
+            "operator": "all",
+            "rules": [
+                {"operator": "gte", "value": 1},
+                {"operator": "lte", "value": 29},
+            ],
+        },
+    },
+    "lockout_reset": {
+        "data_type": "numeric",
+        "rule": {"operator": "lt", "value": 30},
+    },
+    "complexity_enabled": {
+        "data_type": "string",
+        "rule": {
+            "operator": "any",
+            "rules": [
+                {"operator": "eq", "value": "TRUE"},
+                {"operator": "eq", "value": "YES"},
+            ],
+        },
+    },
+}
+
+DEFAULT_DNS_SOA_CAP_MAP: Dict[str, str] = {
+    "serial": "Update to match the 'YYYYMMDDnn' scheme",
+    "expire": "Update to a value between 1209600 to 2419200",
+    "mname": "Update to a value that is an authoritative name server",
+    "minimum": "Update to a value greater than 300",
+    "refresh": "Update to a value between 1200 and 43200 seconds",
+    "retry": "Update to a value less than or equal to half the REFRESH",
 }
 
 DEFAULT_DNS_FINDING_MAP: Dict[str, str] = {
@@ -103,12 +360,14 @@ DNS_IMPACT_MAP: Dict[str, str] = {
 }
 
 
-def _load_dns_mapping(
+def _load_mapping(
     model_name: str,
     value_field: str,
     default_map: Dict[str, str],
+    *,
+    key_field: str = "issue_text",
 ) -> Dict[str, str]:
-    """Return DNS issue mappings from the database, falling back to defaults."""
+    """Return mappings from the database, falling back to defaults."""
 
     try:
         model = apps.get_model("rolodex", model_name)
@@ -116,12 +375,112 @@ def _load_dns_mapping(
         return default_map
 
     try:
-        values = model.objects.all().values_list("issue_text", value_field)
+        values = model.objects.all().values_list(key_field, value_field)
     except (OperationalError, ProgrammingError):  # pragma: no cover - defensive guard
         return default_map
 
     mapping = {issue: text for issue, text in values if issue}
     return mapping or default_map
+
+
+def _default_general_cap_map() -> Dict[str, Dict[str, Any]]:
+    """Return a sanitized copy of the default general CAP mapping."""
+
+    return {
+        issue: {"recommendation": recommendation, "score": score}
+        for issue, (recommendation, score) in DEFAULT_GENERAL_CAP_MAP.items()
+    }
+
+
+def load_general_cap_map() -> Dict[str, Dict[str, Any]]:
+    """Return general CAP mappings from the database or fall back to defaults."""
+
+    try:
+        model = apps.get_model("rolodex", "GeneralCapMapping")
+    except LookupError:
+        return _default_general_cap_map()
+
+    try:
+        entries = model.objects.all().values(
+            "issue_text", "recommendation_text", "score"
+        )
+    except (OperationalError, ProgrammingError):  # pragma: no cover - defensive guard
+        return _default_general_cap_map()
+
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        issue = entry.get("issue_text")
+        if not issue:
+            continue
+        mapping[issue] = {
+            "recommendation": entry.get("recommendation_text", ""),
+            "score": entry.get("score"),
+        }
+
+    return mapping or _default_general_cap_map()
+
+
+def load_dns_soa_cap_map() -> Dict[str, str]:
+    """Return SOA field CAP mappings from the database or fall back to defaults."""
+
+    return _load_mapping(
+        "DNSSOACapMapping",
+        "cap_text",
+        DEFAULT_DNS_SOA_CAP_MAP,
+        key_field="soa_field",
+    )
+
+
+def load_password_cap_map() -> Dict[str, str]:
+    """Return password policy CAP mappings from the database or fall back to defaults."""
+
+    return _load_mapping(
+        "PasswordCapMapping",
+        "cap_text",
+        DEFAULT_PASSWORD_CAP_MAP,
+        key_field="setting",
+    )
+
+
+def _default_password_compliance_matrix() -> Dict[str, Dict[str, Any]]:
+    """Return a sanitized copy of the default password compliance matrix."""
+
+    return {
+        setting: {
+            "data_type": str(definition.get("data_type", "numeric")).lower()
+            if isinstance(definition, dict)
+            else "numeric",
+            "rule": definition.get("rule", {}) if isinstance(definition, dict) else {},
+        }
+        for setting, definition in DEFAULT_PASSWORD_COMPLIANCE_MATRIX.items()
+    }
+
+
+def load_password_compliance_matrix() -> Dict[str, Dict[str, Any]]:
+    """Return password compliance rules from the database or fall back to defaults."""
+
+    try:
+        model = apps.get_model("reporting", "PasswordComplianceMapping")
+    except LookupError:
+        return _default_password_compliance_matrix()
+
+    try:
+        entries = model.objects.all().values("setting", "data_type", "rule")
+    except (OperationalError, ProgrammingError):  # pragma: no cover - defensive guard
+        return _default_password_compliance_matrix()
+
+    matrix: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        setting = entry.get("setting")
+        if not setting:
+            continue
+        data_type = str(entry.get("data_type", "numeric") or "numeric").lower()
+        if data_type not in {"numeric", "string"}:
+            data_type = "numeric"
+        rule = entry.get("rule") if isinstance(entry.get("rule"), (dict, list)) else {}
+        matrix[setting] = {"data_type": data_type, "rule": rule}
+
+    return matrix or _default_password_compliance_matrix()
 
 
 AD_RISK_CONTRIBUTION_PHRASES: Dict[str, str] = {
@@ -336,6 +695,191 @@ def _coerce_int(value: Any) -> Optional[int]:
             return None
 
 
+NEXPOSE_SEVERITY_SCORE_MAP = {
+    "critical": 5,
+    "high": 4,
+    "medium": 3,
+    "moderate": 3,
+    "low": 2,
+    "informational": 1,
+    "info": 1,
+}
+
+
+def coerce_cap_score(value: Any) -> Optional[int]:
+    """Normalize score/severity values into an integer scale."""
+
+    score = _coerce_int(value)
+    if score is not None:
+        return score
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized:
+            return NEXPOSE_SEVERITY_SCORE_MAP.get(normalized)
+    return None
+
+
+def _normalize_cap_text(value: Any) -> str:
+    """Return a normalized string for CAP-style CSV fields."""
+
+    if value in (None, ""):
+        return ""
+    return str(value).strip()
+
+
+def parse_burp_cap_report(file_obj: File) -> List[Dict[str, Any]]:
+    """Parse a ``burp_cap.csv`` upload into structured CAP entries."""
+
+    entries: List[Dict[str, Any]] = []
+    for row in _decode_file(file_obj):
+        entry: Dict[str, Any] = {}
+
+        issue = _normalize_cap_text(_get_case_insensitive(row, "Issue"))
+        hosts = _normalize_cap_text(_get_case_insensitive(row, "Host(s)"))
+        if not hosts:
+            hosts = _normalize_cap_text(_get_case_insensitive(row, "Hosts"))
+        action = _normalize_cap_text(_get_case_insensitive(row, "Action"))
+        ecfirst = _normalize_cap_text(_get_case_insensitive(row, "ecfirst"))
+        severity = _normalize_cap_text(_get_case_insensitive(row, "Sev"))
+        if not severity:
+            severity = _normalize_cap_text(_get_case_insensitive(row, "Severity"))
+        score_value = _coerce_int(_get_case_insensitive(row, "Score"))
+        score_text = _normalize_cap_text(_get_case_insensitive(row, "Score"))
+
+        if issue:
+            entry["issue"] = issue
+        if hosts:
+            entry["hosts"] = hosts
+        if action:
+            entry["action"] = action
+        if ecfirst:
+            entry["ecfirst"] = ecfirst
+        if severity:
+            entry["severity"] = severity
+        if score_value is not None:
+            entry["score"] = score_value
+        elif score_text:
+            entry["score"] = score_text
+
+        if entry:
+            entries.append(entry)
+
+    return entries
+
+
+def parse_nexpose_cap_report(file_obj: File) -> List[Dict[str, Any]]:
+    """Parse a ``nexpose_cap.csv`` upload into structured CAP entries."""
+
+    entries: List[Dict[str, Any]] = []
+    for row in _decode_file(file_obj):
+        systems = _normalize_cap_text(_get_case_insensitive(row, "Systems"))
+        action = _normalize_cap_text(_get_case_insensitive(row, "Action"))
+        score = coerce_cap_score(_get_case_insensitive(row, "Sev"))
+        if score is None:
+            score = coerce_cap_score(_get_case_insensitive(row, "Score"))
+        if score is None:
+            score = coerce_cap_score(_get_case_insensitive(row, "Severity"))
+        issue = _normalize_cap_text(_get_case_insensitive(row, "Issue"))
+        ecfirst = _normalize_cap_text(_get_case_insensitive(row, "ecfirst"))
+
+        entry: Dict[str, Any] = {}
+        if systems:
+            entry["systems"] = systems
+        if action:
+            entry["action"] = action
+        if score is not None:
+            entry["score"] = score
+        if issue:
+            entry["issue"] = issue
+        if ecfirst:
+            entry["ecfirst"] = ecfirst
+
+        if entry:
+            entries.append(entry)
+
+    return entries
+
+
+def _normalize_policy_string(value: Any) -> str:
+    """Return a normalized string representation for password policy values."""
+
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip().upper()
+    return str(value).strip().upper()
+
+
+def _evaluate_compliance_rule(rule: Any, value: Any, data_type: str) -> bool:
+    """Evaluate a compliance rule against ``value`` using the provided ``data_type``."""
+
+    if isinstance(rule, list):
+        return any(_evaluate_compliance_rule(entry, value, data_type) for entry in rule)
+
+    if not isinstance(rule, dict):
+        return False
+
+    operator = str(rule.get("operator", "")).lower()
+
+    if operator in {"any", "or"}:
+        sub_rules = rule.get("rules") or rule.get("conditions") or []
+        return any(
+            _evaluate_compliance_rule(sub_rule, value, data_type)
+            for sub_rule in sub_rules
+            if isinstance(sub_rule, (dict, list))
+        )
+
+    if operator in {"all", "and"}:
+        sub_rules = rule.get("rules") or rule.get("conditions") or []
+        relevant = [
+            sub_rule
+            for sub_rule in sub_rules
+            if isinstance(sub_rule, (dict, list))
+        ]
+        if not relevant:
+            return False
+        return all(
+            _evaluate_compliance_rule(sub_rule, value, data_type)
+            for sub_rule in relevant
+        )
+
+    if value is None:
+        return False
+
+    if data_type == "numeric":
+        try:
+            numeric_value = float(value)
+            comparator = float(rule.get("value"))
+        except (TypeError, ValueError):
+            return False
+
+        if operator in {"lt", "<"}:
+            return numeric_value < comparator
+        if operator in {"lte", "<="}:
+            return numeric_value <= comparator
+        if operator in {"gt", ">"}:
+            return numeric_value > comparator
+        if operator in {"gte", ">="}:
+            return numeric_value >= comparator
+        if operator in {"eq", "=="}:
+            return numeric_value == comparator
+        if operator in {"ne", "!=", "<>"}:
+            return numeric_value != comparator
+        return False
+
+    normalized_value = _normalize_policy_string(value)
+    comparator_text = _normalize_policy_string(rule.get("value"))
+
+    if operator in {"eq", "=="}:
+        return normalized_value == comparator_text
+    if operator in {"ne", "!=", "<>"}:
+        return normalized_value != comparator_text
+
+    return False
+
+
 def _calculate_percentage(numerator: Optional[int], denominator: Optional[int]) -> Optional[float]:
     """Return ``numerator`` / ``denominator`` as a percentage rounded to one decimal place."""
 
@@ -457,15 +1001,20 @@ def _summarize_firewall_vulnerabilities(
 def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     """Parse a dns_report.csv file, returning issue metadata for failed checks."""
 
-    finding_map = _load_dns_mapping(
+    finding_map = _load_mapping(
         "DNSFindingMapping",
         "finding_text",
         DEFAULT_DNS_FINDING_MAP,
     )
-    recommendation_map = _load_dns_mapping(
+    recommendation_map = _load_mapping(
         "DNSRecommendationMapping",
         "recommendation_text",
         DEFAULT_DNS_RECOMMENDATION_MAP,
+    )
+    cap_map = _load_mapping(
+        "DNSCapMapping",
+        "cap_text",
+        DEFAULT_DNS_CAP_MAP,
     )
 
     issues: List[Dict[str, str]] = []
@@ -481,12 +1030,14 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
             continue
         finding = finding_map.get(issue_text, "")
         recommendation = recommendation_map.get(issue_text, "")
+        cap = cap_map.get(issue_text, "")
         impact = DNS_IMPACT_MAP.get(issue_text, "")
         issues.append(
             {
                 "issue": issue_text,
                 "finding": finding,
                 "recommendation": recommendation,
+                "cap": cap,
                 "impact": impact,
             }
         )
@@ -919,6 +1470,148 @@ def _format_plain_list(values: List[str]) -> str:
     return ", ".join(entries[:-1]) + f" and {entries[-1]}"
 
 
+def summarize_password_cap_details(
+    domain_values: Dict[str, Dict[str, Any]]
+) -> Tuple[List[str], Dict[str, Any]]:
+    """Return ordered password CAP fields and associated context values."""
+
+    unique_fields: List[str] = []
+    seen_fields: Set[str] = set()
+    context: Dict[str, Any] = {}
+
+    for domain, values in domain_values.items():
+        if not isinstance(values, dict):
+            continue
+
+        domain_context: Dict[str, Any] = {}
+
+        policy_fields = values.get("policy_cap_fields")
+        policy_values = values.get("policy_cap_values")
+        if isinstance(policy_fields, list) and policy_fields:
+            policy_context: Dict[str, Any] = {}
+            for field in policy_fields:
+                if field not in seen_fields:
+                    seen_fields.add(field)
+                    unique_fields.append(field)
+                field_value = (
+                    policy_values.get(field)
+                    if isinstance(policy_values, dict)
+                    else None
+                )
+                policy_context[field] = field_value
+            if policy_context:
+                domain_context["policy"] = policy_context
+
+        fgpp_fields = values.get("fgpp_cap_fields")
+        fgpp_values = values.get("fgpp_cap_values")
+        if isinstance(fgpp_fields, dict) and fgpp_fields:
+            fgpp_context: Dict[str, Dict[str, Any]] = {}
+            for name, field_list in fgpp_fields.items():
+                if not isinstance(field_list, list) or not field_list:
+                    continue
+                per_policy_context: Dict[str, Any] = {}
+                for field in field_list:
+                    if field not in seen_fields:
+                        seen_fields.add(field)
+                        unique_fields.append(field)
+                    value_map = (
+                        fgpp_values.get(name)
+                        if isinstance(fgpp_values, dict)
+                        else None
+                    )
+                    per_policy_context[field] = (
+                        value_map.get(field) if isinstance(value_map, dict) else None
+                    )
+                if per_policy_context:
+                    fgpp_context[name] = per_policy_context
+            if fgpp_context:
+                domain_context["fgpp"] = fgpp_context
+
+        if domain_context:
+            context[domain] = domain_context
+
+    return unique_fields, context
+
+
+def _stringify_cap_value(value: Any) -> str:
+    """Return a string representation suitable for CAP placeholder substitution."""
+
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _render_cap_template(template: str, values: Dict[str, Any]) -> str:
+    """Render ``template`` by replacing ``{{ key }}`` placeholders with ``values``."""
+
+    if not template:
+        return ""
+
+    def _replace(match: "re.Match[str]") -> str:
+        key = match.group(1)
+        for candidate in (key, key.lower(), key.upper()):
+            if candidate in values:
+                return _stringify_cap_value(values[candidate])
+        return ""
+
+    return _CAP_PLACEHOLDER_PATTERN.sub(_replace, template)
+
+
+def build_password_cap_display_map(
+    context: Dict[str, Any], template_map: Dict[str, str]
+) -> Dict[str, Any]:
+    """Return domain-scoped CAP guidance using ``template_map`` and ``context`` values."""
+
+    domain_map: Dict[str, Any] = {}
+
+    for domain, domain_context in context.items():
+        if not isinstance(domain_context, dict):
+            continue
+
+        domain_entry: Dict[str, Any] = {}
+
+        policy_values = domain_context.get("policy")
+        if isinstance(policy_values, dict) and policy_values:
+            policy_map: Dict[str, str] = {}
+            for field, value in policy_values.items():
+                template = template_map.get(field, "")
+                replacements = {
+                    field: value,
+                    field.lower(): value,
+                    field.upper(): value,
+                }
+                policy_map[field] = _render_cap_template(template, replacements)
+            if policy_map:
+                domain_entry["policy"] = {"score": 4, **policy_map}
+
+        fgpp_values = domain_context.get("fgpp")
+        if isinstance(fgpp_values, dict) and fgpp_values:
+            fgpp_map: Dict[str, Dict[str, str]] = {}
+            for name, fgpp_field_values in fgpp_values.items():
+                if not isinstance(fgpp_field_values, dict) or not fgpp_field_values:
+                    continue
+                per_policy_map: Dict[str, str] = {}
+                for field, value in fgpp_field_values.items():
+                    template = template_map.get(field, "")
+                    replacements = {
+                        field: value,
+                        field.lower(): value,
+                        field.upper(): value,
+                    }
+                    per_policy_map[field] = _render_cap_template(template, replacements)
+                if per_policy_map:
+                    fgpp_map[name] = {"score": 4, **per_policy_map}
+            if fgpp_map:
+                domain_entry["fgpp"] = fgpp_map
+
+        if domain_entry:
+            domain_map[domain] = domain_entry
+
+    return domain_map
+
+
 def _format_integer_value(value: Optional[int]) -> str:
     """Normalize integer-like values to strings while preserving zeroes."""
 
@@ -966,6 +1659,8 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
     web_results: Dict[str, Dict[str, Counter[Tuple[str, str]]]] = {}
+    web_cap_entries: List[Dict[str, Any]] = []
+    nexpose_cap_entries: List[Dict[str, Any]] = []
     ip_results: Dict[str, List[str]] = {
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
@@ -997,6 +1692,14 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                         continue
                     combined_counter = combined_risks.setdefault(severity_key, Counter())
                     combined_counter.update(counter)
+        elif label in {"burp-cap.csv", "burp_cap.csv"}:
+            parsed_cap_entries = parse_burp_cap_report(data_file.file)
+            if parsed_cap_entries:
+                web_cap_entries.extend(parsed_cap_entries)
+        elif label in {"nexpose-cap.csv", "nexpose_cap.csv"}:
+            parsed_nexpose_cap = parse_nexpose_cap_report(data_file.file)
+            if parsed_nexpose_cap:
+                nexpose_cap_entries.extend(parsed_nexpose_cap)
         elif label == "firewall_csv.csv":
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
@@ -1071,6 +1774,12 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 ),
                 **severity_summaries,
             }
+
+    if web_cap_entries:
+        artifacts["web_cap_map"] = web_cap_entries
+
+    if nexpose_cap_entries:
+        artifacts["nexpose_cap_map"] = nexpose_cap_entries
 
     for artifact_key, values in ip_results.items():
         if values:
@@ -1291,58 +2000,41 @@ def build_workbook_password_response(
             fgpp_count = _coerce_int(raw_fgpp)
         return fgpp_count is not None and fgpp_count < 1
 
-    policy_metric_fields = {
-        "history",
-        "max_age",
-        "min_age",
-        "min_length",
-        "lockout_threshold",
-        "lockout_duration",
-        "lockout_reset",
-        "complexity_enabled",
+    compliance_matrix = load_password_compliance_matrix()
+    policy_field_order: List[str] = list(compliance_matrix.keys())
+    policy_fields: Set[str] = set(policy_field_order)
+    numeric_policy_fields: Set[str] = {
+        field
+        for field, definition in compliance_matrix.items()
+        if definition.get("data_type") == "numeric"
     }
 
-    def _coerce_metric_int(entry: Dict[str, Any], key: str) -> Optional[int]:
-        return _coerce_int(entry.get(key))
+    def _normalize_policy_value(entry: Dict[str, Any], key: str) -> Any:
+        value = entry.get(key)
+        if key in numeric_policy_fields:
+            return _coerce_int(value)
+        return _normalize_policy_string(value)
 
-    def _policy_is_bad(entry: Dict[str, Any]) -> bool:
+    def _value_is_non_compliant(setting: str, normalized_value: Any) -> bool:
+        definition = compliance_matrix.get(setting) or {}
+        data_type = definition.get("data_type", "numeric")
+        rule = definition.get("rule")
+        return _evaluate_compliance_rule(rule, normalized_value, data_type)
+
+    def _collect_policy_failures(entry: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(entry, dict):
-            return False
+            return {}
 
-        max_age = _coerce_metric_int(entry, "max_age")
-        if max_age is not None and max_age != 0:
-            return True
+        failures: Dict[str, Any] = {}
 
-        min_age = _coerce_metric_int(entry, "min_age")
-        if min_age is not None and (min_age < 1 or min_age >= 7):
-            return True
+        for setting in policy_field_order:
+            normalized_value = _normalize_policy_value(entry, setting)
+            if setting in numeric_policy_fields and normalized_value is None:
+                continue
+            if _value_is_non_compliant(setting, normalized_value):
+                failures[setting] = normalized_value
 
-        min_length = _coerce_metric_int(entry, "min_length")
-        if min_length is not None and min_length < 8:
-            return True
-
-        history = _coerce_metric_int(entry, "history")
-        if history is not None and history < 10:
-            return True
-
-        lockout_threshold = _coerce_metric_int(entry, "lockout_threshold")
-        if lockout_threshold is not None and (
-            lockout_threshold == 0 or lockout_threshold > 6
-        ):
-            return True
-
-        lockout_duration = _coerce_metric_int(entry, "lockout_duration")
-        if lockout_duration is not None and 1 <= lockout_duration <= 29:
-            return True
-
-        lockout_reset = _coerce_metric_int(entry, "lockout_reset")
-        if lockout_reset is not None and lockout_reset < 30:
-            return True
-
-        if _is_yes(entry.get("complexity_enabled")):
-            return True
-
-        return False
+        return failures
 
     def _iter_fgpp_entries(entry: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
         raw_fgpp = entry.get("fgpp")
@@ -1351,7 +2043,7 @@ def build_workbook_password_response(
                 if isinstance(item, dict):
                     yield item
         elif isinstance(raw_fgpp, dict):
-            if any(key in raw_fgpp for key in policy_metric_fields):
+            if any(key in raw_fgpp for key in policy_fields):
                 yield raw_fgpp
 
     for policy in policies:
@@ -1375,6 +2067,7 @@ def build_workbook_password_response(
             policy_domain_order.append(domain_text)
 
         normalized_entry = entry if isinstance(entry, dict) else {}
+        domain_entry = domain_values.setdefault(domain_text, {})
 
         cracked_value = _coerce_int(normalized_entry.get("passwords_cracked"))
         if cracked_value is not None:
@@ -1382,28 +2075,56 @@ def build_workbook_password_response(
         enabled_value = _coerce_int(normalized_entry.get("enabled_accounts"))
         admin_cracked_value = _normalize_admin_count(normalized_entry)
 
-        policy_is_bad = _policy_is_bad(normalized_entry)
+        policy_failures = _collect_policy_failures(normalized_entry)
+        policy_is_bad = bool(policy_failures)
         if policy_is_bad:
             bad_pass_total += 1
+            policy_field_list = domain_entry.setdefault("policy_cap_fields", [])
+            for field in policy_failures:
+                if field not in policy_field_list:
+                    policy_field_list.append(field)
+            domain_entry.setdefault("policy_cap_values", {}).update(policy_failures)
 
         fgpp_is_bad = False
-        for fgpp_entry in _iter_fgpp_entries(normalized_entry):
-            if _policy_is_bad(fgpp_entry):
-                bad_pass_total += 1
-                fgpp_is_bad = True
+        for index, fgpp_entry in enumerate(
+            _iter_fgpp_entries(normalized_entry), start=1
+        ):
+            fgpp_failures = _collect_policy_failures(fgpp_entry)
+            if not fgpp_failures:
+                continue
+            bad_pass_total += 1
+            fgpp_is_bad = True
+            fgpp_name_value = (
+                fgpp_entry.get("fgpp_name")
+                or fgpp_entry.get("name")
+                or fgpp_entry.get("policy_name")
+            )
+            fgpp_name = str(fgpp_name_value).strip() if fgpp_name_value else ""
+            if not fgpp_name:
+                fgpp_name = f"Policy {index}"
+            fgpp_fields_map = domain_entry.setdefault("fgpp_cap_fields", {})
+            fgpp_field_list = fgpp_fields_map.setdefault(fgpp_name, [])
+            for field in fgpp_failures:
+                if field not in fgpp_field_list:
+                    fgpp_field_list.append(field)
+            fgpp_values_map = domain_entry.setdefault("fgpp_cap_values", {})
+            fgpp_value_entry = fgpp_values_map.setdefault(fgpp_name, {})
+            fgpp_value_entry.update(fgpp_failures)
 
         combined_bad = policy_is_bad or fgpp_is_bad
         if combined_bad or domain_text not in domain_bad_flags:
             domain_bad_flags[domain_text] = domain_bad_flags.get(domain_text, False) or combined_bad
 
-        domain_values[domain_text] = {
-            "passwords_cracked": _format_integer_value(cracked_value),
-            "enabled_accounts": _format_integer_value(enabled_value),
-            "admin_cracked": _format_integer_value(admin_cracked_value),
-            "lanman": _is_yes(normalized_entry.get("lanman_stored")),
-            "no_fgpp": _normalize_fgpp(normalized_entry),
-            "bad_pass": domain_bad_flags.get(domain_text, False),
-        }
+        domain_entry.update(
+            {
+                "passwords_cracked": _format_integer_value(cracked_value),
+                "enabled_accounts": _format_integer_value(enabled_value),
+                "admin_cracked": _format_integer_value(admin_cracked_value),
+                "lanman": _is_yes(normalized_entry.get("lanman_stored")),
+                "no_fgpp": _normalize_fgpp(normalized_entry),
+                "bad_pass": domain_bad_flags.get(domain_text, False),
+            }
+        )
 
     summary_domains: List[str] = []
     for domain in ad_domain_order:
@@ -1413,10 +2134,34 @@ def build_workbook_password_response(
         if domain in domain_values and domain not in summary_domains:
             summary_domains.append(domain)
 
+    policy_cap_fields, policy_cap_context = summarize_password_cap_details(domain_values)
+    password_cap_templates = load_password_cap_map() if policy_cap_fields else {}
+
+    def _inject_cap_details(summary_dict: Dict[str, Any]) -> Dict[str, Any]:
+        if policy_cap_fields:
+            summary_dict["policy_cap_fields"] = list(policy_cap_fields)
+            if policy_cap_context:
+                summary_dict["policy_cap_context"] = policy_cap_context
+                domain_cap_map = build_password_cap_display_map(
+                    policy_cap_context, password_cap_templates
+                )
+                if domain_cap_map:
+                    summary_dict["policy_cap_map"] = domain_cap_map
+                else:
+                    summary_dict.pop("policy_cap_map", None)
+            else:
+                summary_dict.pop("policy_cap_context", None)
+                summary_dict.pop("policy_cap_map", None)
+        else:
+            summary_dict.pop("policy_cap_fields", None)
+            summary_dict.pop("policy_cap_map", None)
+            summary_dict.pop("policy_cap_context", None)
+        return summary_dict
+
     summary: Dict[str, Any] = {"bad_pass_count": bad_pass_total, "total_cracked": total_cracked}
 
     if not summary_domains:
-        return summary, domain_values, summary_domains
+        return _inject_cap_details(summary), domain_values, summary_domains
 
     cracked_counts = [domain_values[domain]["passwords_cracked"] for domain in summary_domains]
     enabled_counts = [domain_values[domain]["enabled_accounts"] for domain in summary_domains]
@@ -1438,7 +2183,7 @@ def build_workbook_password_response(
         }
     )
 
-    return summary, domain_values, summary_domains
+    return _inject_cap_details(summary), domain_values, summary_domains
 
 
 def build_workbook_dns_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:

@@ -39,6 +39,7 @@ from ghostwriter.rolodex.forms_project import (
 )
 from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_ARTIFACT_DEFINITIONS,
+    DEFAULT_GENERAL_CAP_MAP,
     normalize_nexpose_artifact_payload,
     normalize_nexpose_artifacts_map,
 )
@@ -1441,6 +1442,7 @@ class ProjectDataResponsesUpdateTests(TestCase):
                 "issue": "One or more SOA fields are outside recommended ranges",
                 "finding": "configuring DNS records according to best practice",
                 "recommendation": "update SOA fields to follow best practice",
+                "cap": "Get-SOA $domname",
                 "impact": "Incorrect SOA settings can disrupt DNS propagation, caching, and zone transfers, leading to stale or inconsistent domain data.",
             },
         )
@@ -1577,24 +1579,7 @@ class ProjectDataResponsesUpdateTests(TestCase):
         artifacts = self.project.data_artifacts
         self.assertIn("firewall_findings", artifacts)
         findings = artifacts["firewall_findings"]
-        entries = findings["findings"]
-        self.assertEqual(len(entries), 1)
-        finding = entries[0]
-        self.assertEqual(
-            finding,
-            {
-                "risk": "High",
-                "issue": "Blocked traffic review",
-                "devices": "FW-1;FW-2",
-                "solution": "Adjust rule set",
-                "impact": "Service disruption",
-                "details": "Traffic dropped",
-                "reference": "http://example.com",
-                "accepted": "No",
-                "type": "External",
-                "score": 8.5,
-            },
-        )
+        self.assertNotIn("findings", findings)
 
         vulnerabilities = findings["vulnerabilities"]
         self.assertEqual(vulnerabilities["high"]["total_unique"], 1)
@@ -1608,8 +1593,98 @@ class ProjectDataResponsesUpdateTests(TestCase):
                 }
             ],
         )
+
+        firewall_cap = self.project.cap.get("firewall")
+        self.assertIsInstance(firewall_cap, dict)
+        cap_entries = firewall_cap.get("firewall_cap_map")
+        self.assertEqual(len(cap_entries), 1)
+        cap_entry = cap_entries[0]
+        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[
+            "Business justification for firewall rules"
+        ]
+        self.assertEqual(
+            cap_entry,
+            {
+                "recommendation": expected_recommendation,
+                "score": expected_score,
+                "issue": "Blocked traffic review",
+                "devices": "FW-1;FW-2",
+                "solution": "Adjust rule set",
+                "impact": "Service disruption",
+                "details": "Traffic dropped",
+                "reference": "http://example.com",
+                "accepted": "No",
+                "type": "External",
+                "risk": "High",
+                "finding_score": 8.5,
+            },
+        )
         self.assertEqual(vulnerabilities["med"], {"total_unique": 0, "items": []})
         self.assertEqual(vulnerabilities["low"], {"total_unique": 0, "items": []})
+
+    def test_nexpose_cap_upload_sets_cap_map_and_distilled_flag(self):
+        upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+
+        csv_content = "Systems,Action,Sev\napp01,Apply critical patch,4\n"
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "file": SimpleUploadedFile(
+                    "nexpose_cap.csv",
+                    csv_content.encode("utf-8"),
+                    content_type="text/csv",
+                ),
+                "requirement_slug": "required_nexpose_cap_csv",
+                "requirement_label": "nexpose_cap.csv",
+                "requirement_context": "",
+                "description": "",
+                "nexpose_distilled": "1",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
+
+        self.project.refresh_from_db()
+        nexpose_section = self.project.cap.get("nexpose")
+        self.assertIsInstance(nexpose_section, dict)
+        self.assertIn("distilled", nexpose_section)
+        self.assertTrue(nexpose_section["distilled"])
+        self.assertEqual(
+            nexpose_section.get("nexpose_cap_map"),
+            [
+                {
+                    "systems": "app01",
+                    "action": "Apply critical patch",
+                    "score": 4,
+                }
+            ],
+        )
+
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "file": SimpleUploadedFile(
+                    "nexpose_cap.csv",
+                    csv_content.encode("utf-8"),
+                    content_type="text/csv",
+                ),
+                "requirement_slug": "required_nexpose_cap_csv",
+                "requirement_label": "nexpose_cap.csv",
+                "requirement_context": "",
+                "description": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.project.refresh_from_db()
+        nexpose_section = self.project.cap.get("nexpose")
+        self.assertIn("distilled", nexpose_section)
+        self.assertFalse(nexpose_section["distilled"])
 
     def test_external_ip_submission_creates_artifact(self):
         upload_url = reverse("rolodex:project_ip_artifact_upload", kwargs={"pk": self.project.pk})

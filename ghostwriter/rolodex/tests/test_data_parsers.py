@@ -3,7 +3,8 @@
 # Standard Libraries
 import csv
 import io
-from typing import Dict, Iterable
+from typing import Any, Dict, Iterable
+from unittest import mock
 
 # Django Imports
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -15,13 +16,24 @@ from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_ARTIFACT_DEFINITIONS,
     normalize_nexpose_artifact_payload,
     normalize_nexpose_artifacts_map,
+    load_general_cap_map,
+    load_dns_soa_cap_map,
+    load_password_cap_map,
+    load_password_compliance_matrix,
+    build_workbook_password_response,
     parse_dns_report,
+    DEFAULT_GENERAL_CAP_MAP,
 )
 from ghostwriter.rolodex.models import (
+    DNSCapMapping,
+    DNSSOACapMapping,
     DNSFindingMapping,
     DNSRecommendationMapping,
+    GeneralCapMapping,
+    PasswordCapMapping,
     ProjectDataFile,
 )
+from ghostwriter.reporting.models import PasswordComplianceMapping
 
 
 NEXPOSE_HEADERS: Iterable[str] = (
@@ -227,7 +239,7 @@ class NexposeDataParserTests(TestCase):
 
         artifact = self.project.data_artifacts.get("firewall_findings")
         self.assertIsInstance(artifact, dict)
-        self.assertIn("findings", artifact)
+        self.assertNotIn("findings", artifact)
         self.assertIn("vulnerabilities", artifact)
 
         summaries = artifact["vulnerabilities"]
@@ -277,8 +289,19 @@ class NexposeDataParserTests(TestCase):
             ],
         )
 
-        findings = artifact["findings"]
-        self.assertEqual(len(findings), 6)
+        firewall_cap = self.project.cap.get("firewall")
+        self.assertIsInstance(firewall_cap, dict)
+        cap_entries = firewall_cap.get("firewall_cap_map")
+        self.assertIsInstance(cap_entries, list)
+        self.assertEqual(len(cap_entries), 6)
+        first_entry = cap_entries[0]
+        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[
+            "Business justification for firewall rules"
+        ]
+        self.assertEqual(first_entry.get("issue"), "Open management interface")
+        self.assertEqual(first_entry.get("finding_score"), 8.0)
+        self.assertEqual(first_entry.get("recommendation"), expected_recommendation)
+        self.assertEqual(first_entry.get("score"), expected_score)
 
     def test_normalize_web_issue_artifacts(self):
         payload = {
@@ -722,7 +745,12 @@ class NexposeDataParserTests(TestCase):
         }
 
         self.project.workbook_data = workbook_payload
-        self.project.data_responses = {}
+        self.project.data_responses = {
+            "password": {
+                "password_additional_controls": "no",
+                "password_enforce_mfa_all_accounts": "no",
+            }
+        }
         self.project.save(update_fields=["workbook_data", "data_responses"])
 
         self.project.rebuild_data_artifacts()
@@ -747,6 +775,407 @@ class NexposeDataParserTests(TestCase):
             "'legacy.local'",
         )
         self.assertEqual(password_responses.get("bad_pass_count"), 3)
+        self.assertEqual(
+            password_responses.get("policy_cap_fields"),
+            [
+                "max_age",
+                "min_age",
+                "min_length",
+                "history",
+                "lockout_threshold",
+                "lockout_duration",
+                "lockout_reset",
+                "complexity_enabled",
+            ],
+        )
+        expected_cap_map = {
+            "corp.example.com": {
+                "policy": {
+                    "score": 4,
+                    "max_age": (
+                        "Change 'Maximum Age' from 90 to == 0 to align with NIST recommendations "
+                        "to not force users to arbitrarily change passwords based solely on age"
+                    ),
+                    "min_age": "Change 'Minimum Age' from 0 to >= 1 and < 7",
+                    "min_length": "Change 'Minimum Length' from 7 to >= 8",
+                    "history": "Change 'History' from 5 to >= 10",
+                    "lockout_threshold": "Change 'Lockout Threshold' from 8 to > 0 and <= 6",
+                    "lockout_duration": "Change 'Lockout Duration' from 15 to >= 30 or admin unlock",
+                    "lockout_reset": "Change 'Lockout Reset' from 20 to >= 30",
+                    "complexity_enabled": (
+                        "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                        "controls such as blacklists"
+                    ),
+                },
+                "fgpp": {
+                    "ServiceAccounts": {
+                        "score": 4,
+                        "max_age": (
+                            "Change 'Maximum Age' from 365 to == 0 to align with NIST recommendations "
+                            "to not force users to arbitrarily change passwords based solely on age"
+                        ),
+                        "min_age": "Change 'Minimum Age' from 0 to >= 1 and < 7",
+                        "min_length": "Change 'Minimum Length' from 6 to >= 8",
+                        "history": "Change 'History' from 5 to >= 10",
+                        "lockout_threshold": "Change 'Lockout Threshold' from 8 to > 0 and <= 6",
+                        "lockout_duration": "Change 'Lockout Duration' from 10 to >= 30 or admin unlock",
+                        "lockout_reset": "Change 'Lockout Reset' from 10 to >= 30",
+                        "complexity_enabled": (
+                            "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                            "controls such as blacklists"
+                        ),
+                    },
+                    "Tier0Admins": {
+                        "score": 4,
+                        "max_age": (
+                            "Change 'Maximum Age' from 45 to == 0 to align with NIST recommendations "
+                            "to not force users to arbitrarily change passwords based solely on age"
+                        ),
+                        "lockout_reset": "Change 'Lockout Reset' from 15 to >= 30",
+                        "lockout_duration": "Change 'Lockout Duration' from 15 to >= 30 or admin unlock",
+                        "complexity_enabled": (
+                            "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                            "controls such as blacklists"
+                        ),
+                    },
+                },
+            },
+            "lab.example.com": {
+                "policy": {
+                    "score": 4,
+                    "history": "Change 'History' from 8 to >= 10",
+                },
+            },
+        }
+        self.assertEqual(password_responses.get("policy_cap_map"), expected_cap_map)
+        self.assertEqual(
+            password_responses.get("policy_cap_context"),
+            {
+                "corp.example.com": {
+                    "policy": {
+                        "max_age": 90,
+                        "min_age": 0,
+                        "min_length": 7,
+                        "history": 5,
+                        "lockout_threshold": 8,
+                        "lockout_duration": 15,
+                        "lockout_reset": 20,
+                        "complexity_enabled": "TRUE",
+                    },
+                    "fgpp": {
+                        "ServiceAccounts": {
+                            "max_age": 365,
+                            "min_age": 0,
+                            "min_length": 6,
+                            "history": 5,
+                            "lockout_threshold": 8,
+                            "lockout_duration": 10,
+                            "lockout_reset": 10,
+                            "complexity_enabled": "TRUE",
+                        }
+                    },
+                },
+                "lab.example.com": {
+                    "policy": {
+                        "history": 8,
+                    }
+                },
+            },
+        )
+
+        password_entries = password_responses.get("entries")
+        self.assertIsInstance(password_entries, list)
+        corp_entry = next(
+            (entry for entry in password_entries if entry.get("domain") == "corp.example.com"),
+            {},
+        )
+        self.assertEqual(
+            corp_entry.get("bad_policy_fields"),
+            [
+                "max_age",
+                "min_age",
+                "min_length",
+                "history",
+                "lockout_threshold",
+                "lockout_duration",
+                "lockout_reset",
+                "complexity_enabled",
+            ],
+        )
+        self.assertIn("policy_cap_values", corp_entry)
+        self.assertIn("fgpp_bad_fields", corp_entry)
+        self.assertIn("fgpp_cap_values", corp_entry)
+
+        lab_entry = next(
+            (entry for entry in password_entries if entry.get("domain") == "lab.example.com"),
+            {},
+        )
+        self.assertEqual(lab_entry.get("bad_policy_fields"), ["history"])
+
+        password_cap = self.project.cap.get("password")
+        self.assertIsInstance(password_cap, dict)
+        self.assertEqual(
+            password_cap.get("policy_cap_fields"),
+            password_responses.get("policy_cap_fields"),
+        )
+        self.assertEqual(
+            password_cap.get("policy_cap_map"),
+            password_responses.get("policy_cap_map"),
+        )
+        self.assertEqual(
+            password_cap.get("policy_cap_context"),
+            password_responses.get("policy_cap_context"),
+        )
+        expected_badpass_cap_map = {
+            "corp.example.com": {
+                "Weak passwords in use": {
+                    "recommendation": (
+                        "Force all accounts whose password was cracked to change their password. "
+                        "Provide training on secure password creation"
+                    ),
+                    "score": 7,
+                },
+                "LANMAN password hashing enabled": {
+                    "recommendation": (
+                        "Configure the domain to disable LANMAN password hashing. "
+                        "Force accounts with stored LANMAN password hashes to change their password"
+                    ),
+                    "score": 5,
+                },
+            },
+            "legacy.local": {
+                "Weak passwords in use": {
+                    "recommendation": (
+                        "Force all accounts whose password was cracked to change their password. "
+                        "Provide training on secure password creation"
+                    ),
+                    "score": 7,
+                },
+                "Fine-grained Password Policies not defined": {
+                    "recommendation": (
+                        "Define and assign Fine-grained Password Policies for security groups based on the risk "
+                        "associated with an account compromise.\n(Secure Password policy & procedures)"
+                    ),
+                    "score": 4,
+                },
+            },
+            "lab.example.com": {
+                "Weak passwords in use": {
+                    "recommendation": (
+                        "Force all accounts whose password was cracked to change their password. "
+                        "Provide training on secure password creation"
+                    ),
+                    "score": 7,
+                },
+                "LANMAN password hashing enabled": {
+                    "recommendation": (
+                        "Configure the domain to disable LANMAN password hashing. "
+                        "Force accounts with stored LANMAN password hashes to change their password"
+                    ),
+                    "score": 5,
+                },
+            },
+            "Additional password controls not implemented": {
+                "recommendation": (
+                    "Implement additional password controls as recommended by NIST for blacklisting and/or "
+                    "repetitive/sequential characters, which are not available natively in Active Directory\n"
+                    "(Secure Password policy & procedures)"
+                ),
+                "score": 4,
+            },
+            "MFA not enforced for all accounts": {
+                "recommendation": "Enforce MFA for all accounts as recommended by NIST",
+                "score": 4,
+            },
+        }
+        self.assertEqual(password_cap.get("badpass_cap_map"), expected_badpass_cap_map)
+        cap_entries = password_cap.get("entries")
+        self.assertIsInstance(cap_entries, list)
+        corp_cap_entry = next(
+            (entry for entry in cap_entries if entry.get("domain") == "corp.example.com"),
+            {},
+        )
+        self.assertEqual(
+            corp_cap_entry.get("policy_cap_values"),
+            corp_entry.get("policy_cap_values"),
+        )
+        lab_cap_entry = next(
+            (entry for entry in cap_entries if entry.get("domain") == "lab.example.com"),
+            {},
+        )
+        self.assertEqual(
+            lab_cap_entry.get("policy_cap_values"),
+            lab_entry.get("policy_cap_values"),
+        )
+
+    def test_badpass_cap_prefers_existing_response_flags(self):
+        general_cap_map = {
+            issue: {"recommendation": recommendation, "score": score}
+            for issue, (recommendation, score) in DEFAULT_GENERAL_CAP_MAP.items()
+        }
+
+        existing_password_responses = {
+            "password_additional_controls": "no",
+            "password_enforce_mfa_all_accounts": "no",
+        }
+
+        workbook_password_response = {
+            "password_additional_controls": "yes",
+            "password_enforce_mfa_all_accounts": "yes",
+        }
+        workbook_domain_values = {
+            "corp.example.com": {
+                "passwords_cracked": 3,
+                "lanman": False,
+                "no_fgpp": False,
+            }
+        }
+
+        self.project.data_responses = {"password": existing_password_responses}
+        self.project.workbook_data = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["data_responses", "workbook_data", "cap"])
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch("ghostwriter.rolodex.models.build_workbook_ad_response", return_value={}):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_dns_response",
+                    return_value={},
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                        return_value={},
+                    ):
+                        with mock.patch(
+                            "ghostwriter.rolodex.models.build_workbook_password_response",
+                            return_value=(
+                                workbook_password_response,
+                                workbook_domain_values,
+                                [],
+                            ),
+                        ):
+                            with mock.patch(
+                                "ghostwriter.rolodex.models.load_general_cap_map",
+                                return_value=general_cap_map,
+                            ):
+                                self.project.rebuild_data_artifacts()
+
+        self.project.refresh_from_db()
+
+        password_cap = self.project.cap.get("password")
+        self.assertIsInstance(password_cap, dict)
+        badpass_cap_map = password_cap.get("badpass_cap_map")
+        self.assertIsInstance(badpass_cap_map, dict)
+        corp_entries = badpass_cap_map.get("corp.example.com")
+        self.assertIsInstance(corp_entries, dict)
+        self.assertIn("Weak passwords in use", corp_entries)
+        self.assertNotIn("Additional password controls not implemented", corp_entries)
+        self.assertNotIn("MFA not enforced for all accounts", corp_entries)
+        self.assertIn("Additional password controls not implemented", badpass_cap_map)
+        self.assertIn("MFA not enforced for all accounts", badpass_cap_map)
+
+    def test_rebuild_populates_ad_cap_map(self):
+        workbook_payload = {
+            "ad": {
+                "domains": [
+                    {
+                        "domain": "legacy.local",
+                        "functionality_level": "Windows Server 2003",
+                        "total_accounts": 200,
+                        "enabled_accounts": 150,
+                        "generic_accounts": 20,
+                        "inactive_accounts": 20,
+                        "passwords_never_exp": 20,
+                        "exp_passwords": 16,
+                        "domain_admins": 10,
+                        "ent_admins": 3,
+                    },
+                    {
+                        "domain": "modern.local",
+                        "functionality_level": "Windows Server 2019",
+                        "total_accounts": 180,
+                        "enabled_accounts": 175,
+                        "generic_accounts": 4,
+                        "inactive_accounts": 3,
+                        "passwords_never_exp": 2,
+                        "exp_passwords": 1,
+                        "domain_admins": 4,
+                        "ent_admins": 1,
+                    },
+                    {
+                        "domain": "ancient.local",
+                        "functionality_level": "Windows 2000 Mixed",
+                        "total_accounts": 80,
+                        "enabled_accounts": 80,
+                        "generic_accounts": 0,
+                        "inactive_accounts": 0,
+                        "passwords_never_exp": 0,
+                        "exp_passwords": 0,
+                        "domain_admins": 2,
+                        "ent_admins": 1,
+                    },
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch(
+                "ghostwriter.rolodex.models.build_workbook_password_response",
+                return_value=({}, {}, []),
+            ):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                    return_value={},
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_dns_response",
+                        return_value={},
+                    ):
+                        self.project.rebuild_data_artifacts()
+
+        self.project.refresh_from_db()
+
+        ad_cap = self.project.cap.get("ad")
+        self.assertIsInstance(ad_cap, dict)
+        ad_cap_map = ad_cap.get("ad_cap_map")
+        self.assertIsInstance(ad_cap_map, dict)
+
+        def _expected(issue: str) -> Dict[str, Any]:
+            recommendation, score = DEFAULT_GENERAL_CAP_MAP[issue]
+            return {"recommendation": recommendation, "score": score}
+
+        expected_legacy = {
+            "Domain Functionality Level less than 2008": _expected(
+                "Domain Functionality Level less than 2008"
+            ),
+            "Number of Disabled Accounts": _expected("Number of Disabled Accounts"),
+            "Number of 'Generic Accounts'": _expected("Number of 'Generic Accounts'"),
+            "Potentially Inactive Accounts": _expected(
+                "Potentially Inactive Accounts"
+            ),
+            "Accounts with Passwords that Never Expire": _expected(
+                "Accounts with Passwords that Never Expire"
+            ),
+            "Accounts with Expired Passwords": _expected(
+                "Accounts with Expired Passwords"
+            ),
+            "Number of Domain Admins": _expected("Number of Domain Admins"),
+            "Number of Enterprise Admins": _expected("Number of Enterprise Admins"),
+        }
+        self.assertEqual(ad_cap_map.get("legacy.local"), expected_legacy)
+
+        expected_ancient = {
+            "Domain Functionality Level less than 2008": _expected(
+                "Domain Functionality Level less than 2008"
+            )
+        }
+        self.assertEqual(ad_cap_map.get("ancient.local"), expected_ancient)
+        self.assertNotIn("modern.local", ad_cap_map)
 
     def test_firewall_ood_names_populated_from_workbook(self):
         workbook_payload = {
@@ -799,6 +1228,582 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(dns_responses, dict)
         self.assertEqual(dns_responses.get("zone_trans"), 2)
         self.assertEqual(dns_responses.get("existing"), "value")
+
+    def test_dns_soa_cap_map_populated(self):
+        stored_responses = {
+            "dns": {
+                "entries": [
+                    {"domain": "one.example", "soa_fields": ["serial", "refresh"]},
+                    {"domain": "two.example", "soa_fields": ["retry"]},
+                ]
+            }
+        }
+
+        self.project.data_responses = stored_responses
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        dns_responses = self.project.data_responses.get("dns")
+        self.assertIsInstance(dns_responses, dict)
+        expected_soa_cap = {
+            "one.example": {
+                "serial": "Update to match the 'YYYYMMDDnn' scheme",
+                "refresh": "Update to a value between 1200 and 43200 seconds",
+            },
+            "two.example": {
+                "retry": "Update to a value less than or equal to half the REFRESH",
+            },
+        }
+        self.assertEqual(dns_responses.get("soa_field_cap_map"), expected_soa_cap)
+
+        dns_cap = self.project.cap.get("dns")
+        self.assertIsInstance(dns_cap, dict)
+        self.assertEqual(dns_cap.get("soa_field_cap_map"), expected_soa_cap)
+
+    def test_dns_soa_cap_map_uses_database(self):
+        DNSSOACapMapping.objects.update_or_create(
+            soa_field="serial",
+            defaults={"cap_text": "custom serial guidance"},
+        )
+
+        stored_responses = {
+            "dns": {
+                "entries": [
+                    {"domain": "one.example", "soa_fields": ["serial"]},
+                ]
+            }
+        }
+
+        self.project.data_responses = stored_responses
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        dns_responses = self.project.data_responses.get("dns")
+        self.assertIsInstance(dns_responses, dict)
+        expected_override = {"one.example": {"serial": "custom serial guidance"}}
+        self.assertEqual(dns_responses.get("soa_field_cap_map"), expected_override)
+
+        dns_cap = self.project.cap.get("dns")
+        self.assertIsInstance(dns_cap, dict)
+        self.assertEqual(dns_cap.get("soa_field_cap_map"), expected_override)
+
+    def test_dns_cap_map_populated_from_artifacts(self):
+        csv_lines = [
+            "Status,Info",
+            "FAIL,One or more SOA fields are outside recommended ranges",
+            "FAIL,Less than 2 nameservers exist",
+            "FAIL,Some nameservers have duplicate addresses",
+        ]
+        upload = SimpleUploadedFile(
+            "dns_report.csv",
+            "\n".join(csv_lines).encode("utf-8"),
+            content_type="text/csv",
+        )
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=upload,
+            requirement_label="dns_report.csv",
+            requirement_context="one.example",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=data_file.pk).delete())
+
+        self.project.data_responses = {
+            "dns": {
+                "entries": [
+                    {
+                        "domain": "one.example",
+                        "soa_fields": ["serial", "refresh"],
+                    }
+                ]
+            }
+        }
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        dns_responses = self.project.data_responses.get("dns")
+        self.assertIsInstance(dns_responses, dict)
+        expected_dns_cap = {
+            "one.example": {
+                "One or more SOA fields are outside recommended ranges": {
+                    "score": 2,
+                    "recommendation": (
+                        "serial - Update to match the 'YYYYMMDDnn' scheme\n"
+                        "refresh - Update to a value between 1200 and 43200 seconds"
+                    ),
+                },
+                "Less than 2 nameservers exist": {
+                    "score": 2,
+                    "recommendation": "Assign a minimum of 2 nameservers for the domain",
+                },
+                "Some nameservers have duplicate addresses": {
+                    "score": 2,
+                    "recommendation": "Ensure all nameserver addresses are unique",
+                },
+            }
+        }
+        self.assertEqual(dns_responses.get("dns_cap_map"), expected_dns_cap)
+
+        dns_cap = self.project.cap.get("dns")
+        self.assertIsInstance(dns_cap, dict)
+        self.assertEqual(dns_cap.get("dns_cap_map"), expected_dns_cap)
+        self.assertEqual(
+            dns_cap.get("soa_field_cap_map"),
+            dns_responses.get("soa_field_cap_map"),
+        )
+
+    def test_dns_cap_map_added_when_dns_section_missing(self):
+        csv_lines = [
+            "Status,Info",
+            "FAIL,Less than 2 nameservers exist",
+        ]
+        upload = SimpleUploadedFile(
+            "dns_missing_section.csv",
+            "\n".join(csv_lines).encode("utf-8"),
+            content_type="text/csv",
+        )
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=upload,
+            requirement_label="dns_missing_section.csv",
+            requirement_context="missing.example",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=data_file.pk).delete())
+
+        self.project.data_responses = {}
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        dns_responses = self.project.data_responses.get("dns")
+        self.assertIsInstance(dns_responses, dict)
+        expected_missing = {
+            "dns_cap_map": {
+                "missing.example": {
+                    "Less than 2 nameservers exist": {
+                        "score": 2,
+                        "recommendation": "Assign a minimum of 2 nameservers for the domain",
+                    },
+                }
+            }
+        }
+        self.assertEqual(dns_responses, expected_missing)
+
+        dns_cap = self.project.cap.get("dns")
+        self.assertIsInstance(dns_cap, dict)
+        self.assertEqual(dns_cap.get("dns_cap_map"), expected_missing["dns_cap_map"])
+
+    def test_osint_cap_map_populated_from_workbook(self):
+        workbook_payload = {
+            "osint": {
+                "total_ips": 1,
+                "total_domains": 1,
+                "total_hostnames": 0,
+                "total_buckets": 2,
+                "total_leaks": 3,
+                "total_squat": 4,
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_osint_map = {
+            "OSINT identified assets": general_map.get("OSINT identified assets"),
+            "Exposed buckets identified": general_map.get("Exposed buckets identified"),
+            "Exposed Credentials identified": general_map.get("Exposed Credentials identified"),
+            "Potential domain squatters identified": general_map.get("Potential domain squatters identified"),
+        }
+
+        osint_cap = self.project.cap.get("osint")
+        self.assertIsInstance(osint_cap, dict)
+        self.assertEqual(osint_cap.get("osint_cap_map"), expected_osint_map)
+
+    def test_osint_cap_map_removed_when_conditions_not_met(self):
+        general_map = load_general_cap_map()
+        existing_cap = {
+            "osint": {
+                "osint_cap_map": {
+                    "OSINT identified assets": general_map.get("OSINT identified assets"),
+                }
+            }
+        }
+
+        workbook_payload = {
+            "osint": {
+                "total_ips": 0,
+                "total_domains": 0,
+                "total_hostnames": 0,
+                "total_buckets": 0,
+                "total_leaks": 0,
+                "total_squat": 0,
+            }
+        }
+
+        self.project.cap = existing_cap
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("osint", self.project.cap)
+
+    def test_endpoint_cap_map_populated_from_workbook(self):
+        workbook_payload = {
+            "endpoint": {
+                "domains": [
+                    {"domain": "corp.example.com", "systems_ood": 3, "open_wifi": 0},
+                    {"domain": "lab.example.com", "systems_ood": 0, "open_wifi": 4},
+                    {"domain": "legacy.local", "systems_ood": 0, "open_wifi": 0},
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_endpoint_map = {
+            "corp.example.com": {
+                "Systems without active up-to-date security software": general_map.get(
+                    "Systems without active up-to-date security software"
+                ),
+            },
+            "lab.example.com": {
+                "Systems connecting to Open WiFi networks": general_map.get(
+                    "Systems connecting to Open WiFi networks"
+                ),
+            },
+        }
+
+        endpoint_cap = self.project.cap.get("endpoint")
+        self.assertIsInstance(endpoint_cap, dict)
+        self.assertEqual(endpoint_cap.get("endpoint_cap_map"), expected_endpoint_map)
+
+    def test_endpoint_cap_map_removed_when_conditions_not_met(self):
+        general_map = load_general_cap_map()
+        existing_cap = {
+            "endpoint": {
+                "endpoint_cap_map": {
+                    "corp.example.com": {
+                        "Systems without active up-to-date security software": general_map.get(
+                            "Systems without active up-to-date security software"
+                        )
+                    }
+                }
+            }
+        }
+
+        workbook_payload = {
+            "endpoint": {"domains": [{"domain": "corp.example.com", "systems_ood": 0, "open_wifi": 0}]}
+        }
+
+        self.project.cap = existing_cap
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("endpoint", self.project.cap)
+
+    def test_wireless_cap_map_populated_from_workbook(self):
+        workbook_payload = {
+            "wireless": {
+                "domains": [
+                    {
+                        "domain": "corp.example.com",
+                        "psk_count": 4,
+                        "rogue_count": 0,
+                        "wep_inuse": {"confirm": "yes"},
+                        "internal_access": "yes",
+                        "802_1x_used": "no",
+                        "weak_psks": "yes",
+                    },
+                    {
+                        "domain": "lab.example.com",
+                        "psk_count": 0,
+                        "rogue_count": 2,
+                        "wep_inuse": {"confirm": "no"},
+                        "internal_access": "no",
+                        "802_1x_used": "yes",
+                        "weak_psks": "no",
+                    },
+                ]
+            }
+        }
+
+        self.project.cap = {}
+        self.project.data_responses = {}
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["cap", "data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_wireless_map = {
+            "corp.example.com": {
+                "PSK’s in use on wireless networks": general_map.get(
+                    "PSK’s in use on wireless networks"
+                ),
+                "WEP in use on wireless networks": general_map.get(
+                    "WEP in use on wireless networks"
+                ),
+                "Open wireless network connected to the Internal network": general_map.get(
+                    "Open wireless network connected to the Internal network"
+                ),
+                "802.1x authentication not implemented for wireless networks": general_map.get(
+                    "802.1x authentication not implemented for wireless networks"
+                ),
+                "Weak PSK's in use": general_map.get("Weak PSK's in use"),
+            },
+            "lab.example.com": {
+                "Potentially Rogue Access Points": general_map.get(
+                    "Potentially Rogue Access Points"
+                )
+            },
+        }
+
+        wireless_cap = self.project.cap.get("wireless")
+        self.assertIsInstance(wireless_cap, dict)
+        self.assertEqual(wireless_cap.get("wireless_cap_map"), expected_wireless_map)
+
+    def test_wireless_cap_map_without_domains(self):
+        workbook_payload = {
+            "wireless": {
+                "psk_count": 2,
+                "rogue_count": 0,
+                "wep_inuse": {"confirm": "yes"},
+                "internal_access": "no",
+                "802_1x_used": "no",
+                "weak_psks": "yes",
+            }
+        }
+
+        self.project.cap = {}
+        self.project.data_responses = {}
+        self.project.workbook_data = workbook_payload
+        self.project.save(update_fields=["cap", "data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_wireless_map = {
+            "PSK’s in use on wireless networks": general_map.get(
+                "PSK’s in use on wireless networks"
+            ),
+            "WEP in use on wireless networks": general_map.get(
+                "WEP in use on wireless networks"
+            ),
+            "802.1x authentication not implemented for wireless networks": general_map.get(
+                "802.1x authentication not implemented for wireless networks"
+            ),
+            "Weak PSK's in use": general_map.get("Weak PSK's in use"),
+        }
+
+        wireless_cap = self.project.cap.get("wireless")
+        self.assertIsInstance(wireless_cap, dict)
+        self.assertEqual(wireless_cap.get("wireless_cap_map"), expected_wireless_map)
+
+    def test_wireless_cap_map_removed_when_conditions_not_met(self):
+        general_map = load_general_cap_map()
+        existing_cap = {
+            "wireless": {
+                "wireless_cap_map": {
+                    "corp.example.com": {
+                        "PSK’s in use on wireless networks": general_map.get(
+                            "PSK’s in use on wireless networks"
+                        )
+                    }
+                }
+            }
+        }
+
+        workbook_payload = {
+            "wireless": {
+                "domains": [
+                    {
+                        "domain": "corp.example.com",
+                        "psk_count": 0,
+                        "rogue_count": 0,
+                        "wep_inuse": {"confirm": "no"},
+                        "internal_access": "no",
+                        "802_1x_used": "yes",
+                        "weak_psks": "no",
+                    }
+                ]
+            }
+        }
+
+        self.project.cap = existing_cap
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("wireless", self.project.cap)
+
+    def test_sql_cap_map_populated_from_workbook(self):
+        workbook_payload = {"sql": {"total_open": 3}}
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_sql_map = {
+            "Databases allowing open access": general_map.get(
+                "Databases allowing open access"
+            )
+        }
+
+        sql_cap = self.project.cap.get("sql")
+        self.assertIsInstance(sql_cap, dict)
+        self.assertEqual(sql_cap.get("sql_cap_map"), expected_sql_map)
+
+    def test_sql_cap_map_removed_when_conditions_not_met(self):
+        general_map = load_general_cap_map()
+        existing_cap = {
+            "sql": {
+                "sql_cap_map": {
+                    "Databases allowing open access": general_map.get(
+                        "Databases allowing open access"
+                    )
+                }
+            }
+        }
+
+        workbook_payload = {"sql": {"total_open": 0}}
+
+        self.project.cap = existing_cap
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("sql", self.project.cap)
+
+    def test_snmp_cap_map_populated_from_workbook(self):
+        workbook_payload = {"snmp": {"total_strings": 2}}
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        general_map = load_general_cap_map()
+        expected_snmp_map = {
+            "Default SNMP community strings & default credentials in use": general_map.get(
+                "Default SNMP community strings & default credentials in use"
+            )
+        }
+
+        snmp_cap = self.project.cap.get("snmp")
+        self.assertIsInstance(snmp_cap, dict)
+        self.assertEqual(snmp_cap.get("snmp_cap_map"), expected_snmp_map)
+
+    def test_snmp_cap_map_removed_when_conditions_not_met(self):
+        general_map = load_general_cap_map()
+        existing_cap = {
+            "snmp": {
+                "snmp_cap_map": {
+                    "Default SNMP community strings & default credentials in use": general_map.get(
+                        "Default SNMP community strings & default credentials in use"
+                    )
+                }
+            }
+        }
+
+        workbook_payload = {"snmp": {"total_strings": 0}}
+
+        self.project.cap = existing_cap
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("snmp", self.project.cap)
+
+    def test_password_cap_map_uses_database(self):
+        PasswordCapMapping.objects.update_or_create(
+            setting="max_age",
+            defaults={"cap_text": "custom max age guidance"},
+        )
+
+        workbook_payload = {
+            "password": {
+                "policies": [
+                    {
+                        "domain_name": "corp.example.com",
+                        "passwords_cracked": 2,
+                        "enabled_accounts": 20,
+                        "history": 5,
+                        "max_age": 90,
+                        "min_age": 0,
+                        "min_length": 6,
+                        "lockout_threshold": 8,
+                        "lockout_duration": 10,
+                        "lockout_reset": 15,
+                        "complexity_enabled": "yes",
+                    }
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        password_responses = self.project.data_responses.get("password")
+        policy_cap_map = password_responses.get("policy_cap_map", {})
+        self.assertEqual(
+            policy_cap_map.get("corp.example.com", {})
+            .get("policy", {})
+            .get("max_age"),
+            "custom max age guidance",
+        )
 
     def test_nexpose_artifacts_present_without_uploads(self):
         self.project.rebuild_data_artifacts()
@@ -867,6 +1872,118 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(len(low_summary["items"]), 3)
         self.assertEqual(low_summary["items"][0]["issue"], "Missing X-Frame-Options header")
 
+    def test_burp_cap_upload_populates_web_cap_map(self):
+        csv_lines = [
+            "Issue,Host(s),Action,ecfirst,Sev,Score",
+            "Expired TLS Certificate,portal.example.com,Renew the TLS certificate,Yes,High,5",
+            "Missing Security Headers,,Add CSP and HSTS,No,Medium,3",
+            ",,,,",
+        ]
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "burp_cap.csv",
+                "\n".join(csv_lines).encode("utf-8"),
+                content_type="text/csv",
+            ),
+            requirement_label="burp_cap.csv",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        web_section = self.project.cap.get("web")
+        self.assertIsInstance(web_section, dict)
+        self.assertEqual(
+            web_section.get("web_cap_map"),
+            [
+                {
+                    "issue": "Expired TLS Certificate",
+                    "hosts": "portal.example.com",
+                    "action": "Renew the TLS certificate",
+                    "ecfirst": "Yes",
+                    "severity": "High",
+                    "score": 5,
+                },
+                {
+                    "issue": "Missing Security Headers",
+                    "action": "Add CSP and HSTS",
+                    "ecfirst": "No",
+                    "severity": "Medium",
+                    "score": 3,
+                },
+            ],
+        )
+
+        artifacts = self.project.data_artifacts
+        self.assertIsInstance(artifacts, dict)
+        self.assertNotIn("web_cap_map", artifacts)
+        self.assertNotIn("web_cap_entries", artifacts)
+
+        web_response = self.project.data_responses.get("web")
+        if isinstance(web_response, dict):
+            self.assertNotIn("web_cap_map", web_response)
+            self.assertNotIn("web_cap_entries", web_response)
+
+    def test_nexpose_cap_upload_populates_cap_map(self):
+        csv_lines = [
+            "Systems,Action,Sev,Issue,ecfirst",
+            "db01.example.com,Patch OpenSSL,5,SSL Certificate Expired,Yes",
+            "web-tier,Restrict Access,3,,",
+        ]
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "nexpose_cap.csv",
+                "\n".join(csv_lines).encode("utf-8"),
+                content_type="text/csv",
+            ),
+            requirement_label="nexpose_cap.csv",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        nexpose_section = self.project.cap.get("nexpose")
+        self.assertIsInstance(nexpose_section, dict)
+        self.assertEqual(
+            nexpose_section.get("nexpose_cap_map"),
+            [
+                {
+                    "systems": "db01.example.com",
+                    "action": "Patch OpenSSL",
+                    "score": 5,
+                    "issue": "SSL Certificate Expired",
+                    "ecfirst": "Yes",
+                },
+                {
+                    "systems": "web-tier",
+                    "action": "Restrict Access",
+                    "score": 3,
+                },
+            ],
+        )
+
+        artifacts = self.project.data_artifacts
+        self.assertIsInstance(artifacts, dict)
+        self.assertNotIn("nexpose_cap_map", artifacts)
+
+    def test_nexpose_cap_section_includes_default_distilled_flag(self):
+        self.project.cap = {}
+        self.project.save(update_fields=["cap"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        nexpose_section = self.project.cap.get("nexpose")
+        self.assertIsInstance(nexpose_section, dict)
+        self.assertIn("distilled", nexpose_section)
+        self.assertFalse(nexpose_section["distilled"])
+
 
 class DNSDataParserTests(TestCase):
     """Validate DNS CSV parsing behaviour."""
@@ -880,6 +1997,10 @@ class DNSDataParserTests(TestCase):
         DNSRecommendationMapping.objects.create(
             issue_text=issue_text,
             recommendation_text="custom recommendation language",
+        )
+        DNSCapMapping.objects.create(
+            issue_text=issue_text,
+            cap_text="custom cap language",
         )
 
         upload = SimpleUploadedFile(
@@ -897,6 +2018,126 @@ class DNSDataParserTests(TestCase):
                 "issue": issue_text,
                 "finding": "custom finding language",
                 "recommendation": "custom recommendation language",
+                "cap": "custom cap language",
                 "impact": "",
             },
         )
+
+    def test_load_general_cap_map_prefers_database(self):
+        mapping = load_general_cap_map()
+        weak_passwords = mapping.get("Weak passwords in use")
+        self.assertIsInstance(weak_passwords, dict)
+        self.assertEqual(weak_passwords.get("score"), 7)
+        self.assertIn("Force all accounts whose password was cracked", weak_passwords.get("recommendation", ""))
+
+        GeneralCapMapping.objects.update_or_create(
+            issue_text="Weak passwords in use",
+            defaults={
+                "recommendation_text": "custom weak password guidance",
+                "score": 8,
+            },
+        )
+
+        updated_mapping = load_general_cap_map()
+        updated = updated_mapping.get("Weak passwords in use")
+        self.assertIsInstance(updated, dict)
+        self.assertEqual(updated.get("recommendation"), "custom weak password guidance")
+        self.assertEqual(updated.get("score"), 8)
+
+    def test_load_dns_soa_cap_map_prefers_database(self):
+        mapping = load_dns_soa_cap_map()
+        self.assertEqual(
+            mapping.get("serial"),
+            "Update to match the 'YYYYMMDDnn' scheme",
+        )
+
+        DNSSOACapMapping.objects.update_or_create(
+            soa_field="serial",
+            defaults={"cap_text": "custom serial guidance"},
+        )
+
+        updated_mapping = load_dns_soa_cap_map()
+        self.assertEqual(updated_mapping.get("serial"), "custom serial guidance")
+
+    def test_load_password_cap_map_prefers_database(self):
+        mapping = load_password_cap_map()
+        self.assertEqual(
+            mapping.get("max_age"),
+            "Change 'Maximum Age' from {{ max_age }} to == 0 to align with NIST recommendations "
+            "to not force users to arbitrarily change passwords based solely on age",
+        )
+
+        PasswordCapMapping.objects.update_or_create(
+            setting="max_age",
+            defaults={"cap_text": "custom max age guidance"},
+        )
+
+        updated_mapping = load_password_cap_map()
+        self.assertEqual(updated_mapping.get("max_age"), "custom max age guidance")
+
+    def test_load_password_compliance_matrix_prefers_database(self):
+        matrix = load_password_compliance_matrix()
+        self.assertEqual(matrix.get("max_age", {}).get("data_type"), "numeric")
+        self.assertEqual(matrix.get("complexity_enabled", {}).get("data_type"), "string")
+
+        PasswordComplianceMapping.objects.update_or_create(
+            setting="max_age",
+            defaults={
+                "data_type": "numeric",
+                "rule": {"operator": "lt", "value": 30},
+            },
+        )
+
+        updated_matrix = load_password_compliance_matrix()
+        self.assertEqual(
+            updated_matrix.get("max_age", {}).get("rule", {}).get("value"),
+            30,
+        )
+
+    def test_password_compliance_matrix_override_adjusts_failures(self):
+        workbook_payload = {
+            "password": {
+                "policies": [
+                    {
+                        "domain_name": "corp.example.com",
+                        "passwords_cracked": 5,
+                        "enabled_accounts": 100,
+                        "admin_cracked": {"confirm": "Yes", "count": 1},
+                        "max_age": 90,
+                        "min_age": 0,
+                        "min_length": 7,
+                        "history": 5,
+                        "lockout_threshold": 8,
+                        "lockout_duration": 10,
+                        "lockout_reset": 20,
+                        "complexity_enabled": "TRUE",
+                    }
+                ]
+            }
+        }
+
+        _summary, domain_values, _domains = build_workbook_password_response(
+            workbook_payload
+        )
+        corp_entry = domain_values.get("corp.example.com")
+        self.assertIsInstance(corp_entry, dict)
+        self.assertIn("max_age", corp_entry.get("policy_cap_fields", []))
+        self.assertEqual(
+            corp_entry.get("policy_cap_values", {}).get("max_age"),
+            90,
+        )
+
+        PasswordComplianceMapping.objects.update_or_create(
+            setting="max_age",
+            defaults={
+                "data_type": "numeric",
+                "rule": {"operator": "lt", "value": 30},
+            },
+        )
+
+        _summary, updated_domain_values, _domains = build_workbook_password_response(
+            workbook_payload
+        )
+        updated_entry = updated_domain_values.get("corp.example.com")
+        self.assertIsInstance(updated_entry, dict)
+        self.assertNotIn("max_age", updated_entry.get("policy_cap_fields", []))

@@ -383,6 +383,117 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(password_summary["no_fgpp_string"], "'lab.example.com'")
         self.assertEqual(password_summary["bad_pass_count"], 2)
         self.assertEqual(password_summary["total_cracked"], 8464)
+        self.assertEqual(
+            password_summary.get("policy_cap_fields"),
+            [
+                "max_age",
+                "min_age",
+                "min_length",
+                "history",
+                "lockout_threshold",
+                "lockout_duration",
+                "lockout_reset",
+                "complexity_enabled",
+            ],
+        )
+        expected_cap_map = {
+            "corp.example.com": {
+                "policy": {
+                    "score": 4,
+                    "max_age": (
+                        "Change 'Maximum Age' from 90 to == 0 to align with NIST recommendations "
+                        "to not force users to arbitrarily change passwords based solely on age"
+                    ),
+                    "min_age": "Change 'Minimum Age' from 0 to >= 1 and < 7",
+                    "min_length": "Change 'Minimum Length' from 7 to >= 8",
+                    "history": "Change 'History' from 6 to >= 10",
+                    "lockout_threshold": "Change 'Lockout Threshold' from 8 to > 0 and <= 6",
+                    "lockout_duration": "Change 'Lockout Duration' from 15 to >= 30 or admin unlock",
+                    "lockout_reset": "Change 'Lockout Reset' from 20 to >= 30",
+                    "complexity_enabled": (
+                        "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                        "controls such as blacklists"
+                    ),
+                },
+                "fgpp": {
+                    "ServiceAccounts": {
+                        "score": 4,
+                        "max_age": (
+                            "Change 'Maximum Age' from 365 to == 0 to align with NIST recommendations "
+                            "to not force users to arbitrarily change passwords based solely on age"
+                        ),
+                        "min_age": "Change 'Minimum Age' from 0 to >= 1 and < 7",
+                        "min_length": "Change 'Minimum Length' from 6 to >= 8",
+                        "history": "Change 'History' from 5 to >= 10",
+                        "lockout_threshold": "Change 'Lockout Threshold' from 8 to > 0 and <= 6",
+                        "lockout_duration": "Change 'Lockout Duration' from 10 to >= 30 or admin unlock",
+                        "lockout_reset": "Change 'Lockout Reset' from 10 to >= 30",
+                        "complexity_enabled": (
+                            "Change 'Complexity Required' from TRUE to FALSE and implement additional password selection "
+                            "controls such as blacklists"
+                        ),
+                    }
+                },
+            },
+            "lab.example.com": {
+                "policy": {
+                    "score": 4,
+                    "history": "Change 'History' from 15 to >= 10",
+                },
+            },
+        }
+        self.assertEqual(password_summary.get("policy_cap_map"), expected_cap_map)
+        self.assertEqual(
+            password_summary.get("policy_cap_context"),
+            {
+                "corp.example.com": {
+                    "policy": {
+                        "max_age": 90,
+                        "min_age": 0,
+                        "min_length": 7,
+                        "history": 6,
+                        "lockout_threshold": 8,
+                        "lockout_duration": 15,
+                        "lockout_reset": 20,
+                        "complexity_enabled": "TRUE",
+                    },
+                    "fgpp": {
+                        "ServiceAccounts": {
+                            "max_age": 365,
+                            "min_age": 0,
+                            "min_length": 6,
+                            "history": 5,
+                            "lockout_threshold": 8,
+                            "lockout_duration": 10,
+                            "lockout_reset": 10,
+                            "complexity_enabled": "TRUE",
+                        }
+                    },
+                },
+                "lab.example.com": {
+                    "policy": {
+                        "history": 15,
+                    }
+                },
+            },
+        )
+        self.assertEqual(
+            corp_password.get("bad_policy_fields"),
+            [
+                "max_age",
+                "min_age",
+                "min_length",
+                "history",
+                "lockout_threshold",
+                "lockout_duration",
+                "lockout_reset",
+                "complexity_enabled",
+            ],
+        )
+        self.assertIn("policy_cap_values", corp_password)
+        self.assertIn("fgpp_bad_fields", corp_password)
+        self.assertIn("fgpp_cap_values", corp_password)
+        self.assertIsNone(lab_password.get("bad_policy_fields"))
 
         endpoint_summary = responses["endpoint"]
         self.assertIn("entries", endpoint_summary)
@@ -468,6 +579,14 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(
             dns_summary.get("unique_soa_fields"),
             ["serial", "refresh", "retry"],
+        )
+        self.assertEqual(
+            dns_summary.get("soa_field_cap_map"),
+            {
+                "serial": "Update to match the 'YYYYMMDDnn' scheme",
+                "refresh": "Update to a value between 1200 and 43200 seconds",
+                "retry": "Update to a value less than or equal to half the REFRESH",
+            },
         )
 
     def test_workbook_ad_metrics_are_exposed_without_legacy_entries(self):
