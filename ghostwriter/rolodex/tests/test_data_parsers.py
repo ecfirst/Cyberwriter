@@ -1917,6 +1917,11 @@ class NexposeDataParserTests(TestCase):
             ],
         )
 
+        artifacts = self.project.data_artifacts
+        self.assertIsInstance(artifacts, dict)
+        self.assertNotIn("web_cap_map", artifacts)
+        self.assertNotIn("web_cap_entries", artifacts)
+
         web_response = self.project.data_responses.get("web")
         if isinstance(web_response, dict):
             self.assertNotIn("web_cap_map", web_response)
@@ -1962,6 +1967,10 @@ class NexposeDataParserTests(TestCase):
                 },
             ],
         )
+
+        artifacts = self.project.data_artifacts
+        self.assertIsInstance(artifacts, dict)
+        self.assertNotIn("nexpose_cap_map", artifacts)
 
 
 class DNSDataParserTests(TestCase):

@@ -1546,6 +1546,13 @@ class Project(models.Model):
         else:
             existing_cap.pop("nexpose", None)
 
+        # CAP data for Burp/Nexpose uploads lives exclusively under ``project.cap``.
+        # Remove the intermediate artifacts so ``project.data_artifacts`` only
+        # contains fields required by reporting templates and views.
+        artifacts.pop("web_cap_map", None)
+        artifacts.pop("web_cap_entries", None)
+        artifacts.pop("nexpose_cap_map", None)
+
         self.data_artifacts = artifacts
         self.data_responses = existing_responses
         self.cap = existing_cap
