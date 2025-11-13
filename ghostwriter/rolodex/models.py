@@ -517,7 +517,6 @@ class Project(models.Model):
         )
 
         artifacts = build_project_artifacts(self)
-        self.data_artifacts = artifacts
 
         existing_responses = dict(self.data_responses or {})
         existing_cap = dict(self.cap or {})
@@ -888,6 +887,82 @@ class Project(models.Model):
 
             combined_firewall_section.update(workbook_firewall_response)
             existing_responses["firewall"] = combined_firewall_section
+
+        firewall_cap_section = existing_cap.get("firewall")
+        if isinstance(firewall_cap_section, dict):
+            firewall_cap_section = dict(firewall_cap_section)
+        else:
+            firewall_cap_section = {}
+
+        firewall_cap_entries: List[Dict[str, Any]] = []
+        firewall_artifact = artifacts.get("firewall_findings")
+        if isinstance(firewall_artifact, dict):
+            firewall_findings = firewall_artifact.get("findings")
+        else:
+            firewall_findings = None
+
+        def _normalize_firewall_value(value: Any) -> Optional[str]:
+            if value in (None, ""):
+                return None
+            if isinstance(value, str):
+                text = value.strip()
+                return text or None
+            return str(value)
+
+        def _coerce_finding_score(value: Any) -> Optional[Any]:
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return None
+                normalized = text.replace(",", "")
+                try:
+                    return float(normalized)
+                except ValueError:
+                    return text
+            return None
+
+        if isinstance(firewall_findings, list):
+            for entry in firewall_findings:
+                if not isinstance(entry, dict):
+                    continue
+
+                normalized_entry: Dict[str, Any] = {}
+                cap_defaults = _clone_cap_entry(
+                    "Business justification for firewall rules"
+                )
+                if cap_defaults:
+                    normalized_entry.update(cap_defaults)
+
+                for key, value in entry.items():
+                    if key == "score":
+                        score_value = _coerce_finding_score(value)
+                        if score_value is not None:
+                            normalized_entry["finding_score"] = score_value
+                        continue
+
+                    normalized_value = _normalize_firewall_value(value)
+                    if normalized_value is not None:
+                        normalized_entry[key] = normalized_value
+
+                if normalized_entry:
+                    firewall_cap_entries.append(normalized_entry)
+
+        if firewall_cap_entries:
+            firewall_cap_section["firewall_cap_map"] = firewall_cap_entries
+        else:
+            firewall_cap_section.pop("firewall_cap_map", None)
+
+        if firewall_cap_section:
+            existing_cap["firewall"] = firewall_cap_section
+        else:
+            existing_cap.pop("firewall", None)
+
+        if isinstance(firewall_artifact, dict):
+            firewall_artifact.pop("findings", None)
+            if not firewall_artifact.get("vulnerabilities"):
+                artifacts.pop("firewall_findings", None)
 
         workbook_dns_response = build_workbook_dns_response(workbook_payload)
         if workbook_dns_response:
@@ -1424,6 +1499,7 @@ class Project(models.Model):
             web_response_section.pop("web_cap_entries", None)
             web_response_section.pop("web_cap_map", None)
 
+        self.data_artifacts = artifacts
         self.data_responses = existing_responses
         self.cap = existing_cap
 

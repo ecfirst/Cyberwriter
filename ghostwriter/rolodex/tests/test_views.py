@@ -39,6 +39,7 @@ from ghostwriter.rolodex.forms_project import (
 )
 from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_ARTIFACT_DEFINITIONS,
+    DEFAULT_GENERAL_CAP_MAP,
     normalize_nexpose_artifact_payload,
     normalize_nexpose_artifacts_map,
 )
@@ -1578,24 +1579,7 @@ class ProjectDataResponsesUpdateTests(TestCase):
         artifacts = self.project.data_artifacts
         self.assertIn("firewall_findings", artifacts)
         findings = artifacts["firewall_findings"]
-        entries = findings["findings"]
-        self.assertEqual(len(entries), 1)
-        finding = entries[0]
-        self.assertEqual(
-            finding,
-            {
-                "risk": "High",
-                "issue": "Blocked traffic review",
-                "devices": "FW-1;FW-2",
-                "solution": "Adjust rule set",
-                "impact": "Service disruption",
-                "details": "Traffic dropped",
-                "reference": "http://example.com",
-                "accepted": "No",
-                "type": "External",
-                "score": 8.5,
-            },
-        )
+        self.assertNotIn("findings", findings)
 
         vulnerabilities = findings["vulnerabilities"]
         self.assertEqual(vulnerabilities["high"]["total_unique"], 1)
@@ -1608,6 +1592,32 @@ class ProjectDataResponsesUpdateTests(TestCase):
                     "count": 1,
                 }
             ],
+        )
+
+        firewall_cap = self.project.cap.get("firewall")
+        self.assertIsInstance(firewall_cap, dict)
+        cap_entries = firewall_cap.get("firewall_cap_map")
+        self.assertEqual(len(cap_entries), 1)
+        cap_entry = cap_entries[0]
+        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[
+            "Business justification for firewall rules"
+        ]
+        self.assertEqual(
+            cap_entry,
+            {
+                "recommendation": expected_recommendation,
+                "score": expected_score,
+                "issue": "Blocked traffic review",
+                "devices": "FW-1;FW-2",
+                "solution": "Adjust rule set",
+                "impact": "Service disruption",
+                "details": "Traffic dropped",
+                "reference": "http://example.com",
+                "accepted": "No",
+                "type": "External",
+                "risk": "High",
+                "finding_score": 8.5,
+            },
         )
         self.assertEqual(vulnerabilities["med"], {"total_unique": 0, "items": []})
         self.assertEqual(vulnerabilities["low"], {"total_unique": 0, "items": []})

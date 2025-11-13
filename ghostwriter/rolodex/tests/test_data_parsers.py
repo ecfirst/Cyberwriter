@@ -239,7 +239,7 @@ class NexposeDataParserTests(TestCase):
 
         artifact = self.project.data_artifacts.get("firewall_findings")
         self.assertIsInstance(artifact, dict)
-        self.assertIn("findings", artifact)
+        self.assertNotIn("findings", artifact)
         self.assertIn("vulnerabilities", artifact)
 
         summaries = artifact["vulnerabilities"]
@@ -289,8 +289,19 @@ class NexposeDataParserTests(TestCase):
             ],
         )
 
-        findings = artifact["findings"]
-        self.assertEqual(len(findings), 6)
+        firewall_cap = self.project.cap.get("firewall")
+        self.assertIsInstance(firewall_cap, dict)
+        cap_entries = firewall_cap.get("firewall_cap_map")
+        self.assertIsInstance(cap_entries, list)
+        self.assertEqual(len(cap_entries), 6)
+        first_entry = cap_entries[0]
+        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[
+            "Business justification for firewall rules"
+        ]
+        self.assertEqual(first_entry.get("issue"), "Open management interface")
+        self.assertEqual(first_entry.get("finding_score"), 8.0)
+        self.assertEqual(first_entry.get("recommendation"), expected_recommendation)
+        self.assertEqual(first_entry.get("score"), expected_score)
 
     def test_normalize_web_issue_artifacts(self):
         payload = {

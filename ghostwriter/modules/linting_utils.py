@@ -687,32 +687,6 @@ LINTER_CONTEXT = {
                 "172.16.50.5",
             ],
             "firewall_findings": {
-                "findings": [
-                    {
-                        "risk": "High",
-                        "issue": "Overly permissive inbound access",
-                        "devices": "Edge-FW01",
-                        "solution": "Restrict inbound rules to required services",
-                        "impact": "Increases the exposed attack surface for external actors.",
-                        "details": "Inbound rules allow any source to reach management interfaces.",
-                        "reference": "https://example.com/firewall-hardening",
-                        "score": 8.5,
-                        "accepted": "No",
-                        "type": "Configuration",
-                    },
-                    {
-                        "risk": "Medium",
-                        "issue": "Stale decommissioned network objects",
-                        "devices": "Core-FW02",
-                        "solution": "Remove unused objects from rule base",
-                        "impact": "Obsolete objects complicate reviews and obscure risky rules.",
-                        "details": "Multiple inactive objects remain referenced by disabled policies.",
-                        "reference": "",
-                        "score": 5.0,
-                        "accepted": "Yes",
-                        "type": "Operations",
-                    },
-                ],
                 "vulnerabilities": {
                     "high": {
                         "total_unique": 1,
@@ -843,6 +817,30 @@ LINTER_CONTEXT = {
                     ],
                 },
             },
+        },
+        "cap": {
+            "firewall": {
+                "firewall_cap_map": [
+                    {
+                        "issue": "Overly permissive inbound access",
+                        "devices": "Edge-FW01",
+                        "risk": "High",
+                        "finding_score": 8.5,
+                        "recommendation": "Review all firewall rules to ensure there is a valid business justification; document the business justification and network access requirements",
+                        "score": 5,
+                        "solution": "Restrict inbound rules to required services",
+                    },
+                    {
+                        "issue": "Stale decommissioned network objects",
+                        "devices": "Core-FW02",
+                        "risk": "Medium",
+                        "finding_score": 5.0,
+                        "recommendation": "Review all firewall rules to ensure there is a valid business justification; document the business justification and network access requirements",
+                        "score": 5,
+                        "solution": "Remove unused objects from rule base",
+                    },
+                ],
+            }
         },
         "extra_fields": {},
     },
