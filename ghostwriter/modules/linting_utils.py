@@ -649,6 +649,7 @@ LINTER_CONTEXT = {
         "web_issues": {
             "low_sample_string": "",
             "med_sample_string": "'Reveals stack traces that aid targeted exploitation attempts.'",
+            "ai_response": None,
             "high": {
                 "total_unique": 2,
                 "items": [

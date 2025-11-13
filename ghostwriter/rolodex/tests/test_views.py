@@ -1504,6 +1504,8 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertIn("web_issues", artifacts)
         web_artifacts = artifacts["web_issues"]
         self.assertIsInstance(web_artifacts, dict)
+        self.assertIn("ai_response", web_artifacts)
+        self.assertIsNone(web_artifacts["ai_response"])
         self.assertEqual(
             web_artifacts["low_sample_string"],
             "'Missing X-Frame-Options header', 'Banner Disclosure' and 'Directory Listing'",

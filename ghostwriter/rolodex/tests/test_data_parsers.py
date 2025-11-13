@@ -11,7 +11,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 
 # Ghostwriter Libraries
-from ghostwriter.factories import GenerateMockProject
+from ghostwriter.factories import GenerateMockProject, OpenAIConfigurationFactory
 from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_ARTIFACT_DEFINITIONS,
     normalize_nexpose_artifact_payload,
@@ -391,6 +391,7 @@ class NexposeDataParserTests(TestCase):
                 },
                 "med": {"total_unique": 0, "items": []},
                 "low": {"total_unique": 0, "items": []},
+                "ai_response": "Simulated response",
             }
         }
 
@@ -398,6 +399,7 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(normalized["web_issues"], dict)
         self.assertEqual(normalized["web_issues"]["low_sample_string"], "'SQL'")
         self.assertEqual(normalized["web_issues"]["med_sample_string"], "")
+        self.assertEqual(normalized["web_issues"].get("ai_response"), "Simulated response")
         self.assertEqual(normalized["web_issues"]["high"]["total_unique"], 1)
         self.assertEqual(
             normalized["web_issues"]["high"]["items"],
@@ -421,6 +423,7 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(
             normalized_legacy["web_issues"]["high"]["total_unique"], 2
         )
+        self.assertIsNone(normalized_legacy["web_issues"].get("ai_response"))
 
     def test_normalize_iot_alias(self):
         payload = {
@@ -1916,6 +1919,8 @@ class NexposeDataParserTests(TestCase):
 
         web_artifact = self.project.data_artifacts.get("web_issues")
         self.assertIsInstance(web_artifact, dict)
+        self.assertIn("ai_response", web_artifact)
+        self.assertIsNone(web_artifact["ai_response"])
         self.assertEqual(
             web_artifact["low_sample_string"],
             "'Missing X-Frame-Options header', 'Banner Disclosure' and 'Directory Listing'",
@@ -1996,6 +2001,34 @@ class NexposeDataParserTests(TestCase):
         if isinstance(web_response, dict):
             self.assertNotIn("web_cap_map", web_response)
             self.assertNotIn("web_cap_entries", web_response)
+
+    @mock.patch("ghostwriter.rolodex.data_parsers.submit_prompt_to_assistant")
+    def test_web_issue_ai_response_generated_for_high_severity(self, mock_prompt):
+        OpenAIConfigurationFactory(enable=True, assistant_id="asst_123", api_key="sk-test")
+        csv_lines = [
+            "Host,Risk,Issue,Impact",
+            "portal.example.com,High,SQL Injection,This may lead to compromise.",
+            "portal.example.com,High,Cross-Site Scripting,This may allow credential theft.",
+        ]
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "burp_csv.csv",
+                "\n".join(csv_lines).encode("utf-8"),
+                content_type="text/csv",
+            ),
+            requirement_label="burp_csv.csv",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        mock_prompt.side_effect = ["SQL summary", "XSS summary"]
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        web_artifact = self.project.data_artifacts.get("web_issues")
+        self.assertEqual(web_artifact.get("ai_response"), "SQL summary XSS summary")
+        self.assertEqual(mock_prompt.call_count, 2)
 
     def test_nexpose_cap_upload_populates_cap_map(self):
         csv_lines = [

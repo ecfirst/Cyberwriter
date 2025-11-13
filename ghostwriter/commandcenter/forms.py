@@ -12,7 +12,11 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Field, ButtonHolder, Submit, HTML
 
 # Ghostwriter Libraries
-from ghostwriter.commandcenter.models import ReportConfiguration, ExtraFieldSpec
+from ghostwriter.commandcenter.models import (
+    ReportConfiguration,
+    ExtraFieldSpec,
+    OpenAIConfiguration,
+)
 from ghostwriter.modules.reportwriter.project.base import ExportProjectBase
 from ghostwriter.modules.reportwriter.report.base import ExportReportBase
 
@@ -65,6 +69,18 @@ class ReportConfigurationForm(forms.ModelForm):
         name_template = self.cleaned_data["project_filename"]
         ExportProjectBase.check_filename_template(name_template)
         return name_template
+
+
+class OpenAIConfigurationForm(forms.ModelForm):
+    api_key = forms.CharField(
+        required=False,
+        widget=forms.PasswordInput(render_value=True),
+        help_text="API key used to authenticate with OpenAI",
+    )
+
+    class Meta:
+        model = OpenAIConfiguration
+        fields = "__all__"
 
 
 # Marker object to signal ExtraFieldsWidget to use the admin-configured defaults in the DB rather than loading from a value.
