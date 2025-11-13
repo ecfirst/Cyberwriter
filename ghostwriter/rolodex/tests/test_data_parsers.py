@@ -1922,6 +1922,47 @@ class NexposeDataParserTests(TestCase):
             self.assertNotIn("web_cap_map", web_response)
             self.assertNotIn("web_cap_entries", web_response)
 
+    def test_nexpose_cap_upload_populates_cap_map(self):
+        csv_lines = [
+            "Systems,Action,Sev,Issue,ecfirst",
+            "db01.example.com,Patch OpenSSL,High,SSL Certificate Expired,Yes",
+            "web-tier,Restrict Access,Medium,,",
+        ]
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "nexpose_cap.csv",
+                "\n".join(csv_lines).encode("utf-8"),
+                content_type="text/csv",
+            ),
+            requirement_label="nexpose_cap.csv",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        nexpose_section = self.project.cap.get("nexpose")
+        self.assertIsInstance(nexpose_section, dict)
+        self.assertEqual(
+            nexpose_section.get("nexpose_cap_map"),
+            [
+                {
+                    "systems": "db01.example.com",
+                    "action": "Patch OpenSSL",
+                    "severity": "High",
+                    "issue": "SSL Certificate Expired",
+                    "ecfirst": "Yes",
+                },
+                {
+                    "systems": "web-tier",
+                    "action": "Restrict Access",
+                    "severity": "Medium",
+                },
+            ],
+        )
+
 
 class DNSDataParserTests(TestCase):
     """Validate DNS CSV parsing behaviour."""

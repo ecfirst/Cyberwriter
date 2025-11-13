@@ -695,8 +695,8 @@ def _coerce_int(value: Any) -> Optional[int]:
             return None
 
 
-def _normalize_burp_cap_text(value: Any) -> str:
-    """Return a normalized string for Burp CAP fields."""
+def _normalize_cap_text(value: Any) -> str:
+    """Return a normalized string for CAP-style CSV fields."""
 
     if value in (None, ""):
         return ""
@@ -710,17 +710,17 @@ def parse_burp_cap_report(file_obj: File) -> List[Dict[str, Any]]:
     for row in _decode_file(file_obj):
         entry: Dict[str, Any] = {}
 
-        issue = _normalize_burp_cap_text(_get_case_insensitive(row, "Issue"))
-        hosts = _normalize_burp_cap_text(_get_case_insensitive(row, "Host(s)"))
+        issue = _normalize_cap_text(_get_case_insensitive(row, "Issue"))
+        hosts = _normalize_cap_text(_get_case_insensitive(row, "Host(s)"))
         if not hosts:
-            hosts = _normalize_burp_cap_text(_get_case_insensitive(row, "Hosts"))
-        action = _normalize_burp_cap_text(_get_case_insensitive(row, "Action"))
-        ecfirst = _normalize_burp_cap_text(_get_case_insensitive(row, "ecfirst"))
-        severity = _normalize_burp_cap_text(_get_case_insensitive(row, "Sev"))
+            hosts = _normalize_cap_text(_get_case_insensitive(row, "Hosts"))
+        action = _normalize_cap_text(_get_case_insensitive(row, "Action"))
+        ecfirst = _normalize_cap_text(_get_case_insensitive(row, "ecfirst"))
+        severity = _normalize_cap_text(_get_case_insensitive(row, "Sev"))
         if not severity:
-            severity = _normalize_burp_cap_text(_get_case_insensitive(row, "Severity"))
+            severity = _normalize_cap_text(_get_case_insensitive(row, "Severity"))
         score_value = _coerce_int(_get_case_insensitive(row, "Score"))
-        score_text = _normalize_burp_cap_text(_get_case_insensitive(row, "Score"))
+        score_text = _normalize_cap_text(_get_case_insensitive(row, "Score"))
 
         if issue:
             entry["issue"] = issue
@@ -736,6 +736,35 @@ def parse_burp_cap_report(file_obj: File) -> List[Dict[str, Any]]:
             entry["score"] = score_value
         elif score_text:
             entry["score"] = score_text
+
+        if entry:
+            entries.append(entry)
+
+    return entries
+
+
+def parse_nexpose_cap_report(file_obj: File) -> List[Dict[str, Any]]:
+    """Parse a ``nexpose_cap.csv`` upload into structured CAP entries."""
+
+    entries: List[Dict[str, Any]] = []
+    for row in _decode_file(file_obj):
+        systems = _normalize_cap_text(_get_case_insensitive(row, "Systems"))
+        action = _normalize_cap_text(_get_case_insensitive(row, "Action"))
+        severity = _normalize_cap_text(_get_case_insensitive(row, "Sev"))
+        issue = _normalize_cap_text(_get_case_insensitive(row, "Issue"))
+        ecfirst = _normalize_cap_text(_get_case_insensitive(row, "ecfirst"))
+
+        entry: Dict[str, Any] = {}
+        if systems:
+            entry["systems"] = systems
+        if action:
+            entry["action"] = action
+        if severity:
+            entry["severity"] = severity
+        if issue:
+            entry["issue"] = issue
+        if ecfirst:
+            entry["ecfirst"] = ecfirst
 
         if entry:
             entries.append(entry)
@@ -1603,6 +1632,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     dns_results: Dict[str, List[Dict[str, str]]] = {}
     web_results: Dict[str, Dict[str, Counter[Tuple[str, str]]]] = {}
     web_cap_entries: List[Dict[str, Any]] = []
+    nexpose_cap_entries: List[Dict[str, Any]] = []
     ip_results: Dict[str, List[str]] = {
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
@@ -1638,6 +1668,10 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_cap_entries = parse_burp_cap_report(data_file.file)
             if parsed_cap_entries:
                 web_cap_entries.extend(parsed_cap_entries)
+        elif label in {"nexpose-cap.csv", "nexpose_cap.csv"}:
+            parsed_nexpose_cap = parse_nexpose_cap_report(data_file.file)
+            if parsed_nexpose_cap:
+                nexpose_cap_entries.extend(parsed_nexpose_cap)
         elif label == "firewall_csv.csv":
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
@@ -1715,6 +1749,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     if web_cap_entries:
         artifacts["web_cap_map"] = web_cap_entries
+
+    if nexpose_cap_entries:
+        artifacts["nexpose_cap_map"] = nexpose_cap_entries
 
     for artifact_key, values in ip_results.items():
         if values:

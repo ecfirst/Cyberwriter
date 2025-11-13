@@ -2105,6 +2105,17 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                         description_parts.append(f"for {requirement_context}")
                     data_file.description = " ".join(part for part in description_parts if part).strip()
             data_file.save()
+            if requirement_label.lower() == "nexpose_cap.csv":
+                distilled_selected = bool(request.POST.get("nexpose_distilled"))
+                project_cap = dict(project.cap or {})
+                nexpose_section = project_cap.get("nexpose")
+                if isinstance(nexpose_section, dict):
+                    nexpose_section = dict(nexpose_section)
+                else:
+                    nexpose_section = {}
+                nexpose_section["distilled"] = distilled_selected
+                project_cap["nexpose"] = nexpose_section
+                project.cap = project_cap
             project.rebuild_data_artifacts()
             messages.success(request, "Supporting data file uploaded.")
         else:

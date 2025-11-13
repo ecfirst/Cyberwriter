@@ -542,6 +542,11 @@ class Project(models.Model):
                     return 0
             return 0
 
+        def _normalize_cap_value(value: Any) -> str:
+            if value in (None, ""):
+                return ""
+            return str(value).strip()
+
         def _is_truthy(value: Any) -> bool:
             if isinstance(value, bool):
                 return value
@@ -1498,6 +1503,41 @@ class Project(models.Model):
         if isinstance(web_response_section, dict):
             web_response_section.pop("web_cap_entries", None)
             web_response_section.pop("web_cap_map", None)
+
+        nexpose_section = existing_cap.get("nexpose")
+        if isinstance(nexpose_section, dict):
+            nexpose_section = dict(nexpose_section)
+        else:
+            nexpose_section = {}
+
+        raw_nexpose_entries = artifacts.get("nexpose_cap_map")
+        normalized_nexpose_entries: List[Dict[str, Any]] = []
+        if isinstance(raw_nexpose_entries, list):
+            for entry in raw_nexpose_entries:
+                if not isinstance(entry, dict):
+                    continue
+                normalized_entry: Dict[str, Any] = {}
+                for key in ("systems", "action", "severity", "issue", "ecfirst"):
+                    text = _normalize_cap_value(entry.get(key))
+                    if text:
+                        normalized_entry[key] = text
+                if normalized_entry:
+                    normalized_nexpose_entries.append(normalized_entry)
+
+        if normalized_nexpose_entries:
+            nexpose_section["nexpose_cap_map"] = normalized_nexpose_entries
+        else:
+            nexpose_section.pop("nexpose_cap_map", None)
+
+        if "distilled" in nexpose_section:
+            nexpose_section["distilled"] = bool(
+                _is_truthy(nexpose_section.get("distilled"))
+            )
+
+        if nexpose_section:
+            existing_cap["nexpose"] = nexpose_section
+        else:
+            existing_cap.pop("nexpose", None)
 
         self.data_artifacts = artifacts
         self.data_responses = existing_responses
