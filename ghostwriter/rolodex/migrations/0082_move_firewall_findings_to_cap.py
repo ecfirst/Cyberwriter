@@ -2,10 +2,16 @@ from django.db import migrations
 
 
 def rebuild_firewall_cap(apps, schema_editor):
-    Project = apps.get_model("rolodex", "Project")
+    try:
+        from ghostwriter.rolodex.models import Project  # type: ignore
+    except Exception:
+        return
 
     for project in Project.objects.iterator():
-        project.rebuild_data_artifacts()
+        try:
+            project.rebuild_data_artifacts()
+        except Exception:
+            continue
 
 
 class Migration(migrations.Migration):
