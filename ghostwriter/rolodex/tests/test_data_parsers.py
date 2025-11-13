@@ -1861,6 +1861,51 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(len(low_summary["items"]), 3)
         self.assertEqual(low_summary["items"][0]["issue"], "Missing X-Frame-Options header")
 
+    def test_burp_cap_upload_populates_web_cap_entries(self):
+        csv_lines = [
+            "Issue,Host(s),Action,ecfirst,Sev,Score",
+            "Expired TLS Certificate,portal.example.com,Renew the TLS certificate,Yes,High,5",
+            "Missing Security Headers,,Add CSP and HSTS,No,Medium,3",
+            ",,,,",
+        ]
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "burp_cap.csv",
+                "\n".join(csv_lines).encode("utf-8"),
+                content_type="text/csv",
+            ),
+            requirement_label="burp_cap.csv",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        web_section = self.project.cap.get("web")
+        self.assertIsInstance(web_section, dict)
+        self.assertEqual(
+            web_section.get("web_cap_entries"),
+            [
+                {
+                    "issue": "Expired TLS Certificate",
+                    "hosts": "portal.example.com",
+                    "action": "Renew the TLS certificate",
+                    "ecfirst": "Yes",
+                    "severity": "High",
+                    "score": 5,
+                },
+                {
+                    "issue": "Missing Security Headers",
+                    "action": "Add CSP and HSTS",
+                    "ecfirst": "No",
+                    "severity": "Medium",
+                    "score": 3,
+                },
+            ],
+        )
+
 
 class DNSDataParserTests(TestCase):
     """Validate DNS CSV parsing behaviour."""

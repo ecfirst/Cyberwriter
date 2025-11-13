@@ -695,6 +695,54 @@ def _coerce_int(value: Any) -> Optional[int]:
             return None
 
 
+def _normalize_burp_cap_text(value: Any) -> str:
+    """Return a normalized string for Burp CAP fields."""
+
+    if value in (None, ""):
+        return ""
+    return str(value).strip()
+
+
+def parse_burp_cap_report(file_obj: File) -> List[Dict[str, Any]]:
+    """Parse a ``burp_cap.csv`` upload into structured CAP entries."""
+
+    entries: List[Dict[str, Any]] = []
+    for row in _decode_file(file_obj):
+        entry: Dict[str, Any] = {}
+
+        issue = _normalize_burp_cap_text(_get_case_insensitive(row, "Issue"))
+        hosts = _normalize_burp_cap_text(_get_case_insensitive(row, "Host(s)"))
+        if not hosts:
+            hosts = _normalize_burp_cap_text(_get_case_insensitive(row, "Hosts"))
+        action = _normalize_burp_cap_text(_get_case_insensitive(row, "Action"))
+        ecfirst = _normalize_burp_cap_text(_get_case_insensitive(row, "ecfirst"))
+        severity = _normalize_burp_cap_text(_get_case_insensitive(row, "Sev"))
+        if not severity:
+            severity = _normalize_burp_cap_text(_get_case_insensitive(row, "Severity"))
+        score_value = _coerce_int(_get_case_insensitive(row, "Score"))
+        score_text = _normalize_burp_cap_text(_get_case_insensitive(row, "Score"))
+
+        if issue:
+            entry["issue"] = issue
+        if hosts:
+            entry["hosts"] = hosts
+        if action:
+            entry["action"] = action
+        if ecfirst:
+            entry["ecfirst"] = ecfirst
+        if severity:
+            entry["severity"] = severity
+        if score_value is not None:
+            entry["score"] = score_value
+        elif score_text:
+            entry["score"] = score_text
+
+        if entry:
+            entries.append(entry)
+
+    return entries
+
+
 def _normalize_policy_string(value: Any) -> str:
     """Return a normalized string representation for password policy values."""
 
@@ -1554,6 +1602,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
     web_results: Dict[str, Dict[str, Counter[Tuple[str, str]]]] = {}
+    web_cap_entries: List[Dict[str, Any]] = []
     ip_results: Dict[str, List[str]] = {
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
@@ -1585,6 +1634,10 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                         continue
                     combined_counter = combined_risks.setdefault(severity_key, Counter())
                     combined_counter.update(counter)
+        elif label in {"burp-cap.csv", "burp_cap.csv"}:
+            parsed_cap_entries = parse_burp_cap_report(data_file.file)
+            if parsed_cap_entries:
+                web_cap_entries.extend(parsed_cap_entries)
         elif label == "firewall_csv.csv":
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
@@ -1659,6 +1712,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 ),
                 **severity_summaries,
             }
+
+    if web_cap_entries:
+        artifacts["web_cap_entries"] = web_cap_entries
 
     for artifact_key, values in ip_results.items():
         if values:

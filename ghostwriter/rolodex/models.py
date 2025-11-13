@@ -1372,6 +1372,49 @@ class Project(models.Model):
         else:
             existing_cap.pop("snmp", None)
 
+        web_section = existing_cap.get("web")
+        if isinstance(web_section, dict):
+            web_section = dict(web_section)
+        else:
+            web_section = {}
+
+        web_cap_entries = artifacts.get("web_cap_entries")
+        normalized_web_entries: List[Dict[str, Any]] = []
+        if isinstance(web_cap_entries, list):
+            for entry in web_cap_entries:
+                if not isinstance(entry, dict):
+                    continue
+
+                normalized_entry: Dict[str, Any] = {}
+                for field in ("issue", "hosts", "action", "ecfirst", "severity"):
+                    value = entry.get(field)
+                    if value in (None, ""):
+                        continue
+                    text = str(value).strip()
+                    if text:
+                        normalized_entry[field] = text
+
+                score_value = entry.get("score")
+                if isinstance(score_value, (int, float)):
+                    normalized_entry["score"] = int(score_value)
+                elif isinstance(score_value, str):
+                    score_text = score_value.strip()
+                    if score_text:
+                        normalized_entry["score"] = score_text
+
+                if normalized_entry:
+                    normalized_web_entries.append(normalized_entry)
+
+        if normalized_web_entries:
+            web_section["web_cap_entries"] = normalized_web_entries
+        else:
+            web_section.pop("web_cap_entries", None)
+
+        if web_section:
+            existing_cap["web"] = web_section
+        else:
+            existing_cap.pop("web", None)
+
         self.data_responses = existing_responses
         self.cap = existing_cap
 
