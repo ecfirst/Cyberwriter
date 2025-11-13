@@ -622,7 +622,7 @@ class SelectReportTemplateForm(forms.ModelForm):
                 <p class="mb-2">Other report types do not use templates:</p>
                 <div class="btn-group">
                     <a class="btn btn-default excel-btn-icon" href="{% url 'reporting:generate_xlsx' report.id %}"
-                    data-toggle="tooltip" data-placement="top" title="Generate an XLSX report"></i></a>
+                    data-toggle="tooltip" data-placement="top" title="Generate a CAP report"></i></a>
                     <a class="btn btn-default json-btn-icon" href="{% url 'reporting:generate_json' report.id %}"
                     data-toggle="tooltip" data-placement="top" title="Generate exportable JSON"></a>
                     <a class="btn btn-default archive-btn-icon js-generate-report"

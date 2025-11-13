@@ -797,9 +797,11 @@ class GenerateReportXLSX(GenerateReportBase):
         )
 
         try:
-            report_config = ReportConfiguration.get_solo()
             exporter = ExportReportXlsx(obj)
-            report_name = exporter.render_filename(report_config.report_filename, ext="xlsx")
+            report_name = exporter.render_filename(
+                ExportReportXlsx.FILENAME_TEMPLATE,
+                ext="xlsx",
+            )
             output = exporter.run()
             response = HttpResponse(
                 output.getvalue(),
