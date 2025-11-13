@@ -73,11 +73,20 @@ class ExportReportXlsx(ExportXlsxBase, ExportReportBase):
                     "align": "center",
                     "valign": "vcenter",
                     "text_wrap": True,
+                    "border": 1,
                 }
             )
-            default_row_format = workbook.add_format({**base_font, "text_wrap": True, "valign": "top"})
+            default_row_format = workbook.add_format(
+                {**base_font, "text_wrap": True, "valign": "top", "border": 1}
+            )
             banded_row_format = workbook.add_format(
-                {**base_font, "text_wrap": True, "valign": "top", "bg_color": sheet_config["banded_fill"]}
+                {
+                    **base_font,
+                    "text_wrap": True,
+                    "valign": "top",
+                    "bg_color": sheet_config["banded_fill"],
+                    "border": 1,
+                }
             )
 
             for col_idx, title in enumerate(self.HEADERS):
