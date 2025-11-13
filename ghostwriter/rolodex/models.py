@@ -1378,7 +1378,9 @@ class Project(models.Model):
         else:
             web_section = {}
 
-        web_cap_entries = artifacts.get("web_cap_entries")
+        web_cap_entries = artifacts.get("web_cap_map")
+        if web_cap_entries is None:
+            web_cap_entries = artifacts.get("web_cap_entries")
         normalized_web_entries: List[Dict[str, Any]] = []
         if isinstance(web_cap_entries, list):
             for entry in web_cap_entries:
@@ -1406,14 +1408,21 @@ class Project(models.Model):
                     normalized_web_entries.append(normalized_entry)
 
         if normalized_web_entries:
-            web_section["web_cap_entries"] = normalized_web_entries
+            web_section["web_cap_map"] = normalized_web_entries
         else:
-            web_section.pop("web_cap_entries", None)
+            web_section.pop("web_cap_map", None)
+        # Clean up any legacy key so stored CAP data remains normalized.
+        web_section.pop("web_cap_entries", None)
 
         if web_section:
             existing_cap["web"] = web_section
         else:
             existing_cap.pop("web", None)
+
+        web_response_section = existing_responses.get("web")
+        if isinstance(web_response_section, dict):
+            web_response_section.pop("web_cap_entries", None)
+            web_response_section.pop("web_cap_map", None)
 
         self.data_responses = existing_responses
         self.cap = existing_cap

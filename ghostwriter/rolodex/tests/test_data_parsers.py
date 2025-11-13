@@ -1861,7 +1861,7 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(len(low_summary["items"]), 3)
         self.assertEqual(low_summary["items"][0]["issue"], "Missing X-Frame-Options header")
 
-    def test_burp_cap_upload_populates_web_cap_entries(self):
+    def test_burp_cap_upload_populates_web_cap_map(self):
         csv_lines = [
             "Issue,Host(s),Action,ecfirst,Sev,Score",
             "Expired TLS Certificate,portal.example.com,Renew the TLS certificate,Yes,High,5",
@@ -1886,7 +1886,7 @@ class NexposeDataParserTests(TestCase):
         web_section = self.project.cap.get("web")
         self.assertIsInstance(web_section, dict)
         self.assertEqual(
-            web_section.get("web_cap_entries"),
+            web_section.get("web_cap_map"),
             [
                 {
                     "issue": "Expired TLS Certificate",
@@ -1905,6 +1905,11 @@ class NexposeDataParserTests(TestCase):
                 },
             ],
         )
+
+        web_response = self.project.data_responses.get("web")
+        if isinstance(web_response, dict):
+            self.assertNotIn("web_cap_map", web_response)
+            self.assertNotIn("web_cap_entries", web_response)
 
 
 class DNSDataParserTests(TestCase):

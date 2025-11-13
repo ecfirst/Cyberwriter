@@ -1714,7 +1714,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             }
 
     if web_cap_entries:
-        artifacts["web_cap_entries"] = web_cap_entries
+        artifacts["web_cap_map"] = web_cap_entries
 
     for artifact_key, values in ip_results.items():
         if values:
