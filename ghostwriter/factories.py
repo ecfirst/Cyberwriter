@@ -881,6 +881,15 @@ class VirusTotalConfigurationFactory(factory.django.DjangoModelFactory):
     sleep_time = 20
 
 
+class OpenAIConfigurationFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = "commandcenter.OpenAIConfiguration"
+
+    enable = Faker("boolean")
+    assistant_id = Faker("bothify", text="asst_########")
+    api_key = Faker("password", length=32)
+
+
 class GeneralConfigurationFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = "commandcenter.GeneralConfiguration"

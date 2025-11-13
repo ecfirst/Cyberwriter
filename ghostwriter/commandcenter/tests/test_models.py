@@ -12,6 +12,7 @@ from ghostwriter.factories import (
     CompanyInformationFactory,
     GeneralConfigurationFactory,
     NamecheapConfigurationFactory,
+    OpenAIConfigurationFactory,
     ReportConfigurationFactory,
     SlackConfigurationFactory,
     VirusTotalConfigurationFactory,
@@ -264,6 +265,47 @@ class VirusTotalConfigurationTests(TestCase):
         sanitized = entry.sanitized_api_key
         self.assertNotEqual(entry.api_key, sanitized)
         self.assertIn(replacement, sanitized)
+
+
+class OpenAIConfigurationTests(TestCase):
+    """Collection of tests for :model:`commandcenter.OpenAIConfiguration`."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.OpenAIConfiguration = OpenAIConfigurationFactory._meta.model
+
+    def test_crud_finding(self):
+        entry = OpenAIConfigurationFactory(enable=False)
+        self.assertEqual(entry.enable, False)
+        self.assertEqual(entry.pk, 1)
+
+        entry.enable = True
+        entry.assistant_id = "asst_test"
+        entry.api_key = "sk-test"
+        entry.save()
+        entry.refresh_from_db()
+
+        self.assertEqual(entry.enable, True)
+        self.assertEqual(entry.assistant_id, "asst_test")
+        self.assertEqual(entry.api_key, "sk-test")
+
+        entry.delete()
+        self.assertFalse(self.OpenAIConfiguration.objects.all().exists())
+
+    def test_get_solo_method(self):
+        try:
+            entry = self.OpenAIConfiguration.get_solo()
+            self.assertEqual(entry.pk, 1)
+        except Exception:
+            self.fail("OpenAIConfiguration model `get_solo` method failed unexpectedly!")
+
+    def test_sanitized_api_key_property(self):
+        entry = self.OpenAIConfiguration.get_solo()
+        entry.api_key = "sk-test-value-123456"
+        entry.save(update_fields=["api_key"])
+        sanitized = entry.sanitized_api_key
+        self.assertNotEqual(entry.api_key, sanitized)
+        self.assertIn("\u2717", sanitized)
 
 
 class GeneralConfigurationTests(TestCase):

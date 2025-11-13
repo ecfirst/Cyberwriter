@@ -5,6 +5,7 @@ from __future__ import annotations
 # Standard Libraries
 import csv
 import io
+import logging
 import re
 from collections import Counter
 from collections import abc
@@ -17,8 +18,12 @@ from django.db.utils import OperationalError, ProgrammingError
 if False:  # pragma: no cover - typing only
     from ghostwriter.rolodex.models import Project, ProjectDataFile  # noqa: F401
 
+from ghostwriter.commandcenter.models import OpenAIConfiguration
+from ghostwriter.modules.openai_client import submit_prompt_to_assistant
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, parse_ip_text
 from ghostwriter.rolodex.workbook import AD_DOMAIN_METRICS
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_DNS_RECOMMENDATION_MAP: Dict[str, str] = {
@@ -94,6 +99,11 @@ DEFAULT_PASSWORD_CAP_MAP: Dict[str, str] = {
 }
 
 _CAP_PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
+
+WEB_ISSUE_PROMPT_TEMPLATE = (
+    "For '{{ .issue }}' an attacker could [short description of exploitation], "
+    "which could then allow them to [short description of impact of successful exploitation]."
+)
 
 DEFAULT_GENERAL_CAP_MAP: Dict[str, Tuple[str, int]] = {
     "Weak passwords in use": (
@@ -1150,6 +1160,7 @@ def _coerce_web_issue_summary(value: Any) -> Dict[str, Any]:
 
     low_sample_string = ""
     med_sample_string = ""
+    ai_response: Optional[str] = None
     severity_groups = {
         key: _coerce_severity_group({}) for key in ("high", "med", "low")
     }
@@ -1157,6 +1168,8 @@ def _coerce_web_issue_summary(value: Any) -> Dict[str, Any]:
     if isinstance(value, dict):
         low_sample_string = str(value.get("low_sample_string") or "")
         med_sample_string = str(value.get("med_sample_string") or "")
+        if value.get("ai_response"):
+            ai_response = str(value.get("ai_response"))
         has_explicit_summary = False
 
         for severity_key in ("high", "med", "low"):
@@ -1170,6 +1183,7 @@ def _coerce_web_issue_summary(value: Any) -> Dict[str, Any]:
             return {
                 "low_sample_string": low_sample_string,
                 "med_sample_string": med_sample_string,
+                "ai_response": ai_response,
                 **severity_groups,
             }
 
@@ -1239,6 +1253,7 @@ def _coerce_web_issue_summary(value: Any) -> Dict[str, Any]:
     return {
         "low_sample_string": low_sample_string,
         "med_sample_string": med_sample_string,
+        "ai_response": ai_response,
         **severity_groups,
     }
 
@@ -1263,6 +1278,61 @@ def normalize_nexpose_artifacts_map(artifacts: Any) -> Any:
         elif key == "web_issues":
             normalized[key] = _coerce_web_issue_summary(value)
     return normalized
+
+
+def _build_web_issue_ai_response(
+    summary: Dict[str, Any], *, require_burp_csv: bool
+) -> Optional[str]:
+    """Generate an OpenAI summary for high or medium web issues when enabled."""
+
+    if not require_burp_csv:
+        return None
+
+    try:
+        config = OpenAIConfiguration.get_solo()
+    except (OpenAIConfiguration.DoesNotExist, ProgrammingError, OperationalError):
+        return None
+
+    if not config.enable:
+        return None
+
+    severity_order = ("high", "med")
+    target_items: List[Dict[str, Any]] = []
+    for severity_key in severity_order:
+        group = summary.get(severity_key)
+        if not isinstance(group, dict):
+            continue
+        total_unique = group.get("total_unique")
+        try:
+            total_value = int(total_unique)
+        except (TypeError, ValueError):
+            total_value = 0
+        if total_value > 0:
+            target_items = group.get("items", [])
+            break
+
+    if not target_items:
+        return None
+
+    responses: List[str] = []
+    for item in target_items:
+        if not isinstance(item, dict):
+            continue
+        issue = (item.get("issue") or item.get("title") or "").strip()
+        if not issue:
+            continue
+        prompt = WEB_ISSUE_PROMPT_TEMPLATE.replace("{{ .issue }}", issue)
+        try:
+            result = submit_prompt_to_assistant(prompt, config=config)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.warning("OpenAI prompt submission failed: %s", exc)
+            result = None
+        if result:
+            responses.append(result.strip())
+
+    if responses:
+        return " ".join(response for response in responses if response).strip()
+    return None
 
 
 def parse_nexpose_vulnerability_report(file_obj: File) -> Dict[str, Dict[str, Any]]:
@@ -1675,6 +1745,8 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         for artifact_key, label in nexpose_definitions_by_key.items()
     }
 
+    burp_csv_uploaded = False
+
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
         if label == "dns_report.csv":
@@ -1684,6 +1756,8 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             if parsed_dns:
                 dns_results.setdefault(domain, []).extend(parsed_dns)
         elif label in {"burp.csv", "burp_csv.csv"}:
+            if label == "burp_csv.csv":
+                burp_csv_uploaded = True
             parsed_web = parse_web_report(data_file.file)
             for site, severity_map in parsed_web.items():
                 combined_risks = web_results.setdefault(site, {})
@@ -1765,7 +1839,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 severity_key: _summarize_severity_counter(counter)
                 for severity_key, counter in aggregated_severity.items()
             }
-            artifacts["web_issues"] = {
+            web_summary = {
                 "low_sample_string": _format_sample_string(
                     _select_top_samples(low_issue_counter)
                 ),
@@ -1774,6 +1848,14 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 ),
                 **severity_summaries,
             }
+            web_summary["ai_response"] = None
+            ai_response = _build_web_issue_ai_response(
+                web_summary,
+                require_burp_csv=burp_csv_uploaded,
+            )
+            if ai_response:
+                web_summary["ai_response"] = ai_response
+            artifacts["web_issues"] = web_summary
 
     if web_cap_entries:
         artifacts["web_cap_map"] = web_cap_entries

@@ -5,7 +5,7 @@ from django.contrib import admin
 from django import forms
 
 # Ghostwriter Libraries
-from ghostwriter.commandcenter.forms import ReportConfigurationForm
+from ghostwriter.commandcenter.forms import ReportConfigurationForm, OpenAIConfigurationForm
 from ghostwriter.commandcenter.models import (
     BannerConfiguration,
     CloudServicesConfiguration,
@@ -14,6 +14,7 @@ from ghostwriter.commandcenter.models import (
     ExtraFieldSpec,
     GeneralConfiguration,
     NamecheapConfiguration,
+    OpenAIConfiguration,
     ReportConfiguration,
     SlackConfiguration,
     VirusTotalConfiguration,
@@ -26,6 +27,11 @@ admin.site.register(CompanyInformation, SingletonModelAdmin)
 admin.site.register(NamecheapConfiguration, SingletonModelAdmin)
 admin.site.register(SlackConfiguration, SingletonModelAdmin)
 admin.site.register(VirusTotalConfiguration, SingletonModelAdmin)
+class OpenAIConfigurationAdmin(SingletonModelAdmin):
+    form = OpenAIConfigurationForm
+
+
+admin.site.register(OpenAIConfiguration, OpenAIConfigurationAdmin)
 admin.site.register(GeneralConfiguration, SingletonModelAdmin)
 admin.site.register(BannerConfiguration, SingletonModelAdmin)
 

@@ -6,6 +6,7 @@ from django import forms
 
 # Django Imports
 from django.db import models
+from django_cryptography.fields import encrypt
 
 # 3rd Party Libraries
 from ghostwriter.modules.reportwriter.forms import JinjaRichTextField
@@ -321,6 +322,37 @@ class VirusTotalConfiguration(SingletonModel):
     @property
     def sanitized_api_key(self):
         return sanitize(self.api_key)
+
+
+class OpenAIConfiguration(SingletonModel):
+    enable = models.BooleanField(
+        default=False,
+        help_text="Enable to allow CyberWriter to query the OpenAI Assistants API",
+    )
+    assistant_id = models.CharField(
+        max_length=255,
+        default="",
+        blank=True,
+        help_text="OpenAI Assistant identifier to process remediation prompts",
+    )
+    api_key = encrypt(
+        models.CharField(
+            max_length=255,
+            default="",
+            blank=True,
+            help_text="API key used to authenticate with OpenAI",
+        )
+    )
+
+    def __str__(self):
+        return "OpenAI Configuration"
+
+    class Meta:
+        verbose_name = "OpenAI Configuration"
+
+    @property
+    def sanitized_api_key(self):
+        return sanitize(self.api_key or "")
 
 
 class GeneralConfiguration(SingletonModel):
