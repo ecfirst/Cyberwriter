@@ -1631,7 +1631,7 @@ class ProjectDataResponsesUpdateTests(TestCase):
             ]
         )
 
-        csv_content = "Systems,Action,Sev\napp01,Apply critical patch,High\n"
+        csv_content = "Systems,Action,Sev\napp01,Apply critical patch,4\n"
         response = self.client_auth.post(
             upload_url,
             {
@@ -1660,7 +1660,7 @@ class ProjectDataResponsesUpdateTests(TestCase):
                 {
                     "systems": "app01",
                     "action": "Apply critical patch",
-                    "severity": "High",
+                    "score": 4,
                 }
             ],
         )

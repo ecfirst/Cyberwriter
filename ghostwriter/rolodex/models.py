@@ -512,6 +512,7 @@ class Project(models.Model):
             build_workbook_dns_response,
             build_workbook_firewall_response,
             build_workbook_password_response,
+            coerce_cap_score,
             load_dns_soa_cap_map,
             load_general_cap_map,
         )
@@ -1517,10 +1518,16 @@ class Project(models.Model):
                 if not isinstance(entry, dict):
                     continue
                 normalized_entry: Dict[str, Any] = {}
-                for key in ("systems", "action", "severity", "issue", "ecfirst"):
+                for key in ("systems", "action", "issue", "ecfirst"):
                     text = _normalize_cap_value(entry.get(key))
                     if text:
                         normalized_entry[key] = text
+                score_value = entry.get("score")
+                if score_value is None:
+                    score_value = entry.get("severity")
+                score = coerce_cap_score(score_value)
+                if score is not None:
+                    normalized_entry["score"] = score
                 if normalized_entry:
                     normalized_nexpose_entries.append(normalized_entry)
 

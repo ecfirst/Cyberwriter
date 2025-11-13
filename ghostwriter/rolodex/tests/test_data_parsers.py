@@ -1925,8 +1925,8 @@ class NexposeDataParserTests(TestCase):
     def test_nexpose_cap_upload_populates_cap_map(self):
         csv_lines = [
             "Systems,Action,Sev,Issue,ecfirst",
-            "db01.example.com,Patch OpenSSL,High,SSL Certificate Expired,Yes",
-            "web-tier,Restrict Access,Medium,,",
+            "db01.example.com,Patch OpenSSL,5,SSL Certificate Expired,Yes",
+            "web-tier,Restrict Access,3,,",
         ]
 
         upload = ProjectDataFile.objects.create(
@@ -1951,14 +1951,14 @@ class NexposeDataParserTests(TestCase):
                 {
                     "systems": "db01.example.com",
                     "action": "Patch OpenSSL",
-                    "severity": "High",
+                    "score": 5,
                     "issue": "SSL Certificate Expired",
                     "ecfirst": "Yes",
                 },
                 {
                     "systems": "web-tier",
                     "action": "Restrict Access",
-                    "severity": "Medium",
+                    "score": 3,
                 },
             ],
         )

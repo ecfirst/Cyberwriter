@@ -695,6 +695,30 @@ def _coerce_int(value: Any) -> Optional[int]:
             return None
 
 
+NEXPOSE_SEVERITY_SCORE_MAP = {
+    "critical": 5,
+    "high": 4,
+    "medium": 3,
+    "moderate": 3,
+    "low": 2,
+    "informational": 1,
+    "info": 1,
+}
+
+
+def coerce_cap_score(value: Any) -> Optional[int]:
+    """Normalize score/severity values into an integer scale."""
+
+    score = _coerce_int(value)
+    if score is not None:
+        return score
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized:
+            return NEXPOSE_SEVERITY_SCORE_MAP.get(normalized)
+    return None
+
+
 def _normalize_cap_text(value: Any) -> str:
     """Return a normalized string for CAP-style CSV fields."""
 
@@ -750,7 +774,11 @@ def parse_nexpose_cap_report(file_obj: File) -> List[Dict[str, Any]]:
     for row in _decode_file(file_obj):
         systems = _normalize_cap_text(_get_case_insensitive(row, "Systems"))
         action = _normalize_cap_text(_get_case_insensitive(row, "Action"))
-        severity = _normalize_cap_text(_get_case_insensitive(row, "Sev"))
+        score = coerce_cap_score(_get_case_insensitive(row, "Sev"))
+        if score is None:
+            score = coerce_cap_score(_get_case_insensitive(row, "Score"))
+        if score is None:
+            score = coerce_cap_score(_get_case_insensitive(row, "Severity"))
         issue = _normalize_cap_text(_get_case_insensitive(row, "Issue"))
         ecfirst = _normalize_cap_text(_get_case_insensitive(row, "ecfirst"))
 
@@ -759,8 +787,8 @@ def parse_nexpose_cap_report(file_obj: File) -> List[Dict[str, Any]]:
             entry["systems"] = systems
         if action:
             entry["action"] = action
-        if severity:
-            entry["severity"] = severity
+        if score is not None:
+            entry["score"] = score
         if issue:
             entry["issue"] = issue
         if ecfirst:
