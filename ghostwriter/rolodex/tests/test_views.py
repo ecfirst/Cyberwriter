@@ -1653,7 +1653,8 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.project.refresh_from_db()
         nexpose_section = self.project.cap.get("nexpose")
         self.assertIsInstance(nexpose_section, dict)
-        self.assertTrue(nexpose_section.get("distilled"))
+        self.assertIn("distilled", nexpose_section)
+        self.assertTrue(nexpose_section["distilled"])
         self.assertEqual(
             nexpose_section.get("nexpose_cap_map"),
             [
@@ -1682,7 +1683,8 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.project.refresh_from_db()
         nexpose_section = self.project.cap.get("nexpose")
-        self.assertFalse(nexpose_section.get("distilled"))
+        self.assertIn("distilled", nexpose_section)
+        self.assertFalse(nexpose_section["distilled"])
 
     def test_external_ip_submission_creates_artifact(self):
         upload_url = reverse("rolodex:project_ip_artifact_upload", kwargs={"pk": self.project.pk})

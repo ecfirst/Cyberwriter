@@ -1972,6 +1972,18 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(artifacts, dict)
         self.assertNotIn("nexpose_cap_map", artifacts)
 
+    def test_nexpose_cap_section_includes_default_distilled_flag(self):
+        self.project.cap = {}
+        self.project.save(update_fields=["cap"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        nexpose_section = self.project.cap.get("nexpose")
+        self.assertIsInstance(nexpose_section, dict)
+        self.assertIn("distilled", nexpose_section)
+        self.assertFalse(nexpose_section["distilled"])
+
 
 class DNSDataParserTests(TestCase):
     """Validate DNS CSV parsing behaviour."""

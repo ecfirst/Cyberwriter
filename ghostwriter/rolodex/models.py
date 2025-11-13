@@ -1540,11 +1540,10 @@ class Project(models.Model):
             nexpose_section["distilled"] = bool(
                 _is_truthy(nexpose_section.get("distilled"))
             )
-
-        if nexpose_section:
-            existing_cap["nexpose"] = nexpose_section
         else:
-            existing_cap.pop("nexpose", None)
+            nexpose_section["distilled"] = False
+
+        existing_cap["nexpose"] = nexpose_section
 
         # CAP data for Burp/Nexpose uploads lives exclusively under ``project.cap``.
         # Remove the intermediate artifacts so ``project.data_artifacts`` only
