@@ -1,6 +1,7 @@
 """This contains all project-related forms used by the Rolodex application."""
 
 # Standard Libraries
+import json
 from collections import namedtuple
 
 # Django Imports
@@ -33,6 +34,7 @@ from ghostwriter.modules.custom_layout_object import CustomTab, Formset, SwitchT
 from ghostwriter.modules.reportwriter.forms import JinjaRichTextField
 from ghostwriter.rolodex.models import (
     Deconfliction,
+    PROJECT_SCOPING_CONFIGURATION,
     Project,
     ProjectAssignment,
     ProjectContact,
@@ -41,12 +43,88 @@ from ghostwriter.rolodex.models import (
     ProjectObjective,
     ProjectScope,
     ProjectTarget,
+    default_project_scoping,
     WhiteCard,
 )
 
 # Number of "extra" formsets created by default
 # Higher numbers can increase page load times with WYSIWYG editors
 EXTRAS = 0
+
+
+SCOPING_ALL = "__all__"
+
+
+def _category_option_keys(category_key):
+    category = PROJECT_SCOPING_CONFIGURATION.get(category_key, {})
+    options = category.get("options", {}) if isinstance(category, dict) else {}
+    return list(options.keys())
+
+
+def _build_scoping_preset(option_map):
+    preset = {}
+    defaults = default_project_scoping()
+    for category_key, option_keys in option_map.items():
+        if category_key not in defaults:
+            continue
+        category_defaults = defaults[category_key]
+        category_payload = {key: False for key in category_defaults}
+        category_payload["selected"] = True
+        if option_keys == SCOPING_ALL:
+            selected_options = _category_option_keys(category_key)
+        else:
+            selected_options = option_keys or []
+        for option_key in _category_option_keys(category_key):
+            category_payload[option_key] = option_key in selected_options
+        preset[category_key] = category_payload
+    return preset
+
+
+PROJECT_TYPE_SCOPING_PRESETS = {
+    "Silver": _build_scoping_preset({"external": SCOPING_ALL, "firewall": ["os"]}),
+    "Gold": _build_scoping_preset(
+        {
+            "external": SCOPING_ALL,
+            "internal": SCOPING_ALL,
+            "iam": SCOPING_ALL,
+            "firewall": SCOPING_ALL,
+        }
+    ),
+    "Platinum": _build_scoping_preset(
+        {
+            "external": SCOPING_ALL,
+            "internal": SCOPING_ALL,
+            "iam": SCOPING_ALL,
+            "wireless": SCOPING_ALL,
+            "firewall": SCOPING_ALL,
+        }
+    ),
+    "Titanium": _build_scoping_preset(
+        {
+            "external": SCOPING_ALL,
+            "internal": SCOPING_ALL,
+            "iam": SCOPING_ALL,
+            "wireless": SCOPING_ALL,
+            "firewall": SCOPING_ALL,
+        }
+    ),
+    "Platinum & Titanium": _build_scoping_preset(
+        {
+            "external": SCOPING_ALL,
+            "internal": SCOPING_ALL,
+            "iam": SCOPING_ALL,
+            "wireless": SCOPING_ALL,
+            "firewall": SCOPING_ALL,
+        }
+    ),
+    "CloudFirst": _build_scoping_preset(
+        {
+            "external": SCOPING_ALL,
+            "iam": SCOPING_ALL,
+            "cloud": SCOPING_ALL,
+        }
+    ),
+}
 
 
 # Custom inline formsets for nested forms
@@ -469,6 +547,7 @@ class ProjectAssignmentForm(forms.ModelForm):
             "end_date": forms.DateInput(
                 format="%Y-%m-%d",
             ),
+            "scoping": forms.HiddenInput(),
         }
         field_classes = {
             "note": JinjaRichTextField,
@@ -1256,6 +1335,25 @@ class ProjectForm(forms.ModelForm):
         self.fields["client"].empty_label = "-- Select a Client --"
         self.fields["project_type"].empty_label = "-- Select a Project Type --"
 
+        scoping_initial = self._coerce_scoping_payload(getattr(self.instance, "scoping", None))
+        if self.is_bound:
+            bound_value = self.data.get(self.add_prefix("scoping"))
+            if bound_value is None:
+                bound_value = self.data.get("scoping")
+            if bound_value:
+                try:
+                    bound_payload = json.loads(bound_value)
+                except (TypeError, ValueError):
+                    bound_payload = None
+                else:
+                    scoping_initial = self._coerce_scoping_payload(bound_payload)
+
+        self.fields["scoping"].initial = json.dumps(scoping_initial)
+        self.scoping_initial = scoping_initial
+        self.scoping_display = self._build_scoping_display(scoping_initial)
+        self.scoping_presets = PROJECT_TYPE_SCOPING_PRESETS
+        self.scoping_has_existing = self._has_scoping_selection(scoping_initial)
+
         # Design form layout with Crispy FormHelper
         self.helper = FormHelper()
         # Turn on <form> tags for this parent form
@@ -1303,6 +1401,7 @@ class ProjectForm(forms.ModelForm):
                         Column("tags", css_class="form-group col-md-6 mb-0"),
                         css_class="form-row",
                     ),
+                    HTML("""{% include 'rolodex/includes/project_scoping.html' %}"""),
                     "note",
                     link_css_class="project-icon",
                     css_id="project",
@@ -1331,6 +1430,73 @@ class ProjectForm(forms.ModelForm):
                 ),
             ),
         )
+
+    @staticmethod
+    def _coerce_scoping_payload(payload):
+        normalized = default_project_scoping()
+        if not isinstance(payload, dict):
+            return normalized
+        for category_key, category_data in payload.items():
+            if category_key not in normalized or not isinstance(category_data, dict):
+                continue
+            normalized_category = normalized[category_key]
+            normalized_category["selected"] = bool(category_data.get("selected"))
+            for option_key in normalized_category.keys():
+                if option_key == "selected":
+                    continue
+                normalized_category[option_key] = bool(category_data.get(option_key))
+        return normalized
+
+    @staticmethod
+    def _build_scoping_display(scoping_payload):
+        display = []
+        for category_key, category_data in PROJECT_SCOPING_CONFIGURATION.items():
+            options = []
+            initial_data = scoping_payload.get(category_key, {})
+            for option_key, option_label in category_data.get("options", {}).items():
+                options.append(
+                    {
+                        "key": option_key,
+                        "label": option_label,
+                        "selected": bool(initial_data.get(option_key)),
+                    }
+                )
+            display.append(
+                {
+                    "key": category_key,
+                    "label": category_data.get("label", category_key.title()),
+                    "selected": bool(initial_data.get("selected")),
+                    "options": options,
+                }
+            )
+        return display
+
+    @staticmethod
+    def _has_scoping_selection(scoping_payload):
+        for category_data in scoping_payload.values():
+            if category_data.get("selected"):
+                return True
+            for option_key, option_value in category_data.items():
+                if option_key == "selected":
+                    continue
+                if option_value:
+                    return True
+        return False
+
+    def clean_scoping(self):
+        scoping_value = self.cleaned_data.get("scoping")
+        if isinstance(scoping_value, dict):
+            return self._coerce_scoping_payload(scoping_value)
+        if not scoping_value:
+            return default_project_scoping()
+        try:
+            payload = json.loads(scoping_value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                _("Unable to parse the provided scoping information."),
+                code="invalid",
+            ) from exc
+        return self._coerce_scoping_payload(payload)
 
     def clean_end_date(self):
         end_date = self.cleaned_data["end_date"]

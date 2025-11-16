@@ -1,0 +1,39 @@
+{% load static %}
+<div class="card mt-3" id="project-scoping" data-has-existing="{{ form.scoping_has_existing|yesno:'true,false' }}">
+  <div class="card-body">
+    <div class="d-flex align-items-center mb-2">
+      <h5 class="mb-0">Scoping</h5>
+      <span class="badge badge-info ml-2">New</span>
+    </div>
+    <p class="text-muted mb-3">Select the high-level areas that apply to this engagement. Sub-options become available when a category is enabled and can be fine-tuned per project.</p>
+    {{ form.scoping }}
+    <div id="project-scoping-groups">
+      {% for category in form.scoping_display %}
+        <div class="border rounded mb-3 scoping-category" data-category="{{ category.key }}">
+          <div class="bg-light border-bottom p-2 d-flex justify-content-between align-items-center">
+            <div class="form-check mb-0">
+              <input class="form-check-input scoping-category-toggle" type="checkbox" id="scoping-{{ category.key }}"
+                     data-target="#scoping-{{ category.key }}-options" {% if category.selected %}checked{% endif %}>
+              <label class="form-check-label font-weight-bold" for="scoping-{{ category.key }}">{{ category.label }}</label>
+            </div>
+            <small class="text-muted">Toggle to scope this area</small>
+          </div>
+          <div class="p-3 scoping-options {% if not category.selected %}d-none{% endif %}" id="scoping-{{ category.key }}-options">
+            <div class="row">
+              {% for option in category.options %}
+                <div class="col-sm-6 col-md-4">
+                  <div class="form-check">
+                    <input class="form-check-input scoping-option" type="checkbox" id="scoping-{{ category.key }}-{{ option.key }}"
+                           data-category="{{ category.key }}" data-option="{{ option.key }}" {% if option.selected %}checked{% endif %}>
+                    <label class="form-check-label" for="scoping-{{ category.key }}-{{ option.key }}">{{ option.label }}</label>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{{ form.scoping_presets|json_script:"project-scoping-presets" }}
