@@ -1,4 +1,21 @@
 {% load static %}
+<style>
+  #project-scoping .scoping-options .form-check {
+    display: flex;
+    align-items: center;
+  }
+
+  #project-scoping .scoping-options .form-check-input {
+    position: static;
+    margin-top: 0;
+    margin-left: 0;
+    margin-right: 0.35rem;
+  }
+
+  #project-scoping .scoping-options .form-check-label {
+    margin-bottom: 0;
+  }
+</style>
 <div class="card mt-3" id="project-scoping" data-has-existing="{{ form.scoping_has_existing|yesno:'true,false' }}">
   <div class="card-body">
     <div class="d-flex align-items-center mb-2">
