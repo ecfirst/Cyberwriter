@@ -3,6 +3,7 @@
 # Standard Libraries
 import os
 import re
+from collections import OrderedDict
 from datetime import time, timedelta
 from typing import Any, Dict, List, Optional, Set
 
@@ -22,6 +23,101 @@ from ghostwriter.reporting.models import ReportFindingLink
 from ghostwriter.rolodex.validators import validate_ip_range
 
 User = get_user_model()
+
+
+PROJECT_SCOPING_CONFIGURATION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
+    [
+        (
+            "external",
+            {
+                "label": "External",
+                "options": OrderedDict(
+                    [
+                        ("osint", "OSINT"),
+                        ("dns", "DNS"),
+                        ("nexpose", "Nexpose"),
+                        ("web", "Web"),
+                    ]
+                ),
+            },
+        ),
+        (
+            "internal",
+            {
+                "label": "Internal",
+                "options": OrderedDict(
+                    [
+                        ("nexpose", "Nexpose"),
+                        ("iot_iomt", "IoT/IoMT"),
+                        ("endpoint", "Endpoint"),
+                        ("snmp", "SNMP"),
+                        ("sql", "SQL"),
+                    ]
+                ),
+            },
+        ),
+        (
+            "iam",
+            {
+                "label": "IAM",
+                "options": OrderedDict(
+                    [
+                        ("ad", "AD"),
+                        ("password", "Password"),
+                    ]
+                ),
+            },
+        ),
+        (
+            "wireless",
+            {
+                "label": "Wireless",
+                "options": OrderedDict(
+                    [
+                        ("walkthru", "Walkthru"),
+                        ("segmentation", "Segmentation"),
+                    ]
+                ),
+            },
+        ),
+        (
+            "firewall",
+            {
+                "label": "Firewall",
+                "options": OrderedDict(
+                    [
+                        ("os", "OS"),
+                        ("configuration", "Configuration"),
+                    ]
+                ),
+            },
+        ),
+        (
+            "cloud",
+            {
+                "label": "Cloud",
+                "options": OrderedDict(
+                    [
+                        ("cloud_management", "Cloud Management"),
+                        ("iam_management", "IAM Management"),
+                    ]
+                ),
+            },
+        ),
+    ]
+)
+
+
+def default_project_scoping() -> Dict[str, Dict[str, bool]]:
+    """Return a default payload for project scoping selections."""
+
+    defaults: "OrderedDict[str, Dict[str, bool]]" = OrderedDict()
+    for category_key, category_data in PROJECT_SCOPING_CONFIGURATION.items():
+        category_defaults: Dict[str, bool] = {"selected": False}
+        for option_key in category_data.get("options", {}):
+            category_defaults[option_key] = False
+        defaults[category_key] = category_defaults
+    return defaults
 
 
 class Client(models.Model):
@@ -370,6 +466,11 @@ class Project(models.Model):
         default=dict,
         blank=True,
         help_text="Risk ratings derived from the uploaded workbook",
+    )
+    scoping = models.JSONField(
+        default=default_project_scoping,
+        blank=True,
+        help_text="Track the selected scoping categories and their sub-options",
     )
     slack_channel = models.CharField(
         "Project Slack Channel",

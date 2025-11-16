@@ -183,5 +183,99 @@
       displayToastTop({type: 'success', string: 'Updated the primary contact (there must be one and only one).', title: 'Contacts Updated'})
       obj.checked = true;
     }
+
+    const scopingField = $('#id_scoping');
+    const scopingPresetsElement = document.getElementById('project-scoping-presets');
+    const scopingPresets = scopingPresetsElement ? JSON.parse(scopingPresetsElement.textContent) : {};
+
+    function updateScopingField() {
+      const payload = {};
+      $('#project-scoping-groups .scoping-category').each(function () {
+        const categoryKey = $(this).data('category');
+        const categoryData = {selected: $(this).find('.scoping-category-toggle').prop('checked')};
+        $(this).find('.scoping-option').each(function () {
+          categoryData[$(this).data('option')] = $(this).prop('checked');
+        });
+        payload[categoryKey] = categoryData;
+      });
+      if (scopingField.length) {
+        scopingField.val(JSON.stringify(payload));
+      }
+    }
+
+    function toggleCategoryOptions($toggle) {
+      const targetSelector = $toggle.data('target');
+      const $optionsWrapper = $(targetSelector);
+      if ($toggle.prop('checked')) {
+        $optionsWrapper.removeClass('d-none');
+        $optionsWrapper.find('.scoping-option').prop('checked', true);
+      } else {
+        $optionsWrapper.addClass('d-none');
+        $optionsWrapper.find('.scoping-option').prop('checked', false);
+      }
+      updateScopingField();
+    }
+
+    function applyScopingPreset(presetName) {
+      if (!presetName) {
+        return;
+      }
+      const preset = scopingPresets[presetName];
+      if (!preset) {
+        return;
+      }
+      $('#project-scoping-groups .scoping-category').each(function () {
+        const categoryKey = $(this).data('category');
+        const $toggle = $(this).find('.scoping-category-toggle');
+        const targetSelector = $toggle.data('target');
+        const $optionsWrapper = $(targetSelector);
+        const $options = $optionsWrapper.find('.scoping-option');
+        const categoryPreset = preset[categoryKey];
+        if (categoryPreset) {
+          $toggle.prop('checked', !!categoryPreset.selected);
+          if (categoryPreset.selected) {
+            $optionsWrapper.removeClass('d-none');
+          } else {
+            $optionsWrapper.addClass('d-none');
+          }
+          $options.each(function () {
+            const optionKey = $(this).data('option');
+            $(this).prop('checked', !!categoryPreset[optionKey]);
+          });
+        } else {
+          $toggle.prop('checked', false);
+          $optionsWrapper.addClass('d-none');
+          $options.prop('checked', false);
+        }
+      });
+      updateScopingField();
+    }
+
+    $('#project-scoping').on('change', '.scoping-category-toggle', function () {
+      toggleCategoryOptions($(this));
+    });
+
+    $('#project-scoping').on('change', '.scoping-option', function () {
+      updateScopingField();
+    });
+
+    const projectTypeField = $('#id_project_type');
+    const scopingHasExisting = $('#project-scoping').data('has-existing') === true || $('#project-scoping').data('has-existing') === 'true';
+
+    projectTypeField.on('change', function () {
+      const selectedText = $(this).find('option:selected').text().trim();
+      if (selectedText) {
+        applyScopingPreset(selectedText);
+      }
+    });
+
+    if (!scopingHasExisting) {
+      const initialType = projectTypeField.find('option:selected').text().trim();
+      if (initialType) {
+        applyScopingPreset(initialType);
+      }
+    } else {
+      updateScopingField();
+    }
   </script>
 {% endblock %}

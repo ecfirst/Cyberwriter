@@ -1,4 +1,5 @@
 # Standard Libraries
+import json
 import logging
 from datetime import date, datetime, timedelta, timezone
 
@@ -44,6 +45,7 @@ from ghostwriter.rolodex.forms_project import (
     ProjectTargetFormSet,
     WhiteCardFormSet,
 )
+from ghostwriter.rolodex.models import default_project_scoping
 
 logging.disable(logging.CRITICAL)
 
@@ -537,6 +539,32 @@ class ProjectFormTests(TestCase):
 
         form = self.form_data(**project)
         self.assertTrue(form.is_valid())
+
+    def test_scoping_cleaned_payload(self):
+        project = self.project_dict.copy()
+        scoping_payload = default_project_scoping()
+        scoping_payload["external"]["selected"] = True
+        scoping_payload["external"]["osint"] = True
+        scoping_payload["external"]["dns"] = False
+
+        form = ProjectForm(
+            data={
+                "start_date": project["start_date"],
+                "end_date": project["end_date"],
+                "project_type": project["project_type_id"],
+                "client": project["client_id"],
+                "codename": project["codename"],
+                "note": project["note"],
+                "timezone": project["timezone"],
+                "scoping": json.dumps(scoping_payload),
+            }
+        )
+
+        self.assertTrue(form.is_valid())
+        cleaned_scoping = form.cleaned_data["scoping"]
+        self.assertTrue(cleaned_scoping["external"]["selected"])
+        self.assertTrue(cleaned_scoping["external"]["osint"])
+        self.assertFalse(cleaned_scoping["external"]["dns"])
 
 
 class ProjectAssignmentFormSetTests(TestCase):
