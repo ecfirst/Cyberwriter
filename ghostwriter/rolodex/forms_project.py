@@ -1314,6 +1314,7 @@ class ProjectForm(forms.ModelForm):
             "end_date": forms.DateInput(
                 format="%Y-%m-%d",
             ),
+            "scoping": forms.HiddenInput(),
         }
         field_classes = {
             "note": JinjaRichTextField,

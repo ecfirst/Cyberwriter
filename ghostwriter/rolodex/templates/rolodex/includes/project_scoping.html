@@ -6,7 +6,7 @@
       <span class="badge badge-info ml-2">New</span>
     </div>
     <p class="text-muted mb-3">Select the high-level areas that apply to this engagement. Sub-options become available when a category is enabled and can be fine-tuned per project.</p>
-    {{ form.scoping }}
+    {{ form.scoping.as_hidden }}
     <div id="project-scoping-groups">
       {% for category in form.scoping_display %}
         <div class="border rounded mb-3 scoping-category" data-category="{{ category.key }}">
@@ -21,7 +21,7 @@
           <div class="p-3 scoping-options {% if not category.selected %}d-none{% endif %}" id="scoping-{{ category.key }}-options">
             <div class="row">
               {% for option in category.options %}
-                <div class="col-sm-6 col-md-4">
+                <div class="col-sm-6 col-md-4 mb-2">
                   <div class="form-check">
                     <input class="form-check-input scoping-option" type="checkbox" id="scoping-{{ category.key }}-{{ option.key }}"
                            data-category="{{ category.key }}" data-option="{{ option.key }}" {% if option.selected %}checked{% endif %}>
