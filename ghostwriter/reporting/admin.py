@@ -24,6 +24,7 @@ from ghostwriter.reporting.models import (
     ReportTemplate,
     GradeRiskMapping,
     PasswordComplianceMapping,
+    RiskScoreRangeMapping,
     Severity,
 )
 from ghostwriter.reporting.resources import FindingResource, ObservationResource
@@ -227,6 +228,13 @@ class GradeRiskMappingAdmin(admin.ModelAdmin):
     list_display = ("grade", "risk")
     list_editable = ("risk",)
     ordering = ("grade",)
+
+
+@admin.register(RiskScoreRangeMapping)
+class RiskScoreRangeMappingAdmin(admin.ModelAdmin):
+    list_display = ("risk", "min_score", "max_score")
+    list_editable = ("min_score", "max_score")
+    ordering = ("min_score", "risk")
 
 
 @admin.register(PasswordComplianceMapping)

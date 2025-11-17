@@ -1,5 +1,6 @@
 # Standard Libraries
 from datetime import timedelta
+from decimal import Decimal
 import logging
 import os
 import time
@@ -34,7 +35,7 @@ from ghostwriter.factories import (
     SeverityFactory,
     UserFactory,
 )
-from ghostwriter.reporting.models import GradeRiskMapping, Report
+from ghostwriter.reporting.models import GradeRiskMapping, Report, RiskScoreRangeMapping
 from ghostwriter.rolodex.models import Project
 
 logging.disable(logging.CRITICAL)
@@ -784,3 +785,25 @@ class GradeRiskMappingModelTests(TestCase):
     def test_risk_for_grade_handles_unknown_values(self):
         self.assertIsNone(GradeRiskMapping.risk_for_grade("Z"))
         self.assertEqual(GradeRiskMapping.risk_for_grade("B"), "medium")
+
+
+class RiskScoreRangeMappingModelTests(TestCase):
+    """Collection of tests for :model:`reporting.RiskScoreRangeMapping`."""
+
+    def test_default_entries_exist(self):
+        self.assertGreaterEqual(
+            RiskScoreRangeMapping.objects.count(),
+            len(RiskScoreRangeMapping.DEFAULT_RISK_SCORE_MAP),
+        )
+
+    def test_get_risk_score_map_returns_expected_values(self):
+        mapping = RiskScoreRangeMapping.get_risk_score_map()
+        self.assertEqual(mapping.get("Low"), (Decimal("1.0"), Decimal("1.9")))
+        self.assertEqual(mapping.get("High"), (Decimal("5.0"), Decimal("6.0")))
+
+    def test_score_range_for_risk_handles_unknown_values(self):
+        self.assertIsNone(RiskScoreRangeMapping.score_range_for_risk(""))
+        self.assertEqual(
+            RiskScoreRangeMapping.score_range_for_risk("Medium"),
+            (Decimal("3.0"), Decimal("3.9")),
+        )
