@@ -456,6 +456,75 @@ def load_password_cap_map() -> Dict[str, str]:
     )
 
 
+def _normalize_matrix_key(value: Any) -> Optional[str]:
+    """Return a normalized lookup key for matrix entries."""
+
+    if value in (None, ""):
+        return None
+    normalized = " ".join(str(value).strip().lower().split())
+    return normalized or None
+
+
+def load_vulnerability_matrix() -> Dict[str, Dict[str, str]]:
+    """Return vulnerability matrix entries from the database."""
+
+    try:
+        model = apps.get_model("rolodex", "VulnerabilityMatrixEntry")
+    except LookupError:  # pragma: no cover - defensive guard
+        return {}
+
+    try:
+        entries = model.objects.all().values(
+            "vulnerability",
+            "action_required",
+            "remediation_impact",
+            "vulnerability_threat",
+            "category",
+        )
+    except (OperationalError, ProgrammingError):  # pragma: no cover - defensive guard
+        return {}
+
+    matrix: Dict[str, Dict[str, str]] = {}
+    for entry in entries:
+        key = _normalize_matrix_key(entry.get("vulnerability"))
+        if not key:
+            continue
+        matrix[key] = {
+            "action_required": entry.get("action_required") or "",
+            "remediation_impact": entry.get("remediation_impact") or "",
+            "vulnerability_threat": entry.get("vulnerability_threat") or "",
+            "category": entry.get("category") or "",
+        }
+
+    return matrix
+
+
+def load_web_issue_matrix() -> Dict[str, Dict[str, str]]:
+    """Return web issue matrix entries from the database."""
+
+    try:
+        model = apps.get_model("rolodex", "WebIssueMatrixEntry")
+    except LookupError:  # pragma: no cover - defensive guard
+        return {}
+
+    try:
+        entries = model.objects.all().values("title", "impact", "fix")
+    except (OperationalError, ProgrammingError):  # pragma: no cover - defensive guard
+        return {}
+
+    matrix: Dict[str, Dict[str, str]] = {}
+    for entry in entries:
+        key = _normalize_matrix_key(entry.get("title"))
+        if not key:
+            continue
+        matrix[key] = {
+            "impact": entry.get("impact") or "",
+            "fix": entry.get("fix") or "",
+        }
+
+    return matrix
+
+
 def _default_password_compliance_matrix() -> Dict[str, Dict[str, Any]]:
     """Return a sanitized copy of the default password compliance matrix."""
 
@@ -1159,7 +1228,9 @@ def _normalize_web_site_payload(payload: Any, site_name: Optional[str] = None) -
     return normalized
 
 
-def _coerce_web_issue_summary(value: Any) -> Dict[str, Any]:
+def _coerce_web_issue_summary(
+    value: Any, *, web_issue_matrix: Optional[Dict[str, Dict[str, str]]] = None
+) -> Dict[str, Any]:
     """Return a normalized mapping of aggregate web issue severities."""
 
     low_sample_string = ""
@@ -1245,7 +1316,9 @@ def _coerce_web_issue_summary(value: Any) -> Dict[str, Any]:
                         count_value = 1
                     aggregated[severity_key][(issue, impact)] += max(count_value, 0)
         severity_groups = {
-            severity_key: _summarize_severity_counter(counter)
+            severity_key: _summarize_severity_counter(
+                counter, web_issue_matrix=web_issue_matrix
+            )
             for severity_key, counter in aggregated.items()
         }
         for severity_key, fallback_total in fallback_totals.items():
@@ -1339,7 +1412,11 @@ def _build_web_issue_ai_response(
     return None
 
 
-def parse_nexpose_vulnerability_report(file_obj: File) -> Dict[str, Dict[str, Any]]:
+def parse_nexpose_vulnerability_report(
+    file_obj: File,
+    *,
+    vulnerability_matrix: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Dict[str, Dict[str, Any]]:
     """Parse a Nexpose CSV export into grouped vulnerability summaries."""
 
     grouped: Dict[str, Counter] = {
@@ -1382,7 +1459,9 @@ def parse_nexpose_vulnerability_report(file_obj: File) -> Dict[str, Dict[str, An
         )
         items: List[Dict[str, Any]] = []
         for (title, impact), count in ordered[:5]:
-            items.append({"title": title, "impact": impact, "count": count})
+            entry = {"title": title, "impact": impact, "count": count}
+            _apply_vulnerability_matrix_fields(entry, vulnerability_matrix)
+            items.append(entry)
 
         summaries[severity_map[severity]] = _SeverityGroup(
             total_unique=len(counter),
@@ -1449,7 +1528,54 @@ def _categorize_web_risk(raw_value: str) -> Optional[str]:
     return None
 
 
-def _summarize_severity_counter(counter: Counter[Tuple[str, str]]) -> _SeverityGroup:
+def _apply_web_issue_matrix_fields(
+    entry: Dict[str, Any], web_issue_matrix: Optional[Dict[str, Dict[str, str]]]
+) -> Dict[str, Any]:
+    """Populate impact/fix fields using the web issue matrix when available."""
+
+    metadata: Optional[Dict[str, str]] = None
+    if web_issue_matrix:
+        key = _normalize_matrix_key(entry.get("issue"))
+        if key:
+            metadata = web_issue_matrix.get(key)
+    if metadata:
+        if metadata.get("impact"):
+            entry["impact"] = metadata["impact"]
+        entry["fix"] = metadata.get("fix", "")
+    else:
+        entry.setdefault("fix", "")
+    return entry
+
+
+def _apply_vulnerability_matrix_fields(
+    entry: Dict[str, Any], vulnerability_matrix: Optional[Dict[str, Dict[str, str]]]
+) -> Dict[str, Any]:
+    """Populate vulnerability metadata fields when available."""
+
+    defaults = {
+        "action_required": "",
+        "remediation_impact": "",
+        "vulnerability_threat": "",
+        "category": "",
+    }
+    metadata: Optional[Dict[str, str]] = None
+    if vulnerability_matrix:
+        key = _normalize_matrix_key(entry.get("title"))
+        if key:
+            metadata = vulnerability_matrix.get(key)
+    if metadata:
+        entry.update({**defaults, **metadata})
+    else:
+        for field, default in defaults.items():
+            entry.setdefault(field, default)
+    return entry
+
+
+def _summarize_severity_counter(
+    counter: Counter[Tuple[str, str]],
+    *,
+    web_issue_matrix: Optional[Dict[str, Dict[str, str]]] = None,
+) -> _SeverityGroup:
     """Convert a counter of issue/impact pairs into a severity summary."""
 
     ordered = sorted(
@@ -1462,7 +1588,9 @@ def _summarize_severity_counter(counter: Counter[Tuple[str, str]]) -> _SeverityG
     )
     items: List[Dict[str, Any]] = []
     for (issue, impact), count in ordered[:5]:
-        items.append({"issue": issue, "impact": impact, "count": count})
+        entry = {"issue": issue, "impact": impact, "count": count}
+        _apply_web_issue_matrix_fields(entry, web_issue_matrix)
+        items.append(entry)
 
     return _SeverityGroup(total_unique=len(counter), items=items)
 
@@ -1749,6 +1877,8 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         for artifact_key, label in nexpose_definitions_by_key.items()
     }
 
+    vulnerability_matrix = load_vulnerability_matrix()
+    web_issue_matrix = load_web_issue_matrix()
     burp_csv_uploaded = False
 
     for data_file in project.data_files.all():
@@ -1783,7 +1913,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             if parsed_firewall:
                 firewall_results.extend(parsed_firewall)
         elif label in NEXPOSE_ARTIFACT_DEFINITIONS:
-            parsed_vulnerabilities = parse_nexpose_vulnerability_report(data_file.file)
+            parsed_vulnerabilities = parse_nexpose_vulnerability_report(
+                data_file.file, vulnerability_matrix=vulnerability_matrix
+            )
             if any(details.get("items") for details in parsed_vulnerabilities.values()):
                 definition = NEXPOSE_ARTIFACT_DEFINITIONS[label]
                 artifact_key = definition["artifact_key"]
@@ -1840,7 +1972,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
         if any(counter for counter in aggregated_severity.values()):
             severity_summaries = {
-                severity_key: _summarize_severity_counter(counter)
+                severity_key: _summarize_severity_counter(
+                    counter, web_issue_matrix=web_issue_matrix
+                )
                 for severity_key, counter in aggregated_severity.items()
             }
             web_summary = {

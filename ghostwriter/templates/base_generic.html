@@ -206,50 +206,61 @@
 
         <!-- Admin Section -->
         <ul class="list-unstyled components">
-          <!-- Admin Panel Shortcuts -->
-          <p class="sideheader icon admin-icon">Administration</p>
-          {% if request.user.is_staff or request.user.role == "admin" %}
-            <li><a href="{% url 'home:management' %}">Review Configuration</a></li>
-            <li>
-              <a href="#adminSubmenu" data-toggle="collapse" aria-expanded="false"
-                 class="dropdown-toggle sidebar-dropdown-toggle">Admin Panel</a>
-              <ul class="collapse list-unstyled text-left" id="adminSubmenu">
-                <li><a class="icon gears-icon" href="{% url 'admin:index' %}">Admin Panel</a></li>
-                <li><a class="icon slider-icon" href="{% url 'admin:index' %}commandcenter">Configuration Mgmt</a></li>
-                {% if perms.users.view_user %}
-                  <li><a class="icon users-icon" href="{% url 'admin:users_user_changelist' %}">User Mgmt</a></li>
-                {% endif %}
-                {% if perms.django_q.view_task %}
-                  <li><a class="icon calendar-icon" href="{% url 'admin:app_list' 'django_q' %}">Scheduled Tasks</a>
+          {% if request.user|is_privileged %}
+            <!-- Admin Panel Shortcuts -->
+            <p class="sideheader icon admin-icon">Administration</p>
+            {% if request.user.is_staff or request.user.role == "admin" %}
+              <li><a href="{% url 'home:management' %}">Review Configuration</a></li>
+              <li>
+                <a href="#adminSubmenu" data-toggle="collapse" aria-expanded="false"
+                   class="dropdown-toggle sidebar-dropdown-toggle">Admin Panel</a>
+                <ul class="collapse list-unstyled text-left" id="adminSubmenu">
+                  <li><a class="icon gears-icon" href="{% url 'admin:index' %}">Admin Panel</a></li>
+                  <li><a class="icon slider-icon" href="{% url 'admin:index' %}commandcenter">Configuration Mgmt</a></li>
+                  {% if perms.users.view_user %}
+                    <li><a class="icon users-icon" href="{% url 'admin:users_user_changelist' %}">User Mgmt</a></li>
+                  {% endif %}
+                  {% if perms.django_q.view_task %}
+                    <li><a class="icon calendar-icon" href="{% url 'admin:app_list' 'django_q' %}">Scheduled Tasks</a>
+                    </li>
+                  {% endif %}
+                </ul>
+              </li>
+              <!-- Bulk Import & Export Shortcuts -->
+              <li>
+                <a href="#bulkSubmenu" data-toggle="collapse" aria-expanded="false"
+                   class="dropdown-toggle sidebar-dropdown-toggle">Import & Export</a>
+                <ul class="collapse list-unstyled text-left" id="bulkSubmenu">
+                  <li><a class="icon import-icon" href="{% url 'admin:reporting_finding_import' %}">Upload Bulk
+                    Findings</a></li>
+                  <li><a class="icon export-icon" href="{% url 'reporting:export_findings_to_csv' %}">Export Findings to
+                    CSV</a></li>
+                  <hr>
+                  <li><a class="icon import-icon" href="{% url 'admin:reporting_observation_import' %}">Upload Bulk
+                    Observations</a></li>
+                  <li><a class="icon export-icon" href="{% url 'reporting:export_observations_to_csv' %}">Export
+                    Observations to
+                    CSV</a></li>
+                  <hr>
+                  <li><a class="icon import-icon" href="{% url 'admin:shepherd_domain_import' %}">Upload Bulk Domains</a>
                   </li>
-                {% endif %}
-              </ul>
-            </li>
-            <!-- Bulk Import & Export Shortcuts -->
+                  <li><a class="icon export-icon" href="{% url 'shepherd:export_domains_to_csv' %}">Export Domains to
+                    CSV</a></li>
+                  <hr>
+                  <li><a class="icon import-icon" href="{% url 'admin:shepherd_staticserver_import' %}">Upload Bulk
+                    Servers</a></li>
+                  <li><a class="icon export-icon" href="{% url 'shepherd:export_servers_to_csv' %}">Export Servers to
+                    CSV</a></li>
+                </ul>
+              </li>
+            {% endif %}
             <li>
-              <a href="#bulkSubmenu" data-toggle="collapse" aria-expanded="false"
-                 class="dropdown-toggle sidebar-dropdown-toggle">Import & Export</a>
-              <ul class="collapse list-unstyled text-left" id="bulkSubmenu">
-                <li><a class="icon import-icon" href="{% url 'admin:reporting_finding_import' %}">Upload Bulk
-                  Findings</a></li>
-                <li><a class="icon export-icon" href="{% url 'reporting:export_findings_to_csv' %}">Export Findings to
-                  CSV</a></li>
-                <hr>
-                <li><a class="icon import-icon" href="{% url 'admin:reporting_observation_import' %}">Upload Bulk
-                  Observations</a></li>
-                <li><a class="icon export-icon" href="{% url 'reporting:export_observations_to_csv' %}">Export
-                  Observations to
-                  CSV</a></li>
-                <hr>
-                <li><a class="icon import-icon" href="{% url 'admin:shepherd_domain_import' %}">Upload Bulk Domains</a>
+              <a href="#matrixSubmenu" data-toggle="collapse" aria-expanded="false"
+                 class="dropdown-toggle sidebar-dropdown-toggle">Matrices</a>
+              <ul class="collapse list-unstyled text-left" id="matrixSubmenu">
+                <li><a class="icon list-icon" href="{% url 'rolodex:vulnerability_matrix' %}">Vulnerability matrix</a>
                 </li>
-                <li><a class="icon export-icon" href="{% url 'shepherd:export_domains_to_csv' %}">Export Domains to
-                  CSV</a></li>
-                <hr>
-                <li><a class="icon import-icon" href="{% url 'admin:shepherd_staticserver_import' %}">Upload Bulk
-                  Servers</a></li>
-                <li><a class="icon export-icon" href="{% url 'shepherd:export_servers_to_csv' %}">Export Servers to
-                  CSV</a></li>
+                <li><a class="icon list-icon" href="{% url 'rolodex:web_issue_matrix' %}">Web issue matrix</a></li>
               </ul>
             </li>
           {% endif %}

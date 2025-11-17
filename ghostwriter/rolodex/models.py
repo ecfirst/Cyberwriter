@@ -492,6 +492,79 @@ class PasswordCapMapping(models.Model):
         return f"{self.setting}"
 
 
+class VulnerabilityMatrixEntry(models.Model):
+    """Store reusable remediation context for recurring Nexpose findings."""
+
+    vulnerability = models.TextField(
+        "Vulnerability",
+        unique=True,
+        help_text="Exact vulnerability title as presented in scanner CSV exports.",
+    )
+    action_required = models.TextField(
+        "Action required",
+        blank=True,
+        default="",
+        help_text="Guidance describing the remediation action that must be taken.",
+    )
+    remediation_impact = models.TextField(
+        "Remediation impact",
+        blank=True,
+        default="",
+        help_text="Business or technical impact associated with the remediation effort.",
+    )
+    vulnerability_threat = models.TextField(
+        "Vulnerability threat",
+        blank=True,
+        default="",
+        help_text="Threat statement explaining the risk posed by the vulnerability.",
+    )
+    category = models.CharField(
+        "Category",
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Optional grouping or category for the vulnerability.",
+    )
+
+    class Meta:
+        ordering = ["vulnerability"]
+        verbose_name = "Vulnerability matrix entry"
+        verbose_name_plural = "Vulnerability matrix"
+
+    def __str__(self):
+        return self.vulnerability
+
+
+class WebIssueMatrixEntry(models.Model):
+    """Store curated impact and fix guidance for recurring web issues."""
+
+    title = models.TextField(
+        "Issue title",
+        unique=True,
+        help_text="Exact issue title as presented in burp.csv exports.",
+    )
+    impact = models.TextField(
+        "Impact",
+        blank=True,
+        default="",
+        help_text="Standardized impact statement for the issue.",
+    )
+    fix = models.TextField(
+        "Fix",
+        blank=True,
+        default="",
+        help_text="Recommended fix or remediation guidance for the issue.",
+    )
+
+    class Meta:
+        ordering = ["title"]
+        verbose_name = "Web issue matrix entry"
+        verbose_name_plural = "Web issue matrix"
+
+    def __str__(self):
+        return self.title
+
+
 class Project(models.Model):
     """
     Stores an individual project, related to :model:`rolodex.Client`,

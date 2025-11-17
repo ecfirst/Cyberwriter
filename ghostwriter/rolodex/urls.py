@@ -5,7 +5,7 @@ from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 
 # Ghostwriter Libraries
-from ghostwriter.rolodex import views
+from ghostwriter.rolodex import views, views_matrices
 
 app_name = "rolodex"
 
@@ -14,6 +14,59 @@ urlpatterns = [
     path("", views.index, name="index"),
     path("clients/", views.ClientListView.as_view(), name="clients"),
     path("projects/", views.ProjectListView.as_view(), name="projects"),
+]
+
+urlpatterns += [
+    path(
+        "matrices/vulnerabilities/",
+        views_matrices.VulnerabilityMatrixListView.as_view(),
+        name="vulnerability_matrix",
+    ),
+    path(
+        "matrices/vulnerabilities/add/",
+        views_matrices.VulnerabilityMatrixCreateView.as_view(),
+        name="vulnerability_matrix_add",
+    ),
+    path(
+        "matrices/vulnerabilities/<int:pk>/edit/",
+        views_matrices.VulnerabilityMatrixUpdateView.as_view(),
+        name="vulnerability_matrix_edit",
+    ),
+    path(
+        "matrices/vulnerabilities/upload/",
+        views_matrices.VulnerabilityMatrixImportView.as_view(),
+        name="vulnerability_matrix_import",
+    ),
+    path(
+        "matrices/vulnerabilities/download/",
+        views_matrices.VulnerabilityMatrixExportView.as_view(),
+        name="vulnerability_matrix_export",
+    ),
+    path(
+        "matrices/web-issues/",
+        views_matrices.WebIssueMatrixListView.as_view(),
+        name="web_issue_matrix",
+    ),
+    path(
+        "matrices/web-issues/add/",
+        views_matrices.WebIssueMatrixCreateView.as_view(),
+        name="web_issue_matrix_add",
+    ),
+    path(
+        "matrices/web-issues/<int:pk>/edit/",
+        views_matrices.WebIssueMatrixUpdateView.as_view(),
+        name="web_issue_matrix_edit",
+    ),
+    path(
+        "matrices/web-issues/upload/",
+        views_matrices.WebIssueMatrixImportView.as_view(),
+        name="web_issue_matrix_import",
+    ),
+    path(
+        "matrices/web-issues/download/",
+        views_matrices.WebIssueMatrixExportView.as_view(),
+        name="web_issue_matrix_export",
+    ),
 ]
 
 # URLs for AJAX requests – deletion and toggle views
