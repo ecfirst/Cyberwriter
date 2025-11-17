@@ -101,6 +101,7 @@ PROJECT_SCOPING_CONFIGURATION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
                     [
                         ("cloud_management", "Cloud Management"),
                         ("iam_management", "IAM Management"),
+                        ("system_configuration", "System Configuration"),
                     ]
                 ),
             },
@@ -136,6 +137,14 @@ def normalize_project_scoping(payload: Optional[Dict[str, Any]]) -> Dict[str, Di
             if option_key == "selected":
                 continue
             normalized_category[option_key] = bool(category_payload.get(option_key))
+
+        if (
+            category_key == "cloud"
+            and normalized_category.get("selected")
+            and "system_configuration" in normalized_category
+            and "system_configuration" not in category_payload
+        ):
+            normalized_category["system_configuration"] = True
     return normalized
 
 
@@ -860,9 +869,15 @@ class Project(models.Model):
 
                 enabled_for_threshold = max(enabled_accounts, 0)
                 threshold = enabled_for_threshold * 0.05
+                domain_admin_threshold = enabled_for_threshold * 0.005
 
                 if _safe_int(domain_entry.get("generic_accounts")) > threshold:
                     _record_ad_issue("Number of 'Generic Accounts'")
+
+                if _safe_int(domain_entry.get("generic_logins")) > threshold:
+                    _record_ad_issue(
+                        "Number of Systems with Logged in Generic Accounts"
+                    )
 
                 if _safe_int(domain_entry.get("inactive_accounts")) > threshold:
                     _record_ad_issue("Potentially Inactive Accounts")
@@ -873,7 +888,7 @@ class Project(models.Model):
                 if _safe_int(domain_entry.get("exp_passwords")) > threshold:
                     _record_ad_issue("Accounts with Expired Passwords")
 
-                if _safe_int(domain_entry.get("domain_admins")) > threshold:
+                if _safe_int(domain_entry.get("domain_admins")) > domain_admin_threshold:
                     _record_ad_issue("Number of Domain Admins")
 
                 if _safe_int(domain_entry.get("ent_admins")) > 1:

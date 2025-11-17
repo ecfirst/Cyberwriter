@@ -1157,6 +1157,7 @@ class NexposeDataParserTests(TestCase):
                         "total_accounts": 200,
                         "enabled_accounts": 150,
                         "generic_accounts": 20,
+                        "generic_logins": 10,
                         "inactive_accounts": 20,
                         "passwords_never_exp": 20,
                         "exp_passwords": 16,
@@ -1169,6 +1170,7 @@ class NexposeDataParserTests(TestCase):
                         "total_accounts": 180,
                         "enabled_accounts": 175,
                         "generic_accounts": 4,
+                        "generic_logins": 2,
                         "inactive_accounts": 3,
                         "passwords_never_exp": 2,
                         "exp_passwords": 1,
@@ -1181,6 +1183,7 @@ class NexposeDataParserTests(TestCase):
                         "total_accounts": 80,
                         "enabled_accounts": 80,
                         "generic_accounts": 0,
+                        "generic_logins": 0,
                         "inactive_accounts": 0,
                         "passwords_never_exp": 0,
                         "exp_passwords": 0,
@@ -1227,6 +1230,9 @@ class NexposeDataParserTests(TestCase):
                 "Domain Functionality Level less than 2008"
             ),
             "Number of Disabled Accounts": _expected("Number of Disabled Accounts"),
+            "Number of Systems with Logged in Generic Accounts": _expected(
+                "Number of Systems with Logged in Generic Accounts"
+            ),
             "Number of 'Generic Accounts'": _expected("Number of 'Generic Accounts'"),
             "Potentially Inactive Accounts": _expected(
                 "Potentially Inactive Accounts"
@@ -1245,7 +1251,8 @@ class NexposeDataParserTests(TestCase):
         expected_ancient = {
             "Domain Functionality Level less than 2008": _expected(
                 "Domain Functionality Level less than 2008"
-            )
+            ),
+            "Number of Domain Admins": _expected("Number of Domain Admins"),
         }
         self.assertEqual(ad_cap_map.get("ancient.local"), expected_ancient)
         self.assertNotIn("modern.local", ad_cap_map)
