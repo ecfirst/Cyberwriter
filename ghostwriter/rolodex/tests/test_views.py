@@ -1522,6 +1522,7 @@ class ProjectDataResponsesUpdateTests(TestCase):
                 {
                     "issue": "SQL Injection",
                     "impact": "This may lead to full database compromise.",
+                    "fix": "",
                     "count": 1,
                 }
             ],

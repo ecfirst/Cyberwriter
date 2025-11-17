@@ -3,6 +3,9 @@
 # Django Imports
 from django.contrib import admin
 
+# 3rd Party Libraries
+from import_export.admin import ImportExportMixin
+
 # Ghostwriter Libraries
 from ghostwriter.rolodex.models import (
     Client,
@@ -15,6 +18,8 @@ from ghostwriter.rolodex.models import (
     DNSRecommendationMapping,
     GeneralCapMapping,
     PasswordCapMapping,
+    VulnerabilityMatrixEntry,
+    WebIssueMatrixEntry,
     Deconfliction,
     DeconflictionStatus,
     ObjectivePriority,
@@ -31,6 +36,10 @@ from ghostwriter.rolodex.models import (
     ProjectTarget,
     ProjectType,
     WhiteCard,
+)
+from ghostwriter.rolodex.resources import (
+    VulnerabilityMatrixEntryResource,
+    WebIssueMatrixEntryResource,
 )
 
 
@@ -68,6 +77,26 @@ class DNSSOACapMappingAdmin(admin.ModelAdmin):
 class PasswordCapMappingAdmin(admin.ModelAdmin):
     list_display = ("setting", "cap_text")
     search_fields = ("setting", "cap_text")
+
+
+@admin.register(VulnerabilityMatrixEntry)
+class VulnerabilityMatrixEntryAdmin(ImportExportMixin, admin.ModelAdmin):
+    resource_class = VulnerabilityMatrixEntryResource
+    list_display = ("vulnerability", "category", "action_required")
+    search_fields = (
+        "vulnerability",
+        "category",
+        "action_required",
+        "remediation_impact",
+        "vulnerability_threat",
+    )
+
+
+@admin.register(WebIssueMatrixEntry)
+class WebIssueMatrixEntryAdmin(ImportExportMixin, admin.ModelAdmin):
+    resource_class = WebIssueMatrixEntryResource
+    list_display = ("title", "impact", "fix")
+    search_fields = ("title", "impact", "fix")
 
 
 @admin.register(Client)

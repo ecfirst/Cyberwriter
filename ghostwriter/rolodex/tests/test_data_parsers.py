@@ -32,6 +32,8 @@ from ghostwriter.rolodex.models import (
     GeneralCapMapping,
     PasswordCapMapping,
     ProjectDataFile,
+    VulnerabilityMatrixEntry,
+    WebIssueMatrixEntry,
 )
 from ghostwriter.reporting.models import PasswordComplianceMapping
 
@@ -129,6 +131,39 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         self.assertEqual(self.project.data_responses, {"custom": "value"})
+
+    def test_vulnerability_matrix_enriches_artifacts(self):
+        VulnerabilityMatrixEntry.objects.create(
+            vulnerability="Zeta Exposure",
+            action_required="Apply patches",
+            remediation_impact="Moderate downtime",
+            vulnerability_threat="Remote compromise",
+            category="TLS",
+        )
+        rows = [
+            {
+                "Vulnerability Title": "Zeta Exposure",
+                "Impact": "Existing impact",
+                "Vulnerability Severity Level": "High",
+            }
+        ]
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=self._build_csv_file("external_nexpose_csv.csv", rows),
+            requirement_label="external_nexpose_csv.csv",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_vulnerabilities")
+        high_items = artifact["high"]["items"]
+        self.assertTrue(high_items)
+        self.assertEqual(high_items[0]["action_required"], "Apply patches")
+        self.assertEqual(high_items[0]["remediation_impact"], "Moderate downtime")
+        self.assertEqual(high_items[0]["vulnerability_threat"], "Remote compromise")
+        self.assertEqual(high_items[0]["category"], "TLS")
 
     def test_firewall_csv_adds_vulnerability_summary(self):
         self.project.workbook_data = {
@@ -2036,6 +2071,36 @@ class NexposeDataParserTests(TestCase):
         web_artifact = self.project.data_artifacts.get("web_issues")
         self.assertEqual(web_artifact.get("ai_response"), "SQL summary XSS summary")
         self.assertEqual(mock_prompt.call_count, 2)
+
+    def test_web_issue_matrix_enriches_summary(self):
+        WebIssueMatrixEntry.objects.create(
+            title="SQL Injection",
+            impact="SQL matrix impact",
+            fix="Use parameterized queries",
+        )
+        csv_lines = [
+            "Host,Risk,Issue,Impact",
+            "portal.example.com,High,SQL Injection,Original impact",
+        ]
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "burp_csv.csv",
+                "\n".join(csv_lines).encode("utf-8"),
+                content_type="text/csv",
+            ),
+            requirement_label="burp_csv.csv",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        web_artifact = self.project.data_artifacts.get("web_issues")
+        high_items = web_artifact["high"]["items"]
+        self.assertTrue(high_items)
+        self.assertEqual(high_items[0]["impact"], "SQL matrix impact")
+        self.assertEqual(high_items[0]["fix"], "Use parameterized queries")
 
     def test_nexpose_cap_upload_populates_cap_map(self):
         csv_lines = [
