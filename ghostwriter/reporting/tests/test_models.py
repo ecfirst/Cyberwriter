@@ -802,6 +802,7 @@ class ScopingWeightMappingModelTests(TestCase):
         self.assertIn("nexpose", mapping["external"])
         self.assertEqual(mapping["external"]["nexpose"], Decimal("0.5"))
         self.assertEqual(sum(mapping["internal"].values()), Decimal("1"))
+        self.assertIn("system_configuration", mapping["cloud"])
 
     def test_get_weight_map_uses_latest_values(self):
         category = ScopingWeightCategory.objects.get(key="external")

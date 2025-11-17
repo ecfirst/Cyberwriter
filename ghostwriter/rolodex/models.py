@@ -101,6 +101,7 @@ PROJECT_SCOPING_CONFIGURATION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
                     [
                         ("cloud_management", "Cloud Management"),
                         ("iam_management", "IAM Management"),
+                        ("system_configuration", "System Configuration"),
                     ]
                 ),
             },
@@ -136,6 +137,14 @@ def normalize_project_scoping(payload: Optional[Dict[str, Any]]) -> Dict[str, Di
             if option_key == "selected":
                 continue
             normalized_category[option_key] = bool(category_payload.get(option_key))
+
+        if (
+            category_key == "cloud"
+            and normalized_category.get("selected")
+            and "system_configuration" in normalized_category
+            and "system_configuration" not in category_payload
+        ):
+            normalized_category["system_configuration"] = True
     return normalized
 
 

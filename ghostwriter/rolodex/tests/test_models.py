@@ -44,6 +44,7 @@ from ghostwriter.rolodex.models import (
     Project,
     build_scoping_weight_distribution,
     default_project_scoping,
+    normalize_project_scoping,
 )
 
 logging.disable(logging.CRITICAL)
@@ -329,6 +330,30 @@ class ProjectModelTests(TestCase):
         self.assertFalse(project.user_can_view(user))
         self.assertFalse(project.user_can_edit(user))
         self.assertFalse(project.user_can_delete(user))
+
+
+class ProjectScopingNormalizationTests(TestCase):
+    """Validate normalization helpers for project scoping data."""
+
+    def test_cloud_defaults_include_system_configuration(self):
+        payload = {
+            "cloud": {
+                "selected": True,
+                "cloud_management": True,
+            }
+        }
+        normalized = normalize_project_scoping(payload)
+        self.assertTrue(normalized["cloud"]["system_configuration"])
+
+    def test_cloud_system_configuration_respects_explicit_false(self):
+        payload = {
+            "cloud": {
+                "selected": True,
+                "system_configuration": False,
+            }
+        }
+        normalized = normalize_project_scoping(payload)
+        self.assertFalse(normalized["cloud"]["system_configuration"])
 
 
 class ProjectScopingWeightTests(TestCase):
