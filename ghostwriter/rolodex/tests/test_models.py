@@ -1,6 +1,7 @@
 # Standard Libraries
 import logging
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 # Django Imports
 from django.core.exceptions import ValidationError
@@ -36,8 +37,14 @@ from ghostwriter.factories import (
     UserFactory,
     WhiteCardFactory,
 )
+from ghostwriter.reporting.models import ScopingWeightOption
 from ghostwriter.rolodex import risk as risk_helpers
-from ghostwriter.rolodex.models import Client, Project
+from ghostwriter.rolodex.models import (
+    Client,
+    Project,
+    build_scoping_weight_distribution,
+    default_project_scoping,
+)
 
 logging.disable(logging.CRITICAL)
 
@@ -311,6 +318,8 @@ class ProjectModelTests(TestCase):
 
         client_invite = ClientInviteFactory(user=user, client=project.client)
         self.assertFalse(Project.user_can_create(user))
+
+
         self.assertTrue(project.user_can_view(user))
         self.assertTrue(project.user_can_edit(user))
         self.assertTrue(project.user_can_delete(user))
@@ -320,6 +329,45 @@ class ProjectModelTests(TestCase):
         self.assertFalse(project.user_can_view(user))
         self.assertFalse(project.user_can_edit(user))
         self.assertFalse(project.user_can_delete(user))
+
+
+class ProjectScopingWeightTests(TestCase):
+    """Validate helper utilities for project scoping weights."""
+
+    def test_weight_distribution_for_full_scope(self):
+        payload = default_project_scoping()
+        for category in payload.values():
+            category["selected"] = True
+            for option_key in list(category.keys()):
+                if option_key != "selected":
+                    category[option_key] = True
+
+        distribution = build_scoping_weight_distribution(payload)
+        self.assertIn("external", distribution)
+        external_weights = distribution["external"]
+        self.assertEqual(external_weights["nexpose"], Decimal("0.5"))
+        self.assertEqual(sum(external_weights.values()), Decimal("1"))
+
+    def test_weight_distribution_scales_remaining_values(self):
+        payload = default_project_scoping()
+        payload["internal"]["selected"] = True
+        payload["internal"]["nexpose"] = True
+        payload["internal"]["endpoint"] = True
+
+        distribution = build_scoping_weight_distribution(payload)
+        internal_weights = distribution["internal"]
+        self.assertEqual(set(internal_weights.keys()), {"nexpose", "endpoint"})
+        self.assertEqual(sum(internal_weights.values()), Decimal("1"))
+        self.assertGreater(internal_weights["nexpose"], Decimal("0.5"))
+
+    def test_weight_distribution_handles_missing_configuration(self):
+        ScopingWeightOption.objects.filter(category__key="cloud").delete()
+        payload = default_project_scoping()
+        payload["cloud"]["selected"] = True
+        payload["cloud"]["cloud_management"] = True
+
+        distribution = build_scoping_weight_distribution(payload)
+        self.assertEqual(distribution["cloud"]["cloud_management"], Decimal("1"))
 
 
 class ProjectRiskBackfillTests(TestCase):

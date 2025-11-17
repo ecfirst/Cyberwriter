@@ -35,7 +35,13 @@ from ghostwriter.factories import (
     SeverityFactory,
     UserFactory,
 )
-from ghostwriter.reporting.models import GradeRiskMapping, Report, RiskScoreRangeMapping
+from ghostwriter.reporting.models import (
+    GradeRiskMapping,
+    Report,
+    RiskScoreRangeMapping,
+    ScopingWeightCategory,
+    ScopingWeightOption,
+)
 from ghostwriter.rolodex.models import Project
 
 logging.disable(logging.CRITICAL)
@@ -785,6 +791,35 @@ class GradeRiskMappingModelTests(TestCase):
     def test_risk_for_grade_handles_unknown_values(self):
         self.assertIsNone(GradeRiskMapping.risk_for_grade("Z"))
         self.assertEqual(GradeRiskMapping.risk_for_grade("B"), "medium")
+
+
+class ScopingWeightMappingModelTests(TestCase):
+    """Collection of tests for scoping weight configuration helpers."""
+
+    def test_get_weight_map_returns_database_values(self):
+        mapping = ScopingWeightCategory.get_weight_map()
+        self.assertIn("external", mapping)
+        self.assertIn("nexpose", mapping["external"])
+        self.assertEqual(mapping["external"]["nexpose"], Decimal("0.5"))
+        self.assertEqual(sum(mapping["internal"].values()), Decimal("1"))
+
+    def test_get_weight_map_uses_latest_values(self):
+        category = ScopingWeightCategory.objects.get(key="external")
+        option = category.options.get(key="web")
+        option.weight = Decimal("0.25")
+        option.save()
+
+        mapping = ScopingWeightCategory.get_weight_map()
+        self.assertEqual(mapping["external"]["web"], Decimal("0.25"))
+
+    def test_get_weight_map_falls_back_to_defaults(self):
+        ScopingWeightOption.objects.all().delete()
+        ScopingWeightCategory.objects.all().delete()
+
+        mapping = ScopingWeightCategory.get_weight_map()
+        for category_key, options in ScopingWeightCategory.DEFAULT_SCOPING_WEIGHTS.items():
+            self.assertIn(category_key, mapping)
+            self.assertEqual(mapping[category_key], options)
 
 
 class RiskScoreRangeMappingModelTests(TestCase):

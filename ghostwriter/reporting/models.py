@@ -1138,6 +1138,139 @@ class PasswordComplianceMapping(models.Model):
         return self.rule if isinstance(self.rule, dict) else {}
 
 
+class ScopingWeightCategory(models.Model):
+    """Store configurable weights for each project scoping category."""
+
+    DEFAULT_SCOPING_WEIGHTS = OrderedDict(
+        (
+            (
+                "external",
+                OrderedDict(
+                    (
+                        ("nexpose", Decimal("0.5")),
+                        ("web", Decimal("0.4")),
+                        ("dns", Decimal("0.05")),
+                        ("osint", Decimal("0.05")),
+                    )
+                ),
+            ),
+            (
+                "internal",
+                OrderedDict(
+                    (
+                        ("nexpose", Decimal("0.5")),
+                        ("endpoint", Decimal("0.27")),
+                        ("snmp", Decimal("0.12")),
+                        ("sql", Decimal("0.11")),
+                    )
+                ),
+            ),
+            (
+                "iam",
+                OrderedDict((("ad", Decimal("0.6")), ("password", Decimal("0.4")))),
+            ),
+            (
+                "wireless",
+                OrderedDict((("walkthru", Decimal("0.5")), ("segmentation", Decimal("0.5")))),
+            ),
+            (
+                "firewall",
+                OrderedDict((("configuration", Decimal("0.6")), ("os", Decimal("0.4")))),
+            ),
+            (
+                "cloud",
+                OrderedDict(
+                    (("iam_management", Decimal("0.5")), ("cloud_management", Decimal("0.5")))
+                ),
+            ),
+        )
+    )
+
+    key = models.SlugField(
+        "Category Key",
+        max_length=32,
+        unique=True,
+        help_text="Identifier that matches keys in the project scoping payload (e.g., external)",
+    )
+    label = models.CharField("Display Label", max_length=255, help_text="Human-friendly category name")
+    position = models.PositiveIntegerField(
+        "Display Order",
+        default=0,
+        help_text="Control how categories and their weights are displayed in the admin",
+    )
+
+    class Meta:
+        ordering = ["position", "label"]
+        verbose_name = "Scoping weight category"
+        verbose_name_plural = "Scoping weight categories"
+
+    def __str__(self):
+        return self.label
+
+    @classmethod
+    def get_weight_map(cls):
+        """Return configured scoping weights, falling back to defaults when needed."""
+
+        try:
+            categories = cls.objects.prefetch_related("options").order_by("position", "pk")
+        except (ProgrammingError, OperationalError):  # pragma: no cover - table not ready
+            return OrderedDict(
+                (key, OrderedDict(value)) for key, value in cls.DEFAULT_SCOPING_WEIGHTS.items()
+            )
+
+        mapping: "OrderedDict[str, OrderedDict[str, Decimal]]" = OrderedDict()
+        for category in categories:
+            option_map: "OrderedDict[str, Decimal]" = OrderedDict(
+                (option.key, option.weight)
+                for option in category.options.all().order_by("position", "pk")
+            )
+            if option_map:
+                mapping[category.key] = option_map
+
+        if not mapping:
+            return OrderedDict(
+                (key, OrderedDict(value)) for key, value in cls.DEFAULT_SCOPING_WEIGHTS.items()
+            )
+        return mapping
+
+
+class ScopingWeightOption(models.Model):
+    """Represent an individual scoping option weight within a category."""
+
+    category = models.ForeignKey(
+        ScopingWeightCategory,
+        on_delete=models.CASCADE,
+        related_name="options",
+    )
+    key = models.SlugField(
+        "Option Key",
+        max_length=32,
+        help_text="Identifier that matches a specific scoping option (e.g., nexpose)",
+    )
+    label = models.CharField("Display Label", max_length=255, help_text="Human-friendly option name")
+    weight = models.DecimalField(
+        "Base Weight",
+        max_digits=5,
+        decimal_places=4,
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="Relative weight to use when this option is in scope (values are normalized per category)",
+    )
+    position = models.PositiveIntegerField(
+        "Display Order",
+        default=0,
+        help_text="Control how options are listed under their category",
+    )
+
+    class Meta:
+        unique_together = ("category", "key")
+        ordering = ["category", "position", "label"]
+        verbose_name = "Scoping weight option"
+        verbose_name_plural = "Scoping weight options"
+
+    def __str__(self):
+        return f"{self.category}: {self.label}"
+
+
 class GradeRiskMapping(models.Model):
     """Map a workbook letter grade to a report risk level."""
 

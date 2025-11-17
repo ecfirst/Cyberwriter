@@ -16,15 +16,17 @@ from ghostwriter.reporting.models import (
     Finding,
     FindingNote,
     FindingType,
+    GradeRiskMapping,
     LocalFindingNote,
     Observation,
+    PasswordComplianceMapping,
     Report,
     ReportFindingLink,
     ReportObservationLink,
     ReportTemplate,
-    GradeRiskMapping,
-    PasswordComplianceMapping,
     RiskScoreRangeMapping,
+    ScopingWeightCategory,
+    ScopingWeightOption,
     Severity,
 )
 from ghostwriter.reporting.resources import FindingResource, ObservationResource
@@ -78,6 +80,21 @@ class EvidenceAdmin(admin.ModelAdmin):
 @admin.register(FindingType)
 class FindingTypeAdmin(admin.ModelAdmin):
     pass
+
+
+class ScopingWeightOptionInline(admin.TabularInline):
+    model = ScopingWeightOption
+    extra = 0
+    fields = ("label", "key", "weight", "position")
+    ordering = ("position", "label")
+
+
+@admin.register(ScopingWeightCategory)
+class ScopingWeightCategoryAdmin(admin.ModelAdmin):
+    list_display = ("label", "key", "position")
+    list_editable = ("position",)
+    ordering = ("position", "label")
+    inlines = [ScopingWeightOptionInline]
 
 
 @admin.register(Finding)
