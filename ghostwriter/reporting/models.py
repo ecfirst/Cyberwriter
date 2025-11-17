@@ -1181,9 +1181,9 @@ class ScopingWeightCategory(models.Model):
                 "cloud",
                 OrderedDict(
                     (
-                        ("iam_management", Decimal("0.5")),
-                        ("cloud_management", Decimal("0.5")),
-                        ("system_configuration", Decimal("0.5")),
+                        ("iam_management", Decimal("0.4")),
+                        ("cloud_management", Decimal("0.4")),
+                        ("system_configuration", Decimal("0.2")),
                     )
                 ),
             ),
