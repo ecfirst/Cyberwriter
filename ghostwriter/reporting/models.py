@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from collections import OrderedDict
+from decimal import Decimal
 
 # Django Imports
 from django.conf import settings
@@ -1225,3 +1226,75 @@ class GradeRiskMapping(models.Model):
         if not normalized:
             return None
         return cls.get_grade_map().get(normalized)
+
+
+class RiskScoreRangeMapping(models.Model):
+    """Map a report risk label to the inclusive numeric score range it represents."""
+
+    DEFAULT_RISK_SCORE_MAP = OrderedDict(
+        (
+            ("Low", (Decimal("1.0"), Decimal("1.9"))),
+            ("Low-->Medium", (Decimal("2.0"), Decimal("2.4"))),
+            ("Medium-->Low", (Decimal("2.5"), Decimal("2.9"))),
+            ("Medium", (Decimal("3.0"), Decimal("3.9"))),
+            ("Medium-->High", (Decimal("4.0"), Decimal("4.4"))),
+            ("High-->Medium", (Decimal("4.5"), Decimal("4.9"))),
+            ("High", (Decimal("5.0"), Decimal("6.0"))),
+        )
+    )
+
+    risk = models.CharField(
+        "Risk label",
+        max_length=32,
+        unique=True,
+        help_text="Risk bucket label (e.g., Low or Medium-->High)",
+    )
+    min_score = models.DecimalField(
+        "Minimum score",
+        max_digits=4,
+        decimal_places=1,
+        validators=[MinValueValidator(Decimal("0.0"))],
+        help_text="Lowest inclusive score for this risk bucket.",
+    )
+    max_score = models.DecimalField(
+        "Maximum score",
+        max_digits=4,
+        decimal_places=1,
+        validators=[MinValueValidator(Decimal("0.0"))],
+        help_text="Highest inclusive score for this risk bucket.",
+    )
+
+    class Meta:
+        ordering = ["min_score", "risk"]
+        verbose_name = "Risk to score range mapping"
+        verbose_name_plural = "Risk to score range mappings"
+
+    def __str__(self):
+        return f"{self.risk} = {self.min_score}–{self.max_score}"
+
+    @classmethod
+    def get_risk_score_map(cls):
+        """Return configured score ranges keyed by risk label, falling back to defaults."""
+
+        try:
+            records = cls.objects.all()
+        except (ProgrammingError, OperationalError):  # pragma: no cover - table not ready
+            return OrderedDict(cls.DEFAULT_RISK_SCORE_MAP)
+
+        mapping = OrderedDict(
+            (record.risk, (record.min_score, record.max_score)) for record in records
+        )
+        if not mapping:
+            mapping = OrderedDict(cls.DEFAULT_RISK_SCORE_MAP)
+        return mapping
+
+    @classmethod
+    def score_range_for_risk(cls, risk_label):
+        """Return the configured inclusive score range tuple for ``risk_label``."""
+
+        if not risk_label:
+            return None
+        normalized = str(risk_label).strip()
+        if not normalized:
+            return None
+        return cls.get_risk_score_map().get(normalized)
