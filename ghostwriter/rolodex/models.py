@@ -5,7 +5,8 @@ import os
 import re
 from collections import OrderedDict
 from datetime import time, timedelta
-from typing import Any, Dict, List, Optional, Set
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Django Imports
 from django.conf import settings
@@ -19,7 +20,7 @@ from taggit.managers import TaggableManager
 from timezone_field import TimeZoneField
 
 # Ghostwriter Libraries
-from ghostwriter.reporting.models import ReportFindingLink
+from ghostwriter.reporting.models import ReportFindingLink, ScopingWeightCategory
 from ghostwriter.rolodex.validators import validate_ip_range
 
 User = get_user_model()
@@ -118,6 +119,74 @@ def default_project_scoping() -> Dict[str, Dict[str, bool]]:
             category_defaults[option_key] = False
         defaults[category_key] = category_defaults
     return defaults
+
+
+def normalize_project_scoping(payload: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, bool]]:
+    """Normalize arbitrary payloads into the canonical project scoping structure."""
+
+    normalized = default_project_scoping()
+    if not isinstance(payload, dict):
+        return normalized
+    for category_key, category_payload in payload.items():
+        if category_key not in normalized or not isinstance(category_payload, dict):
+            continue
+        normalized_category = normalized[category_key]
+        normalized_category["selected"] = bool(category_payload.get("selected"))
+        for option_key in normalized_category.keys():
+            if option_key == "selected":
+                continue
+            normalized_category[option_key] = bool(category_payload.get(option_key))
+    return normalized
+
+
+def build_scoping_weight_distribution(
+    payload: Optional[Dict[str, Any]]
+) -> "OrderedDict[str, OrderedDict[str, Decimal]]":
+    """Return the configured scoping weights for the provided ``payload``."""
+
+    normalized = normalize_project_scoping(payload)
+    configured_weights = ScopingWeightCategory.get_weight_map()
+    distribution: "OrderedDict[str, OrderedDict[str, Decimal]]" = OrderedDict()
+
+    for category_key, category_config in PROJECT_SCOPING_CONFIGURATION.items():
+        category_state = normalized.get(category_key, {})
+        if not category_state.get("selected"):
+            continue
+
+        option_order = list(category_config.get("options", {}).keys())
+        selected_options: List[str] = [
+            option_key for option_key in option_order if bool(category_state.get(option_key))
+        ]
+        for option_key, option_value in category_state.items():
+            if option_key in {"selected", *option_order}:
+                continue
+            if bool(option_value):
+                selected_options.append(option_key)
+
+        if not selected_options:
+            continue
+
+        category_weights = configured_weights.get(category_key, OrderedDict())
+        weighted_entries: List[Tuple[str, Decimal]] = []
+        for option_key in selected_options:
+            weight_value = category_weights.get(option_key, Decimal("0"))
+            weighted_entries.append((option_key, weight_value))
+
+        total_weight = sum(weight for _, weight in weighted_entries)
+        if total_weight > 0:
+            scale = Decimal("1") / total_weight
+            option_distribution = OrderedDict(
+                (option_key, weight * scale) for option_key, weight in weighted_entries
+            )
+        else:
+            equal_share = Decimal("1") / Decimal(len(weighted_entries))
+            option_distribution = OrderedDict(
+                (option_key, equal_share) for option_key, _ in weighted_entries
+            )
+
+        distribution[category_key] = option_distribution
+
+    return distribution
 
 
 class Client(models.Model):
@@ -528,6 +597,13 @@ class Project(models.Model):
         return finding_queryset.count()
 
     count = property(count_findings)
+
+    def get_scoping_weights(self):
+        """Return the weighted scoping distribution for this project."""
+
+        return build_scoping_weight_distribution(getattr(self, "scoping", None))
+
+    scoping_weights = property(get_scoping_weights)
 
     class Meta:
         ordering = ["-start_date", "end_date", "client", "project_type"]

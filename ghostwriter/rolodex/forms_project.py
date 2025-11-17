@@ -43,8 +43,9 @@ from ghostwriter.rolodex.models import (
     ProjectObjective,
     ProjectScope,
     ProjectTarget,
-    default_project_scoping,
     WhiteCard,
+    default_project_scoping,
+    normalize_project_scoping,
 )
 
 # Number of "extra" formsets created by default
@@ -1434,19 +1435,7 @@ class ProjectForm(forms.ModelForm):
 
     @staticmethod
     def _coerce_scoping_payload(payload):
-        normalized = default_project_scoping()
-        if not isinstance(payload, dict):
-            return normalized
-        for category_key, category_data in payload.items():
-            if category_key not in normalized or not isinstance(category_data, dict):
-                continue
-            normalized_category = normalized[category_key]
-            normalized_category["selected"] = bool(category_data.get("selected"))
-            for option_key in normalized_category.keys():
-                if option_key == "selected":
-                    continue
-                normalized_category[option_key] = bool(category_data.get(option_key))
-        return normalized
+        return normalize_project_scoping(payload)
 
     @staticmethod
     def _build_scoping_display(scoping_payload):
