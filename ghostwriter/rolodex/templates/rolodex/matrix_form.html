@@ -1,0 +1,31 @@
+{% extends "base_generic.html" %}
+
+{% load crispy_forms_tags %}
+
+{% block pagetitle %}{{ form_heading }}{% endblock %}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb">
+  <ul class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'home:dashboard' %}">Dashboard</a></li>
+    <li class="breadcrumb-item"><a href="{{ list_url }}">{{ matrix_title }}</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ form_heading }}</li>
+  </ul>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-body">
+    <h4 class="card-title">{{ form_heading }}</h4>
+    <form method="post">
+      {% csrf_token %}
+      {{ form|crispy }}
+      <div class="d-flex justify-content-between mt-4">
+        <a class="btn btn-outline-secondary" href="{{ list_url }}">Cancel</a>
+        <button type="submit" class="btn btn-primary icon save-icon">Save entry</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

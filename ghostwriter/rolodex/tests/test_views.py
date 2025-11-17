@@ -48,7 +48,11 @@ from ghostwriter.rolodex.ip_artifacts import (
     IP_ARTIFACT_TYPE_EXTERNAL,
     IP_ARTIFACT_TYPE_INTERNAL,
 )
-from ghostwriter.rolodex.models import ProjectDataFile
+from ghostwriter.rolodex.models import (
+    ProjectDataFile,
+    VulnerabilityMatrixEntry,
+    WebIssueMatrixEntry,
+)
 from ghostwriter.rolodex.templatetags import determine_primary
 
 logging.disable(logging.CRITICAL)
@@ -1772,3 +1776,71 @@ class ProjectDataResponsesUpdateTests(TestCase):
             definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
         }
         self.assertEqual(set(self.project.data_artifacts.keys()), expected_keys)
+
+
+class MatrixViewTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.manager = UserFactory(username="matrix_manager", role="manager")
+        cls.manager.set_password(PASSWORD)
+        cls.manager.save()
+        cls.user = UserFactory(username="matrix_user", role="user")
+        cls.user.set_password(PASSWORD)
+        cls.user.save()
+
+    def test_manager_can_view_vulnerability_matrix(self):
+        VulnerabilityMatrixEntry.objects.create(
+            vulnerability="SQL Injection",
+            action_required="Update all input validation.",
+            remediation_impact="High",
+            vulnerability_threat="Data exfiltration",
+            category="Injection",
+        )
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        response = self.client.get(reverse("rolodex:vulnerability_matrix"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "SQL Injection")
+
+    def test_non_privileged_user_redirected(self):
+        self.client.login(username=self.user.username, password=PASSWORD)
+        response = self.client.get(reverse("rolodex:web_issue_matrix"))
+        self.assertRedirects(response, reverse("home:dashboard"))
+
+    def test_manager_can_create_vulnerability_entry(self):
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        response = self.client.post(
+            reverse("rolodex:vulnerability_matrix_add"),
+            {
+                "vulnerability": "Cross-Site Scripting",
+                "action_required": "Sanitize all user-supplied output.",
+                "remediation_impact": "Medium",
+                "vulnerability_threat": "Account takeover",
+                "category": "Injection",
+            },
+        )
+        self.assertRedirects(response, reverse("rolodex:vulnerability_matrix"))
+        self.assertTrue(
+            VulnerabilityMatrixEntry.objects.filter(vulnerability="Cross-Site Scripting").exists()
+        )
+
+    def test_manager_can_import_vulnerability_matrix_csv(self):
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        csv_content = (
+            "vulnerability,action_required,remediation_impact,vulnerability_threat,category\n"
+            "Old Vuln,Apply patch,Low,Info leak,General\n"
+        )
+        upload = SimpleUploadedFile("matrix.csv", csv_content.encode("utf-8"), content_type="text/csv")
+        response = self.client.post(
+            reverse("rolodex:vulnerability_matrix_import"),
+            {"csv_file": upload},
+        )
+        self.assertRedirects(response, reverse("rolodex:vulnerability_matrix"))
+        self.assertTrue(VulnerabilityMatrixEntry.objects.filter(vulnerability="Old Vuln").exists())
+
+    def test_manager_can_export_web_issue_matrix(self):
+        WebIssueMatrixEntry.objects.create(title="Missing CSP", impact="Medium", fix="Add policy")
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        response = self.client.get(reverse("rolodex:web_issue_matrix_export"))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response["Content-Type"])
+        self.assertIn("Missing CSP", response.content.decode("utf-8"))

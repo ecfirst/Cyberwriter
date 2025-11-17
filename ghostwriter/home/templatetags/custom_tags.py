@@ -147,6 +147,14 @@ def is_privileged(user):
 
 
 @register.filter
+def attr(obj, attr_name):
+    """Fetch ``attr_name`` from ``obj`` for dynamic table rendering."""
+    if obj is None:
+        return ""
+    return getattr(obj, attr_name, "")
+
+
+@register.filter
 def has_2fa(user):
     """Check if the user has a valid TOTP method configured."""
     return user_has_valid_totp_device(user)
