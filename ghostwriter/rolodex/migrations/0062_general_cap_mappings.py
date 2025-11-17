@@ -44,6 +44,10 @@ DEFAULT_GENERAL_CAPS = {
         "that have remained disabled for 90 or more days.\r(Account Management policy & procedures)",
         5,
     ),
+    "Number of Systems with Logged in Generic Accounts": (
+        "Review systems with 'generic account' login activity to ensure it is authorized and/or intended",
+        5,
+    ),
     "Number of 'Generic Accounts'": (
         "Unique user accounts should always be used to access data and systems; deviations from this must be documented "
         "including a valid business justification. Additionally, extra security controls should be enforced on any "

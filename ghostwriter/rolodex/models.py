@@ -860,9 +860,15 @@ class Project(models.Model):
 
                 enabled_for_threshold = max(enabled_accounts, 0)
                 threshold = enabled_for_threshold * 0.05
+                domain_admin_threshold = enabled_for_threshold * 0.005
 
                 if _safe_int(domain_entry.get("generic_accounts")) > threshold:
                     _record_ad_issue("Number of 'Generic Accounts'")
+
+                if _safe_int(domain_entry.get("generic_logins")) > threshold:
+                    _record_ad_issue(
+                        "Number of Systems with Logged in Generic Accounts"
+                    )
 
                 if _safe_int(domain_entry.get("inactive_accounts")) > threshold:
                     _record_ad_issue("Potentially Inactive Accounts")
@@ -873,7 +879,7 @@ class Project(models.Model):
                 if _safe_int(domain_entry.get("exp_passwords")) > threshold:
                     _record_ad_issue("Accounts with Expired Passwords")
 
-                if _safe_int(domain_entry.get("domain_admins")) > threshold:
+                if _safe_int(domain_entry.get("domain_admins")) > domain_admin_threshold:
                     _record_ad_issue("Number of Domain Admins")
 
                 if _safe_int(domain_entry.get("ent_admins")) > 1:
