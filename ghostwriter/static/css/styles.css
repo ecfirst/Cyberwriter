@@ -480,15 +480,6 @@ h6 {
     FILE UPLOAD STYLES
 ----------------------------------------------------- */
 
-input[type='file'] {
-  position: absolute;
-  left: 0;
-  opacity: 0;
-  top: 0;
-  bottom: 0;
-  width: 100%;
-}
-
 .project-ip-artifact-form .project-ip-file-input {
   position: static;
   left: auto;
