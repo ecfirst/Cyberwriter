@@ -1858,6 +1858,61 @@ class ProjectDataResponsesUpdateTests(TestCase):
         }
         self.assertEqual(set(self.project.data_artifacts.keys()), expected_keys)
 
+    def test_data_file_deletion_returns_json_for_ajax_request(self):
+        self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.project.rebuild_data_artifacts()
+
+        delete_url = reverse("rolodex:project_data_file_delete", kwargs={"pk": upload.pk})
+        response = self.client_auth.post(
+            delete_url,
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.get("success"))
+        self.assertEqual(payload.get("redirect_url"), f"{self.detail_url}#supplementals")
+        self.assertFalse(self.project.data_files.filter(pk=upload.pk).exists())
+
+    def test_required_artifact_delete_forms_include_success_anchor(self):
+        self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.addCleanup(lambda: upload.delete())
+
+        self.project.rebuild_data_artifacts()
+        response = self.client_auth.get(self.detail_url)
+
+        self.assertContains(response, "project-data-file-delete-form")
+        self.assertIn(
+            f'data-success-url="{self.detail_url}#supplementals"',
+            response.content.decode("utf-8"),
+        )
+
 
 class MatrixViewTests(TestCase):
     @classmethod

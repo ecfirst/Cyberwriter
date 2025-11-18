@@ -207,20 +207,25 @@
                               Missing Nexpose issues identified! Update the matrix and re-upload.
                             </div>
                           {% endif %}
-                          {% if requirement.existing %}
-                            <p class="mb-1">
-                              <strong>Current file:</strong>
-                              <a href="{{ requirement.existing.file.url }}" download>{{ requirement.existing.filename }}</a>
-                            </p>
-                            {% if requirement.parsed_fail_count is not None %}
-                              <p class="mb-0 text-muted small">Failed checks detected: {{ requirement.parsed_fail_count }}</p>
-                            {% endif %}
-                            <form method="post" class="d-inline" action="{% url 'rolodex:project_data_file_delete' requirement.existing.id %}">
-                              {% csrf_token %}
-                              <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
-                            </form>
-                          {% else %}
-                            <p class="mb-1 text-muted">No file uploaded yet.</p>
+                            {% if requirement.existing %}
+                              <p class="mb-1">
+                                <strong>Current file:</strong>
+                                <a href="{{ requirement.existing.file.url }}" download>{{ requirement.existing.filename }}</a>
+                              </p>
+                              {% if requirement.parsed_fail_count is not None %}
+                                <p class="mb-0 text-muted small">Failed checks detected: {{ requirement.parsed_fail_count }}</p>
+                              {% endif %}
+                              <form
+                                method="post"
+                                class="d-inline project-data-file-delete-form"
+                                action="{% url 'rolodex:project_data_file_delete' pk=requirement.existing.pk %}"
+                                data-success-url="{{ request.path }}#supplementals"
+                              >
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                              </form>
+                            {% else %}
+                              <p class="mb-1 text-muted">No file uploaded yet.</p>
                           {% endif %}
                         </div>
                         <form method="post" action="{% url 'rolodex:project_data_file_upload' project.id %}" enctype="multipart/form-data" class="w-100 w-md-auto project-required-data-form">
@@ -270,7 +275,12 @@
                               <strong>Current list:</strong>
                               <a href="{{ ip_card.existing.file.url }}" download>{{ ip_card.existing.filename }}</a>
                             </p>
-                            <form method="post" class="d-inline" action="{% url 'rolodex:project_data_file_delete' ip_card.existing.id %}">
+                            <form
+                              method="post"
+                              class="d-inline project-data-file-delete-form"
+                              action="{% url 'rolodex:project_data_file_delete' pk=ip_card.existing.pk %}"
+                              data-success-url="{{ request.path }}#supplementals"
+                            >
                               {% csrf_token %}
                               <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
                             </form>
@@ -653,6 +663,81 @@
             submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Saving...';
             submitButton.disabled = true;
           });
+        });
+
+        const deleteForms = document.querySelectorAll('.project-data-file-delete-form');
+        deleteForms.forEach(function(form) {
+          const submitButton = form.querySelector('button[type="submit"]');
+          const successUrl = form.getAttribute('data-success-url');
+
+          const setDeletingState = function() {
+            if (!submitButton) {
+              return;
+            }
+            const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
+            submitButton.setAttribute('data-default-text', defaultText);
+            submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Removing...';
+            submitButton.disabled = true;
+          };
+
+          const resetDeletingState = function() {
+            if (!submitButton) {
+              return;
+            }
+            const defaultText = submitButton.getAttribute('data-default-text');
+            if (defaultText) {
+              submitButton.innerHTML = defaultText;
+            }
+            submitButton.disabled = false;
+          };
+
+          const handleDeleteSubmit = function(event) {
+            if (!window.fetch) {
+              storeProjectScrollPosition();
+              return;
+            }
+
+            event.preventDefault();
+            if (form.dataset.submitting === '1') {
+              return;
+            }
+
+            form.dataset.submitting = '1';
+            storeProjectScrollPosition();
+            setDeletingState();
+
+            const formData = new FormData(form);
+            fetch(form.action, {
+              method: 'POST',
+              body: formData,
+              credentials: 'same-origin',
+              headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+              }
+            })
+              .then(function(response) {
+                if (!response.ok) {
+                  throw new Error('Delete failed');
+                }
+                const contentType = response.headers.get('Content-Type') || '';
+                if (contentType.indexOf('application/json') !== -1) {
+                  return response.json();
+                }
+                return {};
+              })
+              .then(function(data) {
+                const redirectUrl = (data && data.redirect_url) || successUrl || window.location.href;
+                window.location.href = redirectUrl;
+              })
+              .catch(function() {
+                form.removeEventListener('submit', handleDeleteSubmit);
+                form.dataset.submitting = '0';
+                resetDeletingState();
+                form.submit();
+              });
+          };
+
+          form.addEventListener('submit', handleDeleteSubmit);
         });
 
         const questionnaireForms = document.querySelectorAll('.project-data-responses-form');

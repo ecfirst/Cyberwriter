@@ -2275,7 +2275,10 @@ class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View
         data_file.delete()
         project.rebuild_data_artifacts()
         messages.success(request, "Supporting data file deleted.")
-        return redirect(self.get_success_url())
+        success_url = self.get_success_url()
+        if request.headers.get("x-requested-with") == "XMLHttpRequest":
+            return JsonResponse({"success": True, "redirect_url": success_url})
+        return redirect(success_url)
 
 
 class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, View):
