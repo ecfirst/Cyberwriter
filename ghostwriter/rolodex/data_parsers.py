@@ -797,6 +797,17 @@ def _generate_key_variants(key: str) -> List[str]:
     return [variant for variant in variants if variant]
 
 
+def _normalize_xml_tag(tag: Optional[str]) -> str:
+    """Return a lowercase representation of ``tag`` without namespaces."""
+
+    if not tag:
+        return ""
+    text = str(tag)
+    if "}" in text:
+        text = text.rsplit("}", 1)[-1]
+    return text.strip().lower()
+
+
 def _get_element_field(element: Optional["ElementTree.Element"], key: str) -> str:
     """Return ``key`` from ``element`` attributes or child elements."""
 
@@ -809,6 +820,14 @@ def _get_element_field(element: Optional["ElementTree.Element"], key: str) -> st
     for candidate in _generate_key_variants(key):
         child = element.find(candidate)
         if child is not None:
+            text = _element_text(child)
+            if text:
+                return text
+    normalized_key = _normalize_xml_tag(key)
+    if not normalized_key:
+        return ""
+    for child in element:
+        if _normalize_xml_tag(getattr(child, "tag", "")) == normalized_key:
             text = _element_text(child)
             if text:
                 return text
@@ -826,6 +845,12 @@ def _find_child_element(
         found = element.find(candidate)
         if found is not None:
             return found
+    normalized_key = _normalize_xml_tag(key)
+    if not normalized_key:
+        return None
+    for child in element:
+        if _normalize_xml_tag(getattr(child, "tag", "")) == normalized_key:
+            return child
     return None
 
 
@@ -845,6 +870,16 @@ def _find_child_elements(
             identifier = id(child)
             if identifier in seen_ids:
                 continue
+            seen_ids.add(identifier)
+            children.append(child)
+    normalized_key = _normalize_xml_tag(key)
+    if not normalized_key:
+        return children
+    for child in element:
+        identifier = id(child)
+        if identifier in seen_ids:
+            continue
+        if _normalize_xml_tag(getattr(child, "tag", "")) == normalized_key:
             seen_ids.add(identifier)
             children.append(child)
     return children
