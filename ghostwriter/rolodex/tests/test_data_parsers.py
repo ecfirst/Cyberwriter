@@ -370,6 +370,100 @@ class NexposeDataParserTests(TestCase):
             )
         )
 
+    def test_nexpose_xml_normalizes_multiline_fields(self):
+        xml_payload = """
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>203.0.113.10</address>
+      <status>alive</status>
+      <names>
+        <name>web.example.com</name>
+      </names>
+      <fingerprints>
+        <os certainty='0.61' vendor='Linux' product='Linux 5.x' />
+      </fingerprints>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service name='HTTPS'>
+              <tests>
+                <test id='ssl-static-key-ciphers' status='vulnerable-exploited'>
+                  <Paragraph>
+                    <UnorderedList>
+                      <ListItem>
+                        <Paragraph>Negotiated with the following insecure cipher suites:</Paragraph>
+                      </ListItem>
+                      <ListItem>
+                        <Paragraph>TLS_RSA_WITH_AES_128_CBC_SHA</Paragraph>
+                      </ListItem>
+                      <ListItem>
+                        <Paragraph>TLS_RSA_WITH_AES_256_CBC_SHA</Paragraph>
+                      </ListItem>
+                    </UnorderedList>
+                  </Paragraph>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <VulnerabilityDefinitions>
+    <vulnerability id='ssl-static-key-ciphers' title='TLS/SSL Server Supports The Use of Static Key Ciphers' severity='3'>
+      <description>
+        <Paragraph>
+          The TLS/SSL server's X.509 certificate either contains a start date
+          in the future or is expired. Please refer to the proof for more details.
+        </Paragraph>
+      </description>
+      <solution>
+        <Paragraph>
+          Obtain a new certificate and install it on the server.
+        </Paragraph>
+        <Paragraph>
+          Afterwards apply vendor instructions.
+        </Paragraph>
+      </solution>
+    </vulnerability>
+  </VulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        finding = artifact["findings"][0]
+
+        self.assertEqual(
+            finding["Details"],
+            "The TLS/SSL server's X.509 certificate either contains a start date in the future or is expired."
+            " Please refer to the proof for more details.",
+        )
+        self.assertEqual(
+            finding["Detailed Remediation"],
+            "Obtain a new certificate and install it on the server.\n\nAfterwards apply vendor instructions.",
+        )
+        self.assertEqual(
+            finding["Evidence"],
+            "Negotiated with the following insecure cipher suites:\nTLS_RSA_WITH_AES_128_CBC_SHA\nTLS_RSA_WITH_AES_256_CBC_SHA",
+        )
+
     def test_vulnerability_matrix_enriches_artifacts(self):
         VulnerabilityMatrixEntry.objects.create(
             vulnerability="Zeta Exposure",

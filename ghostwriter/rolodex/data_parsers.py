@@ -700,18 +700,49 @@ def _collapse_whitespace(value: Any) -> str:
 
 
 def _normalize_multiline_text(value: Any) -> str:
-    """Return ``value`` with normalized newlines while preserving paragraph breaks."""
+    """Return ``value`` with paragraph-friendly spacing."""
 
     if value in (None, ""):
         return ""
 
-    text = str(value)
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    lines = [line.rstrip() for line in normalized.split("\n")]
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+    paragraphs: List[str] = []
+    current_lines: List[str] = []
+
+    for raw_line in text.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped:
+            if current_lines:
+                paragraphs.append(" ".join(current_lines))
+                current_lines = []
+            continue
+        current_lines.append(_collapse_whitespace(stripped))
+
+    if current_lines:
+        paragraphs.append(" ".join(current_lines))
+
+    return "\n\n".join(paragraphs)
+
+
+def _normalize_evidence_text(value: Any) -> str:
+    """Return ``value`` formatted for multi-line evidence blocks."""
+
+    if value in (None, ""):
+        return ""
+
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+    lines: List[str] = []
+    for raw_line in text.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped:
+            if lines and lines[-1] != "":
+                lines.append("")
+            continue
+        lines.append(_collapse_whitespace(stripped))
+
+    while lines and lines[-1] == "":
         lines.pop()
+
     return "\n".join(lines)
 
 
@@ -963,8 +994,8 @@ def _extract_test_evidence(test_element: "ElementTree.Element") -> str:
     for key in ("evidence", "details", "description", "proof"):
         evidence = _get_element_field(test_element, key)
         if evidence:
-            return _normalize_multiline_text(evidence)
-    return _normalize_multiline_text(_element_text(test_element))
+            return _normalize_evidence_text(evidence)
+    return _normalize_evidence_text(_element_text(test_element))
 
 
 def _extract_vulnerability_id(test_element: "ElementTree.Element") -> str:
