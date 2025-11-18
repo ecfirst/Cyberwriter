@@ -1308,11 +1308,14 @@ class ProjectDataResponsesUpdateTests(TestCase):
         burp_index = labels.index("burp_csv.csv")
         self.assertEqual(burp_index, max(dns_indexes) + 1)
         self.assertEqual(
-            labels[burp_index + 1 : burp_index + 4],
+            labels[burp_index + 1 : burp_index + 7],
             [
                 "external_nexpose_csv.csv",
+                "external_nexpose_xml.xml",
                 "internal_nexpose_csv.csv",
+                "internal_nexpose_xml.xml",
                 "iot_nexpose_csv.csv",
+                "iot_nexpose_xml.xml",
             ],
         )
 
@@ -1333,15 +1336,18 @@ class ProjectDataResponsesUpdateTests(TestCase):
 
         burp_index = labels.index("burp_csv.csv")
         self.assertEqual(
-            labels[burp_index + 1 : burp_index + 4],
+            labels[burp_index + 1 : burp_index + 7],
             [
                 "external_nexpose_csv.csv",
+                "external_nexpose_xml.xml",
                 "internal_nexpose_csv.csv",
+                "internal_nexpose_xml.xml",
                 "iot_nexpose_csv.csv",
+                "iot_nexpose_xml.xml",
             ],
         )
         self.assertEqual(
-            labels[burp_index + 4 : burp_index + 6],
+            labels[burp_index + 7 : burp_index + 9],
             [
                 IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_EXTERNAL].label,
                 IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_INTERNAL].label,

@@ -1900,8 +1900,11 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
 
         nexpose_requirement_labels = {
             "external_nexpose_csv.csv",
+            "external_nexpose_xml.xml",
             "internal_nexpose_csv.csv",
+            "internal_nexpose_xml.xml",
             "iot_nexpose_csv.csv",
+            "iot_nexpose_xml.xml",
         }
         reordered_requirements = []
         nexpose_requirements = []

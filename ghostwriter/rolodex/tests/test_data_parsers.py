@@ -207,10 +207,12 @@ class NexposeDataParserTests(TestCase):
         upload = ProjectDataFile.objects.create(
             project=self.project,
             file=SimpleUploadedFile(
-                "nexpose_xml.xml", xml_payload.encode("utf-8"), content_type="text/xml"
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
             ),
-            requirement_label="nexpose_xml.xml",
-            requirement_slug="required_external_nexpose_xml",
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
             requirement_context="external nexpose_xml",
         )
         self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())

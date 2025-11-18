@@ -226,7 +226,7 @@
                           <input type="hidden" name="description" value=""/>
                           <div class="form-group mb-2">
                             <label class="sr-only" for="id_required_file_{{ requirement.slug }}">{{ requirement.label }}{% if requirement.context %} for {{ requirement.context }}{% endif %}</label>
-                            <input type="file" name="file" class="form-control-file project-required-data-input" id="id_required_file_{{ requirement.slug }}" accept=".csv,text/csv" required>
+                            <input type="file" name="file" class="form-control-file project-required-data-input" id="id_required_file_{{ requirement.slug }}" accept=".csv,.xml,text/csv,application/xml,text/xml" required>
                           </div>
                           <div class="d-flex flex-column flex-md-row align-items-md-center">
                             <button type="submit" class="btn btn-primary btn-sm" data-default-text="Upload">Upload</button>

@@ -572,12 +572,15 @@ def build_data_configuration(
 
     if external_nexpose_total > 0:
         add_required("external_nexpose_csv.csv")
+        add_required("external_nexpose_xml.xml")
 
     if internal_nexpose_total > 0:
         add_required("internal_nexpose_csv.csv")
+        add_required("internal_nexpose_xml.xml")
 
     if iot_nexpose_total > 0:
         add_required("iot_nexpose_csv.csv")
+        add_required("iot_nexpose_xml.xml")
 
     if has_workbook_section("firewall"):
         firewall_source = _get_nested(data, ("fierwall",), None)
