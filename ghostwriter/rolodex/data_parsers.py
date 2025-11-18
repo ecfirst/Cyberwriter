@@ -37,6 +37,8 @@ from ghostwriter.rolodex.workbook import AD_DOMAIN_METRICS
 logger = logging.getLogger(__name__)
 
 
+EXCEL_CELL_CHARACTER_LIMIT = 32766
+
 DEFAULT_DNS_RECOMMENDATION_MAP: Dict[str, str] = {
     "One or more SOA fields are outside recommended ranges": "update SOA fields to follow best practice",
     "Less than 2 nameservers exist": "assign a minimum of 2 nameservers for the domain",
@@ -1990,8 +1992,6 @@ NEXPOSE_ARTIFACT_KEYS = {
     definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
 }.union(LEGACY_NEXPOSE_ARTIFACT_ALIASES.keys())
 
-
-EXCEL_CELL_CHARACTER_LIMIT = 32766
 
 NEXPOSE_TEST_STATUS_MAP = {
     "potential": "VP",
