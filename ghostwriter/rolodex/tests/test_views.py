@@ -1887,6 +1887,41 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(payload.get("redirect_url"), f"{self.detail_url}#supplementals")
         self.assertFalse(self.project.data_files.filter(pk=upload.pk).exists())
 
+    def test_data_file_deletion_falls_back_to_requirement_slug(self):
+        self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.project.rebuild_data_artifacts()
+
+        delete_url = reverse(
+            "rolodex:project_data_file_delete",
+            kwargs={"pk": upload.pk + 999},
+        )
+        response = self.client_auth.post(
+            delete_url,
+            {
+                "project_id": str(self.project.pk),
+                "requirement_slug": upload.requirement_slug,
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
+        self.assertFalse(self.project.data_files.filter(pk=upload.pk).exists())
+        self.project.refresh_from_db()
+        assert_default_nexpose_artifacts(self, self.project.data_artifacts)
+
     def test_required_artifact_delete_forms_include_success_anchor(self):
         self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
         self.project.save(update_fields=["workbook_data"])

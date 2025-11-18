@@ -2254,21 +2254,114 @@ class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View
 
     model = ProjectDataFile
 
+    def dispatch(self, request, *args, **kwargs):
+        # Ensure ``self.request`` is available for ``get_object`` fallbacks that
+        # rely on POST data before ``View.dispatch`` runs.
+        self.request = request
+        self.args = args
+        self.kwargs = kwargs
+        self.object = self.get_object()
+        if self.object is None:
+            if not request.user.is_authenticated:
+                return self.handle_not_authenticated()
+            project = self._resolve_project_from_request()
+            if project is None or not project.user_can_edit(request.user):
+                return self.handle_no_permission()
+            self._resolved_project = project
+            return self._handle_missing_file(request)
+        self._resolved_project = getattr(self.object, "project", None)
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_object(self, queryset=None):
+        if hasattr(self, "_data_file_cache"):
+            return self._data_file_cache
+
+        queryset = (queryset or self.get_queryset()).select_related("project")
+        pk = self.kwargs.get(self.pk_url_kwarg)
+        data_file = None
+        if pk is not None:
+            data_file = queryset.filter(pk=pk).first()
+
+        if data_file is None:
+            project = self._resolve_project_from_request()
+            slug = self._resolve_requirement_slug()
+            if project is not None and slug:
+                data_file = queryset.filter(project=project, requirement_slug=slug).first()
+
+        if data_file is not None and not hasattr(self, "_resolved_project"):
+            self._resolved_project = data_file.project
+
+        self._data_file_cache = data_file
+        return data_file
+
     def test_func(self):
-        return self.get_object().project.user_can_edit(self.request.user)
+        project = getattr(self, "_resolved_project", None)
+        if project is None and self.object is not None:
+            project = getattr(self.object, "project", None)
+        if project is None:
+            project = self._resolve_project_from_request()
+        if project is None:
+            return False
+        self._resolved_project = project
+        return project.user_can_edit(self.request.user)
 
     def handle_no_permission(self):
         messages.error(self.request, "You do not have permission to modify that project.")
         return redirect("home:dashboard")
 
     def get_success_url(self):
-        return (
-            reverse("rolodex:project_detail", kwargs={"pk": self.get_object().project.pk})
-            + "#supplementals"
+        project = getattr(self, "_resolved_project", None)
+        if project is not None:
+            return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#supplementals"
+        if self.object is not None and getattr(self.object, "project", None) is not None:
+            return (
+                reverse("rolodex:project_detail", kwargs={"pk": self.object.project.pk})
+                + "#supplementals"
+            )
+        return reverse("home:dashboard")
+
+    def _resolve_requirement_slug(self) -> str:
+        if hasattr(self, "_requirement_slug_cache"):
+            return self._requirement_slug_cache
+        slug = ""
+        if hasattr(self, "request"):
+            slug = (
+                self.request.POST.get("requirement_slug")
+                or self.request.GET.get("requirement_slug")
+                or ""
+            ).strip()
+        self._requirement_slug_cache = slug
+        return slug
+
+    def _resolve_project_from_request(self) -> Optional[Project]:
+        if hasattr(self, "_resolved_project") and self._resolved_project is not None:
+            return self._resolved_project
+        if not hasattr(self, "request"):
+            return None
+        project_id = self.request.POST.get("project_id") or self.request.GET.get("project_id")
+        try:
+            project_pk = int(project_id)
+        except (TypeError, ValueError):
+            return None
+        project = Project.objects.filter(pk=project_pk).first()
+        if project is not None:
+            self._resolved_project = project
+        return project
+
+    def _handle_missing_file(self, request):
+        messages.warning(
+            request,
+            "The selected data file could not be found. Please refresh the page and try again.",
         )
+        redirect_url = self.get_success_url()
+        if request.headers.get("x-requested-with") == "XMLHttpRequest":
+            return JsonResponse({"success": False, "redirect_url": redirect_url}, status=404)
+        return redirect(redirect_url)
 
     def post(self, request, *args, **kwargs):
-        data_file = self.get_object()
+        data_file = self.object
+        if data_file is None:
+            return self._handle_missing_file(request)
         if data_file.file:
             data_file.file.delete(save=False)
         project = data_file.project
