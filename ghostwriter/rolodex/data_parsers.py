@@ -10,7 +10,7 @@ import re
 import unicodedata
 from collections import Counter
 from collections import abc
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 try:  # pragma: no cover - optional hardening dependency
     from defusedxml import ElementTree as DefusedElementTree
@@ -1029,10 +1029,11 @@ def _build_vulnerability_lookup(report_root: "ElementTree.Element") -> Dict[str,
             or _get_element_field(vulnerability, "title")
             or vuln_id
         )
-        severity = _collapse_whitespace(
+        severity_text = _collapse_whitespace(
             _element_text(vulnerability.find("severity"))
             or _get_element_field(vulnerability, "severity")
         )
+        severity_value = _coerce_int(severity_text)
         description = _normalize_multiline_text(
             _element_text(vulnerability.find("description"))
             or _get_element_field(vulnerability, "description")
@@ -1062,12 +1063,69 @@ def _build_vulnerability_lookup(report_root: "ElementTree.Element") -> Dict[str,
 
         lookup[vuln_id] = {
             "title": title or vuln_id,
-            "severity": severity,
+            "severity": severity_value if severity_value is not None else severity_text,
             "description": description,
-            "cves": "; ".join(cve_ids),
+            "cves": ", ".join(cve_ids),
             "solution": solution,
         }
     return lookup
+
+
+def _build_cve_links(cve_field: str) -> str:
+    """Return newline-delimited NIST references for the provided CVE string."""
+
+    text = str(cve_field or "").strip()
+    if not text:
+        return "No NIST reference available"
+    links = []
+    for token in re.split(r"[,;]", text):
+        candidate = token.strip()
+        if not candidate:
+            continue
+        links.append(f"http://web.nvd.nist.gov/view/vuln/detail?vulnId={candidate}")
+    return "\n".join(links) if links else "No NIST reference available"
+
+
+def _adjust_matrix_impact(threat: str, status_code: str) -> str:
+    """Return ``threat`` with ``<EC>`` placeholders tailored to ``status_code``."""
+
+    if not threat:
+        return ""
+    replacement = "can"
+    if (status_code or "").upper() == "VP":
+        replacement = "may"
+    return threat.replace("<EC>", replacement)
+
+
+def _apply_matrix_metadata_to_finding(
+    entry: Dict[str, Any],
+    vulnerability_matrix: Optional[Dict[str, Dict[str, str]]],
+    cve_links: str,
+) -> bool:
+    """Populate matrix-backed fields for a finding entry and return success state."""
+
+    entry.setdefault("impact", "")
+    entry.setdefault("solution", "")
+    entry.setdefault("category", "")
+    entry["references"] = cve_links
+    if not vulnerability_matrix:
+        return False
+
+    key = _normalize_matrix_key(entry.get("Vulnerability Title"))
+    if not key:
+        return False
+    metadata = vulnerability_matrix.get(key)
+    if not metadata:
+        return False
+
+    threat_text = metadata.get("vulnerability_threat") or ""
+    entry["impact"] = _adjust_matrix_impact(
+        threat_text,
+        entry.get("Vulnerability Test Result Code", ""),
+    )
+    entry["solution"] = metadata.get("action_required") or ""
+    entry["category"] = metadata.get("category") or ""
+    return True
 
 
 def _build_nexpose_finding_entry(
@@ -1079,15 +1137,17 @@ def _build_nexpose_finding_entry(
     protocol: str,
     test_element: "ElementTree.Element",
     vulnerability_lookup: Dict[str, Dict[str, str]],
-) -> Optional[Dict[str, str]]:
+    vulnerability_matrix: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Tuple[Optional[Dict[str, str]], Optional[Dict[str, str]]]:
     """Return a populated finding entry for ``test_element`` if possible."""
 
     vulnerability_id = _extract_vulnerability_id(test_element)
     if not vulnerability_id:
-        return None
+        return None, None
     definition = vulnerability_lookup.get(vulnerability_id, {})
     title = _clean_ascii_text(definition.get("title") or vulnerability_id)
-    severity = definition.get("severity") or ""
+    severity = definition.get("severity")
+    severity_value = _coerce_int(severity)
     description = definition.get("description") or ""
     cve_ids = definition.get("cves") or ""
     remediation = definition.get("solution") or ""
@@ -1096,8 +1156,9 @@ def _build_nexpose_finding_entry(
         _map_test_status(_get_element_field(test_element, "status")),
         description,
     )
+    cve_links = _build_cve_links(cve_ids)
 
-    return {
+    entry: Dict[str, Any] = {
         "Asset IP Address": ip_address,
         "Hostname(s)": hostnames,
         "Asset Operating System": os_description,
@@ -1106,12 +1167,46 @@ def _build_nexpose_finding_entry(
         "Vulnerability Test Result Code": status,
         "Vulnerability ID": vulnerability_id,
         "Vulnerability CVE IDs": cve_ids,
-        "Vulnerability Severity Level": severity,
+        "Vulnerability Severity Level": severity_value if severity_value is not None else severity,
         "Vulnerability Title": title,
         "Details": description,
         "Evidence": evidence,
         "Detailed Remediation": remediation,
     }
+    entry.setdefault("impact", "")
+    entry.setdefault("solution", "")
+    entry.setdefault("category", "")
+    entry["references"] = cve_links
+    has_matrix_metadata = _apply_matrix_metadata_to_finding(
+        entry, vulnerability_matrix, cve_links
+    )
+    missing_row: Optional[Dict[str, str]] = None
+    if not has_matrix_metadata:
+        missing_row = {
+            "Vulnerability": entry.get("Vulnerability Title", ""),
+            "Action Required": "",
+            "Remediation Impact": "",
+            "Vulnerability Threat": "",
+            "Category": "",
+            "CVE": cve_links,
+        }
+
+    return entry, missing_row
+
+
+
+def _detect_nexpose_xml_artifact_key(values: Iterable[Any]) -> Optional[str]:
+    """Infer the artifact key for any Nexpose XML specific ``values``."""
+
+    normalized = " ".join(
+        str(value).strip().lower() for value in values if value and str(value).strip()
+    )
+    if not normalized or "nexpose_xml" not in normalized:
+        return None
+    for keyword, artifact_key in NEXPOSE_XML_ARTIFACT_MAP.items():
+        if keyword in normalized:
+            return artifact_key
+    return None
 
 
 def _resolve_nexpose_xml_artifact_key(data_file: "ProjectDataFile") -> Optional[str]:
@@ -1126,13 +1221,23 @@ def _resolve_nexpose_xml_artifact_key(data_file: "ProjectDataFile") -> Optional[
     filename = getattr(data_file, "filename", "")
     if filename:
         candidates.append(filename)
-    normalized = " ".join(text.strip().lower() for text in candidates if text and text.strip())
-    if "nexpose_xml" not in normalized:
+    return _detect_nexpose_xml_artifact_key(candidates)
+
+
+def resolve_nexpose_requirement_artifact_key(
+    requirement: Mapping[str, Any]
+) -> Optional[str]:
+    """Infer the artifact key that corresponds to a workbook requirement."""
+
+    if not isinstance(requirement, abc.Mapping):
         return None
-    for keyword, artifact_key in NEXPOSE_XML_ARTIFACT_MAP.items():
-        if keyword in normalized:
-            return artifact_key
-    return None
+    candidates = [
+        requirement.get("label", ""),
+        requirement.get("slug", ""),
+        requirement.get("context", ""),
+        requirement.get("requirement_context", ""),
+    ]
+    return _detect_nexpose_xml_artifact_key(candidates)
 
 
 def _parse_ip_list(file_obj: File) -> List[str]:
@@ -1825,6 +1930,32 @@ def normalize_nexpose_artifacts_map(artifacts: Any) -> Any:
     return normalized
 
 
+def summarize_nexpose_matrix_gaps(artifacts: Any) -> Dict[str, List[Dict[str, str]]]:
+    """Return artifact-scoped missing Nexpose matrix entries."""
+
+    if not isinstance(artifacts, dict):
+        return {}
+    gap_data = artifacts.get("nexpose_matrix_gaps")
+    if not isinstance(gap_data, dict):
+        return {}
+    missing_by_artifact = gap_data.get("missing_by_artifact")
+    if not isinstance(missing_by_artifact, dict):
+        return {}
+    summary: Dict[str, List[Dict[str, str]]] = {}
+    for artifact_key, payload in missing_by_artifact.items():
+        entries = payload.get("entries") if isinstance(payload, dict) else payload
+        if isinstance(entries, list) and entries:
+            summary[artifact_key] = entries
+    return summary
+
+
+def has_open_nexpose_matrix_gaps(artifacts: Any) -> bool:
+    """Return ``True`` if any Nexpose XML findings are missing matrix entries."""
+
+    summary = summarize_nexpose_matrix_gaps(artifacts)
+    return any(summary.values())
+
+
 def _build_web_issue_ai_response(
     summary: Dict[str, Any], *, require_burp_csv: bool
 ) -> Optional[str]:
@@ -1939,11 +2070,16 @@ def parse_nexpose_vulnerability_report(
     return summaries
 
 
-def parse_nexpose_xml_report(file_obj: File) -> Dict[str, List[Dict[str, str]]]:
+def parse_nexpose_xml_report(
+    file_obj: File,
+    *,
+    vulnerability_matrix: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Dict[str, List[Dict[str, str]]]:
     """Parse a ``nexpose_xml.xml`` upload into structured findings and software entries."""
 
     findings: List[Dict[str, str]] = []
     software_entries: List[Dict[str, str]] = []
+    missing_matrix_rows: Dict[str, Dict[str, str]] = {}
 
     raw_bytes = _read_binary_file(file_obj)
     if not raw_bytes.strip():
@@ -1967,7 +2103,7 @@ def parse_nexpose_xml_report(file_obj: File) -> Dict[str, List[Dict[str, str]]]:
         os_description = _extract_os_description(node)
 
         for test_element in node.findall("./tests/test"):
-            entry = _build_nexpose_finding_entry(
+            entry, missing_row = _build_nexpose_finding_entry(
                 ip_address=ip_address,
                 hostnames=hostname_text,
                 os_description=os_description,
@@ -1975,16 +2111,21 @@ def parse_nexpose_xml_report(file_obj: File) -> Dict[str, List[Dict[str, str]]]:
                 protocol="",
                 test_element=test_element,
                 vulnerability_lookup=vulnerability_lookup,
+                vulnerability_matrix=vulnerability_matrix,
             )
             if entry:
                 findings.append(entry)
+            if missing_row:
+                key = (missing_row.get("Vulnerability") or "").strip().lower()
+                if key:
+                    missing_matrix_rows[key] = missing_row
 
         for endpoint in node.findall("./endpoints/endpoint"):
             port = _collapse_whitespace(_get_element_field(endpoint, "port"))
             protocol = _collapse_whitespace(_get_element_field(endpoint, "protocol")).upper()
             for service in endpoint.findall("./services/service"):
                 for test_element in service.findall("./tests/test"):
-                    entry = _build_nexpose_finding_entry(
+                    entry, missing_row = _build_nexpose_finding_entry(
                         ip_address=ip_address,
                         hostnames=hostname_text,
                         os_description=os_description,
@@ -1992,9 +2133,14 @@ def parse_nexpose_xml_report(file_obj: File) -> Dict[str, List[Dict[str, str]]]:
                         protocol=protocol,
                         test_element=test_element,
                         vulnerability_lookup=vulnerability_lookup,
+                        vulnerability_matrix=vulnerability_matrix,
                     )
                     if entry:
                         findings.append(entry)
+                    if missing_row:
+                        key = (missing_row.get("Vulnerability") or "").strip().lower()
+                        if key:
+                            missing_matrix_rows[key] = missing_row
 
         software_fingerprints = node.findall("./software/fingerprint")
         if not software_fingerprints:
@@ -2015,7 +2161,15 @@ def parse_nexpose_xml_report(file_obj: File) -> Dict[str, List[Dict[str, str]]]:
                 {"System": display_system, "Software": product, "Version": version}
             )
 
-    return {"findings": findings, "software": software_entries}
+    missing_entries = sorted(
+        missing_matrix_rows.values(),
+        key=lambda row: (row.get("Vulnerability") or "").lower(),
+    )
+    return {
+        "findings": findings,
+        "software": software_entries,
+        "missing_matrix_entries": missing_entries,
+    }
 
 
 NEXPOSE_ARTIFACT_DEFINITIONS: Dict[str, Dict[str, str]] = {
@@ -2429,6 +2583,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     }
 
     firewall_results: List[Dict[str, Any]] = []
+    missing_matrix_tracker: Dict[str, Dict[str, Dict[str, str]]] = {}
     nexpose_definitions_by_key: Dict[str, str] = {
         definition["artifact_key"]: definition["label"]
         for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
@@ -2486,7 +2641,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     **parsed_vulnerabilities,
                 }
         elif xml_artifact_key:
-            parsed_xml = parse_nexpose_xml_report(data_file.file)
+            parsed_xml = parse_nexpose_xml_report(
+                data_file.file, vulnerability_matrix=vulnerability_matrix
+            )
             existing_entry = artifacts.get(xml_artifact_key)
             combined_findings: List[Dict[str, str]] = []
             combined_software: List[Dict[str, str]] = []
@@ -2499,10 +2656,31 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     combined_software.extend(existing_software)
             parsed_findings = parsed_xml.get("findings") if isinstance(parsed_xml, dict) else []
             parsed_software = parsed_xml.get("software") if isinstance(parsed_xml, dict) else []
+            parsed_missing = (
+                parsed_xml.get("missing_matrix_entries")
+                if isinstance(parsed_xml, dict)
+                else []
+            )
             if isinstance(parsed_findings, list):
                 combined_findings.extend(parsed_findings)
             if isinstance(parsed_software, list):
                 combined_software.extend(parsed_software)
+            if isinstance(parsed_missing, list) and parsed_missing:
+                tracker = missing_matrix_tracker.setdefault(xml_artifact_key, {})
+                for row in parsed_missing:
+                    if not isinstance(row, dict):
+                        continue
+                    title = (row.get("Vulnerability") or "").strip()
+                    if not title:
+                        continue
+                    tracker[title.lower()] = {
+                        "Vulnerability": title,
+                        "Action Required": row.get("Action Required", ""),
+                        "Remediation Impact": row.get("Remediation Impact", ""),
+                        "Vulnerability Threat": row.get("Vulnerability Threat", ""),
+                        "Category": row.get("Category", ""),
+                        "CVE": row.get("CVE", ""),
+                    }
             artifacts[xml_artifact_key] = {
                 "findings": combined_findings,
                 "software": combined_software,
@@ -2604,6 +2782,21 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             "med": _coerce_severity_group(details.get("med")),
             "low": _coerce_severity_group(details.get("low")),
         }
+
+    if missing_matrix_tracker:
+        missing_by_artifact: Dict[str, Dict[str, Any]] = {}
+        for artifact_key, rows in missing_matrix_tracker.items():
+            if not rows:
+                continue
+            ordered = sorted(
+                rows.values(), key=lambda row: (row.get("Vulnerability") or "").lower()
+            )
+            if ordered:
+                missing_by_artifact[artifact_key] = {"entries": ordered}
+        if missing_by_artifact:
+            artifacts["nexpose_matrix_gaps"] = {
+                "missing_by_artifact": missing_by_artifact
+            }
 
     return artifacts
 

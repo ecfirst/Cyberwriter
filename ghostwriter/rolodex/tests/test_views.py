@@ -943,6 +943,81 @@ class ProjectDetailViewTests(TestCase):
         response = self.client_auth.get(self.uri)
         self.assertEqual(response.status_code, 200)
 
+    def test_detail_view_shows_nexpose_missing_warning_and_button(self):
+        self.project.workbook_data = {"external_nexpose": {"total": 1}}
+        self.project.data_artifacts = {
+            "external_nexpose_findings": {"findings": [], "software": []},
+            "nexpose_matrix_gaps": {
+                "missing_by_artifact": {
+                    "external_nexpose_findings": {
+                        "entries": [
+                            {
+                                "Vulnerability": "Missing Vuln",
+                                "CVE": "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
+                            }
+                        ]
+                    }
+                }
+            },
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts"])
+
+        response = self.client_mgr.get(self.uri)
+        self.assertContains(
+            response,
+            "Missing Nexpose issues identified! Update the matrix and re-upload",
+        )
+        self.assertContains(response, "Download Missing")
+        self.assertContains(response, "?artifact=external_nexpose_findings")
+
+
+class ProjectNexposeMissingMatrixDownloadTests(TestCase):
+    """Tests for downloading missing Nexpose matrix entries."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.manager = UserFactory(password=PASSWORD, role="manager")
+        cls.project = ProjectFactory()
+        cls.url = reverse(
+            "rolodex:project_nexpose_missing_download", kwargs={"pk": cls.project.pk}
+        )
+
+    def setUp(self):
+        self.client_mgr = Client()
+        self.assertTrue(self.client_mgr.login(username=self.manager.username, password=PASSWORD))
+
+    def _set_missing_artifacts(self):
+        self.project.data_artifacts = {
+            "nexpose_matrix_gaps": {
+                "missing_by_artifact": {
+                    "external_nexpose_findings": {
+                        "entries": [
+                            {
+                                "Vulnerability": "Missing Vuln",
+                                "CVE": "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+    def test_download_returns_csv(self):
+        self._set_missing_artifacts()
+        response = self.client_mgr.get(self.url + "?artifact=external_nexpose_findings")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        self.assertIn("nexpose-missing.csv", response["Content-Disposition"])
+        content = response.content.decode("utf-8")
+        self.assertIn("Missing Vuln", content)
+
+    def test_download_redirects_when_missing_absent(self):
+        self.project.data_artifacts = {}
+        self.project.save(update_fields=["data_artifacts"])
+        response = self.client_mgr.get(self.url + "?artifact=external_nexpose_findings")
+        self.assertEqual(response.status_code, 302)
+
 class ProjectInviteDeleteTests(TestCase):
     """Collection of tests for :view:`rolodex.ProjectInviteDelete`."""
 

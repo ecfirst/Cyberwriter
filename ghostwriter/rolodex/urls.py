@@ -237,6 +237,11 @@ urlpatterns += [
     path("projects/<int:pk>/workbook/", views.ProjectWorkbookUpload.as_view(), name="project_workbook"),
     path("projects/<int:pk>/data/files/", views.ProjectDataFileUpload.as_view(), name="project_data_file_upload"),
     path(
+        "projects/<int:pk>/nexpose-missing/",
+        views.ProjectNexposeMissingMatrixDownload.as_view(),
+        name="project_nexpose_missing_download",
+    ),
+    path(
         "projects/<int:pk>/data/ip-list/",
         views.ProjectIPArtifactUpload.as_view(),
         name="project_ip_artifact_upload",

@@ -346,7 +346,7 @@ class NexposeDataParserTests(TestCase):
             cipher_entry["Vulnerability Title"],
             "TLS/SSL Server Supports The Use of Static Key Ciphers",
         )
-        self.assertEqual(cipher_entry["Vulnerability Severity Level"], "3")
+        self.assertEqual(cipher_entry["Vulnerability Severity Level"], 3)
         self.assertEqual(
             cipher_entry["Details"],
             "The server is configured to support ciphers known as static key ciphers.",
@@ -359,16 +359,21 @@ class NexposeDataParserTests(TestCase):
             cipher_entry["Evidence"],
             "Negotiated with the following insecure cipher suites.",
         )
+        self.assertEqual(cipher_entry["impact"], "")
+        self.assertEqual(cipher_entry["solution"], "")
+        self.assertEqual(cipher_entry["category"], "")
+        self.assertEqual(cipher_entry["references"], "No NIST reference available")
 
         cert_entry = next(
             item for item in findings if item["Vulnerability ID"] == "tls-server-cert-expired"
         )
-        self.assertEqual(cert_entry["Vulnerability Severity Level"], "7")
+        self.assertEqual(cert_entry["Vulnerability Severity Level"], 7)
         self.assertTrue(
             cert_entry["Detailed Remediation"].startswith(
                 "Obtain a new certificate and install it on the server."
             )
         )
+        self.assertEqual(cert_entry["references"], "No NIST reference available")
 
     def test_nexpose_xml_normalizes_multiline_fields(self):
         xml_payload = """
@@ -462,6 +467,174 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(
             finding["Evidence"],
             "Negotiated with the following insecure cipher suites:\nTLS_RSA_WITH_AES_128_CBC_SHA\nTLS_RSA_WITH_AES_256_CBC_SHA",
+        )
+
+    def test_nexpose_xml_applies_matrix_metadata(self):
+        VulnerabilityMatrixEntry.objects.create(
+            vulnerability="Fancy — Vulnerability",
+            action_required="Apply Fancy Patch",
+            vulnerability_threat="<EC> disrupt the network",
+            category="Network",
+        )
+        VulnerabilityMatrixEntry.objects.create(
+            vulnerability="Service Vuln",
+            action_required="Fix Service",
+            vulnerability_threat="<EC> expose services",
+            category="Web",
+        )
+
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>203.0.113.5</address>
+      <status>alive</status>
+      <names>
+        <name>alpha.example.com</name>
+      </names>
+      <tests>
+        <test id='vuln-host' status='vulnerable-version'>
+          <details>Proof</details>
+        </test>
+      </tests>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service>
+              <name>https</name>
+              <tests>
+                <test id='vuln-service' status='potential'>
+                  <details>Service proof</details>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability>
+      <id>vuln-host</id>
+      <title>Fancy — Vulnerability</title>
+      <severity>7</severity>
+      <description>Node description</description>
+      <solution>Apply patches</solution>
+      <references>
+        <reference>
+          <source>CVE</source>
+          <value>CVE-2020-0001</value>
+        </reference>
+      </references>
+    </vulnerability>
+    <vulnerability>
+      <id>vuln-service</id>
+      <title>Service Vuln</title>
+      <severity>5</severity>
+      <description>Service description</description>
+      <solution>Service fix</solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        findings = artifact.get("findings")
+        host_entry = next(item for item in findings if item["Vulnerability ID"] == "vuln-host")
+        service_entry = next(item for item in findings if item["Vulnerability ID"] == "vuln-service")
+
+        self.assertEqual(host_entry["solution"], "Apply Fancy Patch")
+        self.assertEqual(host_entry["impact"], "can disrupt the network")
+        self.assertEqual(host_entry["category"], "Network")
+        self.assertEqual(
+            host_entry["references"],
+            "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
+        )
+
+        self.assertEqual(service_entry["solution"], "Fix Service")
+        self.assertEqual(service_entry["impact"], "may expose services")
+        self.assertEqual(service_entry["category"], "Web")
+        self.assertEqual(service_entry["references"], "No NIST reference available")
+
+    def test_nexpose_xml_records_missing_matrix_entries(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>203.0.113.5</address>
+      <status>alive</status>
+      <names>
+        <name>alpha.example.com</name>
+      </names>
+      <tests>
+        <test id='vuln-host' status='vulnerable-version'>
+          <details>Proof</details>
+        </test>
+      </tests>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability>
+      <id>vuln-host</id>
+      <title>Fancy — Vulnerability</title>
+      <severity>7</severity>
+      <description>Node description</description>
+      <solution>Apply patches</solution>
+      <references>
+        <reference>
+          <source>CVE</source>
+          <value>CVE-2020-0001</value>
+        </reference>
+      </references>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        gaps = self.project.data_artifacts.get("nexpose_matrix_gaps")
+        self.assertIsNotNone(gaps)
+        missing_by_artifact = gaps.get("missing_by_artifact", {})
+        self.assertIn("external_nexpose_findings", missing_by_artifact)
+        entries = missing_by_artifact["external_nexpose_findings"].get("entries")
+        self.assertTrue(entries)
+        entry_map = {row.get("Vulnerability"): row for row in entries}
+        host_row = entry_map.get("Fancy — Vulnerability")
+        self.assertIsNotNone(host_row)
+        self.assertEqual(
+            host_row.get("CVE"),
+            "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
         )
 
     def test_vulnerability_matrix_enriches_artifacts(self):

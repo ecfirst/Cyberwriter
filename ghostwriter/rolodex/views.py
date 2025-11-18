@@ -2,7 +2,9 @@
 
 # Standard Libraries
 import copy
+import csv
 import datetime
+import io
 import json
 import logging
 from typing import Any, Dict, List, Optional, Set
@@ -86,7 +88,11 @@ from ghostwriter.rolodex.models import (
     ProjectTarget,
 )
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
-from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
+from ghostwriter.rolodex.data_parsers import (
+    normalize_nexpose_artifacts_map,
+    resolve_nexpose_requirement_artifact_key,
+    summarize_nexpose_matrix_gaps,
+)
 from ghostwriter.rolodex.workbook import (
     SECTION_ENTRY_FIELD_MAP,
     build_data_configuration,
@@ -1879,6 +1885,9 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         dns_issue_counts: Dict[str, int] = {}
         artifacts = normalize_nexpose_artifacts_map(object.data_artifacts or {})
         object.data_artifacts = artifacts
+        matrix_gap_summary = summarize_nexpose_matrix_gaps(artifacts)
+        ctx["nexpose_matrix_gap_summary"] = matrix_gap_summary
+        ctx["has_nexpose_matrix_gaps"] = bool(matrix_gap_summary)
         for dns_entry in artifacts.get("dns_issues", []) or []:
             domain = (dns_entry.get("domain") or "").strip()
             if domain:
@@ -1950,6 +1959,11 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             existing = required_file_lookup.get(slug) if slug else None
             if slug:
                 requirement["existing"] = existing
+            artifact_key = resolve_nexpose_requirement_artifact_key(requirement)
+            requirement["artifact_key"] = artifact_key
+            requirement["missing_matrix_entries"] = (
+                matrix_gap_summary.get(artifact_key, []) if artifact_key else []
+            )
             label = (requirement.get("label") or "").strip().lower()
             if existing and label == "dns_report.csv":
                 candidate_values = [
@@ -2128,6 +2142,61 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
             else:
                 messages.error(request, "Unable to upload data file. Please review the form for errors.")
         return redirect(self.get_success_url())
+
+
+class ProjectNexposeMissingMatrixDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Provide a CSV export of missing Nexpose matrix entries for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self, project: Project) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#supplementals"
+
+    def get(self, request, *args, **kwargs):
+        project = self.get_object()
+        artifact_key = (request.GET.get("artifact") or "").strip()
+        summary = summarize_nexpose_matrix_gaps(project.data_artifacts or {})
+        entries = summary.get(artifact_key)
+        if not entries:
+            messages.error(
+                request,
+                "No missing Nexpose matrix entries are available for download.",
+            )
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        buffer = io.StringIO()
+        fieldnames = [
+            "Vulnerability",
+            "Action Required",
+            "Remediation Impact",
+            "Vulnerability Threat",
+            "Category",
+            "CVE",
+        ]
+        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in entries:
+            if not isinstance(row, dict):
+                continue
+            writer.writerow({
+                "Vulnerability": row.get("Vulnerability", ""),
+                "Action Required": row.get("Action Required", ""),
+                "Remediation Impact": row.get("Remediation Impact", ""),
+                "Vulnerability Threat": row.get("Vulnerability Threat", ""),
+                "Category": row.get("Category", ""),
+                "CVE": row.get("CVE", ""),
+            })
+
+        response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+        add_content_disposition_header(response, "nexpose-missing.csv")
+        return response
 
 
 class ProjectIPArtifactUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
