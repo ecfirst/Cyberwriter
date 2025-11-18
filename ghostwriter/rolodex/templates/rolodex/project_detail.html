@@ -222,7 +222,16 @@
                                 data-success-url="{{ request.path }}#supplementals"
                               >
                                 {% csrf_token %}
-                                <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                                <button
+                                  type="submit"
+                                  class="btn btn-outline-danger btn-sm project-data-file-delete-button"
+                                  data-loading-text="Removing..."
+                                >
+                                  Remove
+                                </button>
+                                <noscript>
+                                  <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                                </noscript>
                               </form>
                             {% else %}
                               <p class="mb-1 text-muted">No file uploaded yet.</p>
@@ -282,7 +291,16 @@
                               data-success-url="{{ request.path }}#supplementals"
                             >
                               {% csrf_token %}
-                              <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                              <button
+                                type="submit"
+                                class="btn btn-outline-danger btn-sm project-data-file-delete-button"
+                                data-loading-text="Removing..."
+                              >
+                                Remove
+                              </button>
+                              <noscript>
+                                <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                              </noscript>
                             </form>
                           {% else %}
                             <p class="mb-1 text-muted">No IP addresses provided yet.</p>
@@ -667,38 +685,37 @@
 
         const deleteForms = document.querySelectorAll('.project-data-file-delete-form');
         deleteForms.forEach(function(form) {
-          const submitButton = form.querySelector('button[type="submit"]');
+          const deleteButton = form.querySelector('.project-data-file-delete-button');
           const successUrl = form.getAttribute('data-success-url');
+          if (!deleteButton) {
+            return;
+          }
 
           const setDeletingState = function() {
-            if (!submitButton) {
-              return;
-            }
-            const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
-            submitButton.setAttribute('data-default-text', defaultText);
-            submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Removing...';
-            submitButton.disabled = true;
+            const defaultText = deleteButton.getAttribute('data-default-text') || deleteButton.textContent.trim();
+            deleteButton.setAttribute('data-default-text', defaultText);
+            const loadingText = deleteButton.getAttribute('data-loading-text') || 'Removing...';
+            deleteButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>' + loadingText;
+            deleteButton.disabled = true;
           };
 
           const resetDeletingState = function() {
-            if (!submitButton) {
-              return;
-            }
-            const defaultText = submitButton.getAttribute('data-default-text');
+            const defaultText = deleteButton.getAttribute('data-default-text');
             if (defaultText) {
-              submitButton.innerHTML = defaultText;
+              deleteButton.innerHTML = defaultText;
             }
-            submitButton.disabled = false;
+            deleteButton.disabled = false;
           };
 
-          const handleDeleteSubmit = function(event) {
-            if (!window.fetch) {
-              storeProjectScrollPosition();
+          deleteButton.addEventListener('click', function(event) {
+            event.preventDefault();
+            if (form.dataset.submitting === '1') {
               return;
             }
 
-            event.preventDefault();
-            if (form.dataset.submitting === '1') {
+            if (!window.fetch) {
+              storeProjectScrollPosition();
+              form.submit();
               return;
             }
 
@@ -730,14 +747,11 @@
                 window.location.href = redirectUrl;
               })
               .catch(function() {
-                form.removeEventListener('submit', handleDeleteSubmit);
                 form.dataset.submitting = '0';
                 resetDeletingState();
                 form.submit();
               });
-          };
-
-          form.addEventListener('submit', handleDeleteSubmit);
+          });
         });
 
         const questionnaireForms = document.querySelectorAll('.project-data-responses-form');

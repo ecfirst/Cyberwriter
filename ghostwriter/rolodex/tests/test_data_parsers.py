@@ -469,6 +469,85 @@ class NexposeDataParserTests(TestCase):
             "Negotiated with the following insecure cipher suites:\nTLS_RSA_WITH_AES_128_CBC_SHA\nTLS_RSA_WITH_AES_256_CBC_SHA",
         )
 
+    def test_nexpose_xml_populates_cve_ids_and_references(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>192.0.2.55</address>
+      <status>alive</status>
+      <names>
+        <name>cve-host</name>
+      </names>
+      <tests>
+        <test id='multi-cve' status='vulnerable-exploited'>
+          <Paragraph>
+            <Paragraph>Example proof</Paragraph>
+          </Paragraph>
+        </test>
+      </tests>
+    </node>
+  </nodes>
+  <VulnerabilityDefinitions>
+    <vulnerability id='multi-cve' title='Multi CVE Example' severity='6'>
+      <description>
+        <Paragraph>
+          <Paragraph>Example description</Paragraph>
+        </Paragraph>
+      </description>
+      <solution>
+        <Paragraph>
+          <Paragraph>Apply all fixes</Paragraph>
+        </Paragraph>
+      </solution>
+      <References>
+        <reference source='CVE'>CVE-2020-1111</reference>
+        <reference source='CVE' value='CVE-2020-2222'/>
+        <reference source='URL'>http://example.com</reference>
+      </References>
+      <CVEs>
+        <CVE id='CVE-2020-2222'/>
+        <cve>CVE-2020-3333</cve>
+      </CVEs>
+    </vulnerability>
+  </VulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        finding = artifact["findings"][0]
+
+        self.assertEqual(
+            finding["Vulnerability CVE IDs"],
+            "CVE-2020-1111, CVE-2020-2222, CVE-2020-3333",
+        )
+        self.assertEqual(
+            finding["References"],
+            "\n".join(
+                [
+                    "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-1111",
+                    "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-2222",
+                    "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-3333",
+                ]
+            ),
+        )
+
     def test_nexpose_xml_applies_matrix_metadata(self):
         VulnerabilityMatrixEntry.objects.create(
             vulnerability="Fancy — Vulnerability",

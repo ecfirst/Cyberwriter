@@ -806,6 +806,41 @@ def _get_element_field(element: Optional["ElementTree.Element"], key: str) -> st
     return ""
 
 
+def _find_child_element(
+    element: Optional["ElementTree.Element"], key: str
+) -> Optional["ElementTree.Element"]:
+    """Return the first child element that matches ``key`` variants."""
+
+    if element is None:
+        return None
+    for candidate in _generate_key_variants(key):
+        found = element.find(candidate)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_child_elements(
+    element: Optional["ElementTree.Element"], key: str
+) -> List["ElementTree.Element"]:
+    """Return all child elements that match ``key`` variants."""
+
+    if element is None:
+        return []
+    children: List["ElementTree.Element"] = []
+    seen_ids: Set[int] = set()
+    for candidate in _generate_key_variants(key):
+        if not candidate:
+            continue
+        for child in element.findall(candidate):
+            identifier = id(child)
+            if identifier in seen_ids:
+                continue
+            seen_ids.add(identifier)
+            children.append(child)
+    return children
+
+
 def _truncate_excel_text(value: str, limit: int = EXCEL_CELL_CHARACTER_LIMIT) -> str:
     """Ensure ``value`` fits within an Excel cell by truncating when needed."""
 
@@ -1012,12 +1047,10 @@ def _build_vulnerability_lookup(report_root: "ElementTree.Element") -> Dict[str,
     """Return a mapping of vulnerability IDs to descriptive fields."""
 
     lookup: Dict[str, Dict[str, str]] = {}
-    definitions = report_root.find("vulnerabilityDefinitions")
-    if definitions is None:
-        definitions = report_root.find("VulnerabilityDefinitions")
+    definitions = _find_child_element(report_root, "vulnerabilityDefinitions")
     if definitions is None:
         return lookup
-    for vulnerability in definitions.findall("vulnerability"):
+    for vulnerability in _find_child_elements(definitions, "vulnerability"):
         vuln_id = (
             _collapse_whitespace(_get_element_field(vulnerability, "id"))
             or _collapse_whitespace(_element_text(vulnerability.find("id")))
@@ -1044,28 +1077,47 @@ def _build_vulnerability_lookup(report_root: "ElementTree.Element") -> Dict[str,
                 or _get_element_field(vulnerability, "solution")
             )
         )
-        references = vulnerability.find("references")
+        references = _find_child_element(vulnerability, "references")
         cve_ids: List[str] = []
-        if references is not None:
-            for reference in references.findall("reference"):
-                source = _collapse_whitespace(
-                    _element_text(reference.find("source"))
-                    or _get_element_field(reference, "source")
-                )
-                if source.upper() != "CVE":
-                    continue
-                value = _collapse_whitespace(
-                    _element_text(reference.find("value"))
-                    or _get_element_field(reference, "value")
-                )
-                if value:
-                    cve_ids.append(value)
+        reference_nodes = _find_child_elements(references, "reference")
+        for reference in reference_nodes:
+            source = _collapse_whitespace(_get_element_field(reference, "source"))
+            if source.upper() != "CVE":
+                continue
+            value = _collapse_whitespace(
+                _get_element_field(reference, "value") or _element_text(reference)
+            )
+            if value:
+                cve_ids.append(value)
+
+        cves_parent = _find_child_element(vulnerability, "cves")
+        cve_nodes = _find_child_elements(cves_parent, "cve")
+        for cve_node in cve_nodes:
+            identifier = _collapse_whitespace(
+                _get_element_field(cve_node, "id")
+                or _get_element_field(cve_node, "value")
+                or _element_text(cve_node)
+            )
+            if identifier:
+                cve_ids.append(identifier)
+
+        normalized_cves: List[str] = []
+        seen_cves: Set[str] = set()
+        for cve in cve_ids:
+            cleaned = cve.strip()
+            if not cleaned:
+                continue
+            key = cleaned.upper()
+            if key in seen_cves:
+                continue
+            seen_cves.add(key)
+            normalized_cves.append(cleaned)
 
         lookup[vuln_id] = {
             "title": title or vuln_id,
             "severity": severity_value if severity_value is not None else severity_text,
             "description": description,
-            "cves": ", ".join(cve_ids),
+            "cves": ", ".join(normalized_cves),
             "solution": solution,
         }
     return lookup
