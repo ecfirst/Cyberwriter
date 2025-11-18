@@ -699,6 +699,22 @@ def _collapse_whitespace(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _normalize_multiline_text(value: Any) -> str:
+    """Return ``value`` with normalized newlines while preserving paragraph breaks."""
+
+    if value in (None, ""):
+        return ""
+
+    text = str(value)
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in normalized.split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
 def _clean_ascii_text(value: Any) -> str:
     """Return ``value`` normalized to ASCII with collapsed whitespace."""
 
@@ -947,8 +963,8 @@ def _extract_test_evidence(test_element: "ElementTree.Element") -> str:
     for key in ("evidence", "details", "description", "proof"):
         evidence = _get_element_field(test_element, key)
         if evidence:
-            return evidence
-    return ""
+            return _normalize_multiline_text(evidence)
+    return _normalize_multiline_text(_element_text(test_element))
 
 
 def _extract_vulnerability_id(test_element: "ElementTree.Element") -> str:
@@ -967,6 +983,8 @@ def _build_vulnerability_lookup(report_root: "ElementTree.Element") -> Dict[str,
     lookup: Dict[str, Dict[str, str]] = {}
     definitions = report_root.find("vulnerabilityDefinitions")
     if definitions is None:
+        definitions = report_root.find("VulnerabilityDefinitions")
+    if definitions is None:
         return lookup
     for vulnerability in definitions.findall("vulnerability"):
         vuln_id = (
@@ -984,12 +1002,12 @@ def _build_vulnerability_lookup(report_root: "ElementTree.Element") -> Dict[str,
             _element_text(vulnerability.find("severity"))
             or _get_element_field(vulnerability, "severity")
         )
-        description = _collapse_whitespace(
+        description = _normalize_multiline_text(
             _element_text(vulnerability.find("description"))
             or _get_element_field(vulnerability, "description")
         )
         solution = _truncate_excel_text(
-            _collapse_whitespace(
+            _normalize_multiline_text(
                 _element_text(vulnerability.find("solution"))
                 or _get_element_field(vulnerability, "solution")
             )

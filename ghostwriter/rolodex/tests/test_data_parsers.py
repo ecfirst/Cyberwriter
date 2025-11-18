@@ -255,6 +255,121 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(software_entry["Software"], "ExampleApp")
         self.assertEqual(software_entry["Version"], "1.2.3")
 
+    def test_nexpose_xml_uses_vulnerability_lookup_details(self):
+        xml_payload = """
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>66.161.143.41</address>
+      <status>alive</status>
+      <names>
+        <name>escope.ohiogi.com</name>
+      </names>
+      <fingerprints>
+        <os certainty='0.64' vendor='Linux' product='LINUX 4.0 - 4.4' />
+      </fingerprints>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service name='HTTPS'>
+              <tests>
+                <test id='ssl-static-key-ciphers' status='vulnerable-exploited'>
+                  <Paragraph>
+                    <Paragraph>Negotiated with the following insecure cipher suites.</Paragraph>
+                  </Paragraph>
+                </test>
+                <test id='tls-server-cert-expired' status='vulnerable-exploited'>
+                  <Paragraph>
+                    <Paragraph>The certificate is not valid after Mon, 19 Aug 2024 13:28:45 CDT.</Paragraph>
+                  </Paragraph>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <VulnerabilityDefinitions>
+    <vulnerability id='ssl-static-key-ciphers' title='TLS/SSL Server Supports The Use of Static Key Ciphers' severity='3'>
+      <description>
+        <Paragraph>
+          <Paragraph>The server is configured to support ciphers known as static key ciphers.</Paragraph>
+        </Paragraph>
+      </description>
+      <solution>
+        <Paragraph>
+          <Paragraph>Configure the server to disable support for static key cipher suites.</Paragraph>
+        </Paragraph>
+      </solution>
+    </vulnerability>
+    <vulnerability id='tls-server-cert-expired' title='X.509 Server Certificate Is Invalid/Expired' severity='7'>
+      <description>
+        <Paragraph>
+          <Paragraph>The TLS/SSL server's X.509 certificate either contains a start date in the future or is expired.</Paragraph>
+        </Paragraph>
+      </description>
+      <solution>
+        <Paragraph>
+          <Paragraph>Obtain a new certificate and install it on the server.</Paragraph>
+        </Paragraph>
+      </solution>
+    </vulnerability>
+  </VulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        findings = artifact.get("findings")
+        self.assertEqual(len(findings), 2)
+
+        cipher_entry = next(
+            item for item in findings if item["Vulnerability ID"] == "ssl-static-key-ciphers"
+        )
+        self.assertEqual(
+            cipher_entry["Vulnerability Title"],
+            "TLS/SSL Server Supports The Use of Static Key Ciphers",
+        )
+        self.assertEqual(cipher_entry["Vulnerability Severity Level"], "3")
+        self.assertEqual(
+            cipher_entry["Details"],
+            "The server is configured to support ciphers known as static key ciphers.",
+        )
+        self.assertEqual(
+            cipher_entry["Detailed Remediation"],
+            "Configure the server to disable support for static key cipher suites.",
+        )
+        self.assertEqual(
+            cipher_entry["Evidence"],
+            "Negotiated with the following insecure cipher suites.",
+        )
+
+        cert_entry = next(
+            item for item in findings if item["Vulnerability ID"] == "tls-server-cert-expired"
+        )
+        self.assertEqual(cert_entry["Vulnerability Severity Level"], "7")
+        self.assertTrue(
+            cert_entry["Detailed Remediation"].startswith(
+                "Obtain a new certificate and install it on the server."
+            )
+        )
+
     def test_vulnerability_matrix_enriches_artifacts(self):
         VulnerabilityMatrixEntry.objects.create(
             vulnerability="Zeta Exposure",
