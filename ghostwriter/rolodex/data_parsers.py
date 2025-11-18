@@ -1104,10 +1104,10 @@ def _apply_matrix_metadata_to_finding(
 ) -> bool:
     """Populate matrix-backed fields for a finding entry and return success state."""
 
-    entry.setdefault("impact", "")
-    entry.setdefault("solution", "")
-    entry.setdefault("category", "")
-    entry["references"] = cve_links
+    entry.setdefault("Impact", "")
+    entry.setdefault("Solution", "")
+    entry.setdefault("Category", "")
+    entry["References"] = cve_links
     if not vulnerability_matrix:
         return False
 
@@ -1119,12 +1119,12 @@ def _apply_matrix_metadata_to_finding(
         return False
 
     threat_text = metadata.get("vulnerability_threat") or ""
-    entry["impact"] = _adjust_matrix_impact(
+    entry["Impact"] = _adjust_matrix_impact(
         threat_text,
         entry.get("Vulnerability Test Result Code", ""),
     )
-    entry["solution"] = metadata.get("action_required") or ""
-    entry["category"] = metadata.get("category") or ""
+    entry["Solution"] = metadata.get("action_required") or ""
+    entry["Category"] = metadata.get("category") or ""
     return True
 
 
@@ -1173,10 +1173,10 @@ def _build_nexpose_finding_entry(
         "Evidence": evidence,
         "Detailed Remediation": remediation,
     }
-    entry.setdefault("impact", "")
-    entry.setdefault("solution", "")
-    entry.setdefault("category", "")
-    entry["references"] = cve_links
+    entry.setdefault("Impact", "")
+    entry.setdefault("Solution", "")
+    entry.setdefault("Category", "")
+    entry["References"] = cve_links
     has_matrix_metadata = _apply_matrix_metadata_to_finding(
         entry, vulnerability_matrix, cve_links
     )

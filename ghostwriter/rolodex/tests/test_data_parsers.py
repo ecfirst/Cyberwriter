@@ -359,10 +359,10 @@ class NexposeDataParserTests(TestCase):
             cipher_entry["Evidence"],
             "Negotiated with the following insecure cipher suites.",
         )
-        self.assertEqual(cipher_entry["impact"], "")
-        self.assertEqual(cipher_entry["solution"], "")
-        self.assertEqual(cipher_entry["category"], "")
-        self.assertEqual(cipher_entry["references"], "No NIST reference available")
+        self.assertEqual(cipher_entry["Impact"], "")
+        self.assertEqual(cipher_entry["Solution"], "")
+        self.assertEqual(cipher_entry["Category"], "")
+        self.assertEqual(cipher_entry["References"], "No NIST reference available")
 
         cert_entry = next(
             item for item in findings if item["Vulnerability ID"] == "tls-server-cert-expired"
@@ -373,7 +373,7 @@ class NexposeDataParserTests(TestCase):
                 "Obtain a new certificate and install it on the server."
             )
         )
-        self.assertEqual(cert_entry["references"], "No NIST reference available")
+        self.assertEqual(cert_entry["References"], "No NIST reference available")
 
     def test_nexpose_xml_normalizes_multiline_fields(self):
         xml_payload = """
@@ -559,18 +559,18 @@ class NexposeDataParserTests(TestCase):
         host_entry = next(item for item in findings if item["Vulnerability ID"] == "vuln-host")
         service_entry = next(item for item in findings if item["Vulnerability ID"] == "vuln-service")
 
-        self.assertEqual(host_entry["solution"], "Apply Fancy Patch")
-        self.assertEqual(host_entry["impact"], "can disrupt the network")
-        self.assertEqual(host_entry["category"], "Network")
+        self.assertEqual(host_entry["Solution"], "Apply Fancy Patch")
+        self.assertEqual(host_entry["Impact"], "can disrupt the network")
+        self.assertEqual(host_entry["Category"], "Network")
         self.assertEqual(
-            host_entry["references"],
+            host_entry["References"],
             "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
         )
 
-        self.assertEqual(service_entry["solution"], "Fix Service")
-        self.assertEqual(service_entry["impact"], "may expose services")
-        self.assertEqual(service_entry["category"], "Web")
-        self.assertEqual(service_entry["references"], "No NIST reference available")
+        self.assertEqual(service_entry["Solution"], "Fix Service")
+        self.assertEqual(service_entry["Impact"], "may expose services")
+        self.assertEqual(service_entry["Category"], "Web")
+        self.assertEqual(service_entry["References"], "No NIST reference available")
 
     def test_nexpose_xml_records_missing_matrix_entries(self):
         xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
