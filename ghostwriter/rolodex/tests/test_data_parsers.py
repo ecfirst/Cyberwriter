@@ -132,6 +132,127 @@ class NexposeDataParserTests(TestCase):
 
         self.assertEqual(self.project.data_responses, {"custom": "value"})
 
+    def test_nexpose_xml_upload_populates_findings(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <scans>
+    <scan>
+      <id>scan-1</id>
+      <name>Example</name>
+      <startTime>2023-01-01T00:00:00Z</startTime>
+      <endTime>2023-01-01T01:00:00Z</endTime>
+      <status>complete</status>
+    </scan>
+  </scans>
+  <nodes>
+    <node>
+      <address>192.0.2.10</address>
+      <status>vulnerable</status>
+      <names>
+        <name>alpha.example.com</name>
+        <name>beta</name>
+      </names>
+      <fingerprints>
+        <os certainty='1.0' vendor='Microsoft' product='Windows 10'/>
+      </fingerprints>
+      <tests>
+        <test id='vuln-host' status='vulnerable-version'>
+          <evidence>Evidence for host</evidence>
+        </test>
+      </tests>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service>
+              <name>https</name>
+              <tests>
+                <test id='vuln-service' status='potential'>
+                  <details>Context-dependent service evidence</details>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+      <software>
+        <fingerprint vendor='ExampleCo' product='ExampleApp' version='1.2.3'/>
+      </software>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability>
+      <id>vuln-host</id>
+      <title>Fancy — Vulnerability</title>
+      <severity>7</severity>
+      <description>Node description</description>
+      <solution>Apply patches</solution>
+      <references>
+        <reference>
+          <source>CVE</source>
+          <value>CVE-2020-0001</value>
+        </reference>
+      </references>
+    </vulnerability>
+    <vulnerability>
+      <id>vuln-service</id>
+      <title>Service Vuln</title>
+      <severity>5</severity>
+      <description>Service description mentioning context-dependent risk.</description>
+      <solution>Service fix</solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "nexpose_xml.xml", xml_payload.encode("utf-8"), content_type="text/xml"
+            ),
+            requirement_label="nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        self.assertIsInstance(artifact, dict)
+        findings = artifact.get("findings")
+        software = artifact.get("software")
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), 2)
+        self.assertIsInstance(software, list)
+        self.assertEqual(len(software), 1)
+
+        host_finding = findings[0]
+        self.assertEqual(host_finding["Asset IP Address"], "192.0.2.10")
+        self.assertEqual(host_finding["Hostname(s)"], "alpha.example.com; beta")
+        self.assertEqual(host_finding["Asset Operating System"], "Windows 10")
+        self.assertEqual(host_finding["Vulnerability ID"], "vuln-host")
+        self.assertEqual(host_finding["Vulnerability Title"], "Fancy Vulnerability")
+        self.assertEqual(host_finding["Vulnerability Test Result Code"], "VE")
+        self.assertEqual(host_finding["Vulnerability CVE IDs"], "CVE-2020-0001")
+        self.assertEqual(host_finding["Details"], "Node description")
+
+        service_finding = findings[1]
+        self.assertEqual(service_finding["Service Port"], "443")
+        self.assertEqual(service_finding["Protocol"], "TCP")
+        self.assertEqual(service_finding["Vulnerability Test Result Code"], "VP")
+        self.assertEqual(
+            service_finding["Details"],
+            "Service description mentioning context-dependent risk.",
+        )
+
+        software_entry = software[0]
+        self.assertEqual(
+            software_entry["System"], "192.0.2.10 (alpha.example.com; beta)"
+        )
+        self.assertEqual(software_entry["Software"], "ExampleApp")
+        self.assertEqual(software_entry["Version"], "1.2.3")
+
     def test_vulnerability_matrix_enriches_artifacts(self):
         VulnerabilityMatrixEntry.objects.create(
             vulnerability="Zeta Exposure",

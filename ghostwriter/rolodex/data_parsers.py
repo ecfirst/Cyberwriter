@@ -7,9 +7,20 @@ import csv
 import io
 import logging
 import re
+import unicodedata
 from collections import Counter
 from collections import abc
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
+try:  # pragma: no cover - optional hardening dependency
+    from defusedxml import ElementTree as DefusedElementTree
+except ImportError:  # pragma: no cover - fallback when defusedxml is unavailable
+    DefusedElementTree = None
+
+if DefusedElementTree is None:  # pragma: no cover - handled when defusedxml missing
+    from xml.etree import ElementTree as ElementTree
+else:  # pragma: no cover - exercised indirectly via parser tests
+    ElementTree = DefusedElementTree
 
 from django.apps import apps
 from django.core.files.base import File
@@ -665,6 +676,412 @@ def _decode_file(file_obj: File) -> Iterable[Dict[str, str]]:
 
     stream = io.StringIO(text)
     return csv.DictReader(stream)
+
+
+def _read_binary_file(file_obj: File) -> bytes:
+    """Return the raw bytes stored in ``file_obj``."""
+
+    file_obj.open("rb")
+    try:
+        return file_obj.read() or b""
+    finally:
+        file_obj.close()
+
+
+def _collapse_whitespace(value: Any) -> str:
+    """Return ``value`` with consecutive whitespace collapsed."""
+
+    if value in (None, ""):
+        return ""
+    text = str(value)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _clean_ascii_text(value: Any) -> str:
+    """Return ``value`` normalized to ASCII with collapsed whitespace."""
+
+    if value in (None, ""):
+        return ""
+    normalized = unicodedata.normalize("NFKD", str(value))
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    return _collapse_whitespace(ascii_text)
+
+
+def _element_text(element: Optional["ElementTree.Element"]) -> str:
+    """Return the string content extracted from ``element``."""
+
+    if element is None:
+        return ""
+    text = "".join(element.itertext())
+    return text.strip()
+
+
+def _generate_key_variants(key: str) -> List[str]:
+    """Return possible attribute/child names for ``key``."""
+
+    variants: Set[str] = set()
+    parts = re.split(r"[-_]", key)
+    if parts:
+        camel = parts[0] + "".join(part.title() for part in parts[1:])
+        pascal = "".join(part.title() for part in parts)
+        variants.update({camel, pascal})
+    variants.update(
+        {
+            key,
+            key.replace("-", ""),
+            key.replace("-", "_"),
+            key.replace("_", ""),
+            key.lower(),
+            key.upper(),
+            key.title(),
+        }
+    )
+    return [variant for variant in variants if variant]
+
+
+def _get_element_field(element: Optional["ElementTree.Element"], key: str) -> str:
+    """Return ``key`` from ``element`` attributes or child elements."""
+
+    if element is None:
+        return ""
+    for candidate in _generate_key_variants(key):
+        value = element.attrib.get(candidate)
+        if value not in (None, ""):
+            return str(value).strip()
+    for candidate in _generate_key_variants(key):
+        child = element.find(candidate)
+        if child is not None:
+            text = _element_text(child)
+            if text:
+                return text
+    return ""
+
+
+def _truncate_excel_text(value: str, limit: int = EXCEL_CELL_CHARACTER_LIMIT) -> str:
+    """Ensure ``value`` fits within an Excel cell by truncating when needed."""
+
+    text = value or ""
+    if len(text) <= limit:
+        return text
+    ellipsis = "…"
+    return text[: max(0, limit - len(ellipsis))] + ellipsis
+
+
+def _safe_float(value: Any) -> float:
+    """Best effort conversion of ``value`` to ``float``."""
+
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return 0.0
+
+
+_VULN_DOWNGRADE_SUBSTRINGS: Tuple[str, ...] = (
+    "only if",
+    "context-dependent",
+    "might allow",
+    "when configured as a cgi script",
+    "extension in php",
+    "where an affected version",
+    "the potential for",
+    "disputed",
+    "are not affected",
+    "man-in-the-middle attackers to",
+    "which might",
+    "in certain configurations",
+    "may be vulnerable",
+    "could lead to",
+    "was configured pointing to",
+    "if an intermediary proxy is in use",
+    "when using a block cipher algorithm in cipher block chaining (cbc) mode",
+    "traffic amplification attacks",
+    "conduct drdos attacks",
+    "a drdos attack",
+    "anonymous root logins should only be allowed from system console",
+    "domain name server (dns) amplification attack",
+    "while this is not a definite vulnerability on its own",
+    "when used in",
+    "allows local users to",
+    "allows user-assisted remote attackers",
+    "on android",
+    "with physical access",
+    "physically proximate attackers",
+    "potentially exploitable",
+    "requires local system access",
+)
+
+_VULN_DOWNGRADE_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"function in the .* extension",
+        r"when\s+.+?\s+is\s+used",
+        r"when\s+.+?\s+are\s+used",
+        r"when\s+.+?\s+is\s+enabled",
+        r"when\s+.+?\s+setting\s+is\s+disabled",
+        r"when\s+.+?\s+are\s+enabled",
+        r"when\s+the\s+.+?\s+is\s+in\s+place",
+        r"when\s+.+?\s+is\s+being\s+used",
+        r"with\s+.+?\s+enabled",
+    )
+]
+
+_VULN_DOWNGRADE_PHRASES = (
+    "a carefully crafted, invalid isakmp cert request packet will cause the isakmpd daemon to attempt an out-of-bounds read, crashing the service.",
+    "a carefully crafted, invalid isakmp delete packet with a very large number of spi's will cause the isakmpd daemon to attempt an out-of-bounds read, crashing the service.",
+)
+
+
+def _should_adjust_vuln_code(description: str) -> bool:
+    """Return ``True`` when ``description`` indicates a potential finding."""
+
+    if not description:
+        return False
+    desc_lower = description.lower()
+    if any(token in desc_lower for token in _VULN_DOWNGRADE_SUBSTRINGS):
+        return True
+
+    if "potentially" in desc_lower and "timestamp response" not in desc_lower:
+        return True
+
+    if "on os x" in desc_lower and not any(
+        exclusion in desc_lower for exclusion in ("adobe flash", "adobe air")
+    ):
+        return True
+    if "on linux" in desc_lower and not any(
+        exclusion in desc_lower for exclusion in ("adobe flash", "adobe air")
+    ):
+        return True
+    if "on windows" in desc_lower and not any(
+        exclusion in desc_lower for exclusion in ("adobe flash", "adobe air")
+    ):
+        return True
+
+    if "when running on" in desc_lower or "when running with" in desc_lower:
+        return True
+
+    if "when using a block cipher algorithm in cipher block chaining (cbc) mode" in desc_lower:
+        return True
+
+    if any(phrase in desc_lower for phrase in _VULN_DOWNGRADE_PHRASES):
+        return True
+
+    for pattern in _VULN_DOWNGRADE_PATTERNS:
+        if pattern.search(description):
+            return True
+
+    return False
+
+
+def _adjust_vulnerability_code(code: str, description: str) -> str:
+    """Adjust Nexpose test codes based on descriptive context."""
+
+    normalized = (code or "").upper()
+    if normalized in {"VV", "VE"} and _should_adjust_vuln_code(description):
+        normalized = "VP"
+    if normalized == "VV":
+        return "VE"
+    return normalized
+
+
+def _map_test_status(raw_status: Any) -> str:
+    """Normalize Nexpose test status strings."""
+
+    text = _collapse_whitespace(raw_status)
+    if not text:
+        return ""
+    mapped = NEXPOSE_TEST_STATUS_MAP.get(text.lower())
+    if mapped:
+        return mapped
+    return text.upper()
+
+
+def _collect_node_hostnames(node: "ElementTree.Element") -> List[str]:
+    """Return a list of unique hostnames recorded for ``node``."""
+
+    hostnames: List[str] = []
+    for name_element in node.findall("./names/name"):
+        hostname = _collapse_whitespace(_element_text(name_element))
+        if hostname and hostname not in hostnames:
+            hostnames.append(hostname)
+    return hostnames
+
+
+def _extract_os_description(node: "ElementTree.Element") -> str:
+    """Select the best matching OS description for ``node``."""
+
+    os_entries = node.findall("./fingerprints/os")
+    if not os_entries:
+        os_entries = node.findall("./fingerprints/fingerprint")
+    fallback = ""
+    for os_element in os_entries:
+        certainty = _safe_float(_get_element_field(os_element, "certainty"))
+        vendor = _get_element_field(os_element, "vendor")
+        product = _get_element_field(os_element, "product")
+        family = _get_element_field(os_element, "family")
+        device_class = _get_element_field(os_element, "device-class") or _get_element_field(
+            os_element, "deviceClass"
+        )
+        if not fallback:
+            fallback = product or vendor or family or device_class or ""
+        if certainty == 1.0 and product:
+            return product
+        if certainty >= 0.67:
+            if vendor and vendor.lower() == "microsoft":
+                return product or "Microsoft Windows UNKNOWN"
+            if vendor:
+                return vendor
+            if family:
+                return family
+            if device_class:
+                return device_class
+    return fallback
+
+
+def _extract_test_evidence(test_element: "ElementTree.Element") -> str:
+    """Return the best-effort evidence string for ``test_element``."""
+
+    for key in ("evidence", "details", "description", "proof"):
+        evidence = _get_element_field(test_element, key)
+        if evidence:
+            return evidence
+    return ""
+
+
+def _extract_vulnerability_id(test_element: "ElementTree.Element") -> str:
+    """Return the vulnerability identifier linked to ``test_element``."""
+
+    for key in ("id", "vulnerability-id", "vulnerabilityId", "vuln-id"):
+        value = _get_element_field(test_element, key)
+        if value:
+            return value
+    return ""
+
+
+def _build_vulnerability_lookup(report_root: "ElementTree.Element") -> Dict[str, Dict[str, str]]:
+    """Return a mapping of vulnerability IDs to descriptive fields."""
+
+    lookup: Dict[str, Dict[str, str]] = {}
+    definitions = report_root.find("vulnerabilityDefinitions")
+    if definitions is None:
+        return lookup
+    for vulnerability in definitions.findall("vulnerability"):
+        vuln_id = (
+            _collapse_whitespace(_get_element_field(vulnerability, "id"))
+            or _collapse_whitespace(_element_text(vulnerability.find("id")))
+        )
+        if not vuln_id:
+            continue
+        title = _clean_ascii_text(
+            _element_text(vulnerability.find("title"))
+            or _get_element_field(vulnerability, "title")
+            or vuln_id
+        )
+        severity = _collapse_whitespace(
+            _element_text(vulnerability.find("severity"))
+            or _get_element_field(vulnerability, "severity")
+        )
+        description = _collapse_whitespace(
+            _element_text(vulnerability.find("description"))
+            or _get_element_field(vulnerability, "description")
+        )
+        solution = _truncate_excel_text(
+            _collapse_whitespace(
+                _element_text(vulnerability.find("solution"))
+                or _get_element_field(vulnerability, "solution")
+            )
+        )
+        references = vulnerability.find("references")
+        cve_ids: List[str] = []
+        if references is not None:
+            for reference in references.findall("reference"):
+                source = _collapse_whitespace(
+                    _element_text(reference.find("source"))
+                    or _get_element_field(reference, "source")
+                )
+                if source.upper() != "CVE":
+                    continue
+                value = _collapse_whitespace(
+                    _element_text(reference.find("value"))
+                    or _get_element_field(reference, "value")
+                )
+                if value:
+                    cve_ids.append(value)
+
+        lookup[vuln_id] = {
+            "title": title or vuln_id,
+            "severity": severity,
+            "description": description,
+            "cves": "; ".join(cve_ids),
+            "solution": solution,
+        }
+    return lookup
+
+
+def _build_nexpose_finding_entry(
+    *,
+    ip_address: str,
+    hostnames: str,
+    os_description: str,
+    port: str,
+    protocol: str,
+    test_element: "ElementTree.Element",
+    vulnerability_lookup: Dict[str, Dict[str, str]],
+) -> Optional[Dict[str, str]]:
+    """Return a populated finding entry for ``test_element`` if possible."""
+
+    vulnerability_id = _extract_vulnerability_id(test_element)
+    if not vulnerability_id:
+        return None
+    definition = vulnerability_lookup.get(vulnerability_id, {})
+    title = _clean_ascii_text(definition.get("title") or vulnerability_id)
+    severity = definition.get("severity") or ""
+    description = definition.get("description") or ""
+    cve_ids = definition.get("cves") or ""
+    remediation = definition.get("solution") or ""
+    evidence = _extract_test_evidence(test_element)
+    status = _adjust_vulnerability_code(
+        _map_test_status(_get_element_field(test_element, "status")),
+        description,
+    )
+
+    return {
+        "Asset IP Address": ip_address,
+        "Hostname(s)": hostnames,
+        "Asset Operating System": os_description,
+        "Service Port": port,
+        "Protocol": protocol,
+        "Vulnerability Test Result Code": status,
+        "Vulnerability ID": vulnerability_id,
+        "Vulnerability CVE IDs": cve_ids,
+        "Vulnerability Severity Level": severity,
+        "Vulnerability Title": title,
+        "Details": description,
+        "Evidence": evidence,
+        "Detailed Remediation": remediation,
+    }
+
+
+def _resolve_nexpose_xml_artifact_key(data_file: "ProjectDataFile") -> Optional[str]:
+    """Infer the artifact key that should store a Nexpose XML upload."""
+
+    candidates = [
+        (data_file.requirement_label or ""),
+        (data_file.requirement_slug or ""),
+        (data_file.requirement_context or ""),
+        (data_file.description or ""),
+    ]
+    filename = getattr(data_file, "filename", "")
+    if filename:
+        candidates.append(filename)
+    normalized = " ".join(text.strip().lower() for text in candidates if text and text.strip())
+    if "nexpose_xml" not in normalized:
+        return None
+    for keyword, artifact_key in NEXPOSE_XML_ARTIFACT_MAP.items():
+        if keyword in normalized:
+            return artifact_key
+    return None
 
 
 def _parse_ip_list(file_obj: File) -> List[str]:
@@ -1471,6 +1888,85 @@ def parse_nexpose_vulnerability_report(
     return summaries
 
 
+def parse_nexpose_xml_report(file_obj: File) -> Dict[str, List[Dict[str, str]]]:
+    """Parse a ``nexpose_xml.xml`` upload into structured findings and software entries."""
+
+    findings: List[Dict[str, str]] = []
+    software_entries: List[Dict[str, str]] = []
+
+    raw_bytes = _read_binary_file(file_obj)
+    if not raw_bytes.strip():
+        return {"findings": findings, "software": software_entries}
+
+    try:
+        report_root = ElementTree.fromstring(raw_bytes)
+    except ElementTree.ParseError:  # pragma: no cover - invalid XML is ignored
+        logger.warning("Unable to parse Nexpose XML upload", exc_info=True)
+        return {"findings": findings, "software": software_entries}
+
+    vulnerability_lookup = _build_vulnerability_lookup(report_root)
+    nodes_parent = report_root.find("nodes")
+    if nodes_parent is None:
+        return {"findings": findings, "software": software_entries}
+
+    for node in nodes_parent.findall("node"):
+        ip_address = _collapse_whitespace(_get_element_field(node, "address"))
+        hostnames = _collect_node_hostnames(node)
+        hostname_text = "; ".join(hostnames)
+        os_description = _extract_os_description(node)
+
+        for test_element in node.findall("./tests/test"):
+            entry = _build_nexpose_finding_entry(
+                ip_address=ip_address,
+                hostnames=hostname_text,
+                os_description=os_description,
+                port="",
+                protocol="",
+                test_element=test_element,
+                vulnerability_lookup=vulnerability_lookup,
+            )
+            if entry:
+                findings.append(entry)
+
+        for endpoint in node.findall("./endpoints/endpoint"):
+            port = _collapse_whitespace(_get_element_field(endpoint, "port"))
+            protocol = _collapse_whitespace(_get_element_field(endpoint, "protocol")).upper()
+            for service in endpoint.findall("./services/service"):
+                for test_element in service.findall("./tests/test"):
+                    entry = _build_nexpose_finding_entry(
+                        ip_address=ip_address,
+                        hostnames=hostname_text,
+                        os_description=os_description,
+                        port=port,
+                        protocol=protocol,
+                        test_element=test_element,
+                        vulnerability_lookup=vulnerability_lookup,
+                    )
+                    if entry:
+                        findings.append(entry)
+
+        software_fingerprints = node.findall("./software/fingerprint")
+        if not software_fingerprints:
+            software_fingerprints = node.findall("./software/softwareFingerprint")
+        system_label = ip_address or hostname_text or "Unknown System"
+        display_system = system_label
+        if hostname_text:
+            if ip_address:
+                display_system = f"{ip_address} ({hostname_text})"
+            else:
+                display_system = hostname_text
+        for fingerprint in software_fingerprints:
+            product = _collapse_whitespace(_get_element_field(fingerprint, "product"))
+            version = _collapse_whitespace(_get_element_field(fingerprint, "version"))
+            if not (product or version):
+                continue
+            software_entries.append(
+                {"System": display_system, "Software": product, "Version": version}
+            )
+
+    return {"findings": findings, "software": software_entries}
+
+
 NEXPOSE_ARTIFACT_DEFINITIONS: Dict[str, Dict[str, str]] = {
     "external_nexpose_csv.csv": {
         "artifact_key": "external_nexpose_vulnerabilities",
@@ -1493,6 +1989,22 @@ LEGACY_NEXPOSE_ARTIFACT_ALIASES: Dict[str, str] = {
 NEXPOSE_ARTIFACT_KEYS = {
     definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
 }.union(LEGACY_NEXPOSE_ARTIFACT_ALIASES.keys())
+
+
+EXCEL_CELL_CHARACTER_LIMIT = 32766
+
+NEXPOSE_TEST_STATUS_MAP = {
+    "potential": "VP",
+    "vulnerable-exploited": "VE",
+    "vulnerable-version": "VV",
+}
+
+NEXPOSE_XML_ARTIFACT_MAP = {
+    "external": "external_nexpose_findings",
+    "internal": "internal_nexpose_findings",
+    "iot": "iot_iomt_nexpose_findings",
+    "iomt": "iot_iomt_nexpose_findings",
+}
 
 
 def _categorize_web_risk(raw_value: str) -> Optional[str]:
@@ -1883,6 +2395,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
+        xml_artifact_key = _resolve_nexpose_xml_artifact_key(data_file)
         if label == "dns_report.csv":
             domain = (data_file.requirement_context or data_file.description or data_file.filename).strip()
             domain = domain or "Unknown Domain"
@@ -1923,6 +2436,28 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     "label": definition["label"],
                     **parsed_vulnerabilities,
                 }
+        elif xml_artifact_key:
+            parsed_xml = parse_nexpose_xml_report(data_file.file)
+            existing_entry = artifacts.get(xml_artifact_key)
+            combined_findings: List[Dict[str, str]] = []
+            combined_software: List[Dict[str, str]] = []
+            if isinstance(existing_entry, dict):
+                existing_findings = existing_entry.get("findings")
+                existing_software = existing_entry.get("software")
+                if isinstance(existing_findings, list):
+                    combined_findings.extend(existing_findings)
+                if isinstance(existing_software, list):
+                    combined_software.extend(existing_software)
+            parsed_findings = parsed_xml.get("findings") if isinstance(parsed_xml, dict) else []
+            parsed_software = parsed_xml.get("software") if isinstance(parsed_xml, dict) else []
+            if isinstance(parsed_findings, list):
+                combined_findings.extend(parsed_findings)
+            if isinstance(parsed_software, list):
+                combined_software.extend(parsed_software)
+            artifacts[xml_artifact_key] = {
+                "findings": combined_findings,
+                "software": combined_software,
+            }
         else:
             requirement_slug = (data_file.requirement_slug or "").strip()
             if requirement_slug:
