@@ -661,11 +661,16 @@ def build_ad_risk_contrib(
 def _decode_file(file_obj: File) -> Iterable[Dict[str, str]]:
     """Return a DictReader for the provided file object."""
 
-    file_obj.open("rb")
     try:
-        raw_bytes = file_obj.read() or b""
-    finally:
-        file_obj.close()
+        file_obj.open("rb")
+    except FileNotFoundError:
+        logger.warning("Uploaded data file is missing from storage", exc_info=True)
+        raw_bytes = b""
+    else:
+        try:
+            raw_bytes = file_obj.read() or b""
+        finally:
+            file_obj.close()
 
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
         try:
@@ -683,7 +688,11 @@ def _decode_file(file_obj: File) -> Iterable[Dict[str, str]]:
 def _read_binary_file(file_obj: File) -> bytes:
     """Return the raw bytes stored in ``file_obj``."""
 
-    file_obj.open("rb")
+    try:
+        file_obj.open("rb")
+    except FileNotFoundError:
+        logger.warning("Uploaded data file is missing from storage", exc_info=True)
+        return b""
     try:
         return file_obj.read() or b""
     finally:
@@ -1301,11 +1310,16 @@ def resolve_nexpose_requirement_artifact_key(
 def _parse_ip_list(file_obj: File) -> List[str]:
     """Parse a newline-delimited text file into a list of IP entries."""
 
-    file_obj.open("rb")
     try:
-        raw_bytes = file_obj.read() or b""
-    finally:
-        file_obj.close()
+        file_obj.open("rb")
+    except FileNotFoundError:
+        logger.warning("Uploaded data file is missing from storage", exc_info=True)
+        raw_bytes = b""
+    else:
+        try:
+            raw_bytes = file_obj.read() or b""
+        finally:
+            file_obj.close()
 
     try:
         text = raw_bytes.decode("utf-8")
