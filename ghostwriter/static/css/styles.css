@@ -498,6 +498,15 @@ input[type='file'] {
   opacity: 1;
 }
 
+.project-required-data-form .project-required-data-input {
+  position: static;
+  left: auto;
+  top: auto;
+  bottom: auto;
+  width: 100%;
+  opacity: 1;
+}
+
 .csvdiv {
   position: absolute;
   left: 0;
