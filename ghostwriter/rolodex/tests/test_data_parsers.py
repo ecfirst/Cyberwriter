@@ -469,6 +469,75 @@ class NexposeDataParserTests(TestCase):
             "Negotiated with the following insecure cipher suites:\nTLS_RSA_WITH_AES_128_CBC_SHA\nTLS_RSA_WITH_AES_256_CBC_SHA",
         )
 
+
+    def test_nexpose_xml_uses_definition_titles_case_insensitively(self):
+        xml_payload = """<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>192.0.2.55</address>
+      <status>alive</status>
+      <names>
+        <name>zulu.example.com</name>
+      </names>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service name='HTTPS'>
+              <tests>
+                <test id='SSL-STATIC-KEY-CIPHERS' status='vulnerable-exploited'>
+                  <Paragraph>
+                    <Paragraph>Negotiated static-key suites.</Paragraph>
+                  </Paragraph>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability id='ssl-static-key-ciphers' title='TLS/SSL Server Supports The Use of Static Key Ciphers' severity='3'>
+      <description>
+        <Paragraph>
+          <Paragraph>The server is configured to support static key ciphers.</Paragraph>
+        </Paragraph>
+      </description>
+      <solution>
+        <Paragraph>
+          <Paragraph>Disable static key cipher support.</Paragraph>
+        </Paragraph>
+      </solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        findings = artifact.get("findings")
+        self.assertEqual(len(findings), 1)
+        entry = findings[0]
+        self.assertEqual(
+            entry["Vulnerability Title"],
+            "TLS/SSL Server Supports The Use of Static Key Ciphers",
+        )
+        self.assertEqual(entry["Vulnerability Severity Level"], 3)
+
     def test_nexpose_xml_populates_cve_ids_and_references(self):
         xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
 <NexposeReport version='1.0'>

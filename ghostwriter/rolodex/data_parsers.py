@@ -1113,13 +1113,17 @@ def _build_vulnerability_lookup(report_root: "ElementTree.Element") -> Dict[str,
             seen_cves.add(key)
             normalized_cves.append(cleaned)
 
-        lookup[vuln_id] = {
+        entry = {
             "title": title or vuln_id,
             "severity": severity_value if severity_value is not None else severity_text,
             "description": description,
             "cves": ", ".join(normalized_cves),
             "solution": solution,
         }
+        lookup[vuln_id] = entry
+        normalized_id = vuln_id.lower()
+        if normalized_id and normalized_id not in lookup:
+            lookup[normalized_id] = entry
     return lookup
 
 
@@ -1196,7 +1200,9 @@ def _build_nexpose_finding_entry(
     vulnerability_id = _extract_vulnerability_id(test_element)
     if not vulnerability_id:
         return None, None
-    definition = vulnerability_lookup.get(vulnerability_id, {})
+    definition = vulnerability_lookup.get(vulnerability_id) or vulnerability_lookup.get(
+        vulnerability_id.lower(), {}
+    )
     title = _clean_ascii_text(definition.get("title") or vulnerability_id)
     severity = definition.get("severity")
     severity_value = _coerce_int(severity)
