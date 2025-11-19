@@ -4988,80 +4988,88 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 issue_name = (entry.get("issue") or "").strip() if isinstance(entry, dict) else ""
                 if issue_name:
                     missing_web_issue_matrix.add(issue_name)
-        elif label in {"nipper_xml.xml", "nipper.xml", "firewall_xml.xml"} or any(
-            value
-            and (
-                value.endswith("firewall_xml.xml")
-                or value.endswith("firewall.xml")
-                or ("firewall" in value and value.endswith(".xml"))
-            )
-            for value in {label, requirement_slug, filename_label}
-        ):
-            parsed_nipper = parse_nipper_xml_report(data_file.file, project)
-            if parsed_nipper:
-                firewall_results.extend(parsed_nipper)
-        elif label in NEXPOSE_ARTIFACT_DEFINITIONS:
-            parsed_vulnerabilities = parse_nexpose_vulnerability_report(
-                data_file.file, vulnerability_matrix=vulnerability_matrix
-            )
-            if any(details.get("items") for details in parsed_vulnerabilities.values()):
-                definition = NEXPOSE_ARTIFACT_DEFINITIONS[label]
-                artifact_key = definition["artifact_key"]
-                nexpose_results[artifact_key] = {
-                    "label": definition["label"],
-                    **parsed_vulnerabilities,
-                }
-        elif xml_artifact_key:
-            parsed_xml = parse_nexpose_xml_report(
-                data_file.file, vulnerability_matrix=vulnerability_matrix
-            )
-            existing_entry = artifacts.get(xml_artifact_key)
-            combined_findings: List[Dict[str, str]] = []
-            combined_software: List[Dict[str, str]] = []
-            if isinstance(existing_entry, dict):
-                existing_findings = existing_entry.get("findings")
-                existing_software = existing_entry.get("software")
-                if isinstance(existing_findings, list):
-                    combined_findings.extend(existing_findings)
-                if isinstance(existing_software, list):
-                    combined_software.extend(existing_software)
-            parsed_findings = parsed_xml.get("findings") if isinstance(parsed_xml, dict) else []
-            parsed_software = parsed_xml.get("software") if isinstance(parsed_xml, dict) else []
-            parsed_missing = (
-                parsed_xml.get("missing_matrix_entries")
-                if isinstance(parsed_xml, dict)
-                else []
-            )
-            if isinstance(parsed_findings, list):
-                combined_findings.extend(parsed_findings)
-            if isinstance(parsed_software, list):
-                combined_software.extend(parsed_software)
-            if isinstance(parsed_missing, list) and parsed_missing:
-                tracker = missing_matrix_tracker.setdefault(xml_artifact_key, {})
-                for row in parsed_missing:
-                    if not isinstance(row, dict):
-                        continue
-                    title = (row.get("Vulnerability") or "").strip()
-                    if not title:
-                        continue
-                    tracker[title.lower()] = {
-                        "Vulnerability": title,
-                        "Action Required": row.get("Action Required", ""),
-                        "Remediation Impact": row.get("Remediation Impact", ""),
-                        "Vulnerability Threat": row.get("Vulnerability Threat", ""),
-                        "Category": row.get("Category", ""),
-                        "CVE": row.get("CVE", ""),
-                    }
-            artifacts[xml_artifact_key] = {
-                "findings": combined_findings,
-                "software": combined_software,
-            }
-            metrics_key = NEXPOSE_METRICS_KEY_MAP.get(xml_artifact_key)
-            if metrics_key:
-                artifacts[metrics_key] = _build_nexpose_metrics_payload(combined_findings)
         else:
-            requirement_slug = (data_file.requirement_slug or "").strip()
-            if requirement_slug:
+            explicitly_labeled_firewall = label in {
+                "nipper_xml.xml",
+                "nipper.xml",
+                "firewall_xml.xml",
+            } or any(
+                value
+                and (
+                    value.endswith("firewall_xml.xml")
+                    or value.endswith("firewall.xml")
+                    or ("firewall" in value and value.endswith(".xml"))
+                )
+                for value in {label, requirement_slug, filename_label}
+            )
+
+            parsed_nipper: List[Dict[str, Any]] = []
+            if explicitly_labeled_firewall or filename_label.endswith(".xml"):
+                parsed_nipper = parse_nipper_xml_report(data_file.file, project)
+                if parsed_nipper:
+                    firewall_results.extend(parsed_nipper)
+                    continue
+
+            if label in NEXPOSE_ARTIFACT_DEFINITIONS:
+                parsed_vulnerabilities = parse_nexpose_vulnerability_report(
+                    data_file.file, vulnerability_matrix=vulnerability_matrix
+                )
+                if any(details.get("items") for details in parsed_vulnerabilities.values()):
+                    definition = NEXPOSE_ARTIFACT_DEFINITIONS[label]
+                    artifact_key = definition["artifact_key"]
+                    nexpose_results[artifact_key] = {
+                        "label": definition["label"],
+                        **parsed_vulnerabilities,
+                    }
+            elif xml_artifact_key:
+                parsed_xml = parse_nexpose_xml_report(
+                    data_file.file, vulnerability_matrix=vulnerability_matrix
+                )
+                existing_entry = artifacts.get(xml_artifact_key)
+                combined_findings: List[Dict[str, str]] = []
+                combined_software: List[Dict[str, str]] = []
+                if isinstance(existing_entry, dict):
+                    existing_findings = existing_entry.get("findings")
+                    existing_software = existing_entry.get("software")
+                    if isinstance(existing_findings, list):
+                        combined_findings.extend(existing_findings)
+                    if isinstance(existing_software, list):
+                        combined_software.extend(existing_software)
+                parsed_findings = parsed_xml.get("findings") if isinstance(parsed_xml, dict) else []
+                parsed_software = parsed_xml.get("software") if isinstance(parsed_xml, dict) else []
+                parsed_missing = (
+                    parsed_xml.get("missing_matrix_entries")
+                    if isinstance(parsed_xml, dict)
+                    else []
+                )
+                if isinstance(parsed_findings, list):
+                    combined_findings.extend(parsed_findings)
+                if isinstance(parsed_software, list):
+                    combined_software.extend(parsed_software)
+                if isinstance(parsed_missing, list) and parsed_missing:
+                    tracker = missing_matrix_tracker.setdefault(xml_artifact_key, {})
+                    for row in parsed_missing:
+                        if not isinstance(row, dict):
+                            continue
+                        title = (row.get("Vulnerability") or "").strip()
+                        if not title:
+                            continue
+                        tracker[title.lower()] = {
+                            "Vulnerability": title,
+                            "Action Required": row.get("Action Required", ""),
+                            "Remediation Impact": row.get("Remediation Impact", ""),
+                            "Vulnerability Threat": row.get("Vulnerability Threat", ""),
+                            "Category": row.get("Category", ""),
+                            "CVE": row.get("CVE", ""),
+                        }
+                artifacts[xml_artifact_key] = {
+                    "findings": combined_findings,
+                    "software": combined_software,
+                }
+                metrics_key = NEXPOSE_METRICS_KEY_MAP.get(xml_artifact_key)
+                if metrics_key:
+                    artifacts[metrics_key] = _build_nexpose_metrics_payload(combined_findings)
+            elif requirement_slug:
                 for definition in IP_ARTIFACT_DEFINITIONS.values():
                     if requirement_slug != definition.slug:
                         continue
@@ -5073,7 +5081,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                         if ip not in entries:
                             entries.append(ip)
                     break
-
     if dns_results:
         artifacts["dns_issues"] = [
             {"domain": domain, "issues": issues}

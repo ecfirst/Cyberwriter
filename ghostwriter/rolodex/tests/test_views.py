@@ -1823,13 +1823,13 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.project.save(update_fields=["workbook_data"])
 
         upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
-        upload = self._build_nipper_xml_file("firewall_xml.xml")
+        upload = self._build_nipper_xml_file("custom_upload.xml")
 
         response = self.client_auth.post(
             upload_url,
             {
                 "file": upload,
-                "requirement_slug": "required_firewall-xml-xml",
+                "requirement_slug": "",
                 "requirement_label": "",
                 "requirement_context": "",
                 "description": "",
