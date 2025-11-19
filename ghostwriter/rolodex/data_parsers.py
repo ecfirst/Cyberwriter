@@ -3701,7 +3701,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 require_burp_csv=burp_csv_uploaded,
             )
             if ai_response:
-            web_summary["ai_response"] = ai_response
+                web_summary["ai_response"] = ai_response
             artifacts["web_issues"] = web_summary
 
     if web_cap_entries:
