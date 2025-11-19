@@ -1853,6 +1853,41 @@ def _strip_element_namespaces(document_root: Optional["ElementTree.Element"]) ->
             element.tag = tag.split("}", 1)[-1]
 
 
+def _read_file_bytes(file_obj: File) -> bytes:
+    """Best-effort file reader that resets the pointer for reuse."""
+
+    raw_bytes: Any = b""
+
+    try:
+        file_obj.open("rb")
+    except Exception:
+        # If the storage backend does not expose ``open`` fall back to the
+        # existing handle (common for in-memory uploads and some test doubles).
+        pass
+
+    try:
+        raw_bytes = file_obj.read() or b""
+    except Exception:
+        raw_bytes = b""
+    finally:
+        try:
+            file_obj.seek(0)
+        except Exception:
+            pass
+        try:
+            file_obj.close()
+        except Exception:
+            pass
+
+    if isinstance(raw_bytes, str):
+        return raw_bytes.encode(errors="ignore")
+
+    if isinstance(raw_bytes, bytes):
+        return raw_bytes
+
+    return b""
+
+
 def _collect_device_names(document_root: Optional["ElementTree.Element"]) -> List[str]:
     """Extract device names from the Nipper XML metadata section."""
 
@@ -2168,17 +2203,9 @@ def parse_nipper_xml_report(file_obj: File, project: "Project") -> List[Dict[str
 
     findings: List[Dict[str, Any]] = []
 
-    try:
-        file_obj.open("rb")
-        raw_bytes = file_obj.read() or b""
-    except FileNotFoundError:  # pragma: no cover - defensive guard
-        logger.warning("Nipper XML file missing from storage", exc_info=True)
-        raw_bytes = b""
-    finally:
-        try:
-            file_obj.close()
-        except Exception:  # pragma: no cover - defensive guard
-            pass
+    raw_bytes = _read_file_bytes(file_obj)
+    if not raw_bytes:
+        logger.warning("Nipper XML file missing or empty during parsing")
 
     try:
         root = ElementTree.fromstring(raw_bytes)
