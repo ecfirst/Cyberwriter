@@ -654,17 +654,17 @@ def _clean_burp_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _compute_burp_score(severity: str, confidence: str) -> int:
+def _compute_burp_score(severity: str, confidence: str) -> float:
     """Calculate Burp numeric score based on severity and confidence."""
 
-    base_map = {"High": 9, "Medium": 6, "Low": 3, "Information": 1}
-    modifier_map = {"Certain": 1, "Firm": 0, "Tentative": -1}
+    base_map = {"High": 9.0, "Medium": 6.0, "Low": 3.0, "Information": 1.0}
+    modifier_map = {"Certain": 1.0, "Firm": 0.0, "Tentative": -1.0}
 
-    base = base_map.get(severity, 0)
-    modifier = modifier_map.get(confidence, 0)
+    base = base_map.get(severity, 0.0)
+    modifier = modifier_map.get(confidence, 0.0)
     if severity == "Information":
-        modifier = 0
-    return base + modifier
+        modifier = 0.0
+    return float(base + modifier)
 
 
 def _parse_burp_background(issue: ElementTree.Element, issue_name: str) -> str:
@@ -701,23 +701,39 @@ def _parse_burp_remediation(issue: ElementTree.Element) -> str:
     return "<<CUSTOM_REMED>>"
 
 
-def _parse_burp_fix(issue_name: str, web_issues_matrix: Optional[Mapping[str, Dict[str, str]]]) -> str:
+def _parse_burp_fix(
+    issue_name: str,
+    web_issues_matrix: Optional[Mapping[str, Dict[str, str]]],
+    *,
+    missing_issues: Optional[Set[str]] = None,
+    matrix_entry: Optional[Mapping[str, str]] = None,
+) -> str:
     """Return fix text from the web issues matrix when present."""
 
     lookup_title = _compute_lookup_title(issue_name)
-    matrix_entry = _get_matrix_entry(lookup_title, web_issues_matrix)
-    if matrix_entry:
-        return matrix_entry.get("fix", "")
+    entry = matrix_entry or _get_matrix_entry(lookup_title, web_issues_matrix)
+    if entry:
+        return entry.get("fix", "")
+    if missing_issues is not None:
+        missing_issues.add(issue_name)
     return ""
 
 
-def _parse_burp_impact(issue_name: str, web_issues_matrix: Optional[Mapping[str, Dict[str, str]]]) -> str:
+def _parse_burp_impact(
+    issue_name: str,
+    web_issues_matrix: Optional[Mapping[str, Dict[str, str]]],
+    *,
+    missing_issues: Optional[Set[str]] = None,
+    matrix_entry: Optional[Mapping[str, str]] = None,
+) -> str:
     """Return impact text from the web issues matrix when present."""
 
     lookup_title = _compute_lookup_title(issue_name)
-    matrix_entry = _get_matrix_entry(lookup_title, web_issues_matrix)
-    if matrix_entry:
-        return matrix_entry.get("impact", "")
+    entry = matrix_entry or _get_matrix_entry(lookup_title, web_issues_matrix)
+    if entry:
+        return entry.get("impact", "")
+    if missing_issues is not None:
+        missing_issues.add(issue_name)
     return ""
 
 
@@ -796,7 +812,7 @@ def _parse_burp_details(issue: ElementTree.Element, issue_name: str) -> str:
 
 def parse_burp_xml_report(
     file_obj: File, web_issues_matrix: Optional[Mapping[str, Dict[str, str]]] = None
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """Parse a Burp XML export into normalized finding entries."""
 
     raw_content = file_obj.read()
@@ -814,6 +830,7 @@ def parse_burp_xml_report(
         return []
 
     grouped: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = {}
+    missing_matrix_issues: Set[str] = set()
 
     for issue in root.findall("issue"):
         severity = (issue.findtext("severity") or "").strip() or "Low"
@@ -828,7 +845,12 @@ def parse_burp_xml_report(
         details = _parse_burp_details(issue, issue_name)
 
         path_detail_key = f"{path}::{details}"
-        risk_key = f"{risk_label}::{score}"
+        risk_key = f"{risk_label}::{score:.1f}"
+
+        lookup_title = _compute_lookup_title(issue_name)
+        matrix_entry = _get_matrix_entry(lookup_title, web_issues_matrix)
+        if matrix_entry is None:
+            missing_matrix_issues.add(issue_name)
 
         risk_entry = grouped.setdefault(risk_key, {})
         issue_entry = risk_entry.setdefault(issue_name, {})
@@ -837,8 +859,18 @@ def parse_burp_xml_report(
             {
                 "background": _parse_burp_background(issue, issue_name),
                 "remediation": _parse_burp_remediation(issue),
-                "impact": _parse_burp_impact(issue_name, web_issues_matrix),
-                "fix": _parse_burp_fix(issue_name, web_issues_matrix),
+                "impact": _parse_burp_impact(
+                    issue_name,
+                    web_issues_matrix,
+                    missing_issues=missing_matrix_issues,
+                    matrix_entry=matrix_entry,
+                ),
+                "fix": _parse_burp_fix(
+                    issue_name,
+                    web_issues_matrix,
+                    missing_issues=missing_matrix_issues,
+                    matrix_entry=matrix_entry,
+                ),
                 "paths": {},
             },
         )
@@ -853,15 +885,28 @@ def parse_burp_xml_report(
         if not host_entry.get("remediation"):
             host_entry["remediation"] = _parse_burp_remediation(issue)
         if not host_entry.get("impact"):
-            host_entry["impact"] = _parse_burp_impact(issue_name, web_issues_matrix)
+            host_entry["impact"] = _parse_burp_impact(
+                issue_name,
+                web_issues_matrix,
+                missing_issues=missing_matrix_issues,
+                matrix_entry=matrix_entry,
+            )
         if not host_entry.get("fix"):
-            host_entry["fix"] = _parse_burp_fix(issue_name, web_issues_matrix)
+            host_entry["fix"] = _parse_burp_fix(
+                issue_name,
+                web_issues_matrix,
+                missing_issues=missing_matrix_issues,
+                matrix_entry=matrix_entry,
+            )
 
     findings: List[Dict[str, Any]] = []
 
     for risk_key in sorted(grouped.keys()):
         risk_label, score_text = risk_key.split("::", 1)
-        score = int(score_text) if score_text.isdigit() else _coerce_int(score_text) or 0
+        try:
+            score = float(score_text)
+        except (TypeError, ValueError):
+            score = float(_coerce_int(score_text) or 0)
 
         for issue_name, host_map in grouped[risk_key].items():
             for host_name, host_data in host_map.items():
@@ -887,7 +932,13 @@ def parse_burp_xml_report(
                         }
                     )
 
-    return findings
+    missing_entries = [
+        {"issue": issue_name, "impact": "", "fix": ""}
+        for issue_name in sorted(missing_matrix_issues, key=str.lower)
+        if issue_name
+    ]
+
+    return {"findings": findings, "missing_matrix_entries": missing_entries}
 
 
 def _default_password_compliance_matrix() -> Dict[str, Dict[str, Any]]:
@@ -2415,6 +2466,37 @@ def has_open_nexpose_matrix_gaps(artifacts: Any) -> bool:
     return any(summary.values())
 
 
+def summarize_web_issue_matrix_gaps(artifacts: Any) -> List[Dict[str, str]]:
+    """Return missing web issue matrix entries when present."""
+
+    if not isinstance(artifacts, dict):
+        return []
+    gap_data = artifacts.get("web_issue_matrix_gaps")
+    if not isinstance(gap_data, dict):
+        return []
+    entries = gap_data.get("entries")
+    if isinstance(entries, list):
+        normalized_entries: List[Dict[str, str]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            issue_value = (entry.get("issue") or "").strip()
+            if not issue_value:
+                continue
+            normalized_entries.append(
+                {"issue": issue_value, "impact": entry.get("impact", ""), "fix": entry.get("fix", "")}
+            )
+        return normalized_entries
+    return []
+
+
+def has_open_web_issue_matrix_gaps(artifacts: Any) -> bool:
+    """Return ``True`` when Burp XML findings reference missing matrix issues."""
+
+    summary = summarize_web_issue_matrix_gaps(artifacts)
+    return bool(summary)
+
+
 def _build_web_issue_ai_response(
     summary: Dict[str, Any], *, require_burp_csv: bool
 ) -> Optional[str]:
@@ -3540,6 +3622,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     web_issue_matrix = load_web_issue_matrix()
     burp_csv_uploaded = False
     parsed_web_findings: List[Dict[str, Any]] = []
+    missing_web_issue_matrix: Set[str] = set()
 
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
@@ -3566,9 +3649,19 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             if parsed_cap_entries:
                 web_cap_entries.extend(parsed_cap_entries)
         elif label == "burp_xml.xml":
-            findings = parse_burp_xml_report(data_file.file, web_issue_matrix)
+            burp_payload = parse_burp_xml_report(data_file.file, web_issue_matrix)
+            findings = burp_payload.get("findings") if isinstance(burp_payload, dict) else burp_payload
             if findings:
                 parsed_web_findings.extend(findings)
+            missing_entries = (
+                burp_payload.get("missing_matrix_entries", [])
+                if isinstance(burp_payload, dict)
+                else []
+            )
+            for entry in missing_entries:
+                issue_name = (entry.get("issue") or "").strip() if isinstance(entry, dict) else ""
+                if issue_name:
+                    missing_web_issue_matrix.add(issue_name)
         elif label == "firewall_csv.csv":
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
@@ -3709,6 +3802,14 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     if parsed_web_findings:
         artifacts["web_findings"] = parsed_web_findings
+
+    if missing_web_issue_matrix:
+        artifacts["web_issue_matrix_gaps"] = {
+            "entries": [
+                {"issue": issue, "impact": "", "fix": ""}
+                for issue in sorted(missing_web_issue_matrix, key=str.lower)
+            ]
+        }
 
     for artifact_key, values in ip_results.items():
         if values:

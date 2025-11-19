@@ -2895,16 +2895,52 @@ class NexposeDataParserTests(TestCase):
 
         self.assertEqual(sql_finding["Issue"], "SQL injection")
         self.assertEqual(sql_finding["Risk"], "High")
-        self.assertEqual(sql_finding["Score"], 9)
+        self.assertEqual(sql_finding["Score"], 9.0)
         self.assertEqual(sql_finding["Impact"], "Matrix impact")
         self.assertEqual(sql_finding["Detailed Remediation"], "Patch immediately")
         self.assertIn("Example evidence", sql_finding["Evidence"])
 
         self.assertEqual(vuln_finding["Issue"], "Vulnerable Software detected")
         self.assertEqual(vuln_finding["Risk"], "Low")
-        self.assertEqual(vuln_finding["Score"], 1)
+        self.assertEqual(vuln_finding["Score"], 1.0)
         self.assertEqual(vuln_finding["Impact"], "Outdated impact")
         self.assertEqual(vuln_finding["Detailed Remediation"], "Update software")
+
+    def test_burp_xml_missing_matrix_entries_recorded(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<issues>
+  <issue>
+    <serialNumber>1</serialNumber>
+    <type>123</type>
+    <name>Unhandled Issue</name>
+    <host ip='203.0.113.10'>portal.example.com</host>
+    <path>/missing</path>
+    <location>/missing</location>
+    <severity>Medium</severity>
+    <confidence>Firm</confidence>
+  </issue>
+</issues>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "burp_xml.xml",
+                xml_payload.encode(),
+                content_type="text/xml",
+            ),
+            requirement_label="burp_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        gaps = self.project.data_artifacts.get("web_issue_matrix_gaps")
+        self.assertIsInstance(gaps, dict)
+        entries = gaps.get("entries") if isinstance(gaps, dict) else None
+        self.assertIsInstance(entries, list)
+        self.assertIn({"issue": "Unhandled Issue", "impact": "", "fix": ""}, entries)
 
     def test_nexpose_metrics_populate_cap_map(self):
         xml_payload = """<?xml version='1.0' encoding='UTF-8'?>

@@ -96,6 +96,7 @@ from ghostwriter.rolodex.data_parsers import (
     normalize_nexpose_artifacts_map,
     resolve_nexpose_requirement_artifact_key,
     summarize_nexpose_matrix_gaps,
+    summarize_web_issue_matrix_gaps,
 )
 from ghostwriter.rolodex.workbook import (
     SECTION_ENTRY_FIELD_MAP,
@@ -1892,6 +1893,9 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         matrix_gap_summary = summarize_nexpose_matrix_gaps(artifacts)
         ctx["nexpose_matrix_gap_summary"] = matrix_gap_summary
         ctx["has_nexpose_matrix_gaps"] = bool(matrix_gap_summary)
+        web_issue_gap_summary = summarize_web_issue_matrix_gaps(artifacts)
+        ctx["web_issue_matrix_gap_summary"] = web_issue_gap_summary
+        ctx["has_web_issue_matrix_gaps"] = bool(web_issue_gap_summary)
         processed_cards = []
         for metrics_key, label in NEXPOSE_METRICS_LABELS.items():
             payload = artifacts.get(metrics_key)
@@ -1985,6 +1989,9 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             requirement["artifact_key"] = artifact_key
             requirement["missing_matrix_entries"] = (
                 matrix_gap_summary.get(artifact_key, []) if artifact_key else []
+            )
+            requirement["missing_web_matrix_entries"] = (
+                web_issue_gap_summary if label == "burp_xml.xml" else []
             )
             label = (requirement.get("label") or "").strip().lower()
             if existing and label == "dns_report.csv":
@@ -2207,6 +2214,48 @@ class ProjectNexposeMissingMatrixDownload(RoleBasedAccessControlMixin, SingleObj
 
         response = HttpResponse(buffer.getvalue(), content_type="text/csv")
         add_content_disposition_header(response, "nexpose-missing.csv")
+        return response
+
+
+class ProjectWebIssueMissingDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Provide a CSV export of missing web issue matrix entries for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self, project: Project) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#supplementals"
+
+    def get(self, request, *args, **kwargs):
+        project = self.get_object()
+        entries = summarize_web_issue_matrix_gaps(project.data_artifacts or {})
+        if not entries:
+            messages.error(request, "No missing Web issues are available for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        buffer = io.StringIO()
+        fieldnames = ["issue", "impact", "fix"]
+        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in entries:
+            if not isinstance(row, dict):
+                continue
+            writer.writerow(
+                {
+                    "issue": row.get("issue", ""),
+                    "impact": row.get("impact", ""),
+                    "fix": row.get("fix", ""),
+                }
+            )
+
+        response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+        add_content_disposition_header(response, "burp-missing.csv")
         return response
 
 

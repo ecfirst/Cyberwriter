@@ -207,6 +207,11 @@
                               Missing Nexpose issues identified! Update the matrix and re-upload.
                             </div>
                           {% endif %}
+                          {% if requirement.missing_web_matrix_entries %}
+                            <div class="alert alert-warning small py-2 px-3 mt-2">
+                              Missing Web issues identified! Update the matrix and re-upload.
+                            </div>
+                          {% endif %}
                             {% if requirement.existing %}
                               <p class="mb-1">
                                 <strong>Current file:</strong>
@@ -245,19 +250,26 @@
                             <label class="sr-only" for="id_required_file_{{ requirement.slug }}">{{ requirement.label }}{% if requirement.context %} for {{ requirement.context }}{% endif %}</label>
                             <input type="file" name="file" class="form-control-file project-required-data-input" id="id_required_file_{{ requirement.slug }}" accept=".csv,.xml,text/csv,application/xml,text/xml" required>
                           </div>
-                          <div class="d-flex flex-column flex-md-row align-items-md-center">
-                            <button type="submit" class="btn btn-primary btn-sm" data-default-text="Upload">Upload</button>
-                            {% if requirement.missing_matrix_entries and requirement.artifact_key %}
-                              <a
-                                href="{% url 'rolodex:project_nexpose_missing_download' project.id %}?artifact={{ requirement.artifact_key }}"
-                                class="btn btn-outline-warning btn-sm mt-2 mt-md-0 ml-md-2"
-                              >
-                                Download Missing
-                              </a>
-                            {% endif %}
-                          </div>
-                        </form>
-                      </div>
+                            <div class="d-flex flex-column flex-md-row align-items-md-center">
+                              <button type="submit" class="btn btn-primary btn-sm" data-default-text="Upload">Upload</button>
+                              {% if requirement.missing_matrix_entries and requirement.artifact_key %}
+                                <a
+                                  href="{% url 'rolodex:project_nexpose_missing_download' project.id %}?artifact={{ requirement.artifact_key }}"
+                                  class="btn btn-outline-warning btn-sm mt-2 mt-md-0 ml-md-2"
+                                >
+                                  Download Missing
+                                </a>
+                              {% elif requirement.missing_web_matrix_entries %}
+                                <a
+                                  href="{% url 'rolodex:project_web_issue_missing_download' project.id %}"
+                                  class="btn btn-outline-warning btn-sm mt-2 mt-md-0 ml-md-2"
+                                >
+                                  Download Missing
+                                </a>
+                              {% endif %}
+                            </div>
+                          </form>
+                        </div>
                     </div>
                   </div>
                 {% endwith %}

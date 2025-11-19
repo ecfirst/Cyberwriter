@@ -242,6 +242,11 @@ urlpatterns += [
         name="project_nexpose_missing_download",
     ),
     path(
+        "projects/<int:pk>/web-issue-missing/",
+        views.ProjectWebIssueMissingDownload.as_view(),
+        name="project_web_issue_missing_download",
+    ),
+    path(
         "projects/<int:pk>/nexpose-data/",
         views.ProjectNexposeDataDownload.as_view(),
         name="project_nexpose_data_download",
