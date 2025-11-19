@@ -2552,12 +2552,15 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
     workbook = Workbook(buffer, {"in_memory": True})
 
     def header_format(color: str):
-        fmt = workbook.add_format({
-            "bold": True,
-            "border": 1,
-            "font_color": "#000000",
-            "bg_color": color,
-        })
+        fmt = workbook.add_format(
+            {
+                "bold": True,
+                "border": 1,
+                "font_color": "#000000",
+                "bg_color": color,
+                "pattern": 1,
+            }
+        )
         return fmt
 
     summary_header_cache: Dict[str, Any] = {}
@@ -2567,10 +2570,10 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
             summary_header_cache[color] = header_format(color)
         return summary_header_cache[color]
 
-    summary_data_fmt = workbook.add_format({"border": 1})
-    summary_band_fmt = workbook.add_format({"border": 1, "bg_color": "#99CCFF"})
-    text_data_fmt = workbook.add_format({"border": 1, "text_wrap": True})
-    text_band_fmt = workbook.add_format({"border": 1, "text_wrap": True, "bg_color": "#99CCFF"})
+    summary_data_fmt = workbook.add_format({"border": 1, "font_color": "#000000"})
+    summary_band_fmt = workbook.add_format({"border": 1, "bg_color": "#99CCFF", "font_color": "#000000"})
+    text_data_fmt = workbook.add_format({"border": 1, "text_wrap": True, "font_color": "#000000"})
+    text_band_fmt = workbook.add_format({"border": 1, "text_wrap": True, "bg_color": "#99CCFF", "font_color": "#000000"})
 
     def _calc_text_width(value: Any) -> int:
         if value is None:
@@ -2718,11 +2721,11 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
         width_tracker=exec_width_tracker,
     )
 
-    apply_autofit(
-        exec_ws,
-        exec_width_tracker,
-        list(range(0, 4)) + list(range(5, 9)) + [10, 11],
-    )
+    exec_columns_to_fit = list(range(0, 4)) + list(range(5, 9)) + [10, 11]
+    if hasattr(exec_ws, "autofit"):
+        exec_ws.autofit()
+    else:
+        apply_autofit(exec_ws, exec_width_tracker, exec_columns_to_fit)
 
     def write_issue_sheet(name: str, data_rows: List[List[Any]], headers: List[str]) -> None:
         ws = workbook.add_worksheet(name)
