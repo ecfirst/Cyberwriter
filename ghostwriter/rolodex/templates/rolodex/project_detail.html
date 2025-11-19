@@ -397,21 +397,36 @@
                       <dd class="col-6 text-right">{{ card.summary.total_low|default:0 }}</dd>
                       <dt class="col-6">Unique Count</dt>
                       <dd class="col-6 text-right">{{ card.summary.unique|default:0 }}</dd>
-                      <dt class="col-6">Unique High/Medium</dt>
-                      <dd class="col-6 text-right">{{ card.summary.unique_high_med|default:0 }}</dd>
-                      <dt class="col-6">OOD Count</dt>
-                      <dd class="col-6 text-right">{{ card.summary.total_ood|default:0 }}</dd>
-                      <dt class="col-6">ISC Count</dt>
-                      <dd class="col-6 text-right">{{ card.summary.total_isc|default:0 }}</dd>
-                      <dt class="col-6">IWC Count</dt>
-                      <dd class="col-6 text-right">{{ card.summary.total_iwc|default:0 }}</dd>
+                      {% if card.type == "web" %}
+                        <dt class="col-6">Unique Highs</dt>
+                        <dd class="col-6 text-right">{{ card.summary.unique_high|default:0 }}</dd>
+                        <dt class="col-6">Unique Mediums</dt>
+                        <dd class="col-6 text-right">{{ card.summary.unique_med|default:0 }}</dd>
+                        <dt class="col-6">Unique Lows</dt>
+                        <dd class="col-6 text-right">{{ card.summary.unique_low|default:0 }}</dd>
+                      {% else %}
+                        <dt class="col-6">Unique High/Medium</dt>
+                        <dd class="col-6 text-right">{{ card.summary.unique_high_med|default:0 }}</dd>
+                        <dt class="col-6">OOD Count</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total_ood|default:0 }}</dd>
+                        <dt class="col-6">ISC Count</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total_isc|default:0 }}</dd>
+                        <dt class="col-6">IWC Count</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total_iwc|default:0 }}</dd>
+                      {% endif %}
                     </dl>
                     {% if card.has_file %}
-                      <a class="btn btn-outline-primary btn-sm" href="{% url 'rolodex:project_nexpose_data_download' project.id %}?artifact={{ card.metrics_key }}">
-                        Download Nexpose Data file
-                      </a>
+                      {% if card.type == "web" %}
+                        <a class="btn btn-outline-primary btn-sm" href="{% url 'rolodex:project_web_data_download' project.id %}">
+                          Download Web Data file
+                        </a>
+                      {% else %}
+                        <a class="btn btn-outline-primary btn-sm" href="{% url 'rolodex:project_nexpose_data_download' project.id %}?artifact={{ card.metrics_key }}">
+                          Download Nexpose Data file
+                        </a>
+                      {% endif %}
                     {% else %}
-                      <p class="text-muted small mb-0">The Nexpose data file will be available after processing completes.</p>
+                      <p class="text-muted small mb-0">The data file will be available after processing completes.</p>
                     {% endif %}
                   </div>
                 </div>

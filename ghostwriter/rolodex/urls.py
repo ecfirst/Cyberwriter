@@ -252,6 +252,11 @@ urlpatterns += [
         name="project_nexpose_data_download",
     ),
     path(
+        "projects/<int:pk>/web-data/",
+        views.ProjectWebDataDownload.as_view(),
+        name="project_web_data_download",
+    ),
+    path(
         "projects/<int:pk>/nexpose-distilled/",
         views.ProjectNexposeDistilledUpdate.as_view(),
         name="project_nexpose_distilled_update",

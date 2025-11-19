@@ -1908,6 +1908,21 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                     "metrics_key": metrics_key,
                     "summary": summary,
                     "has_file": bool(payload.get("xlsx_base64")),
+                    "type": "nexpose",
+                }
+            )
+        web_metrics = artifacts.get("web_metrics")
+        if isinstance(web_metrics, dict):
+            summary = (
+                web_metrics.get("summary") if isinstance(web_metrics.get("summary"), dict) else {}
+            )
+            processed_cards.append(
+                {
+                    "label": "Web Findings",
+                    "metrics_key": "web_metrics",
+                    "summary": summary,
+                    "has_file": bool(web_metrics.get("xlsx_base64")),
+                    "type": "web",
                 }
             )
         ctx["processed_data_cards"] = processed_cards
@@ -1940,7 +1955,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             "internal_nexpose_xml.xml",
             "iot_nexpose_xml.xml",
         }
-        burp_requirement_labels = {"burp_csv.csv", "burp_xml.xml"}
+        burp_requirement_labels = {"burp_xml.xml"}
         reordered_requirements = []
         nexpose_requirements = []
         burp_insert_index = None
@@ -2317,6 +2332,54 @@ class ProjectNexposeDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         filename = payload.get("xlsx_filename") or "nexpose_data.xlsx"
+        add_content_disposition_header(response, filename)
+        return response
+
+
+class ProjectWebDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Provide the processed web findings XLSX download for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self, project: Project) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#processed-data"
+
+    def get(self, request, *args, **kwargs):
+        project = self.get_object()
+        artifacts = project.data_artifacts or {}
+        if not isinstance(artifacts, dict):
+            messages.error(request, "No web data file is available for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        payload = artifacts.get("web_metrics")
+        if not isinstance(payload, dict):
+            messages.error(request, "No web data file is available for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        workbook_b64 = payload.get("xlsx_base64")
+        if not workbook_b64:
+            messages.error(request, "The web data file is not available for download yet.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        try:
+            workbook_bytes = base64.b64decode(workbook_b64)
+        except (ValueError, binascii.Error):  # pragma: no cover - defensive guard
+            logger.exception("Failed to decode web XLSX payload")
+            messages.error(request, "Unable to decode the web data file.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        response = HttpResponse(
+            workbook_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        filename = payload.get("xlsx_filename") or "burp_data.xlsx"
         add_content_disposition_header(response, filename)
         return response
 
