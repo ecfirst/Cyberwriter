@@ -4614,7 +4614,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
                 firewall_results.extend(parsed_firewall)
-        elif label in {"nipper_xml.xml", "nipper.xml"}:
+        elif label in {"nipper_xml.xml", "nipper.xml", "firewall_xml.xml"}:
             parsed_nipper = parse_nipper_xml_report(data_file.file, project)
             if parsed_nipper:
                 firewall_results.extend(parsed_nipper)
