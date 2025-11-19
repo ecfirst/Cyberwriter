@@ -1,6 +1,7 @@
 """Tests for project data file parsing helpers."""
 
 # Standard Libraries
+import base64
 import csv
 import io
 from typing import Any, Dict, Iterable
@@ -254,6 +255,75 @@ class NexposeDataParserTests(TestCase):
         )
         self.assertEqual(software_entry["Software"], "ExampleApp")
         self.assertEqual(software_entry["Version"], "1.2.3")
+
+    def test_nexpose_xml_generates_metrics_and_xlsx(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node address='10.0.0.1' status='alive'>
+      <names><name>alpha.local</name></names>
+      <tests>
+        <test id='alpha-high' status='vulnerable-exploited'>
+          <Paragraph><Paragraph>Alpha evidence</Paragraph></Paragraph>
+        </test>
+      </tests>
+    </node>
+    <node address='10.0.0.2' status='alive'>
+      <names><name>beta.local</name></names>
+      <endpoints>
+        <endpoint protocol='tcp' port='8443' status='open'>
+          <services>
+            <service name='https'>
+              <tests>
+                <test id='beta-med' status='vulnerable-version'>
+                  <Paragraph><Paragraph>Beta context</Paragraph></Paragraph>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability id='alpha-high' title='Alpha High' severity='9'>
+      <description>High issue description</description>
+      <solution>Resolve alpha</solution>
+    </vulnerability>
+    <vulnerability id='beta-med' title='Beta Medium' severity='5'>
+      <description>Medium issue description</description>
+      <solution>Resolve beta</solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        metrics = self.project.data_artifacts.get("external_nexpose_metrics")
+        self.assertIsInstance(metrics, dict)
+        assert isinstance(metrics, dict)  # pragma: no cover - type guard
+        summary = metrics.get("summary") or {}
+        self.assertEqual(summary.get("total"), 2)
+        self.assertEqual(summary.get("total_high"), 1)
+        self.assertEqual(summary.get("total_med"), 1)
+        workbook_b64 = metrics.get("xlsx_base64")
+        self.assertTrue(workbook_b64)
+        decoded = base64.b64decode(workbook_b64)
+        self.assertTrue(decoded.startswith(b"PK"))
 
     def test_nexpose_xml_uses_vulnerability_lookup_details(self):
         xml_payload = """

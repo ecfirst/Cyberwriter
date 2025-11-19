@@ -1,4 +1,5 @@
 # Standard Libraries
+import base64
 import json
 import logging
 import shutil
@@ -970,6 +971,32 @@ class ProjectDetailViewTests(TestCase):
         self.assertContains(response, "Download Missing")
         self.assertContains(response, "?artifact=external_nexpose_findings")
 
+    def test_processed_data_tab_shows_metrics_card(self):
+        workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
+        self.project.data_artifacts = {
+            "external_nexpose_metrics": {
+                "summary": {
+                    "total": 4,
+                    "total_high": 2,
+                    "total_med": 1,
+                    "total_low": 1,
+                    "unique": 3,
+                    "unique_high_med": 3,
+                    "total_ood": 1,
+                    "total_isc": 1,
+                    "total_iwc": 1,
+                },
+                "xlsx_base64": workbook_b64,
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.uri)
+        self.assertContains(response, "Processed Data")
+        self.assertContains(response, "Total Count")
+        self.assertContains(response, "Download Nexpose Data file")
+        self.assertContains(response, "?artifact=external_nexpose_metrics")
+
 
 class ProjectNexposeMissingMatrixDownloadTests(TestCase):
     """Tests for downloading missing Nexpose matrix entries."""
@@ -1016,6 +1043,49 @@ class ProjectNexposeMissingMatrixDownloadTests(TestCase):
         self.project.data_artifacts = {}
         self.project.save(update_fields=["data_artifacts"])
         response = self.client_mgr.get(self.url + "?artifact=external_nexpose_findings")
+        self.assertEqual(response.status_code, 302)
+
+
+class ProjectNexposeDataDownloadTests(TestCase):
+    """Tests for downloading processed Nexpose XLSX data."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.manager = UserFactory(password=PASSWORD, role="manager")
+        cls.project = ProjectFactory()
+        cls.url = reverse(
+            "rolodex:project_nexpose_data_download", kwargs={"pk": cls.project.pk}
+        )
+
+    def setUp(self):
+        self.client_mgr = Client()
+        self.assertTrue(self.client_mgr.login(username=self.manager.username, password=PASSWORD))
+
+    def _set_metrics_artifacts(self):
+        workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
+        self.project.data_artifacts = {
+            "external_nexpose_metrics": {
+                "summary": {"total": 1},
+                "xlsx_base64": workbook_b64,
+                "xlsx_filename": "nexpose_data.xlsx",
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+    def test_download_returns_xlsx(self):
+        self._set_metrics_artifacts()
+        response = self.client_mgr.get(self.url + "?artifact=external_nexpose_metrics")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertTrue(response.content.startswith(b"PK"))
+
+    def test_download_redirects_when_missing(self):
+        self.project.data_artifacts = {}
+        self.project.save(update_fields=["data_artifacts"])
+        response = self.client_mgr.get(self.url + "?artifact=external_nexpose_metrics")
         self.assertEqual(response.status_code, 302)
 
 class ProjectInviteDeleteTests(TestCase):
@@ -1383,13 +1453,10 @@ class ProjectDataResponsesUpdateTests(TestCase):
         burp_index = labels.index("burp_csv.csv")
         self.assertEqual(burp_index, max(dns_indexes) + 1)
         self.assertEqual(
-            labels[burp_index + 1 : burp_index + 7],
+            labels[burp_index + 1 : burp_index + 4],
             [
-                "external_nexpose_csv.csv",
                 "external_nexpose_xml.xml",
-                "internal_nexpose_csv.csv",
                 "internal_nexpose_xml.xml",
-                "iot_nexpose_csv.csv",
                 "iot_nexpose_xml.xml",
             ],
         )
@@ -1411,18 +1478,15 @@ class ProjectDataResponsesUpdateTests(TestCase):
 
         burp_index = labels.index("burp_csv.csv")
         self.assertEqual(
-            labels[burp_index + 1 : burp_index + 7],
+            labels[burp_index + 1 : burp_index + 4],
             [
-                "external_nexpose_csv.csv",
                 "external_nexpose_xml.xml",
-                "internal_nexpose_csv.csv",
                 "internal_nexpose_xml.xml",
-                "iot_nexpose_csv.csv",
                 "iot_nexpose_xml.xml",
             ],
         )
         self.assertEqual(
-            labels[burp_index + 7 : burp_index + 9],
+            labels[burp_index + 4 : burp_index + 6],
             [
                 IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_EXTERNAL].label,
                 IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_INTERNAL].label,

@@ -242,6 +242,11 @@ urlpatterns += [
         name="project_nexpose_missing_download",
     ),
     path(
+        "projects/<int:pk>/nexpose-data/",
+        views.ProjectNexposeDataDownload.as_view(),
+        name="project_nexpose_data_download",
+    ),
+    path(
         "projects/<int:pk>/data/ip-list/",
         views.ProjectIPArtifactUpload.as_view(),
         name="project_ip_artifact_upload",

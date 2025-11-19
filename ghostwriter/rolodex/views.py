@@ -1,6 +1,8 @@
 """This contains all the views used by the Rolodex application."""
 
 # Standard Libraries
+import base64
+import binascii
 import copy
 import csv
 import datetime
@@ -89,6 +91,8 @@ from ghostwriter.rolodex.models import (
 )
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
 from ghostwriter.rolodex.data_parsers import (
+    NEXPOSE_METRICS_KEY_MAP,
+    NEXPOSE_METRICS_LABELS,
     normalize_nexpose_artifacts_map,
     resolve_nexpose_requirement_artifact_key,
     summarize_nexpose_matrix_gaps,
@@ -1888,6 +1892,21 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         matrix_gap_summary = summarize_nexpose_matrix_gaps(artifacts)
         ctx["nexpose_matrix_gap_summary"] = matrix_gap_summary
         ctx["has_nexpose_matrix_gaps"] = bool(matrix_gap_summary)
+        processed_cards = []
+        for metrics_key, label in NEXPOSE_METRICS_LABELS.items():
+            payload = artifacts.get(metrics_key)
+            if not isinstance(payload, dict):
+                continue
+            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            processed_cards.append(
+                {
+                    "label": label,
+                    "metrics_key": metrics_key,
+                    "summary": summary,
+                    "has_file": bool(payload.get("xlsx_base64")),
+                }
+            )
+        ctx["processed_data_cards"] = processed_cards
         for dns_entry in artifacts.get("dns_issues", []) or []:
             domain = (dns_entry.get("domain") or "").strip()
             if domain:
@@ -1908,11 +1927,8 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             ip_cards.append(card_entry)
 
         nexpose_requirement_labels = {
-            "external_nexpose_csv.csv",
             "external_nexpose_xml.xml",
-            "internal_nexpose_csv.csv",
             "internal_nexpose_xml.xml",
-            "iot_nexpose_csv.csv",
             "iot_nexpose_xml.xml",
         }
         reordered_requirements = []
@@ -2196,6 +2212,68 @@ class ProjectNexposeMissingMatrixDownload(RoleBasedAccessControlMixin, SingleObj
 
         response = HttpResponse(buffer.getvalue(), content_type="text/csv")
         add_content_disposition_header(response, "nexpose-missing.csv")
+        return response
+
+
+class ProjectNexposeDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Provide the processed Nexpose XLSX download for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self, project: Project) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#processed-data"
+
+    def _resolve_metrics_payload(self, project: Project, artifact: str) -> Optional[Dict[str, Any]]:
+        artifacts = project.data_artifacts or {}
+        if not isinstance(artifacts, dict):
+            return None
+        payload = artifacts.get(artifact)
+        if isinstance(payload, dict):
+            return payload
+        metrics_key = NEXPOSE_METRICS_KEY_MAP.get(artifact)
+        if metrics_key:
+            payload = artifacts.get(metrics_key)
+            if isinstance(payload, dict):
+                return payload
+        return None
+
+    def get(self, request, *args, **kwargs):
+        project = self.get_object()
+        artifact_key = (request.GET.get("artifact") or "").strip()
+        if not artifact_key:
+            messages.error(request, "A Nexpose artifact was not specified for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        payload = self._resolve_metrics_payload(project, artifact_key)
+        if not payload:
+            messages.error(request, "No Nexpose data file is available for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        workbook_b64 = payload.get("xlsx_base64")
+        if not workbook_b64:
+            messages.error(request, "The Nexpose data file is not available for download yet.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        try:
+            workbook_bytes = base64.b64decode(workbook_b64)
+        except (ValueError, binascii.Error):  # pragma: no cover - defensive guard
+            logger.exception("Failed to decode Nexpose XLSX payload")
+            messages.error(request, "Unable to decode the Nexpose data file.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        response = HttpResponse(
+            workbook_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        filename = payload.get("xlsx_filename") or "nexpose_data.xlsx"
+        add_content_disposition_header(response, filename)
         return response
 
 

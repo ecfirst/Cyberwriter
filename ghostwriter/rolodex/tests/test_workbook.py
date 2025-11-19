@@ -133,11 +133,8 @@ class WorkbookHelpersTests(SimpleTestCase):
         _, required_files = build_data_configuration(workbook_data)
 
         labels = {entry["label"] for entry in required_files}
-        self.assertIn("external_nexpose_csv.csv", labels)
         self.assertIn("external_nexpose_xml.xml", labels)
-        self.assertIn("internal_nexpose_csv.csv", labels)
         self.assertIn("internal_nexpose_xml.xml", labels)
-        self.assertIn("iot_nexpose_csv.csv", labels)
         self.assertIn("iot_nexpose_xml.xml", labels)
 
     def test_iot_testing_question_added_by_default(self):
@@ -192,11 +189,8 @@ class WorkbookHelpersTests(SimpleTestCase):
         _, required_files = build_data_configuration(workbook_data)
 
         labels = {entry["label"] for entry in required_files}
-        self.assertNotIn("external_nexpose_csv.csv", labels)
         self.assertNotIn("external_nexpose_xml.xml", labels)
-        self.assertNotIn("internal_nexpose_csv.csv", labels)
         self.assertNotIn("internal_nexpose_xml.xml", labels)
-        self.assertNotIn("iot_nexpose_csv.csv", labels)
         self.assertNotIn("iot_nexpose_xml.xml", labels)
 
     def test_firewall_requirement_included_when_unique_values_present(self):

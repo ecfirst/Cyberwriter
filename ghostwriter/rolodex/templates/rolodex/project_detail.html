@@ -370,6 +370,53 @@
         </div>
       </div>
 
+      <div id="processed-data" class="tab-pane">
+        <h4>Processed Data</h4>
+        <hr/>
+        {% if processed_data_cards %}
+          <div class="row">
+            {% for card in processed_data_cards %}
+              <div class="col-md-6">
+                <div class="card mb-3">
+                  <div class="card-body">
+                    <h5 class="card-title">{{ card.label }}</h5>
+                    <dl class="row small mb-3">
+                      <dt class="col-6">Total Count</dt>
+                      <dd class="col-6 text-right">{{ card.summary.total|default:0 }}</dd>
+                      <dt class="col-6">Total Highs</dt>
+                      <dd class="col-6 text-right">{{ card.summary.total_high|default:0 }}</dd>
+                      <dt class="col-6">Total Mediums</dt>
+                      <dd class="col-6 text-right">{{ card.summary.total_med|default:0 }}</dd>
+                      <dt class="col-6">Total Lows</dt>
+                      <dd class="col-6 text-right">{{ card.summary.total_low|default:0 }}</dd>
+                      <dt class="col-6">Unique Count</dt>
+                      <dd class="col-6 text-right">{{ card.summary.unique|default:0 }}</dd>
+                      <dt class="col-6">Unique High/Medium</dt>
+                      <dd class="col-6 text-right">{{ card.summary.unique_high_med|default:0 }}</dd>
+                      <dt class="col-6">OOD Count</dt>
+                      <dd class="col-6 text-right">{{ card.summary.total_ood|default:0 }}</dd>
+                      <dt class="col-6">ISC Count</dt>
+                      <dd class="col-6 text-right">{{ card.summary.total_isc|default:0 }}</dd>
+                      <dt class="col-6">IWC Count</dt>
+                      <dd class="col-6 text-right">{{ card.summary.total_iwc|default:0 }}</dd>
+                    </dl>
+                    {% if card.has_file %}
+                      <a class="btn btn-outline-primary btn-sm" href="{% url 'rolodex:project_nexpose_data_download' project.id %}?artifact={{ card.metrics_key }}">
+                        Download Nexpose Data file
+                      </a>
+                    {% else %}
+                      <p class="text-muted small mb-0">The Nexpose data file will be available after processing completes.</p>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="text-muted offset-2 col-8">No Nexpose XML uploads have been processed yet.</p>
+        {% endif %}
+      </div>
+
       <div id="documents" class="tab-pane">
         <h4>Generate Project Documents</h4>
         <hr/>

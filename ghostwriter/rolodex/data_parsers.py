@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 # Standard Libraries
+import base64
 import csv
 import io
 import logging
 import re
 import unicodedata
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections import abc
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
@@ -25,6 +26,8 @@ else:  # pragma: no cover - exercised indirectly via parser tests
 from django.apps import apps
 from django.core.files.base import File
 from django.db.utils import OperationalError, ProgrammingError
+
+from xlsxwriter.workbook import Workbook
 
 if False:  # pragma: no cover - typing only
     from ghostwriter.rolodex.models import Project, ProjectDataFile  # noqa: F401
@@ -2316,6 +2319,455 @@ NEXPOSE_XML_ARTIFACT_MAP = {
     "iomt": "iot_iomt_nexpose_findings",
 }
 
+NEXPOSE_METRICS_KEY_MAP = {
+    "external_nexpose_findings": "external_nexpose_metrics",
+    "internal_nexpose_findings": "internal_nexpose_metrics",
+    "iot_iomt_nexpose_findings": "iot_iomt_nexpose_metrics",
+}
+
+NEXPOSE_METRICS_LABELS = {
+    "external_nexpose_metrics": "External Nexpose",
+    "internal_nexpose_metrics": "Internal Nexpose",
+    "iot_iomt_nexpose_metrics": "IoT/IoMT Nexpose",
+}
+
+NEXPOSE_TAB_INDEX_ENTRIES = [
+    "Unique Issues  -:-  Unique issues found across all scanned systems",
+    "Issues by Majority Type  -:-  From the Unique Issues, a listing of those that are the same 'type' (missing patch, configuration item, etc) that represent the majority of the issues found",
+    "Subset of Majority Items  -:-  From the Majority Type, a listing of those that are the same application, vendor, service, etc that are responsible for the bulk of the Majority issues",
+    "All Issues  -:-  All issues identified. May include 'duplicate' findings (same issue/system, different ports)",
+    "High Risk Issues  -:-  All 'High' risk issues identified",
+    "Medium Risk Issues  -:-  All 'Medium' risk issues identified",
+    "Low Risk Issues  -:-  All 'Low' risk issues identified",
+]
+
+
+def _derive_risk_from_score(score: Optional[int]) -> str:
+    """Convert a Nexpose score into a High/Medium/Low risk bucket."""
+
+    if score is None:
+        return "Low"
+    if score >= 8:
+        return "High"
+    if score <= 3:
+        return "Low"
+    return "Medium"
+
+
+def _build_host_identifier(ip_address: str, hostnames: str) -> str:
+    """Return a combined identifier for an asset."""
+
+    ip_text = (ip_address or "").strip()
+    hostname_text = (hostnames or "").strip()
+    if ip_text and hostname_text:
+        return f"{ip_text} ({hostname_text})"
+    if ip_text:
+        return ip_text
+    if hostname_text:
+        return hostname_text
+    return "Unknown Host"
+
+
+def _format_port_display(port_value: str, protocol: str) -> str:
+    """Render the combined port/protocol string for workbook tables."""
+
+    port_text = (port_value or "").strip()
+    proto_text = (protocol or "").strip().upper()
+    if not port_text:
+        return "N/A"
+    if proto_text:
+        return f"{port_text}.{proto_text}"
+    return port_text
+
+
+def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build summary metrics, top lists, and workbook bytes for Nexpose findings."""
+
+    total_entries: List[Dict[str, Any]] = []
+    unique_entries: "OrderedDict[Tuple[int, str], Dict[str, Any]]" = OrderedDict()
+    seen_total_keys: Set[Tuple[str, str, str, int]] = set()
+    host_counters: Dict[str, Dict[str, int]] = {}
+    impact_counter: Counter[str] = Counter()
+    high_issues: List[Dict[str, Any]] = []
+    med_issues: List[Dict[str, Any]] = []
+    low_issues: List[Dict[str, Any]] = []
+
+    for entry in findings or []:
+        ip_address = (entry.get("Asset IP Address") or "").strip()
+        hostnames = (entry.get("Hostname(s)") or "").strip()
+        port = (entry.get("Service Port") or "").strip()
+        protocol = (entry.get("Protocol") or "").strip()
+        title = (entry.get("Vulnerability Title") or entry.get("Vulnerability ID") or "").strip()
+        if not title:
+            title = "Untitled Vulnerability"
+        severity = _coerce_int(entry.get("Vulnerability Severity Level")) or 0
+        impact = (entry.get("Impact") or "").strip()
+        solution = (entry.get("Solution") or "").strip()
+        category = (entry.get("Category") or "").strip()
+        details = (entry.get("Details") or "").strip()
+        evidence = (entry.get("Evidence") or "").strip()
+        remediation = (entry.get("Detailed Remediation") or solution or "").strip()
+        host_identifier = _build_host_identifier(ip_address, hostnames)
+        risk = _derive_risk_from_score(severity)
+        port_display = _format_port_display(port, protocol)
+
+        normalized_entry = {
+            "ip": ip_address,
+            "hostnames": hostnames,
+            "host_id": host_identifier,
+            "port": port_display,
+            "issue": title,
+            "impact": impact,
+            "details": details,
+            "evidence": evidence,
+            "remediation": remediation,
+            "risk": risk,
+            "category": category,
+            "severity": severity,
+        }
+
+        total_key = (ip_address, hostnames, title.lower(), severity)
+        if total_key not in seen_total_keys:
+            total_entries.append(normalized_entry)
+            seen_total_keys.add(total_key)
+
+        unique_key = (severity, title.lower())
+        if unique_key not in unique_entries:
+            unique_entries[unique_key] = {
+                "risk": risk,
+                "issue": title,
+                "impact": impact,
+                "remediation": solution or remediation,
+                "category": category,
+                "severity": severity,
+            }
+
+        bucket = host_counters.setdefault(host_identifier, {"high": 0, "med": 0, "low": 0})
+        if severity >= 8:
+            bucket["high"] += 1
+            high_issues.append(normalized_entry)
+        elif severity >= 4:
+            bucket["med"] += 1
+            med_issues.append(normalized_entry)
+        else:
+            bucket["low"] += 1
+            low_issues.append(normalized_entry)
+
+        if impact:
+            impact_counter[impact] += 1
+
+    total_count = len(total_entries)
+    unique_values = list(unique_entries.values())
+    unique_count = len(unique_values)
+    unique_high = sum(1 for entry in unique_values if entry.get("severity", 0) >= 8)
+    unique_med = sum(1 for entry in unique_values if 4 <= entry.get("severity", 0) <= 7)
+    unique_low = sum(1 for entry in unique_values if entry.get("severity", 0) <= 3)
+    category_counter: Counter[str] = Counter(
+        (entry.get("category") or "").strip() for entry in unique_values if entry.get("category")
+    )
+    majority_type = None
+    majority_value = 0
+    for candidate in ("OOD", "ISC", "IWC"):
+        count = category_counter.get(candidate, 0)
+        if count > majority_value:
+            majority_type = candidate
+            majority_value = count
+
+    summary = {
+        "total": total_count,
+        "total_high": len(high_issues),
+        "total_med": len(med_issues),
+        "total_low": len(low_issues),
+        "unique": unique_count,
+        "unique_high": unique_high,
+        "unique_med": unique_med,
+        "unique_low": unique_low,
+        "unique_high_med": unique_high + unique_med,
+        "total_ood": category_counter.get("OOD", 0),
+        "total_isc": category_counter.get("ISC", 0),
+        "total_iwc": category_counter.get("IWC", 0),
+    }
+
+    host_rows = [
+        {
+            "host": host,
+            "high": counts.get("high", 0),
+            "med": counts.get("med", 0),
+            "low": counts.get("low", 0),
+        }
+        for host, counts in sorted(host_counters.items(), key=lambda item: item[0].lower())
+    ]
+
+    top_hosts = []
+    for host in host_rows:
+        score = host["high"] * 3 + host["med"] * 2 + host["low"]
+        top_hosts.append({**host, "score": score})
+    top_hosts.sort(key=lambda item: (-item["score"], -(item["high"] + item["med"] + item["low"]), item["host"].lower()))
+    top_hosts = top_hosts[:10]
+
+    top_impacts = [
+        {"impact": impact, "count": count}
+        for impact, count in impact_counter.most_common(10)
+    ]
+
+    majority_unique = [
+        entry
+        for entry in unique_values
+        if majority_type and (entry.get("category") or "").strip() == majority_type
+    ]
+    majority_subset = [
+        entry
+        for entry in total_entries
+        if majority_type and (entry.get("category") or "").strip() == majority_type
+    ]
+
+    metrics_payload: Dict[str, Any] = {
+        "summary": summary,
+        "host_counts": host_rows,
+        "top_hosts": top_hosts,
+        "top_impacts": top_impacts,
+        "tab_index_entries": NEXPOSE_TAB_INDEX_ENTRIES,
+        "unique_issues": unique_values,
+        "majority_type": majority_type,
+        "majority_unique": majority_unique,
+        "majority_subset": majority_subset,
+        "all_issues": total_entries,
+        "high_issues": high_issues,
+        "med_issues": med_issues,
+        "low_issues": low_issues,
+        "xlsx_filename": "nexpose_data.xlsx",
+    }
+
+    workbook_bytes = _render_nexpose_metrics_workbook(metrics_payload)
+    if workbook_bytes:
+        metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
+
+    return metrics_payload
+
+
+def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
+    """Create an XLSX workbook for the processed Nexpose metrics."""
+
+    buffer = io.BytesIO()
+    workbook = Workbook(buffer, {"in_memory": True})
+
+    def header_format(color: str):
+        fmt = workbook.add_format({
+            "bold": True,
+            "border": 1,
+            "font_color": "#FFFFFF",
+            "bg_color": color,
+        })
+        return fmt
+
+    summary_header_cache: Dict[str, Any] = {}
+
+    def get_header(color: str):
+        if color not in summary_header_cache:
+            summary_header_cache[color] = header_format(color)
+        return summary_header_cache[color]
+
+    summary_data_fmt = workbook.add_format({"border": 1})
+    summary_band_fmt = workbook.add_format({"border": 1, "bg_color": "#99CCFF"})
+    text_data_fmt = workbook.add_format({"border": 1, "text_wrap": True})
+    text_band_fmt = workbook.add_format({"border": 1, "text_wrap": True, "bg_color": "#99CCFF"})
+
+    def write_table(
+        worksheet,
+        *,
+        start_row: int,
+        start_col: int,
+        headers: List[str],
+        rows: List[List[Any]],
+        header_colors: Optional[List[str]] = None,
+        data_format=text_data_fmt,
+        band_format=text_band_fmt,
+    ) -> None:
+        for idx, header in enumerate(headers):
+            color = (header_colors[idx] if header_colors and idx < len(header_colors) else (header_colors[0] if header_colors else "#0066CC"))
+            worksheet.write(start_row, start_col + idx, header, get_header(color))
+        for row_index, row in enumerate(rows):
+            fmt = band_format if row_index % 2 == 1 else data_format
+            for col_index, value in enumerate(row):
+                worksheet.write(start_row + 1 + row_index, start_col + col_index, value, fmt)
+
+    exec_ws = workbook.add_worksheet("Executive Summary")
+    exec_ws.set_column(0, 3, 28)
+    exec_ws.set_column(5, 8, 18)
+    exec_ws.set_column(10, 10, 45)
+    exec_ws.set_column(11, 11, 12)
+
+    host_rows = [
+        [row["host"], row["high"], row["med"], row["low"]]
+        for row in metrics.get("host_counts", [])
+    ]
+    write_table(
+        exec_ws,
+        start_row=0,
+        start_col=0,
+        headers=["Host", "High", "Medium", "Low"],
+        rows=host_rows,
+        header_colors=["#0066CC", "#0066CC", "#0066CC", "#0066CC"],
+        data_format=summary_data_fmt,
+        band_format=summary_band_fmt,
+    )
+
+    summary = metrics.get("summary") or {}
+    totals_rows = [[
+        summary.get("total", 0),
+        summary.get("total_high", 0),
+        summary.get("total_med", 0),
+        summary.get("total_low", 0),
+    ]]
+    write_table(
+        exec_ws,
+        start_row=0,
+        start_col=5,
+        headers=["Total", "Total High", "Total Medium", "Total Low"],
+        rows=totals_rows,
+        header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
+        data_format=summary_data_fmt,
+        band_format=summary_band_fmt,
+    )
+
+    unique_rows = [[
+        summary.get("unique", 0),
+        summary.get("unique_high", 0),
+        summary.get("unique_med", 0),
+        summary.get("unique_low", 0),
+    ]]
+    write_table(
+        exec_ws,
+        start_row=3,
+        start_col=5,
+        headers=["Unique Total", "Unique High", "Unique Medium", "Unique Low"],
+        rows=unique_rows,
+        header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
+        data_format=summary_data_fmt,
+        band_format=summary_band_fmt,
+    )
+
+    top_host_rows = [
+        [row.get("host"), row.get("high"), row.get("med"), row.get("low")]
+        for row in metrics.get("top_hosts", [])
+    ]
+    write_table(
+        exec_ws,
+        start_row=6,
+        start_col=5,
+        headers=["Top Risk Hosts", "High", "Medium", "Low"],
+        rows=top_host_rows,
+        header_colors=["#FF0000", "#FF0000", "#FF9900", "#99CC00"],
+        data_format=summary_data_fmt,
+        band_format=summary_band_fmt,
+    )
+
+    impact_rows = [
+        [item.get("impact"), item.get("count", 0)]
+        for item in metrics.get("top_impacts", [])
+    ]
+    impact_headers = ["Top 10 Issue Impacts", "Count"]
+    write_table(
+        exec_ws,
+        start_row=0,
+        start_col=10,
+        headers=impact_headers,
+        rows=impact_rows,
+        header_colors=["#0066CC", "#0066CC"],
+        data_format=text_data_fmt,
+        band_format=text_band_fmt,
+    )
+
+    tab_index_rows = [[entry] for entry in metrics.get("tab_index_entries", [])]
+    write_table(
+        exec_ws,
+        start_row=16,
+        start_col=10,
+        headers=["Tab Index"],
+        rows=tab_index_rows,
+        header_colors=["#CCFFFF"],
+        data_format=text_data_fmt,
+        band_format=text_band_fmt,
+    )
+
+    def write_issue_sheet(name: str, data_rows: List[List[Any]], headers: List[str]) -> None:
+        ws = workbook.add_worksheet(name)
+        ws.set_column(0, len(headers) - 1, 35)
+        write_table(
+            ws,
+            start_row=0,
+            start_col=0,
+            headers=headers,
+            rows=data_rows,
+            header_colors=["#0066CC"] * len(headers),
+            data_format=text_data_fmt,
+            band_format=text_band_fmt,
+        )
+
+    unique_headers = ["Risk", "Issue", "Impact", "Remediation", "Category"]
+    unique_rows_table = [
+        [entry.get("risk"), entry.get("issue"), entry.get("impact"), entry.get("remediation"), entry.get("category")]
+        for entry in metrics.get("unique_issues", [])
+    ]
+    write_issue_sheet("Unique Issues", unique_rows_table, unique_headers)
+
+    majority_rows = [
+        [entry.get("risk"), entry.get("issue"), entry.get("impact"), entry.get("remediation"), entry.get("category")]
+        for entry in metrics.get("majority_unique", [])
+    ]
+    write_issue_sheet("Issues by Majority Type", majority_rows, unique_headers)
+
+    def build_full_rows(items: List[Dict[str, Any]]) -> List[List[Any]]:
+        rows = []
+        for item in items:
+            rows.append(
+                [
+                    item.get("ip"),
+                    item.get("hostnames"),
+                    item.get("port"),
+                    item.get("issue"),
+                    item.get("impact"),
+                    item.get("details"),
+                    item.get("evidence"),
+                    item.get("remediation"),
+                    item.get("risk"),
+                    item.get("category"),
+                ]
+            )
+        return rows
+
+    full_headers = [
+        "IP Address",
+        "Hostname(s)",
+        "Port",
+        "Issue",
+        "Impact",
+        "Issue Details",
+        "Evidence",
+        "Remediation",
+        "Risk",
+        "Category",
+    ]
+
+    subset_rows = build_full_rows(metrics.get("majority_subset", []))
+    write_issue_sheet("Subset of Majority Issues", subset_rows, full_headers)
+
+    all_rows = build_full_rows(metrics.get("all_issues", []))
+    write_issue_sheet("All Issues", all_rows, full_headers)
+
+    high_rows = build_full_rows(metrics.get("high_issues", []))
+    write_issue_sheet("High Risk Issues", high_rows, full_headers)
+
+    med_rows = build_full_rows(metrics.get("med_issues", []))
+    write_issue_sheet("Medium Risk Issues", med_rows, full_headers)
+
+    low_rows = build_full_rows(metrics.get("low_issues", []))
+    write_issue_sheet("Low Risk Issues", low_rows, full_headers)
+
+    workbook.close()
+    buffer.seek(0)
+    return buffer.getvalue()
+
 
 def _categorize_web_risk(raw_value: str) -> Optional[str]:
     """Return the severity bucket for a Burp risk string."""
@@ -2792,6 +3244,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 "findings": combined_findings,
                 "software": combined_software,
             }
+            metrics_key = NEXPOSE_METRICS_KEY_MAP.get(xml_artifact_key)
+            if metrics_key:
+                artifacts[metrics_key] = _build_nexpose_metrics_payload(combined_findings)
         else:
             requirement_slug = (data_file.requirement_slug or "").strip()
             if requirement_slug:
