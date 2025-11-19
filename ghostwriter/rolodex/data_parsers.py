@@ -9,6 +9,7 @@ import io
 import logging
 import re
 import unicodedata
+from base64 import b64decode
 from collections import Counter, OrderedDict
 from collections import abc
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
@@ -539,6 +540,405 @@ def load_web_issue_matrix() -> Dict[str, Dict[str, str]]:
         }
 
     return matrix
+
+
+def _normalize_issue_name(value: str) -> str:
+    """Normalize Burp issue names for grouping and matrix lookups."""
+
+    if "Vulnerable Software detected" in value:
+        return "Vulnerable Software detected"
+    if "PostgreSQL injection" in value:
+        return "SQL injection"
+    if "SQL Server injection" in value:
+        return "SQL injection"
+    return value
+
+
+def _get_matrix_entry(
+    lookup_title: str, web_issues_matrix: Optional[Mapping[str, Dict[str, str]]]
+) -> Optional[Dict[str, str]]:
+    """Return a web issue matrix entry matching ``lookup_title`` when available."""
+
+    if not web_issues_matrix:
+        return None
+
+    normalized = _normalize_matrix_key(lookup_title)
+    if not normalized:
+        return None
+
+    if isinstance(web_issues_matrix, dict):
+        entry = web_issues_matrix.get(normalized)
+        if entry:
+            return entry
+
+    for _, entry in getattr(web_issues_matrix, "items", lambda: [])():
+        if not isinstance(entry, dict):
+            continue
+        issue_key = _normalize_matrix_key(entry.get("issue"))
+        if issue_key and issue_key == normalized:
+            return entry
+
+    return None
+
+
+def _compute_lookup_title(issue_name: str) -> str:
+    """Derive the lookup title for matrix resolution."""
+
+    if " includes a vulnerable version of the library " in issue_name:
+        return "includes a vulnerable version of the library"
+    if "Vulnerable version of the library " in issue_name:
+        return "includes a vulnerable version of the library"
+    if "Detected Deserialization" in issue_name:
+        return "Detected Deserialization"
+    if " Vulnerable Software detected" in issue_name or "Vulnerable version of " in issue_name:
+        return "Vulnerable Software detected"
+    if "Cross-Site Request Forgery (CSRF)" in issue_name:
+        return "Cross-site request forgery"
+    return issue_name
+
+
+def _clean_burp_text(text: str) -> str:
+    """Clean Burp XML strings into normalized plain text."""
+
+    replacements = {
+        "<p>": "",
+        "</p>": "\n",
+        "<br>": "\n",
+        "</br>": "\n",
+        "<br/>": "\n",
+        "<b>": "'",
+        "</b>": "'",
+        "<i>": "'",
+        "</i>": "'",
+        "<pre>": "",
+        "</pre>": "\n",
+        "&lt;": "<",
+        "&gt;": ">",
+        "&amp;": "&",
+        "&quote;": "'",
+        "&quot;": "'",
+        "<ul>": "\n",
+        "</ul>": "",
+        "<li>": "",
+        "</li>": "\n",
+        "<table>": "",
+        "</table>": "",
+        "<tr>": "",
+        "</tr>": "\n",
+        "<td>": "",
+        "</td>": "",
+        "<h4>": "",
+        "</h4>": ":\n",
+        "Burp Suite": "ecfirst",
+        "Burp ": "ecfirst ",
+    }
+
+    cleaned = text.replace("\n", " ")
+    for target, replacement in replacements.items():
+        cleaned = cleaned.replace(target, replacement)
+
+    cleaned = re.sub(r"<a href=\".*?\">", "", cleaned)
+    cleaned = cleaned.replace("</a>", "")
+    cleaned = cleaned.replace(
+        "<div style=\"font-size:8px\">This issue was reported by ActiveScan++</div>",
+        "",
+    )
+    cleaned = cleaned.replace(
+        "Refer to Backslash Powered Scanning for further details and guidance interpreting results.",
+        "",
+    )
+
+    while "  " in cleaned:
+        cleaned = cleaned.replace("  ", " ")
+
+    return cleaned.strip()
+
+
+def _compute_burp_score(severity: str, confidence: str) -> float:
+    """Calculate Burp numeric score based on severity and confidence."""
+
+    base_map = {"High": 9.0, "Medium": 6.0, "Low": 3.0, "Information": 1.0}
+    modifier_map = {"Certain": 1.0, "Firm": 0.0, "Tentative": -1.0}
+
+    base = base_map.get(severity, 0.0)
+    modifier = modifier_map.get(confidence, 0.0)
+    if severity == "Information":
+        modifier = 0.0
+    return float(base + modifier)
+
+
+def _parse_burp_background(issue: ElementTree.Element, issue_name: str) -> str:
+    """Return background text for an issue."""
+
+    background_elem = issue.find("issueBackground")
+    if background_elem is not None and background_elem.text:
+        return _clean_burp_text(background_elem.text)
+
+    if issue_name == "Vulnerable Software detected":
+        return (
+            "Software that is out of date may contain known unpatched vulnerabilities "
+            "that attacker can exploit to compromise the application, system and/or users."
+        )
+
+    issue_detail_elem = issue.find("issueDetail")
+    if issue_detail_elem is not None and issue_detail_elem.text:
+        return _clean_burp_text(issue_detail_elem.text)
+
+    return ""
+
+
+def _parse_burp_remediation(issue: ElementTree.Element) -> str:
+    """Return remediation text or a placeholder when absent."""
+
+    remediation_elem = issue.find("remediationBackground")
+    if remediation_elem is not None and remediation_elem.text:
+        return _clean_burp_text(remediation_elem.text)
+
+    remediation_detail_elem = issue.find("remediationDetail")
+    if remediation_detail_elem is not None and remediation_detail_elem.text:
+        return _clean_burp_text(remediation_detail_elem.text)
+
+    return "<<CUSTOM_REMED>>"
+
+
+def _parse_burp_fix(
+    issue_name: str,
+    web_issues_matrix: Optional[Mapping[str, Dict[str, str]]],
+    *,
+    missing_issues: Optional[Set[str]] = None,
+    matrix_entry: Optional[Mapping[str, str]] = None,
+) -> str:
+    """Return fix text from the web issues matrix when present."""
+
+    lookup_title = _compute_lookup_title(issue_name)
+    entry = matrix_entry or _get_matrix_entry(lookup_title, web_issues_matrix)
+    if entry:
+        return entry.get("fix", "")
+    if missing_issues is not None:
+        missing_issues.add(issue_name)
+    return ""
+
+
+def _parse_burp_impact(
+    issue_name: str,
+    web_issues_matrix: Optional[Mapping[str, Dict[str, str]]],
+    *,
+    missing_issues: Optional[Set[str]] = None,
+    matrix_entry: Optional[Mapping[str, str]] = None,
+) -> str:
+    """Return impact text from the web issues matrix when present."""
+
+    lookup_title = _compute_lookup_title(issue_name)
+    entry = matrix_entry or _get_matrix_entry(lookup_title, web_issues_matrix)
+    if entry:
+        return entry.get("impact", "")
+    if missing_issues is not None:
+        missing_issues.add(issue_name)
+    return ""
+
+
+def _decode_burp_response(issue: ElementTree.Element) -> Optional[str]:
+    """Return the decoded response body from the first requestresponse block."""
+
+    for rr in issue.findall("requestresponse"):
+        response_elem = rr.find("response")
+        if response_elem is None or response_elem.text is None:
+            continue
+
+        text = response_elem.text
+        if response_elem.get("base64", "false").lower() == "true":
+            try:
+                decoded = b64decode(text)
+                return decoded.decode("utf-8", errors="replace")
+            except Exception:  # pragma: no cover - defensive fallback
+                return None
+        return text
+
+    return None
+
+
+def _parse_burp_details(issue: ElementTree.Element, issue_name: str) -> str:
+    """Return evidence/details text for an issue."""
+
+    issue_detail_elem = issue.find("issueDetail")
+    issue_background_elem = issue.find("issueBackground")
+    issue_type = (issue.findtext("type") or "").strip()
+    path_text = (issue.findtext("path") or "").strip()
+
+    if issue_detail_elem is not None and issue_detail_elem.text:
+        if (issue_background_elem is not None and issue_background_elem.text) or (
+            issue_name == "Vulnerable Software detected"
+        ):
+            return _clean_burp_text(issue_detail_elem.text)
+
+    response_text = _decode_burp_response(issue)
+
+    if (
+        issue_type == "134217728"
+        and issue_name == "Detailed Error Messages Revealed"
+        and "ScriptResource.axd" not in path_text
+        and "WebResource.axd" not in path_text
+        and response_text
+    ):
+        t1 = response_text.find("</html>")
+        if t1 >= 0:
+            t2 = t1 + 7
+        else:
+            t2 = 0
+        if t2 == len(response_text):
+            opening_index = response_text.find("<html ")
+            if opening_index >= 0:
+                t2 = opening_index + 6
+        snippet = response_text[t2:]
+        if len(snippet) >= 32000:
+            snippet = f"{snippet[:30000]} ... [SNIP] ..."
+        if t1 >= 0:
+            return f"... {snippet}"
+        return snippet
+
+    if (
+        issue_type == "5245344"
+        and issue_name == "Frameable response (potential Clickjacking)"
+        and "ScriptResource.axd" not in path_text
+        and "WebResource.axd" not in path_text
+        and response_text
+    ):
+        header_end = response_text.find("\r\n\r\n")
+        headers = response_text[:header_end] if header_end >= 0 else response_text
+        return f"{headers}\n... [SNIP] ..."
+
+    return "See response(s)"
+
+
+def parse_burp_xml_report(
+    file_obj: File, web_issues_matrix: Optional[Mapping[str, Dict[str, str]]] = None
+) -> Dict[str, Any]:
+    """Parse a Burp XML export into normalized finding entries."""
+
+    raw_content = file_obj.read()
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+
+    if isinstance(raw_content, bytes):
+        xml_content = raw_content.decode("utf-8", errors="replace")
+    else:
+        xml_content = str(raw_content)
+
+    try:
+        root = ElementTree.fromstring(xml_content)
+    except ElementTree.ParseError:
+        return []
+
+    grouped: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = {}
+    missing_matrix_issues: Set[str] = set()
+
+    for issue in root.findall("issue"):
+        severity = (issue.findtext("severity") or "").strip() or "Low"
+        confidence = (issue.findtext("confidence") or "").strip()
+        risk_label = "Low" if severity == "Information" else severity
+        score = _compute_burp_score(severity, confidence)
+
+        issue_name_raw = (issue.findtext("name") or "").strip()
+        issue_name = _normalize_issue_name(issue_name_raw)
+        host_name = (issue.findtext("host") or "").strip()
+        path = (issue.findtext("location") or issue.findtext("path") or "").strip()
+        details = _parse_burp_details(issue, issue_name)
+
+        path_detail_key = f"{path}::{details}"
+        risk_key = f"{risk_label}::{score:.1f}"
+
+        lookup_title = _compute_lookup_title(issue_name)
+        matrix_entry = _get_matrix_entry(lookup_title, web_issues_matrix)
+        if matrix_entry is None:
+            missing_matrix_issues.add(issue_name)
+
+        risk_entry = grouped.setdefault(risk_key, {})
+        issue_entry = risk_entry.setdefault(issue_name, {})
+        host_entry = issue_entry.setdefault(
+            host_name,
+            {
+                "background": _parse_burp_background(issue, issue_name),
+                "remediation": _parse_burp_remediation(issue),
+                "impact": _parse_burp_impact(
+                    issue_name,
+                    web_issues_matrix,
+                    missing_issues=missing_matrix_issues,
+                    matrix_entry=matrix_entry,
+                ),
+                "fix": _parse_burp_fix(
+                    issue_name,
+                    web_issues_matrix,
+                    missing_issues=missing_matrix_issues,
+                    matrix_entry=matrix_entry,
+                ),
+                "paths": {},
+            },
+        )
+
+        if path_detail_key in host_entry["paths"]:
+            continue
+
+        host_entry["paths"][path_detail_key] = {"path": path, "details": details}
+
+        if not host_entry.get("background"):
+            host_entry["background"] = _parse_burp_background(issue, issue_name)
+        if not host_entry.get("remediation"):
+            host_entry["remediation"] = _parse_burp_remediation(issue)
+        if not host_entry.get("impact"):
+            host_entry["impact"] = _parse_burp_impact(
+                issue_name,
+                web_issues_matrix,
+                missing_issues=missing_matrix_issues,
+                matrix_entry=matrix_entry,
+            )
+        if not host_entry.get("fix"):
+            host_entry["fix"] = _parse_burp_fix(
+                issue_name,
+                web_issues_matrix,
+                missing_issues=missing_matrix_issues,
+                matrix_entry=matrix_entry,
+            )
+
+    findings: List[Dict[str, Any]] = []
+
+    for risk_key in sorted(grouped.keys()):
+        risk_label, score_text = risk_key.split("::", 1)
+        try:
+            score = float(score_text)
+        except (TypeError, ValueError):
+            score = float(_coerce_int(score_text) or 0)
+
+        for issue_name, host_map in grouped[risk_key].items():
+            for host_name, host_data in host_map.items():
+                remediation_text = host_data.get("remediation", "")
+                fix_text = host_data.get("fix", "")
+                detailed_remediation = (
+                    remediation_text if remediation_text != "<<CUSTOM_REMED>>" else fix_text
+                )
+
+                for path_detail in host_data.get("paths", {}).values():
+                    findings.append(
+                        {
+                            "Risk": risk_label,
+                            "Issue": issue_name,
+                            "Impact": host_data.get("impact", ""),
+                            "Background": host_data.get("background", ""),
+                            "Fix": fix_text,
+                            "Host": host_name,
+                            "Path": path_detail.get("path", ""),
+                            "Evidence": path_detail.get("details", ""),
+                            "Detailed Remediation": detailed_remediation,
+                            "Score": score,
+                        }
+                    )
+
+    missing_entries = [
+        {"issue": issue_name, "impact": "", "fix": ""}
+        for issue_name in sorted(missing_matrix_issues, key=str.lower)
+        if issue_name
+    ]
+
+    return {"findings": findings, "missing_matrix_entries": missing_entries}
 
 
 def _default_password_compliance_matrix() -> Dict[str, Dict[str, Any]]:
@@ -2066,12 +2466,43 @@ def has_open_nexpose_matrix_gaps(artifacts: Any) -> bool:
     return any(summary.values())
 
 
+def summarize_web_issue_matrix_gaps(artifacts: Any) -> List[Dict[str, str]]:
+    """Return missing web issue matrix entries when present."""
+
+    if not isinstance(artifacts, dict):
+        return []
+    gap_data = artifacts.get("web_issue_matrix_gaps")
+    if not isinstance(gap_data, dict):
+        return []
+    entries = gap_data.get("entries")
+    if isinstance(entries, list):
+        normalized_entries: List[Dict[str, str]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            issue_value = (entry.get("issue") or "").strip()
+            if not issue_value:
+                continue
+            normalized_entries.append(
+                {"issue": issue_value, "impact": entry.get("impact", ""), "fix": entry.get("fix", "")}
+            )
+        return normalized_entries
+    return []
+
+
+def has_open_web_issue_matrix_gaps(artifacts: Any) -> bool:
+    """Return ``True`` when Burp XML findings reference missing matrix issues."""
+
+    summary = summarize_web_issue_matrix_gaps(artifacts)
+    return bool(summary)
+
+
 def _build_web_issue_ai_response(
-    summary: Dict[str, Any], *, require_burp_csv: bool
+    summary: Dict[str, Any], *, require_web_data: bool
 ) -> Optional[str]:
     """Generate an OpenAI summary for high or medium web issues when enabled."""
 
-    if not require_burp_csv:
+    if not require_web_data:
         return None
 
     try:
@@ -2805,6 +3236,389 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
     return buffer.getvalue()
 
 
+def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Generate metrics and an XLSX workbook for Burp web findings."""
+
+    if not findings:
+        return {}
+
+    total_entries: List[Dict[str, Any]] = []
+    unique_entries: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    impact_counter: Counter[str] = Counter()
+
+    for finding in findings:
+        issue = (finding.get("Issue") or "").strip()
+        impact = (finding.get("Impact") or "").strip()
+        background = finding.get("Background")
+        fix = finding.get("Fix")
+        risk = (finding.get("Risk") or "").strip()
+        score = finding.get("Score")
+        try:
+            numeric_score = float(score) if score is not None else 0.0
+        except (TypeError, ValueError):  # pragma: no cover - defensive guard
+            numeric_score = 0.0
+
+        entry = {
+            "Issue": issue,
+            "Impact": impact,
+            "Background": background,
+            "Fix": fix,
+            "Host": finding.get("Host"),
+            "Path": finding.get("Path"),
+            "Evidence": finding.get("Evidence"),
+            "Detailed Remediation": finding.get("Detailed Remediation"),
+            "Risk": risk,
+            "Score": numeric_score,
+        }
+        total_entries.append(entry)
+        impact_counter[impact] += 1
+
+        unique_key = (risk, issue, impact)
+        existing = unique_entries.get(unique_key)
+        if existing:
+            if numeric_score > existing.get("Score", 0):
+                existing["Score"] = numeric_score
+            continue
+        unique_entries[unique_key] = {
+            "Issue": issue,
+            "Impact": impact,
+            "Background": background,
+            "Fix": fix,
+            "Risk": risk,
+            "Score": numeric_score,
+        }
+
+    unique_values = list(unique_entries.values())
+    summary = {
+        "total": len(total_entries),
+        "unique": len(unique_values),
+        "total_high": sum(1 for entry in total_entries if entry.get("Score", 0) >= 8.0),
+        "total_med": sum(
+            1 for entry in total_entries if 5.0 <= entry.get("Score", 0) <= 7.9
+        ),
+        "total_low": sum(1 for entry in total_entries if entry.get("Score", 0) <= 4.9),
+        "unique_high": sum(1 for entry in unique_values if entry.get("Score", 0) >= 8.0),
+        "unique_med": sum(
+            1 for entry in unique_values if 5.0 <= entry.get("Score", 0) <= 7.9
+        ),
+        "unique_low": sum(1 for entry in unique_values if entry.get("Score", 0) <= 4.9),
+        "uniquelow": None,  # populated below for legacy naming
+    }
+    summary["uniquelow"] = summary["unique_low"]
+
+    top_impacts = [
+        {"impact": impact, "count": count}
+        for impact, count in impact_counter.most_common(10)
+    ]
+
+    metrics_payload: Dict[str, Any] = {
+        "summary": summary,
+        "unique_issues": sorted(
+            unique_values, key=lambda entry: (entry.get("Risk", ""), entry.get("Issue", ""), entry.get("Impact", ""))
+        ),
+        "all_issues": total_entries,
+        "high_issues": [entry for entry in total_entries if entry.get("Score", 0) >= 8.0],
+        "med_issues": [
+            entry for entry in total_entries if 5.0 <= entry.get("Score", 0) <= 7.9
+        ],
+        "low_issues": [entry for entry in total_entries if entry.get("Score", 0) <= 4.9],
+        "top_impacts": top_impacts,
+        "tab_index_entries": [
+            "Unique Issues  -:-  Unique issues found across all scanned systems",
+            "All Issues  -:-  All issues identified. May include 'duplicate' findings (same issue/system, different ports)",
+            "High Risk Issues  -:-  All 'High' risk issues identified",
+            "Medium Risk Issues  -:-  All 'Medium' risk issues identified",
+            "Low Risk Issues  -:-  All 'Low' risk issues identified",
+        ],
+        "xlsx_filename": "burp_data.xlsx",
+    }
+
+    workbook_bytes = _render_web_metrics_workbook(metrics_payload)
+    if workbook_bytes:
+        metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
+
+    return metrics_payload
+
+
+def _build_web_cap_entries_from_metrics(
+    metrics: Optional[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Create CAP-style web entries derived from web metrics."""
+
+    if not isinstance(metrics, dict):
+        return []
+
+    unique_issues = metrics.get("unique_issues")
+    all_issues = metrics.get("all_issues")
+    if not isinstance(unique_issues, list) or not isinstance(all_issues, list):
+        return []
+
+    host_map: Dict[str, Set[str]] = {}
+    for entry in all_issues:
+        if not isinstance(entry, dict):
+            continue
+        issue = (entry.get("Issue") or "").strip()
+        if not issue:
+            continue
+        host = (entry.get("Host") or "").strip()
+        path = (entry.get("Path") or "").strip()
+        host_path = f"{host}{path}".strip()
+        if not host_path:
+            continue
+        host_map.setdefault(issue, set()).add(host_path)
+
+    cap_entries: List[Dict[str, Any]] = []
+    for entry in unique_issues:
+        if not isinstance(entry, dict):
+            continue
+        issue = (entry.get("Issue") or "").strip()
+        if not issue:
+            continue
+        hosts = "\n".join(sorted(host_map.get(issue, set())))
+        cap_entries.append(
+            {
+                "issue": issue,
+                "hosts": hosts,
+                "score": entry.get("Score"),
+                "action": entry.get("Fix"),
+                "severity": entry.get("Risk"),
+            }
+        )
+
+    return cap_entries
+
+
+def _render_web_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
+    """Create an XLSX workbook for Burp web findings."""
+
+    buffer = io.BytesIO()
+    workbook = Workbook(buffer, {"in_memory": True})
+
+    def header_format(color: str):
+        return workbook.add_format(
+            {
+                "bold": True,
+                "border": 1,
+                "font_color": "#000000",
+                "bg_color": color,
+                "pattern": 1,
+            }
+        )
+
+    header_cache: Dict[str, Any] = {}
+
+    def get_header(color: str = "#0066CC"):
+        if color not in header_cache:
+            header_cache[color] = header_format(color)
+        return header_cache[color]
+
+    data_fmt = workbook.add_format({"border": 1, "font_color": "#000000", "text_wrap": True})
+    band_fmt = workbook.add_format(
+        {"border": 1, "bg_color": "#99CCFF", "font_color": "#000000", "text_wrap": True}
+    )
+
+    def write_table(
+        worksheet,
+        *,
+        start_row: int,
+        start_col: int,
+        headers: List[str],
+        rows: List[List[Any]],
+        header_colors: Optional[List[str]] = None,
+        width_tracker: Optional[Dict[int, int]] = None,
+    ) -> None:
+        for idx, header in enumerate(headers):
+            color = header_colors[idx] if header_colors and idx < len(header_colors) else (
+                header_colors[0] if header_colors else "#0066CC"
+            )
+            worksheet.write(start_row, start_col + idx, header, get_header(color))
+            if width_tracker is not None:
+                width_tracker[start_col + idx] = max(width_tracker.get(start_col + idx, 0), len(str(header)))
+
+        for row_idx, row in enumerate(rows):
+            fmt = band_fmt if row_idx % 2 == 1 else data_fmt
+            for col_idx, value in enumerate(row):
+                worksheet.write(start_row + 1 + row_idx, start_col + col_idx, value, fmt)
+                if width_tracker is not None:
+                    width_tracker[start_col + col_idx] = max(
+                        width_tracker.get(start_col + col_idx, 0), len(str(value or ""))
+                    )
+
+    # Executive Summary
+    summary_ws = workbook.add_worksheet("Executive Summary")
+    width_tracker: Dict[int, int] = {}
+    summary = metrics.get("summary", {}) if isinstance(metrics.get("summary"), dict) else {}
+
+    write_table(
+        summary_ws,
+        start_row=0,
+        start_col=0,
+        headers=["Total", "Total High", "Total Medium", "Total Low"],
+        header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
+        rows=[
+            [
+                summary.get("total", 0),
+                summary.get("total_high", 0),
+                summary.get("total_med", 0),
+                summary.get("total_low", 0),
+            ]
+        ],
+        width_tracker=width_tracker,
+    )
+
+    write_table(
+        summary_ws,
+        start_row=3,
+        start_col=0,
+        headers=["Unique Total", "Unique High", "Unique Medium", "Unique Low"],
+        header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
+        rows=[
+            [
+                summary.get("unique", 0),
+                summary.get("unique_high", 0),
+                summary.get("unique_med", 0),
+                summary.get("unique_low", 0),
+            ]
+        ],
+        width_tracker=width_tracker,
+    )
+
+    impact_rows = [
+        [row.get("impact"), row.get("count")] for row in metrics.get("top_impacts", []) or []
+    ]
+    write_table(
+        summary_ws,
+        start_row=0,
+        start_col=5,
+        headers=["Top 10 Issue Impacts", "Count"],
+        header_colors=["#0066CC", "#0066CC"],
+        rows=impact_rows,
+        width_tracker=width_tracker,
+    )
+
+    tab_index_rows = [[row] for row in metrics.get("tab_index_entries", []) or []]
+    write_table(
+        summary_ws,
+        start_row=16,
+        start_col=5,
+        headers=["Tab Index"],
+        header_colors=["#CCFFFF"],
+        rows=tab_index_rows,
+        width_tracker=width_tracker,
+    )
+
+    for col, width in width_tracker.items():
+        summary_ws.set_column(col, col, width + 2)
+
+    unique_headers = ["Issue", "Impact", "Background", "Fix", "Risk"]
+    unique_rows = [
+        [
+            entry.get("Issue"),
+            entry.get("Impact"),
+            entry.get("Background"),
+            entry.get("Fix"),
+            entry.get("Risk"),
+        ]
+        for entry in metrics.get("unique_issues", []) or []
+    ]
+
+    unique_ws = workbook.add_worksheet("Unique Issues")
+    write_table(unique_ws, start_row=0, start_col=0, headers=unique_headers, rows=unique_rows)
+    unique_ws.set_column(0, len(unique_headers) - 1, 30)
+
+    full_headers = [
+        "Issue",
+        "Impact",
+        "Background",
+        "Host",
+        "Path",
+        "Evidence",
+        "Fix",
+        "Detailed Remediation",
+        "Risk",
+    ]
+
+    def write_issue_sheet(title: str, entries: List[Dict[str, Any]]):
+        sheet = workbook.add_worksheet(title)
+        rows: List[List[Any]] = []
+        for entry in entries:
+            rows.append(
+                [
+                    entry.get("Issue"),
+                    entry.get("Impact"),
+                    entry.get("Background"),
+                    entry.get("Host"),
+                    entry.get("Path"),
+                    entry.get("Evidence"),
+                    entry.get("Fix"),
+                    entry.get("Detailed Remediation"),
+                    entry.get("Risk"),
+                ]
+            )
+        write_table(sheet, start_row=0, start_col=0, headers=full_headers, rows=rows)
+        sheet.set_column(0, len(full_headers) - 1, 35)
+
+    write_issue_sheet("All Issues", metrics.get("all_issues", []) or [])
+    write_issue_sheet("High Risk Issues", metrics.get("high_issues", []) or [])
+    write_issue_sheet("Medium Risk Issues", metrics.get("med_issues", []) or [])
+    write_issue_sheet("Low Risk Issues", metrics.get("low_issues", []) or [])
+
+    workbook.close()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _build_web_summary_from_findings(
+    findings: List[Dict[str, Any]], web_issue_matrix: Optional[Dict[str, Dict[str, str]]]
+) -> Optional[Dict[str, Any]]:
+    """Construct the web issue summary from parsed Burp findings."""
+
+    if not findings:
+        return None
+
+    low_issue_counter: Counter[str] = Counter()
+    med_impact_counter: Counter[str] = Counter()
+    aggregated_severity: Dict[str, Counter[Tuple[str, str]]] = {
+        "high": Counter(),
+        "med": Counter(),
+        "low": Counter(),
+    }
+
+    for finding in findings:
+        severity_key = _categorize_web_risk(finding.get("Risk", ""))
+        if not severity_key:
+            continue
+        issue_value = (finding.get("Issue") or "").strip()
+        impact_value = (finding.get("Impact") or "").strip()
+        aggregated_severity[severity_key][(issue_value, impact_value)] += 1
+
+        if severity_key == "low" and issue_value:
+            low_issue_counter[issue_value] += 1
+        elif severity_key == "med":
+            sample = _clean_impact_sample(impact_value)
+            if sample:
+                med_impact_counter[sample] += 1
+
+    if not any(counter for counter in aggregated_severity.values()):
+        return None
+
+    severity_summaries = {
+        severity_key: _summarize_severity_counter(counter, web_issue_matrix=web_issue_matrix)
+        for severity_key, counter in aggregated_severity.items()
+    }
+
+    web_summary = {
+        "low_sample_string": _format_sample_string(_select_top_samples(low_issue_counter)),
+        "med_sample_string": _format_sample_string(_select_top_samples(med_impact_counter)),
+        **severity_summaries,
+    }
+    web_summary["ai_response"] = None
+    ai_response = _build_web_issue_ai_response(web_summary, require_web_data=bool(findings))
+    if ai_response:
+        web_summary["ai_response"] = ai_response
+    return web_summary
+
+
 def _categorize_web_risk(raw_value: str) -> Optional[str]:
     """Return the severity bucket for a Burp risk string."""
 
@@ -3170,8 +3984,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
-    web_results: Dict[str, Dict[str, Counter[Tuple[str, str]]]] = {}
-    web_cap_entries: List[Dict[str, Any]] = []
     ip_results: Dict[str, List[str]] = {
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
@@ -3189,7 +4001,8 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     vulnerability_matrix = load_vulnerability_matrix()
     web_issue_matrix = load_web_issue_matrix()
-    burp_csv_uploaded = False
+    parsed_web_findings: List[Dict[str, Any]] = []
+    missing_web_issue_matrix: Set[str] = set()
 
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
@@ -3200,21 +4013,20 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_dns = parse_dns_report(data_file.file)
             if parsed_dns:
                 dns_results.setdefault(domain, []).extend(parsed_dns)
-        elif label in {"burp.csv", "burp_csv.csv"}:
-            if label == "burp_csv.csv":
-                burp_csv_uploaded = True
-            parsed_web = parse_web_report(data_file.file)
-            for site, severity_map in parsed_web.items():
-                combined_risks = web_results.setdefault(site, {})
-                for severity_key, counter in severity_map.items():
-                    if not counter:
-                        continue
-                    combined_counter = combined_risks.setdefault(severity_key, Counter())
-                    combined_counter.update(counter)
-        elif label in {"burp-cap.csv", "burp_cap.csv"}:
-            parsed_cap_entries = parse_burp_cap_report(data_file.file)
-            if parsed_cap_entries:
-                web_cap_entries.extend(parsed_cap_entries)
+        elif label == "burp_xml.xml":
+            burp_payload = parse_burp_xml_report(data_file.file, web_issue_matrix)
+            findings = burp_payload.get("findings") if isinstance(burp_payload, dict) else burp_payload
+            if findings:
+                parsed_web_findings.extend(findings)
+            missing_entries = (
+                burp_payload.get("missing_matrix_entries", [])
+                if isinstance(burp_payload, dict)
+                else []
+            )
+            for entry in missing_entries:
+                issue_name = (entry.get("issue") or "").strip() if isinstance(entry, dict) else ""
+                if issue_name:
+                    missing_web_issue_matrix.add(issue_name)
         elif label == "firewall_csv.csv":
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
@@ -3299,59 +4111,28 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             for domain, issues in dns_results.items()
         ]
 
-    if web_results:
-        low_issue_counter: Counter[str] = Counter()
-        med_impact_counter: Counter[str] = Counter()
-        aggregated_severity: Dict[str, Counter[Tuple[str, str]]] = {
-            "high": Counter(),
-            "med": Counter(),
-            "low": Counter(),
+    web_summary = _build_web_summary_from_findings(
+        parsed_web_findings, web_issue_matrix
+    )
+    if web_summary:
+        artifacts["web_issues"] = web_summary
+
+    if parsed_web_findings:
+        artifacts["web_findings"] = parsed_web_findings
+        metrics_payload = _build_web_metrics_payload(parsed_web_findings)
+        if metrics_payload:
+            artifacts["web_metrics"] = metrics_payload
+            cap_entries = _build_web_cap_entries_from_metrics(metrics_payload)
+            if cap_entries:
+                artifacts["web_cap_map"] = cap_entries
+
+    if missing_web_issue_matrix:
+        artifacts["web_issue_matrix_gaps"] = {
+            "entries": [
+                {"issue": issue, "impact": "", "fix": ""}
+                for issue in sorted(missing_web_issue_matrix, key=str.lower)
+            ]
         }
-
-        for severity_map in web_results.values():
-            for severity_key in ("high", "med", "low"):
-                counter = severity_map.get(severity_key, Counter())
-                if not counter:
-                    continue
-                aggregated_severity[severity_key].update(counter)
-                if severity_key == "low":
-                    for (issue, _impact), count in counter.items():
-                        issue_sample = (issue or "").strip()
-                        if issue_sample:
-                            low_issue_counter[issue_sample] += count
-                elif severity_key == "med":
-                    for (_issue, impact), count in counter.items():
-                        impact_sample = _clean_impact_sample(impact)
-                        if impact_sample:
-                            med_impact_counter[impact_sample] += count
-
-        if any(counter for counter in aggregated_severity.values()):
-            severity_summaries = {
-                severity_key: _summarize_severity_counter(
-                    counter, web_issue_matrix=web_issue_matrix
-                )
-                for severity_key, counter in aggregated_severity.items()
-            }
-            web_summary = {
-                "low_sample_string": _format_sample_string(
-                    _select_top_samples(low_issue_counter)
-                ),
-                "med_sample_string": _format_sample_string(
-                    _select_top_samples(med_impact_counter)
-                ),
-                **severity_summaries,
-            }
-            web_summary["ai_response"] = None
-            ai_response = _build_web_issue_ai_response(
-                web_summary,
-                require_burp_csv=burp_csv_uploaded,
-            )
-            if ai_response:
-                web_summary["ai_response"] = ai_response
-            artifacts["web_issues"] = web_summary
-
-    if web_cap_entries:
-        artifacts["web_cap_map"] = web_cap_entries
 
     for artifact_key, values in ip_results.items():
         if values:

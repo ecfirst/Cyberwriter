@@ -2284,6 +2284,13 @@ class GenerateReportTests(TestCase):
         self.report.project.save(update_fields=["data_artifacts"])
         self.addCleanup(self._reset_project_artifacts)
 
+    def _set_web_matrix_gap(self):
+        self.report.project.data_artifacts = {
+            "web_issue_matrix_gaps": {"entries": [{"issue": "Missing Issue", "impact": "", "fix": ""}]}
+        }
+        self.report.project.save(update_fields=["data_artifacts"])
+        self.addCleanup(self._reset_project_artifacts)
+
     def test_view_json_uri_exists_at_desired_location(self):
         response = self.client_mgr.get(self.json_uri)
         self.assertEqual(response.status_code, 200)
@@ -2348,6 +2355,17 @@ class GenerateReportTests(TestCase):
         self.assertEqual(
             str(messages[0]),
             "Missing Nexpose issues identified! Update the matrix and re-upload.",
+        )
+
+    def test_view_docx_blocked_when_web_matrix_missing(self):
+        self._set_web_matrix_gap()
+        response = self.client_mgr.get(self.docx_uri)
+        self.assertEqual(response.status_code, 302)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(messages)
+        self.assertEqual(
+            str(messages[0]),
+            "Missing Web issues identified! Update the matrix and re-upload.",
         )
 
     def test_view_xlsx_requires_login_and_permissions(self):

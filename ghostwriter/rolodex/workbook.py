@@ -558,8 +558,7 @@ def build_data_configuration(
                 )
 
     if _as_int(_get_nested(data, ("web", "combined_unique"), 0)) > 0:
-        add_required("burp_csv.csv")
-        add_required("burp-cap.csv")
+        add_required("burp_xml.xml")
 
     # Vulnerability artifacts
     external_nexpose_total = _as_int(_get_nested(data, ("external_nexpose", "total"), 0))

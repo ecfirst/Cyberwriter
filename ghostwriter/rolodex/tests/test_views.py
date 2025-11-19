@@ -971,6 +971,29 @@ class ProjectDetailViewTests(TestCase):
         self.assertContains(response, "Download Missing")
         self.assertContains(response, "?artifact=external_nexpose_findings")
 
+    def test_detail_view_shows_web_issue_missing_warning_and_button(self):
+        self.project.workbook_data = {"web": {"combined_unique": 1}}
+        self.project.data_artifacts = {
+            "web_issue_matrix_gaps": {
+                "entries": [
+                    {"issue": "Unhandled Issue", "impact": "", "fix": ""},
+                ]
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts"])
+
+        response = self.client_mgr.get(self.uri)
+        self.assertContains(
+            response, "Missing Web issues identified! Update the matrix and re-upload"
+        )
+        self.assertContains(response, "Download Missing")
+        self.assertContains(
+            response,
+            reverse(
+                "rolodex:project_web_issue_missing_download", kwargs={"pk": self.project.pk}
+            ),
+        )
+
     def test_processed_data_tab_shows_metrics_card(self):
         workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
         self.project.data_artifacts = {
@@ -1038,6 +1061,37 @@ class ProjectNexposeMissingMatrixDownloadTests(TestCase):
         self.assertIn("nexpose-missing.csv", response["Content-Disposition"])
         content = response.content.decode("utf-8")
         self.assertIn("Missing Vuln", content)
+
+
+class ProjectWebIssueMissingDownloadTests(TestCase):
+    """Tests for downloading missing web issue matrix entries."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.manager = UserFactory(password=PASSWORD, role="manager")
+        cls.project = ProjectFactory()
+        cls.url = reverse(
+            "rolodex:project_web_issue_missing_download", kwargs={"pk": cls.project.pk}
+        )
+
+    def setUp(self):
+        self.client_mgr = Client()
+        self.assertTrue(self.client_mgr.login(username=self.manager.username, password=PASSWORD))
+
+    def _set_missing_artifacts(self):
+        self.project.data_artifacts = {
+            "web_issue_matrix_gaps": {"entries": [{"issue": "Missing Issue", "impact": "", "fix": ""}]}
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+    def test_download_returns_csv(self):
+        self._set_missing_artifacts()
+        response = self.client_mgr.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        self.assertIn("burp-missing.csv", response["Content-Disposition"])
+        content = response.content.decode("utf-8")
+        self.assertIn("Missing Issue", content)
 
     def test_download_redirects_when_missing_absent(self):
         self.project.data_artifacts = {}
@@ -1447,10 +1501,12 @@ class ProjectDataResponsesUpdateTests(TestCase):
         requirements = response.context["required_data_files"]
         labels = [requirement.get("label") for requirement in requirements]
 
-        self.assertIn("burp_csv.csv", labels)
+        self.assertIn("burp_xml.xml", labels)
+        for absent in ("burp_cap.csv", "burp-cap.csv", "burp_csv.csv"):
+            self.assertNotIn(absent, labels)
         dns_indexes = [index for index, label in enumerate(labels) if label == "dns_report.csv"]
         self.assertTrue(dns_indexes)
-        burp_index = labels.index("burp_csv.csv")
+        burp_index = labels.index("burp_xml.xml")
         self.assertEqual(burp_index, max(dns_indexes) + 1)
         self.assertEqual(
             labels[burp_index + 1 : burp_index + 4],
@@ -1476,46 +1532,23 @@ class ProjectDataResponsesUpdateTests(TestCase):
         supplemental_cards = response.context["supplemental_cards"]
         labels = [card["data"]["label"] for card in supplemental_cards]
 
-        burp_index = labels.index("burp_csv.csv")
-        self.assertEqual(
-            labels[burp_index + 1 : burp_index + 4],
-            [
-                "external_nexpose_xml.xml",
-                "internal_nexpose_xml.xml",
-                "iot_nexpose_xml.xml",
-            ],
-        )
-        self.assertEqual(
-            labels[burp_index + 4 : burp_index + 6],
-            [
-                IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_EXTERNAL].label,
-                IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_INTERNAL].label,
-            ],
-        )
+        self.assertIn("burp_xml.xml", labels)
+        for absent in ("burp_cap.csv", "burp-cap.csv", "burp_csv.csv"):
+            self.assertNotIn(absent, labels)
 
-    def test_firewall_requirement_precedes_burp_cap(self):
-        workbook_payload = {
-            "web": {"combined_unique": 3},
-            "firewall": {"unique": 1},
-        }
-        self.project.workbook_data = workbook_payload
-        self.project.save(update_fields=["workbook_data"])
-
-        response = self.client_auth.get(self.detail_url)
-
-        supplemental_cards = response.context["supplemental_cards"]
-        labels = [
-            card["data"]["label"]
-            for card in supplemental_cards
-            if card.get("card_type") == "required"
+        nexpose_labels = [
+            "external_nexpose_xml.xml",
+            "internal_nexpose_xml.xml",
+            "iot_nexpose_xml.xml",
         ]
+        nexpose_indices = [labels.index(label) for label in nexpose_labels]
+        ip_labels = [
+            IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_EXTERNAL].label,
+            IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_INTERNAL].label,
+        ]
+        ip_indices = [labels.index(label) for label in ip_labels]
 
-        self.assertIn("firewall_csv.csv", labels)
-        firewall_index = labels.index("firewall_csv.csv")
-        burp_candidates = [candidate for candidate in ("burp-cap.csv", "burp_cap.csv") if candidate in labels]
-        self.assertTrue(burp_candidates)
-        burp_index = min(labels.index(candidate) for candidate in burp_candidates)
-        self.assertLess(firewall_index, burp_index)
+        self.assertGreater(min(ip_indices), max(nexpose_indices))
 
     def test_dns_required_entry_includes_fail_count(self):
         workbook_payload = {"dns": {"records": [{"domain": "example.com"}]}}

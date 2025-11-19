@@ -96,6 +96,7 @@ from ghostwriter.rolodex.data_parsers import (
     normalize_nexpose_artifacts_map,
     resolve_nexpose_requirement_artifact_key,
     summarize_nexpose_matrix_gaps,
+    summarize_web_issue_matrix_gaps,
 )
 from ghostwriter.rolodex.workbook import (
     SECTION_ENTRY_FIELD_MAP,
@@ -1892,6 +1893,9 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         matrix_gap_summary = summarize_nexpose_matrix_gaps(artifacts)
         ctx["nexpose_matrix_gap_summary"] = matrix_gap_summary
         ctx["has_nexpose_matrix_gaps"] = bool(matrix_gap_summary)
+        web_issue_gap_summary = summarize_web_issue_matrix_gaps(artifacts)
+        ctx["web_issue_matrix_gap_summary"] = web_issue_gap_summary
+        ctx["has_web_issue_matrix_gaps"] = bool(web_issue_gap_summary)
         processed_cards = []
         for metrics_key, label in NEXPOSE_METRICS_LABELS.items():
             payload = artifacts.get(metrics_key)
@@ -1904,6 +1908,21 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                     "metrics_key": metrics_key,
                     "summary": summary,
                     "has_file": bool(payload.get("xlsx_base64")),
+                    "type": "nexpose",
+                }
+            )
+        web_metrics = artifacts.get("web_metrics")
+        if isinstance(web_metrics, dict):
+            summary = (
+                web_metrics.get("summary") if isinstance(web_metrics.get("summary"), dict) else {}
+            )
+            processed_cards.append(
+                {
+                    "label": "Web Findings",
+                    "metrics_key": "web_metrics",
+                    "summary": summary,
+                    "has_file": bool(web_metrics.get("xlsx_base64")),
+                    "type": "web",
                 }
             )
         ctx["processed_data_cards"] = processed_cards
@@ -1936,6 +1955,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             "internal_nexpose_xml.xml",
             "iot_nexpose_xml.xml",
         }
+        burp_requirement_labels = {"burp_xml.xml"}
         reordered_requirements = []
         nexpose_requirements = []
         burp_insert_index = None
@@ -1945,7 +1965,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                 nexpose_requirements.append(requirement)
                 continue
             reordered_requirements.append(requirement)
-            if label == "burp_csv.csv":
+            if label in burp_requirement_labels:
                 burp_insert_index = len(reordered_requirements)
         if nexpose_requirements:
             if burp_insert_index is None:
@@ -1954,28 +1974,11 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                 reordered_requirements[burp_insert_index:burp_insert_index] = nexpose_requirements
         required_files = reordered_requirements
 
-        firewall_index = None
-        burp_cap_index = None
-        for index, requirement in enumerate(required_files):
-            label = (requirement.get("label") or "").strip().lower()
-            if label == "firewall_csv.csv" and firewall_index is None:
-                firewall_index = index
-            if label in {"burp-cap.csv", "burp_cap.csv"} and burp_cap_index is None:
-                burp_cap_index = index
-            if firewall_index is not None and burp_cap_index is not None:
-                break
-        if (
-            firewall_index is not None
-            and burp_cap_index is not None
-            and firewall_index > burp_cap_index
-        ):
-            requirement = required_files.pop(firewall_index)
-            required_files.insert(burp_cap_index, requirement)
-
         supplemental_cards = []
         inserted_ip_cards = False
         pending_ip_cards_after_burp = False
         for requirement in required_files:
+            label = (requirement.get("label") or "").strip().lower()
             slug = requirement.get("slug")
             existing = required_file_lookup.get(slug) if slug else None
             if slug:
@@ -1985,7 +1988,9 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             requirement["missing_matrix_entries"] = (
                 matrix_gap_summary.get(artifact_key, []) if artifact_key else []
             )
-            label = (requirement.get("label") or "").strip().lower()
+            requirement["missing_web_matrix_entries"] = (
+                web_issue_gap_summary if label == "burp_xml.xml" else []
+            )
             if existing and label == "dns_report.csv":
                 candidate_values = [
                     existing.requirement_context,
@@ -2006,7 +2011,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                     fail_count = 0
                 requirement["parsed_fail_count"] = fail_count
                 setattr(existing, "parsed_fail_count", fail_count)
-            if label == "burp_csv.csv":
+            if label in burp_requirement_labels:
                 supplemental_cards.append({"card_type": "required", "data": requirement})
                 pending_ip_cards_after_burp = True
                 continue
@@ -2209,6 +2214,48 @@ class ProjectNexposeMissingMatrixDownload(RoleBasedAccessControlMixin, SingleObj
         return response
 
 
+class ProjectWebIssueMissingDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Provide a CSV export of missing web issue matrix entries for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self, project: Project) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#supplementals"
+
+    def get(self, request, *args, **kwargs):
+        project = self.get_object()
+        entries = summarize_web_issue_matrix_gaps(project.data_artifacts or {})
+        if not entries:
+            messages.error(request, "No missing Web issues are available for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        buffer = io.StringIO()
+        fieldnames = ["issue", "impact", "fix"]
+        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in entries:
+            if not isinstance(row, dict):
+                continue
+            writer.writerow(
+                {
+                    "issue": row.get("issue", ""),
+                    "impact": row.get("impact", ""),
+                    "fix": row.get("fix", ""),
+                }
+            )
+
+        response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+        add_content_disposition_header(response, "burp-missing.csv")
+        return response
+
+
 class ProjectNexposeDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
     """Provide the processed Nexpose XLSX download for a project."""
 
@@ -2267,6 +2314,54 @@ class ProjectNexposeDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         filename = payload.get("xlsx_filename") or "nexpose_data.xlsx"
+        add_content_disposition_header(response, filename)
+        return response
+
+
+class ProjectWebDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Provide the processed web findings XLSX download for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self, project: Project) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#processed-data"
+
+    def get(self, request, *args, **kwargs):
+        project = self.get_object()
+        artifacts = project.data_artifacts or {}
+        if not isinstance(artifacts, dict):
+            messages.error(request, "No web data file is available for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        payload = artifacts.get("web_metrics")
+        if not isinstance(payload, dict):
+            messages.error(request, "No web data file is available for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        workbook_b64 = payload.get("xlsx_base64")
+        if not workbook_b64:
+            messages.error(request, "The web data file is not available for download yet.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        try:
+            workbook_bytes = base64.b64decode(workbook_b64)
+        except (ValueError, binascii.Error):  # pragma: no cover - defensive guard
+            logger.exception("Failed to decode web XLSX payload")
+            messages.error(request, "Unable to decode the web data file.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        response = HttpResponse(
+            workbook_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        filename = payload.get("xlsx_filename") or "burp_data.xlsx"
         add_content_disposition_header(response, filename)
         return response
 
