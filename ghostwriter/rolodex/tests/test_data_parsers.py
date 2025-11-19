@@ -1020,6 +1020,27 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(summaries["low"]["total_unique"], 2)
         self.assertEqual(len(summaries["low"]["items"]), 2)
 
+    def test_firewall_xml_parses_after_read(self):
+        """Ensure firewall uploads are parsed even if the handle was previously consumed."""
+
+        upload = self._build_nipper_xml_file("firewall_xml.xml")
+        _ = upload.read()
+
+        upload_entry = ProjectDataFile.objects.create(
+            project=self.project,
+            file=upload,
+            requirement_label="firewall_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload_entry.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifacts = self.project.data_artifacts
+        self.assertIn("firewall_findings", artifacts)
+        self.assertIn("firewall_metrics", artifacts)
+        self.assertIn("firewall_vulnerabilities", artifacts)
+
     def test_nipper_xml_parsing_respects_tier(self):
         self.project.project_type.project_type = "Gold"
         self.project.project_type.save(update_fields=["project_type"])

@@ -1866,6 +1866,12 @@ def _read_file_bytes(file_obj: File) -> bytes:
         pass
 
     try:
+        file_obj.seek(0)
+    except Exception:
+        # Not all file-like objects support seeking to the beginning prior to reads.
+        pass
+
+    try:
         raw_bytes = file_obj.read() or b""
     except Exception:
         raw_bytes = b""
