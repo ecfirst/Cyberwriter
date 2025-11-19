@@ -3340,6 +3340,54 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
     return metrics_payload
 
 
+def _build_web_cap_entries_from_metrics(
+    metrics: Optional[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Create CAP-style web entries derived from web metrics."""
+
+    if not isinstance(metrics, dict):
+        return []
+
+    unique_issues = metrics.get("unique_issues")
+    all_issues = metrics.get("all_issues")
+    if not isinstance(unique_issues, list) or not isinstance(all_issues, list):
+        return []
+
+    host_map: Dict[str, Set[str]] = {}
+    for entry in all_issues:
+        if not isinstance(entry, dict):
+            continue
+        issue = (entry.get("Issue") or "").strip()
+        if not issue:
+            continue
+        host = (entry.get("Host") or "").strip()
+        path = (entry.get("Path") or "").strip()
+        host_path = f"{host}{path}".strip()
+        if not host_path:
+            continue
+        host_map.setdefault(issue, set()).add(host_path)
+
+    cap_entries: List[Dict[str, Any]] = []
+    for entry in unique_issues:
+        if not isinstance(entry, dict):
+            continue
+        issue = (entry.get("Issue") or "").strip()
+        if not issue:
+            continue
+        hosts = "\n".join(sorted(host_map.get(issue, set())))
+        cap_entries.append(
+            {
+                "issue": issue,
+                "hosts": hosts,
+                "score": entry.get("Score"),
+                "action": entry.get("Fix"),
+                "severity": entry.get("Risk"),
+            }
+        )
+
+    return cap_entries
+
+
 def _render_web_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
     """Create an XLSX workbook for Burp web findings."""
 
@@ -3936,7 +3984,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
-    web_cap_entries: List[Dict[str, Any]] = []
     ip_results: Dict[str, List[str]] = {
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
@@ -3966,10 +4013,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_dns = parse_dns_report(data_file.file)
             if parsed_dns:
                 dns_results.setdefault(domain, []).extend(parsed_dns)
-        elif label in {"burp-cap.csv", "burp_cap.csv"}:
-            parsed_cap_entries = parse_burp_cap_report(data_file.file)
-            if parsed_cap_entries:
-                web_cap_entries.extend(parsed_cap_entries)
         elif label == "burp_xml.xml":
             burp_payload = parse_burp_xml_report(data_file.file, web_issue_matrix)
             findings = burp_payload.get("findings") if isinstance(burp_payload, dict) else burp_payload
@@ -4074,14 +4117,14 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     if web_summary:
         artifacts["web_issues"] = web_summary
 
-    if web_cap_entries:
-        artifacts["web_cap_map"] = web_cap_entries
-
     if parsed_web_findings:
         artifacts["web_findings"] = parsed_web_findings
         metrics_payload = _build_web_metrics_payload(parsed_web_findings)
         if metrics_payload:
             artifacts["web_metrics"] = metrics_payload
+            cap_entries = _build_web_cap_entries_from_metrics(metrics_payload)
+            if cap_entries:
+                artifacts["web_cap_map"] = cap_entries
 
     if missing_web_issue_matrix:
         artifacts["web_issue_matrix_gaps"] = {

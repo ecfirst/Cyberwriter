@@ -1974,24 +1974,6 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                 reordered_requirements[burp_insert_index:burp_insert_index] = nexpose_requirements
         required_files = reordered_requirements
 
-        firewall_index = None
-        burp_cap_index = None
-        for index, requirement in enumerate(required_files):
-            label = (requirement.get("label") or "").strip().lower()
-            if label == "firewall_csv.csv" and firewall_index is None:
-                firewall_index = index
-            if label in {"burp-cap.csv", "burp_cap.csv"} and burp_cap_index is None:
-                burp_cap_index = index
-            if firewall_index is not None and burp_cap_index is not None:
-                break
-        if (
-            firewall_index is not None
-            and burp_cap_index is not None
-            and firewall_index > burp_cap_index
-        ):
-            requirement = required_files.pop(firewall_index)
-            required_files.insert(burp_cap_index, requirement)
-
         supplemental_cards = []
         inserted_ip_cards = False
         pending_ip_cards_after_burp = False
