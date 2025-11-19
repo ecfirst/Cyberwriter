@@ -1283,6 +1283,10 @@ class Project(models.Model):
         else:
             firewall_findings = None
 
+        if not firewall_findings:
+            existing_cap.pop("firewall", None)
+            firewall_cap_section = {}
+
         def _normalize_firewall_value(value: Any) -> Optional[str]:
             if value in (None, ""):
                 return None
@@ -1305,7 +1309,9 @@ class Project(models.Model):
                     return text
             return None
 
-        if isinstance(firewall_findings, list):
+        global_firewall_entries: Dict[str, Dict[str, Any]] = {}
+
+        if isinstance(firewall_findings, list) and firewall_findings:
             for entry in firewall_findings:
                 if not isinstance(entry, dict):
                     continue
@@ -1334,15 +1340,14 @@ class Project(models.Model):
                 if normalized_entry:
                     firewall_cap_entries.append(normalized_entry)
 
-        global_firewall_entries: Dict[str, Dict[str, Any]] = {}
-        if firewall_periodic_reviews not in (None, ""):
-            normalized_reviews = str(firewall_periodic_reviews).strip().lower()
-        else:
-            normalized_reviews = ""
-        if normalized_reviews == "no":
-            entry = _clone_cap_entry("Business justification for firewall rules")
-            if entry:
-                global_firewall_entries["Business justification for firewall rules"] = entry
+            if firewall_periodic_reviews not in (None, ""):
+                normalized_reviews = str(firewall_periodic_reviews).strip().lower()
+            else:
+                normalized_reviews = ""
+            if normalized_reviews == "no":
+                entry = _clone_cap_entry("Business justification for firewall rules")
+                if entry:
+                    global_firewall_entries["Business justification for firewall rules"] = entry
 
         if firewall_cap_entries:
             firewall_cap_section["firewall_cap_map"] = firewall_cap_entries
@@ -1359,7 +1364,7 @@ class Project(models.Model):
         else:
             existing_cap.pop("firewall", None)
 
-        if firewall_artifact and "firewall_vulnerabilities" not in artifacts:
+        if firewall_artifact and firewall_findings and "firewall_vulnerabilities" not in artifacts:
             summarized = _summarize_firewall_vulnerabilities(firewall_findings or [])
             if summarized:
                 artifacts["firewall_vulnerabilities"] = summarized

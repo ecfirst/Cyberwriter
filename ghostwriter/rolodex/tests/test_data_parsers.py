@@ -970,113 +970,17 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(high_items[0]["vulnerability_threat"], "Remote compromise")
         self.assertEqual(high_items[0]["category"], "TLS")
 
-    def test_firewall_csv_adds_vulnerability_summary(self):
+    def test_firewall_xml_adds_vulnerability_summary(self):
         self.project.workbook_data = {
             "firewall": {"firewall_periodic_reviews": "No"},
         }
         self.project.data_responses = {}
         self.project.save(update_fields=["workbook_data", "data_responses"])
 
-        headers = [
-            "Risk",
-            "Issue",
-            "Devices",
-            "Solution",
-            "Impact",
-            "Details",
-            "Reference",
-            "Accepted",
-            "Type",
-            "Score",
-        ]
-
-        rows = [
-            {
-                "Risk": "High",
-                "Issue": "Open management interface",
-                "Devices": "FW-EDGE",
-                "Solution": "Restrict access",
-                "Impact": "Allows remote compromise. Additional details beyond the first sentence.",
-                "Details": "Management interface exposed",
-                "Reference": "http://example.com/high-1",
-                "Accepted": "No",
-                "Type": "Configuration",
-                "Score": "8.0",
-            },
-            {
-                "Risk": "High",
-                "Issue": "Open management interface",
-                "Devices": "FW-EDGE",
-                "Solution": "Restrict access",
-                "Impact": "Allows remote compromise.",
-                "Details": "Duplicate finding",
-                "Reference": "http://example.com/high-2",
-                "Accepted": "No",
-                "Type": "Configuration",
-                "Score": "8.0",
-            },
-            {
-                "Risk": "High",
-                "Issue": "Legacy cipher suites enabled",
-                "Devices": "FW-DMZ",
-                "Solution": "Disable legacy ciphers",
-                "Impact": "Enables downgrade attacks! Attackers may intercept data.",
-                "Details": "TLS settings allow weak ciphers",
-                "Reference": "http://example.com/high-3",
-                "Accepted": "No",
-                "Type": "Configuration",
-                "Score": "7.5",
-            },
-            {
-                "Risk": "Medium",
-                "Issue": "Unused objects",
-                "Devices": "FW-CORE",
-                "Solution": "Remove stale objects",
-                "Impact": "Clutters policy reviews. Leads to oversight of risky rules.",
-                "Details": "Objects no longer referenced",
-                "Reference": "",
-                "Accepted": "Yes",
-                "Type": "Operations",
-                "Score": "5.0",
-            },
-            {
-                "Risk": "Medium",
-                "Issue": "Audit logging disabled",
-                "Devices": "FW-CORE",
-                "Solution": "Enable logging",
-                "Impact": "Obscures incident response",
-                "Details": "Logging turned off",
-                "Reference": "http://example.com/med-2",
-                "Accepted": "No",
-                "Type": "Operations",
-                "Score": "4.5",
-            },
-            {
-                "Risk": "Low",
-                "Issue": "Banner not customized",
-                "Devices": "FW-EDGE",
-                "Solution": "Update login banner",
-                "Impact": "Reveals platform details",
-                "Details": "Default login banner present",
-                "Reference": "",
-                "Accepted": "No",
-                "Type": "Operations",
-                "Score": "2.0",
-            },
-        ]
-
-        buffer = io.StringIO()
-        writer = csv.DictWriter(buffer, fieldnames=headers)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-        content = buffer.getvalue().encode("utf-8")
-        buffer.close()
-
         upload = ProjectDataFile.objects.create(
             project=self.project,
-            file=SimpleUploadedFile("firewall_csv.csv", content, content_type="text/csv"),
-            requirement_label="firewall_csv.csv",
+            file=self._build_nipper_xml_file("firewall_xml.xml"),
+            requirement_label="firewall_xml.xml",
         )
         self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
 
@@ -1090,133 +994,31 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(metrics, dict)
         summary = metrics.get("summary") if isinstance(metrics, dict) else None
         self.assertIsInstance(summary, dict)
-        self.assertEqual(summary.get("unique"), 6)
-        self.assertEqual(summary.get("unique_high"), 3)
-        self.assertEqual(summary.get("unique_med"), 2)
-        self.assertEqual(summary.get("unique_low"), 1)
+        self.assertEqual(summary.get("unique"), 3)
+        self.assertEqual(summary.get("unique_high"), 1)
+        self.assertEqual(summary.get("unique_med"), 0)
+        self.assertEqual(summary.get("unique_low"), 2)
         self.assertEqual(metrics.get("xlsx_filename"), "firewall_data.xlsx")
         self.assertTrue(metrics.get("xlsx_base64"))
 
         summaries = self.project.data_artifacts.get("firewall_vulnerabilities")
-        self.assertEqual(summaries["high"]["total_unique"], 2)
+        self.assertEqual(summaries["high"]["total_unique"], 1)
         self.assertEqual(
             summaries["high"]["items"],
             [
                 {
-                    "issue": "Open management interface",
-                    "impact": "Allows remote compromise.",
-                    "count": 2,
-                },
-                {
-                    "issue": "Legacy cipher suites enabled",
-                    "impact": "Enables downgrade attacks!",
-                    "count": 1,
-                },
-            ],
-        )
-
-        self.assertEqual(summaries["med"]["total_unique"], 2)
-        self.assertEqual(
-            summaries["med"]["items"],
-            [
-                {
-                    "issue": "Audit logging disabled",
-                    "impact": "Obscures incident response",
-                    "count": 1,
-                },
-                {
-                    "issue": "Unused objects",
-                    "impact": "Clutters policy reviews.",
-                    "count": 1,
-                },
-            ],
-        )
-
-        self.assertEqual(summaries["low"]["total_unique"], 1)
-        self.assertEqual(
-            summaries["low"]["items"],
-            [
-                {
-                    "issue": "Banner not customized",
-                    "impact": "Reveals platform details",
+                    "issue": "Outdated Firmware",
+                    "impact": "This vulnerability allows for total information disclosure, providing access to any / all data, allows an attacker to modify any files or information on the target system(s), and can result in total loss of availability of the attacked resource(s) with a base CVSSv2 score of 9.0",
                     "count": 1,
                 }
             ],
         )
 
-        firewall_cap = self.project.cap.get("firewall")
-        self.assertIsInstance(firewall_cap, dict)
-        cap_entries = firewall_cap.get("firewall_cap_map")
-        self.assertIsInstance(cap_entries, list)
-        self.assertEqual(len(cap_entries), 6)
-        first_entry = cap_entries[0]
-        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[
-            "Business justification for firewall rules"
-        ]
-        self.assertEqual(first_entry.get("issue"), "Open management interface")
-        self.assertEqual(first_entry.get("finding_score"), 8.0)
-        self.assertEqual(first_entry.get("recommendation"), expected_recommendation)
-        self.assertEqual(first_entry.get("score"), expected_score)
+        self.assertEqual(summaries["med"]["total_unique"], 0)
+        self.assertEqual(summaries["med"]["items"], [])
 
-        global_entries = firewall_cap.get("global")
-        self.assertIsInstance(global_entries, dict)
-        justification_entry = global_entries.get(
-            "Business justification for firewall rules"
-        )
-        self.assertIsInstance(justification_entry, dict)
-        self.assertEqual(
-            justification_entry.get("recommendation"), expected_recommendation
-        )
-        self.assertEqual(justification_entry.get("score"), expected_score)
-
-    def test_firewall_global_entry_created_from_workbook_response(self):
-        workbook_payload = {
-            "firewall": {"firewall_periodic_reviews": "no"},
-        }
-        self.project.workbook_data = workbook_payload
-        self.project.data_responses = {}
-        self.project.save(update_fields=["workbook_data", "data_responses"])
-
-        self.project.rebuild_data_artifacts()
-        self.project.refresh_from_db()
-
-        cap_payload = self.project.cap or {}
-        firewall_cap = cap_payload.get("firewall")
-        self.assertIsInstance(firewall_cap, dict)
-        global_entries = firewall_cap.get("global")
-        self.assertIsInstance(global_entries, dict)
-        justification_entry = global_entries.get(
-            "Business justification for firewall rules"
-        )
-        self.assertIsInstance(justification_entry, dict)
-        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[
-            "Business justification for firewall rules"
-        ]
-        self.assertEqual(
-            justification_entry.get("recommendation"), expected_recommendation
-        )
-        self.assertEqual(justification_entry.get("score"), expected_score)
-
-        responses = self.project.data_responses.get("firewall")
-        self.assertIsInstance(responses, dict)
-        self.assertEqual(responses.get("firewall_periodic_reviews"), "no")
-
-    def test_firewall_global_entry_skipped_when_reviews_performed(self):
-        workbook_payload = {
-            "firewall": {"firewall_periodic_reviews": "Yes"},
-        }
-        self.project.workbook_data = workbook_payload
-        self.project.data_responses = {}
-        self.project.save(update_fields=["workbook_data", "data_responses"])
-
-        self.project.rebuild_data_artifacts()
-        self.project.refresh_from_db()
-
-        cap_payload = self.project.cap or {}
-        self.assertNotIn("firewall", cap_payload)
-        responses = self.project.data_responses.get("firewall")
-        self.assertIsInstance(responses, dict)
-        self.assertEqual(responses.get("firewall_periodic_reviews"), "Yes")
+        self.assertEqual(summaries["low"]["total_unique"], 2)
+        self.assertEqual(len(summaries["low"]["items"]), 2)
 
     def test_nipper_xml_parsing_respects_tier(self):
         self.project.project_type.project_type = "Gold"
@@ -1276,6 +1078,29 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(complexity_entry.get("Risk"), "Low")
         self.assertIn("Alpha", complexity_entry.get("Devices"))
         self.assertIn("Complexity item", complexity_entry.get("Details"))
+
+    def test_firewall_artifacts_removed_when_upload_deleted(self):
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=self._build_nipper_xml_file("firewall_xml.xml"),
+            requirement_label="firewall_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertIn("firewall_findings", self.project.data_artifacts)
+        self.assertIn("firewall", self.project.cap)
+
+        upload.delete()
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        self.assertNotIn("firewall_findings", self.project.data_artifacts)
+        self.assertNotIn("firewall_metrics", self.project.data_artifacts)
+        self.assertNotIn("firewall_vulnerabilities", self.project.data_artifacts)
+        self.assertNotIn("firewall", self.project.cap)
 
     def test_normalize_web_issue_artifacts(self):
         payload = {

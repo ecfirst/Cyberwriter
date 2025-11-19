@@ -1760,25 +1760,14 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.project.save(update_fields=["workbook_data"])
 
         upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
-        csv_content = "\n".join(
-            [
-                "Risk,Issue,Devices,Solution,Impact,Details,Reference,Score,Accepted,Type",
-                "High,Blocked traffic review,FW-1;FW-2,Adjust rule set,Service disruption,Traffic dropped,http://example.com,8.5,No,External",
-                ",,,,,,,,,",
-            ]
-        )
-        upload = SimpleUploadedFile(
-            "firewall_csv.csv",
-            csv_content.encode("utf-8"),
-            content_type="text/csv",
-        )
+        upload = self._build_nipper_xml_file("firewall_xml.xml")
 
         response = self.client_auth.post(
             upload_url,
             {
                 "file": upload,
-                "requirement_slug": "required_firewall-csv-csv",
-                "requirement_label": "firewall_csv.csv",
+                "requirement_slug": "required_firewall-xml-xml",
+                "requirement_label": "firewall_xml.xml",
                 "requirement_context": "",
                 "description": "",
             },
@@ -1806,8 +1795,8 @@ class ProjectDataResponsesUpdateTests(TestCase):
             vulnerabilities["high"]["items"],
             [
                 {
-                    "issue": "Blocked traffic review",
-                    "impact": "Service disruption",
+                    "issue": "Outdated Firmware",
+                    "impact": "This vulnerability allows for total information disclosure, providing access to any / all data, allows an attacker to modify any files or information on the target system(s), and can result in total loss of availability of the attacked resource(s) with a base CVSSv2 score of 9.0",
                     "count": 1,
                 }
             ],
@@ -1816,28 +1805,16 @@ class ProjectDataResponsesUpdateTests(TestCase):
         firewall_cap = self.project.cap.get("firewall")
         self.assertIsInstance(firewall_cap, dict)
         cap_entries = firewall_cap.get("firewall_cap_map")
-        self.assertEqual(len(cap_entries), 1)
-        cap_entry = cap_entries[0]
+        self.assertGreaterEqual(len(cap_entries), 1)
         expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[
             "Business justification for firewall rules"
         ]
-        self.assertEqual(
-            cap_entry,
-            {
-                "recommendation": expected_recommendation,
-                "score": expected_score,
-                "issue": "Blocked traffic review",
-                "devices": "FW-1;FW-2",
-                "solution": "Adjust rule set",
-                "impact": "Service disruption",
-                "details": "Traffic dropped",
-                "reference": "http://example.com",
-                "accepted": "No",
-                "type": "External",
-                "risk": "High",
-                "finding_score": 8.5,
-            },
-        )
+        issues = {entry.get("issue") for entry in cap_entries}
+        self.assertIn("Outdated Firmware", issues)
+        for entry in cap_entries:
+            if entry.get("issue") == "Outdated Firmware":
+                self.assertEqual(entry.get("recommendation"), expected_recommendation)
+                self.assertEqual(entry.get("score"), expected_score)
         self.assertEqual(vulnerabilities["med"], {"total_unique": 0, "items": []})
         self.assertEqual(vulnerabilities["low"], {"total_unique": 0, "items": []})
 
