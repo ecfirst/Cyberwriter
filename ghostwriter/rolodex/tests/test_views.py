@@ -1818,6 +1818,40 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(vulnerabilities["med"], {"total_unique": 0, "items": []})
         self.assertEqual(vulnerabilities["low"], {"total_unique": 0, "items": []})
 
+    def test_firewall_upload_with_missing_label_still_parsed(self):
+        self.project.workbook_data = {"firewall": {"unique": 1}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
+        upload = self._build_nipper_xml_file("firewall_xml.xml")
+
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "file": upload,
+                "requirement_slug": "required_firewall-xml-xml",
+                "requirement_label": "",
+                "requirement_context": "",
+                "description": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
+
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+
+        artifacts = self.project.data_artifacts
+        self.assertIn("firewall_findings", artifacts)
+        self.assertIn("firewall_metrics", artifacts)
+        self.assertIn("firewall_vulnerabilities", artifacts)
+
     def test_nexpose_distilled_toggle_updates_cap(self):
         toggle_url = reverse(
             "rolodex:project_nexpose_distilled_update", kwargs={"pk": self.project.pk}

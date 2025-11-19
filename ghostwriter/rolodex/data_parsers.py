@@ -4959,6 +4959,8 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     for data_file in project.data_files.all():
         file_name = os.path.basename(getattr(data_file.file, "name", ""))
+        requirement_slug = (data_file.requirement_slug or "").strip().lower()
+        filename_label = (file_name or "").strip().lower()
         label = (
             data_file.requirement_label
             or data_file.requirement_slug
@@ -4986,7 +4988,15 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 issue_name = (entry.get("issue") or "").strip() if isinstance(entry, dict) else ""
                 if issue_name:
                     missing_web_issue_matrix.add(issue_name)
-        elif label in {"nipper_xml.xml", "nipper.xml", "firewall_xml.xml"}:
+        elif label in {"nipper_xml.xml", "nipper.xml", "firewall_xml.xml"} or any(
+            value
+            and (
+                value.endswith("firewall_xml.xml")
+                or value.endswith("firewall.xml")
+                or ("firewall" in value and value.endswith(".xml"))
+            )
+            for value in {label, requirement_slug, filename_label}
+        ):
             parsed_nipper = parse_nipper_xml_report(data_file.file, project)
             if parsed_nipper:
                 firewall_results.extend(parsed_nipper)
