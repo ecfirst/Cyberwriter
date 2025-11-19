@@ -1840,13 +1840,27 @@ def _categorize_severity(score: Optional[float]) -> Optional[str]:
     return None
 
 
+def _strip_element_namespaces(document_root: Optional["ElementTree.Element"]) -> None:
+    """Remove XML namespaces in-place to simplify tag lookup."""
+
+    if document_root is None:
+        return
+
+    for element in document_root.iter():
+        tag = getattr(element, "tag", None)
+        if isinstance(tag, str) and "}" in tag:
+            element.tag = tag.split("}", 1)[-1]
+
+
 def _collect_device_names(document_root: Optional["ElementTree.Element"]) -> List[str]:
     """Extract device names from the Nipper XML metadata section."""
 
     if document_root is None:
         return []
 
-    devices_root = document_root.find("document/information/devices")
+    devices_root = document_root.find("document/information/devices") or document_root.find(
+        ".//information/devices"
+    )
     device_names: List[str] = []
     if devices_root is not None:
         for device in devices_root:
@@ -2170,10 +2184,13 @@ def parse_nipper_xml_report(file_obj: File, project: "Project") -> List[Dict[str
     except ElementTree.ParseError:
         return []
 
+    _strip_element_namespaces(root)
+
     device_names = _collect_device_names(root)
     selected_sections = _resolve_assessment_tier(project)
 
-    section_map = {section.attrib.get("ref", ""): section for section in root.findall("./document/section")}
+    sections = list(root.findall("./document/section")) or list(root.findall(".//section"))
+    section_map = {section.attrib.get("ref", ""): section for section in sections}
 
     if "VULNAUDIT" in selected_sections:
         findings.extend(_parse_vulnaudit_sections(section_map.get("VULNAUDIT"), device_names))
