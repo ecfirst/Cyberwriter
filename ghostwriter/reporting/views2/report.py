@@ -41,6 +41,7 @@ from ghostwriter.reporting.filters import ReportFilter, ReportTemplateFilter
 from ghostwriter.reporting.forms import ReportForm, ReportTemplateForm, SelectReportTemplateForm
 from ghostwriter.reporting.models import Archive, Finding, Report, ReportTemplate
 from ghostwriter.rolodex.models import Project
+from ghostwriter.rolodex.data_parsers import has_open_nexpose_matrix_gaps
 
 logger = logging.getLogger(__name__)
 channel_layer = get_channel_layer()
@@ -709,6 +710,17 @@ class GenerateReportDOCX(GenerateReportBase):
             self.request.user,
         )
 
+        project = getattr(obj, "project", None)
+        if project and has_open_nexpose_matrix_gaps(project.data_artifacts):
+            messages.error(
+                self.request,
+                "Missing Nexpose issues identified! Update the matrix and re-upload.",
+                extra_tags="alert-danger",
+            )
+            return HttpResponseRedirect(
+                reverse("reporting:report_detail", kwargs={"pk": obj.pk}) + "#generate"
+            )
+
         report_config = ReportConfiguration.get_solo()
 
         # Get the template for this report
@@ -913,6 +925,17 @@ class GenerateReportAll(GenerateReportBase):
             obj.id,
             self.request.user,
         )
+
+        project = getattr(obj, "project", None)
+        if project and has_open_nexpose_matrix_gaps(project.data_artifacts):
+            messages.error(
+                self.request,
+                "Missing Nexpose issues identified! Update the matrix and re-upload.",
+                extra_tags="alert-danger",
+            )
+            return HttpResponseRedirect(
+                reverse("reporting:report_detail", kwargs={"pk": obj.pk}) + "#generate"
+            )
 
         try:
             report_config = ReportConfiguration.get_solo()

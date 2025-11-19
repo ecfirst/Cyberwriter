@@ -1,4 +1,5 @@
 # Standard Libraries
+import base64
 import json
 import logging
 import shutil
@@ -943,6 +944,150 @@ class ProjectDetailViewTests(TestCase):
         response = self.client_auth.get(self.uri)
         self.assertEqual(response.status_code, 200)
 
+    def test_detail_view_shows_nexpose_missing_warning_and_button(self):
+        self.project.workbook_data = {"external_nexpose": {"total": 1}}
+        self.project.data_artifacts = {
+            "external_nexpose_findings": {"findings": [], "software": []},
+            "nexpose_matrix_gaps": {
+                "missing_by_artifact": {
+                    "external_nexpose_findings": {
+                        "entries": [
+                            {
+                                "Vulnerability": "Missing Vuln",
+                                "CVE": "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
+                            }
+                        ]
+                    }
+                }
+            },
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts"])
+
+        response = self.client_mgr.get(self.uri)
+        self.assertContains(
+            response,
+            "Missing Nexpose issues identified! Update the matrix and re-upload",
+        )
+        self.assertContains(response, "Download Missing")
+        self.assertContains(response, "?artifact=external_nexpose_findings")
+
+    def test_processed_data_tab_shows_metrics_card(self):
+        workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
+        self.project.data_artifacts = {
+            "external_nexpose_metrics": {
+                "summary": {
+                    "total": 4,
+                    "total_high": 2,
+                    "total_med": 1,
+                    "total_low": 1,
+                    "unique": 3,
+                    "unique_high_med": 3,
+                    "total_ood": 1,
+                    "total_isc": 1,
+                    "total_iwc": 1,
+                },
+                "xlsx_base64": workbook_b64,
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.uri)
+        self.assertContains(response, "Processed Data")
+        self.assertContains(response, "Total Count")
+        self.assertContains(response, "Download Nexpose Data file")
+        self.assertContains(response, "?artifact=external_nexpose_metrics")
+
+
+class ProjectNexposeMissingMatrixDownloadTests(TestCase):
+    """Tests for downloading missing Nexpose matrix entries."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.manager = UserFactory(password=PASSWORD, role="manager")
+        cls.project = ProjectFactory()
+        cls.url = reverse(
+            "rolodex:project_nexpose_missing_download", kwargs={"pk": cls.project.pk}
+        )
+
+    def setUp(self):
+        self.client_mgr = Client()
+        self.assertTrue(self.client_mgr.login(username=self.manager.username, password=PASSWORD))
+
+    def _set_missing_artifacts(self):
+        self.project.data_artifacts = {
+            "nexpose_matrix_gaps": {
+                "missing_by_artifact": {
+                    "external_nexpose_findings": {
+                        "entries": [
+                            {
+                                "Vulnerability": "Missing Vuln",
+                                "CVE": "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+    def test_download_returns_csv(self):
+        self._set_missing_artifacts()
+        response = self.client_mgr.get(self.url + "?artifact=external_nexpose_findings")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        self.assertIn("nexpose-missing.csv", response["Content-Disposition"])
+        content = response.content.decode("utf-8")
+        self.assertIn("Missing Vuln", content)
+
+    def test_download_redirects_when_missing_absent(self):
+        self.project.data_artifacts = {}
+        self.project.save(update_fields=["data_artifacts"])
+        response = self.client_mgr.get(self.url + "?artifact=external_nexpose_findings")
+        self.assertEqual(response.status_code, 302)
+
+
+class ProjectNexposeDataDownloadTests(TestCase):
+    """Tests for downloading processed Nexpose XLSX data."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.manager = UserFactory(password=PASSWORD, role="manager")
+        cls.project = ProjectFactory()
+        cls.url = reverse(
+            "rolodex:project_nexpose_data_download", kwargs={"pk": cls.project.pk}
+        )
+
+    def setUp(self):
+        self.client_mgr = Client()
+        self.assertTrue(self.client_mgr.login(username=self.manager.username, password=PASSWORD))
+
+    def _set_metrics_artifacts(self):
+        workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
+        self.project.data_artifacts = {
+            "external_nexpose_metrics": {
+                "summary": {"total": 1},
+                "xlsx_base64": workbook_b64,
+                "xlsx_filename": "nexpose_data.xlsx",
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+    def test_download_returns_xlsx(self):
+        self._set_metrics_artifacts()
+        response = self.client_mgr.get(self.url + "?artifact=external_nexpose_metrics")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertTrue(response.content.startswith(b"PK"))
+
+    def test_download_redirects_when_missing(self):
+        self.project.data_artifacts = {}
+        self.project.save(update_fields=["data_artifacts"])
+        response = self.client_mgr.get(self.url + "?artifact=external_nexpose_metrics")
+        self.assertEqual(response.status_code, 302)
+
 class ProjectInviteDeleteTests(TestCase):
     """Collection of tests for :view:`rolodex.ProjectInviteDelete`."""
 
@@ -1310,9 +1455,9 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(
             labels[burp_index + 1 : burp_index + 4],
             [
-                "external_nexpose_csv.csv",
-                "internal_nexpose_csv.csv",
-                "iot_nexpose_csv.csv",
+                "external_nexpose_xml.xml",
+                "internal_nexpose_xml.xml",
+                "iot_nexpose_xml.xml",
             ],
         )
 
@@ -1335,9 +1480,9 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(
             labels[burp_index + 1 : burp_index + 4],
             [
-                "external_nexpose_csv.csv",
-                "internal_nexpose_csv.csv",
-                "iot_nexpose_csv.csv",
+                "external_nexpose_xml.xml",
+                "internal_nexpose_xml.xml",
+                "iot_nexpose_xml.xml",
             ],
         )
         self.assertEqual(
@@ -1629,69 +1774,25 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(vulnerabilities["med"], {"total_unique": 0, "items": []})
         self.assertEqual(vulnerabilities["low"], {"total_unique": 0, "items": []})
 
-    def test_nexpose_cap_upload_sets_cap_map_and_distilled_flag(self):
-        upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
-        self.addCleanup(
-            lambda: [
-                (data_file.file.delete(save=False), data_file.delete())
-                for data_file in list(self.project.data_files.all())
-            ]
+    def test_nexpose_distilled_toggle_updates_cap(self):
+        toggle_url = reverse(
+            "rolodex:project_nexpose_distilled_update", kwargs={"pk": self.project.pk}
         )
 
-        csv_content = "Systems,Action,Sev\napp01,Apply critical patch,4\n"
-        response = self.client_auth.post(
-            upload_url,
-            {
-                "file": SimpleUploadedFile(
-                    "nexpose_cap.csv",
-                    csv_content.encode("utf-8"),
-                    content_type="text/csv",
-                ),
-                "requirement_slug": "required_nexpose_cap_csv",
-                "requirement_label": "nexpose_cap.csv",
-                "requirement_context": "",
-                "description": "",
-                "nexpose_distilled": "1",
-            },
-        )
+        response = self.client_auth.post(toggle_url, {"nexpose_distilled": "1"})
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
+        self.assertEqual(response.url, f"{self.detail_url}#processed-data")
 
         self.project.refresh_from_db()
         nexpose_section = self.project.cap.get("nexpose")
         self.assertIsInstance(nexpose_section, dict)
-        self.assertIn("distilled", nexpose_section)
-        self.assertTrue(nexpose_section["distilled"])
-        self.assertEqual(
-            nexpose_section.get("nexpose_cap_map"),
-            [
-                {
-                    "systems": "app01",
-                    "action": "Apply critical patch",
-                    "score": 4,
-                }
-            ],
-        )
+        self.assertTrue(nexpose_section.get("distilled"))
 
-        response = self.client_auth.post(
-            upload_url,
-            {
-                "file": SimpleUploadedFile(
-                    "nexpose_cap.csv",
-                    csv_content.encode("utf-8"),
-                    content_type="text/csv",
-                ),
-                "requirement_slug": "required_nexpose_cap_csv",
-                "requirement_label": "nexpose_cap.csv",
-                "requirement_context": "",
-                "description": "",
-            },
-        )
+        response = self.client_auth.post(toggle_url, {})
         self.assertEqual(response.status_code, 302)
         self.project.refresh_from_db()
         nexpose_section = self.project.cap.get("nexpose")
-        self.assertIn("distilled", nexpose_section)
-        self.assertFalse(nexpose_section["distilled"])
+        self.assertFalse(nexpose_section.get("distilled"))
 
     def test_external_ip_submission_creates_artifact(self):
         upload_url = reverse("rolodex:project_ip_artifact_upload", kwargs={"pk": self.project.pk})
@@ -1776,6 +1877,96 @@ class ProjectDataResponsesUpdateTests(TestCase):
             definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
         }
         self.assertEqual(set(self.project.data_artifacts.keys()), expected_keys)
+
+    def test_data_file_deletion_returns_json_for_ajax_request(self):
+        self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.project.rebuild_data_artifacts()
+
+        delete_url = reverse("rolodex:project_data_file_delete", kwargs={"pk": upload.pk})
+        response = self.client_auth.post(
+            delete_url,
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.get("success"))
+        self.assertEqual(payload.get("redirect_url"), f"{self.detail_url}#supplementals")
+        self.assertFalse(self.project.data_files.filter(pk=upload.pk).exists())
+
+    def test_data_file_deletion_falls_back_to_requirement_slug(self):
+        self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.project.rebuild_data_artifacts()
+
+        delete_url = reverse(
+            "rolodex:project_data_file_delete",
+            kwargs={"pk": upload.pk + 999},
+        )
+        response = self.client_auth.post(
+            delete_url,
+            {
+                "project_id": str(self.project.pk),
+                "requirement_slug": upload.requirement_slug,
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
+        self.assertFalse(self.project.data_files.filter(pk=upload.pk).exists())
+        self.project.refresh_from_db()
+        assert_default_nexpose_artifacts(self, self.project.data_artifacts)
+
+    def test_required_artifact_delete_forms_include_success_anchor(self):
+        self.project.workbook_data = {"dns": {"records": [{"domain": "example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "dns_report.csv",
+                b"Status,Info\nFAIL,One or more SOA fields are outside recommended ranges\n",
+                content_type="text/csv",
+            ),
+            requirement_slug="required_dns-report-csv_example-com",
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.addCleanup(lambda: upload.delete())
+
+        self.project.rebuild_data_artifacts()
+        response = self.client_auth.get(self.detail_url)
+
+        self.assertContains(response, "project-data-file-delete-form")
+        self.assertIn(
+            f'data-success-url="{self.detail_url}#supplementals"',
+            response.content.decode("utf-8"),
+        )
 
 
 class MatrixViewTests(TestCase):

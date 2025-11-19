@@ -2262,6 +2262,28 @@ class GenerateReportTests(TestCase):
         self.assertTrue(self.client_auth.login(username=self.user.username, password=PASSWORD))
         self.assertTrue(self.client_mgr.login(username=self.mgr_user.username, password=PASSWORD))
 
+    def _reset_project_artifacts(self):
+        self.report.project.data_artifacts = {}
+        self.report.project.save(update_fields=["data_artifacts"])
+
+    def _set_matrix_gap(self):
+        self.report.project.data_artifacts = {
+            "nexpose_matrix_gaps": {
+                "missing_by_artifact": {
+                    "external_nexpose_findings": {
+                        "entries": [
+                            {
+                                "Vulnerability": "Missing Vuln",
+                                "CVE": "No NIST reference available",
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        self.report.project.save(update_fields=["data_artifacts"])
+        self.addCleanup(self._reset_project_artifacts)
+
     def test_view_json_uri_exists_at_desired_location(self):
         response = self.client_mgr.get(self.json_uri)
         self.assertEqual(response.status_code, 200)
@@ -2317,6 +2339,17 @@ class GenerateReportTests(TestCase):
         self.assertEqual(response.status_code, 200)
         assignment.delete()
 
+    def test_view_docx_blocked_when_matrix_missing(self):
+        self._set_matrix_gap()
+        response = self.client_mgr.get(self.docx_uri)
+        self.assertEqual(response.status_code, 302)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(messages)
+        self.assertEqual(
+            str(messages[0]),
+            "Missing Nexpose issues identified! Update the matrix and re-upload.",
+        )
+
     def test_view_xlsx_requires_login_and_permissions(self):
         response = self.client.get(self.xlsx_uri)
         self.assertEqual(response.status_code, 302)
@@ -2352,6 +2385,17 @@ class GenerateReportTests(TestCase):
         response = self.client_auth.get(self.all_uri)
         self.assertEqual(response.status_code, 200, str(response.request))
         assignment.delete()
+
+    def test_view_all_blocked_when_matrix_missing(self):
+        self._set_matrix_gap()
+        response = self.client_mgr.get(self.all_uri)
+        self.assertEqual(response.status_code, 302)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(messages)
+        self.assertEqual(
+            str(messages[0]),
+            "Missing Nexpose issues identified! Update the matrix and re-upload.",
+        )
 
     def test_view_docx_with_missing_template(self):
         good_template = self.report.docx_template

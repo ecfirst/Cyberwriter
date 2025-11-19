@@ -1,6 +1,7 @@
 """Tests for project data file parsing helpers."""
 
 # Standard Libraries
+import base64
 import csv
 import io
 from typing import Any, Dict, Iterable
@@ -131,6 +132,728 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         self.assertEqual(self.project.data_responses, {"custom": "value"})
+
+    def test_nexpose_xml_upload_populates_findings(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <scans>
+    <scan>
+      <id>scan-1</id>
+      <name>Example</name>
+      <startTime>2023-01-01T00:00:00Z</startTime>
+      <endTime>2023-01-01T01:00:00Z</endTime>
+      <status>complete</status>
+    </scan>
+  </scans>
+  <nodes>
+    <node>
+      <address>192.0.2.10</address>
+      <status>vulnerable</status>
+      <names>
+        <name>alpha.example.com</name>
+        <name>beta</name>
+      </names>
+      <fingerprints>
+        <os certainty='1.0' vendor='Microsoft' product='Windows 10'/>
+      </fingerprints>
+      <tests>
+        <test id='vuln-host' status='vulnerable-version'>
+          <evidence>Evidence for host</evidence>
+        </test>
+      </tests>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service>
+              <name>https</name>
+              <tests>
+                <test id='vuln-service' status='potential'>
+                  <details>Context-dependent service evidence</details>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+      <software>
+        <fingerprint vendor='ExampleCo' product='ExampleApp' version='1.2.3'/>
+      </software>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability>
+      <id>vuln-host</id>
+      <title>Fancy — Vulnerability</title>
+      <severity>7</severity>
+      <description>Node description</description>
+      <solution>Apply patches</solution>
+      <references>
+        <reference>
+          <source>CVE</source>
+          <value>CVE-2020-0001</value>
+        </reference>
+      </references>
+    </vulnerability>
+    <vulnerability>
+      <id>vuln-service</id>
+      <title>Service Vuln</title>
+      <severity>5</severity>
+      <description>Service description mentioning context-dependent risk.</description>
+      <solution>Service fix</solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        self.assertIsInstance(artifact, dict)
+        findings = artifact.get("findings")
+        software = artifact.get("software")
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), 2)
+        self.assertIsInstance(software, list)
+        self.assertEqual(len(software), 1)
+
+        host_finding = findings[0]
+        self.assertEqual(host_finding["Asset IP Address"], "192.0.2.10")
+        self.assertEqual(host_finding["Hostname(s)"], "alpha.example.com; beta")
+        self.assertEqual(host_finding["Asset Operating System"], "Windows 10")
+        self.assertEqual(host_finding["Vulnerability ID"], "vuln-host")
+        self.assertEqual(host_finding["Vulnerability Title"], "Fancy Vulnerability")
+        self.assertEqual(host_finding["Vulnerability Test Result Code"], "VE")
+        self.assertEqual(host_finding["Vulnerability CVE IDs"], "CVE-2020-0001")
+        self.assertEqual(host_finding["Details"], "Node description")
+
+        service_finding = findings[1]
+        self.assertEqual(service_finding["Service Port"], "443")
+        self.assertEqual(service_finding["Protocol"], "TCP")
+        self.assertEqual(service_finding["Vulnerability Test Result Code"], "VP")
+        self.assertEqual(
+            service_finding["Details"],
+            "Service description mentioning context-dependent risk.",
+        )
+
+        software_entry = software[0]
+        self.assertEqual(
+            software_entry["System"], "192.0.2.10 (alpha.example.com; beta)"
+        )
+        self.assertEqual(software_entry["Software"], "ExampleApp")
+        self.assertEqual(software_entry["Version"], "1.2.3")
+
+    def test_nexpose_xml_generates_metrics_and_xlsx(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node address='10.0.0.1' status='alive'>
+      <names><name>alpha.local</name></names>
+      <tests>
+        <test id='alpha-high' status='vulnerable-exploited'>
+          <Paragraph><Paragraph>Alpha evidence</Paragraph></Paragraph>
+        </test>
+      </tests>
+    </node>
+    <node address='10.0.0.2' status='alive'>
+      <names><name>beta.local</name></names>
+      <endpoints>
+        <endpoint protocol='tcp' port='8443' status='open'>
+          <services>
+            <service name='https'>
+              <tests>
+                <test id='beta-med' status='vulnerable-version'>
+                  <Paragraph><Paragraph>Beta context</Paragraph></Paragraph>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability id='alpha-high' title='Alpha High' severity='9'>
+      <description>High issue description</description>
+      <solution>Resolve alpha</solution>
+    </vulnerability>
+    <vulnerability id='beta-med' title='Beta Medium' severity='5'>
+      <description>Medium issue description</description>
+      <solution>Resolve beta</solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        metrics = self.project.data_artifacts.get("external_nexpose_metrics")
+        self.assertIsInstance(metrics, dict)
+        assert isinstance(metrics, dict)  # pragma: no cover - type guard
+        summary = metrics.get("summary") or {}
+        self.assertEqual(summary.get("total"), 2)
+        self.assertEqual(summary.get("total_high"), 1)
+        self.assertEqual(summary.get("total_med"), 1)
+        workbook_b64 = metrics.get("xlsx_base64")
+        self.assertTrue(workbook_b64)
+        decoded = base64.b64decode(workbook_b64)
+        self.assertTrue(decoded.startswith(b"PK"))
+
+    def test_nexpose_xml_uses_vulnerability_lookup_details(self):
+        xml_payload = """
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>66.161.143.41</address>
+      <status>alive</status>
+      <names>
+        <name>escope.ohiogi.com</name>
+      </names>
+      <fingerprints>
+        <os certainty='0.64' vendor='Linux' product='LINUX 4.0 - 4.4' />
+      </fingerprints>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service name='HTTPS'>
+              <tests>
+                <test id='ssl-static-key-ciphers' status='vulnerable-exploited'>
+                  <Paragraph>
+                    <Paragraph>Negotiated with the following insecure cipher suites.</Paragraph>
+                  </Paragraph>
+                </test>
+                <test id='tls-server-cert-expired' status='vulnerable-exploited'>
+                  <Paragraph>
+                    <Paragraph>The certificate is not valid after Mon, 19 Aug 2024 13:28:45 CDT.</Paragraph>
+                  </Paragraph>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <VulnerabilityDefinitions>
+    <vulnerability id='ssl-static-key-ciphers' title='TLS/SSL Server Supports The Use of Static Key Ciphers' severity='3'>
+      <description>
+        <Paragraph>
+          <Paragraph>The server is configured to support ciphers known as static key ciphers.</Paragraph>
+        </Paragraph>
+      </description>
+      <solution>
+        <Paragraph>
+          <Paragraph>Configure the server to disable support for static key cipher suites.</Paragraph>
+        </Paragraph>
+      </solution>
+    </vulnerability>
+    <vulnerability id='tls-server-cert-expired' title='X.509 Server Certificate Is Invalid/Expired' severity='7'>
+      <description>
+        <Paragraph>
+          <Paragraph>The TLS/SSL server's X.509 certificate either contains a start date in the future or is expired.</Paragraph>
+        </Paragraph>
+      </description>
+      <solution>
+        <Paragraph>
+          <Paragraph>Obtain a new certificate and install it on the server.</Paragraph>
+        </Paragraph>
+      </solution>
+    </vulnerability>
+  </VulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        findings = artifact.get("findings")
+        self.assertEqual(len(findings), 2)
+
+        cipher_entry = next(
+            item for item in findings if item["Vulnerability ID"] == "ssl-static-key-ciphers"
+        )
+        self.assertEqual(
+            cipher_entry["Vulnerability Title"],
+            "TLS/SSL Server Supports The Use of Static Key Ciphers",
+        )
+        self.assertEqual(cipher_entry["Vulnerability Severity Level"], 3)
+        self.assertEqual(
+            cipher_entry["Details"],
+            "The server is configured to support ciphers known as static key ciphers.",
+        )
+        self.assertEqual(
+            cipher_entry["Detailed Remediation"],
+            "Configure the server to disable support for static key cipher suites.",
+        )
+        self.assertEqual(
+            cipher_entry["Evidence"],
+            "Negotiated with the following insecure cipher suites.",
+        )
+        self.assertEqual(cipher_entry["Impact"], "")
+        self.assertEqual(cipher_entry["Solution"], "")
+        self.assertEqual(cipher_entry["Category"], "")
+        self.assertEqual(cipher_entry["References"], "No NIST reference available")
+
+        cert_entry = next(
+            item for item in findings if item["Vulnerability ID"] == "tls-server-cert-expired"
+        )
+        self.assertEqual(cert_entry["Vulnerability Severity Level"], 7)
+        self.assertTrue(
+            cert_entry["Detailed Remediation"].startswith(
+                "Obtain a new certificate and install it on the server."
+            )
+        )
+        self.assertEqual(cert_entry["References"], "No NIST reference available")
+
+    def test_nexpose_xml_normalizes_multiline_fields(self):
+        xml_payload = """
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>203.0.113.10</address>
+      <status>alive</status>
+      <names>
+        <name>web.example.com</name>
+      </names>
+      <fingerprints>
+        <os certainty='0.61' vendor='Linux' product='Linux 5.x' />
+      </fingerprints>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service name='HTTPS'>
+              <tests>
+                <test id='ssl-static-key-ciphers' status='vulnerable-exploited'>
+                  <Paragraph>
+                    <UnorderedList>
+                      <ListItem>
+                        <Paragraph>Negotiated with the following insecure cipher suites:</Paragraph>
+                      </ListItem>
+                      <ListItem>
+                        <Paragraph>TLS_RSA_WITH_AES_128_CBC_SHA</Paragraph>
+                      </ListItem>
+                      <ListItem>
+                        <Paragraph>TLS_RSA_WITH_AES_256_CBC_SHA</Paragraph>
+                      </ListItem>
+                    </UnorderedList>
+                  </Paragraph>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <VulnerabilityDefinitions>
+    <vulnerability id='ssl-static-key-ciphers' title='TLS/SSL Server Supports The Use of Static Key Ciphers' severity='3'>
+      <description>
+        <Paragraph>
+          The TLS/SSL server's X.509 certificate either contains a start date
+          in the future or is expired. Please refer to the proof for more details.
+        </Paragraph>
+      </description>
+      <solution>
+        <Paragraph>
+          Obtain a new certificate and install it on the server.
+        </Paragraph>
+        <Paragraph>
+          Afterwards apply vendor instructions.
+        </Paragraph>
+      </solution>
+    </vulnerability>
+  </VulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        finding = artifact["findings"][0]
+
+        self.assertEqual(
+            finding["Details"],
+            "The TLS/SSL server's X.509 certificate either contains a start date in the future or is expired."
+            " Please refer to the proof for more details.",
+        )
+        self.assertEqual(
+            finding["Detailed Remediation"],
+            "Obtain a new certificate and install it on the server.\n\nAfterwards apply vendor instructions.",
+        )
+        self.assertEqual(
+            finding["Evidence"],
+            "Negotiated with the following insecure cipher suites:\nTLS_RSA_WITH_AES_128_CBC_SHA\nTLS_RSA_WITH_AES_256_CBC_SHA",
+        )
+
+
+    def test_nexpose_xml_uses_definition_titles_case_insensitively(self):
+        xml_payload = """<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>192.0.2.55</address>
+      <status>alive</status>
+      <names>
+        <name>zulu.example.com</name>
+      </names>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service name='HTTPS'>
+              <tests>
+                <test id='SSL-STATIC-KEY-CIPHERS' status='vulnerable-exploited'>
+                  <Paragraph>
+                    <Paragraph>Negotiated static-key suites.</Paragraph>
+                  </Paragraph>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability id='ssl-static-key-ciphers' title='TLS/SSL Server Supports The Use of Static Key Ciphers' severity='3'>
+      <description>
+        <Paragraph>
+          <Paragraph>The server is configured to support static key ciphers.</Paragraph>
+        </Paragraph>
+      </description>
+      <solution>
+        <Paragraph>
+          <Paragraph>Disable static key cipher support.</Paragraph>
+        </Paragraph>
+      </solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        findings = artifact.get("findings")
+        self.assertEqual(len(findings), 1)
+        entry = findings[0]
+        self.assertEqual(
+            entry["Vulnerability Title"],
+            "TLS/SSL Server Supports The Use of Static Key Ciphers",
+        )
+        self.assertEqual(entry["Vulnerability Severity Level"], 3)
+
+    def test_nexpose_xml_populates_cve_ids_and_references(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>192.0.2.55</address>
+      <status>alive</status>
+      <names>
+        <name>cve-host</name>
+      </names>
+      <tests>
+        <test id='multi-cve' status='vulnerable-exploited'>
+          <Paragraph>
+            <Paragraph>Example proof</Paragraph>
+          </Paragraph>
+        </test>
+      </tests>
+    </node>
+  </nodes>
+  <VulnerabilityDefinitions>
+    <vulnerability id='multi-cve' title='Multi CVE Example' severity='6'>
+      <description>
+        <Paragraph>
+          <Paragraph>Example description</Paragraph>
+        </Paragraph>
+      </description>
+      <solution>
+        <Paragraph>
+          <Paragraph>Apply all fixes</Paragraph>
+        </Paragraph>
+      </solution>
+      <References>
+        <reference source='CVE'>CVE-2020-1111</reference>
+        <reference source='CVE' value='CVE-2020-2222'/>
+        <reference source='URL'>http://example.com</reference>
+      </References>
+      <CVEs>
+        <CVE id='CVE-2020-2222'/>
+        <cve>CVE-2020-3333</cve>
+      </CVEs>
+    </vulnerability>
+  </VulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        finding = artifact["findings"][0]
+
+        self.assertEqual(
+            finding["Vulnerability CVE IDs"],
+            "CVE-2020-1111, CVE-2020-2222, CVE-2020-3333",
+        )
+        self.assertEqual(
+            finding["References"],
+            "\n".join(
+                [
+                    "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-1111",
+                    "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-2222",
+                    "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-3333",
+                ]
+            ),
+        )
+
+    def test_nexpose_xml_applies_matrix_metadata(self):
+        VulnerabilityMatrixEntry.objects.create(
+            vulnerability="Fancy — Vulnerability",
+            action_required="Apply Fancy Patch",
+            vulnerability_threat="<EC> disrupt the network",
+            category="Network",
+        )
+        VulnerabilityMatrixEntry.objects.create(
+            vulnerability="Service Vuln",
+            action_required="Fix Service",
+            vulnerability_threat="<EC> expose services",
+            category="Web",
+        )
+
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>203.0.113.5</address>
+      <status>alive</status>
+      <names>
+        <name>alpha.example.com</name>
+      </names>
+      <tests>
+        <test id='vuln-host' status='vulnerable-version'>
+          <details>Proof</details>
+        </test>
+      </tests>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service>
+              <name>https</name>
+              <tests>
+                <test id='vuln-service' status='potential'>
+                  <details>Service proof</details>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability>
+      <id>vuln-host</id>
+      <title>Fancy — Vulnerability</title>
+      <severity>7</severity>
+      <description>Node description</description>
+      <solution>Apply patches</solution>
+      <references>
+        <reference>
+          <source>CVE</source>
+          <value>CVE-2020-0001</value>
+        </reference>
+      </references>
+    </vulnerability>
+    <vulnerability>
+      <id>vuln-service</id>
+      <title>Service Vuln</title>
+      <severity>5</severity>
+      <description>Service description</description>
+      <solution>Service fix</solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        artifact = self.project.data_artifacts.get("external_nexpose_findings")
+        findings = artifact.get("findings")
+        host_entry = next(item for item in findings if item["Vulnerability ID"] == "vuln-host")
+        service_entry = next(item for item in findings if item["Vulnerability ID"] == "vuln-service")
+
+        self.assertEqual(host_entry["Solution"], "Apply Fancy Patch")
+        self.assertEqual(host_entry["Impact"], "can disrupt the network")
+        self.assertEqual(host_entry["Category"], "Network")
+        self.assertEqual(
+            host_entry["References"],
+            "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
+        )
+
+        self.assertEqual(service_entry["Solution"], "Fix Service")
+        self.assertEqual(service_entry["Impact"], "may expose services")
+        self.assertEqual(service_entry["Category"], "Web")
+        self.assertEqual(service_entry["References"], "No NIST reference available")
+
+    def test_nexpose_xml_records_missing_matrix_entries(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>203.0.113.5</address>
+      <status>alive</status>
+      <names>
+        <name>alpha.example.com</name>
+      </names>
+      <tests>
+        <test id='vuln-host' status='vulnerable-version'>
+          <details>Proof</details>
+        </test>
+      </tests>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability>
+      <id>vuln-host</id>
+      <title>Fancy — Vulnerability</title>
+      <severity>7</severity>
+      <description>Node description</description>
+      <solution>Apply patches</solution>
+      <references>
+        <reference>
+          <source>CVE</source>
+          <value>CVE-2020-0001</value>
+        </reference>
+      </references>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        gaps = self.project.data_artifacts.get("nexpose_matrix_gaps")
+        self.assertIsNotNone(gaps)
+        missing_by_artifact = gaps.get("missing_by_artifact", {})
+        self.assertIn("external_nexpose_findings", missing_by_artifact)
+        entries = missing_by_artifact["external_nexpose_findings"].get("entries")
+        self.assertTrue(entries)
+        entry_map = {row.get("Vulnerability"): row for row in entries}
+        host_row = entry_map.get("Fancy — Vulnerability")
+        self.assertIsNotNone(host_row)
+        self.assertEqual(
+            host_row.get("CVE"),
+            "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
+        )
 
     def test_vulnerability_matrix_enriches_artifacts(self):
         VulnerabilityMatrixEntry.objects.create(
@@ -2102,21 +2825,74 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(high_items[0]["impact"], "SQL matrix impact")
         self.assertEqual(high_items[0]["fix"], "Use parameterized queries")
 
-    def test_nexpose_cap_upload_populates_cap_map(self):
-        csv_lines = [
-            "Systems,Action,Sev,Issue,ecfirst",
-            "db01.example.com,Patch OpenSSL,5,SSL Certificate Expired,Yes",
-            "web-tier,Restrict Access,3,,",
-        ]
+    def test_nexpose_metrics_populate_cap_map(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <scans>
+    <scan id='1' name='Scan' startTime='20230101T000000000' endTime='20230101T010000000' status='finished'/>
+  </scans>
+  <nodes>
+    <node address='192.0.2.10' status='alive'>
+      <names>
+        <name>alpha.example.com</name>
+        <name>beta</name>
+      </names>
+      <fingerprints>
+        <os certainty='1.00' vendor='Microsoft' product='Windows 10'/>
+      </fingerprints>
+      <tests>
+        <test id='vuln-host' status='vulnerable-exploited'>
+          <Paragraph>
+            <Paragraph>Host proof</Paragraph>
+          </Paragraph>
+        </test>
+      </tests>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service name='HTTPS'>
+              <tests>
+                <test id='vuln-service' status='potential'>
+                  <Paragraph>
+                    <Paragraph>Service proof</Paragraph>
+                  </Paragraph>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability>
+      <id>vuln-host</id>
+      <title>Fancy — Vulnerability</title>
+      <severity>7</severity>
+      <description>Node description</description>
+      <solution>Apply patches</solution>
+    </vulnerability>
+    <vulnerability>
+      <id>vuln-service</id>
+      <title>Service Vuln</title>
+      <severity>5</severity>
+      <description>Service description</description>
+      <solution>Service fix</solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
 
         upload = ProjectDataFile.objects.create(
             project=self.project,
             file=SimpleUploadedFile(
-                "nexpose_cap.csv",
-                "\n".join(csv_lines).encode("utf-8"),
-                content_type="text/csv",
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
             ),
-            requirement_label="nexpose_cap.csv",
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
         )
         self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
 
@@ -2129,16 +2905,16 @@ class NexposeDataParserTests(TestCase):
             nexpose_section.get("nexpose_cap_map"),
             [
                 {
-                    "systems": "db01.example.com",
-                    "action": "Patch OpenSSL",
-                    "score": 5,
-                    "issue": "SSL Certificate Expired",
-                    "ecfirst": "Yes",
+                    "systems": "192.0.2.10 (alpha.example.com; beta)",
+                    "action": "Apply patches",
+                    "score": 7,
+                    "issue": "Fancy Vulnerability",
                 },
                 {
-                    "systems": "web-tier",
-                    "action": "Restrict Access",
-                    "score": 3,
+                    "systems": "192.0.2.10 (alpha.example.com; beta) (P)",
+                    "action": "Service fix",
+                    "score": 5,
+                    "issue": "Service Vuln",
                 },
             ],
         )

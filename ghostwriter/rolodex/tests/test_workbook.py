@@ -123,7 +123,7 @@ class WorkbookHelpersTests(SimpleTestCase):
         assert isinstance(general, dict)  # pragma: no cover - typing hint
         self.assertEqual(general.get("assessment_scope"), ["cloud"])
 
-    def test_nexpose_csv_requirements_added_for_positive_totals(self):
+    def test_nexpose_requirements_added_for_positive_totals(self):
         workbook_data = {
             "external_nexpose": {"total": 1},
             "internal_nexpose": {"total": 2},
@@ -133,9 +133,9 @@ class WorkbookHelpersTests(SimpleTestCase):
         _, required_files = build_data_configuration(workbook_data)
 
         labels = {entry["label"] for entry in required_files}
-        self.assertIn("external_nexpose_csv.csv", labels)
-        self.assertIn("internal_nexpose_csv.csv", labels)
-        self.assertIn("iot_nexpose_csv.csv", labels)
+        self.assertIn("external_nexpose_xml.xml", labels)
+        self.assertIn("internal_nexpose_xml.xml", labels)
+        self.assertIn("iot_nexpose_xml.xml", labels)
 
     def test_iot_testing_question_added_by_default(self):
         questions, _ = build_data_configuration({})
@@ -179,7 +179,7 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertEqual(dns_question["subheading"], "example.com")
         self.assertEqual(dns_question["field_kwargs"].get("choices"), DNS_SOA_FIELD_CHOICES)
 
-    def test_nexpose_csv_requirements_skip_zero_totals(self):
+    def test_nexpose_requirements_skip_zero_totals(self):
         workbook_data = {
             "external_nexpose": {"total": 0},
             "internal_nexpose": {"total": 0},
@@ -189,9 +189,9 @@ class WorkbookHelpersTests(SimpleTestCase):
         _, required_files = build_data_configuration(workbook_data)
 
         labels = {entry["label"] for entry in required_files}
-        self.assertNotIn("external_nexpose_csv.csv", labels)
-        self.assertNotIn("internal_nexpose_csv.csv", labels)
-        self.assertNotIn("iot_nexpose_csv.csv", labels)
+        self.assertNotIn("external_nexpose_xml.xml", labels)
+        self.assertNotIn("internal_nexpose_xml.xml", labels)
+        self.assertNotIn("iot_nexpose_xml.xml", labels)
 
     def test_firewall_requirement_included_when_unique_values_present(self):
         workbook_data = {

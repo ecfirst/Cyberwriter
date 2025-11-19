@@ -1,8 +1,12 @@
 """This contains all the views used by the Rolodex application."""
 
 # Standard Libraries
+import base64
+import binascii
 import copy
+import csv
 import datetime
+import io
 import json
 import logging
 from typing import Any, Dict, List, Optional, Set
@@ -86,7 +90,13 @@ from ghostwriter.rolodex.models import (
     ProjectTarget,
 )
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
-from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
+from ghostwriter.rolodex.data_parsers import (
+    NEXPOSE_METRICS_KEY_MAP,
+    NEXPOSE_METRICS_LABELS,
+    normalize_nexpose_artifacts_map,
+    resolve_nexpose_requirement_artifact_key,
+    summarize_nexpose_matrix_gaps,
+)
 from ghostwriter.rolodex.workbook import (
     SECTION_ENTRY_FIELD_MAP,
     build_data_configuration,
@@ -1879,6 +1889,29 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         dns_issue_counts: Dict[str, int] = {}
         artifacts = normalize_nexpose_artifacts_map(object.data_artifacts or {})
         object.data_artifacts = artifacts
+        matrix_gap_summary = summarize_nexpose_matrix_gaps(artifacts)
+        ctx["nexpose_matrix_gap_summary"] = matrix_gap_summary
+        ctx["has_nexpose_matrix_gaps"] = bool(matrix_gap_summary)
+        processed_cards = []
+        for metrics_key, label in NEXPOSE_METRICS_LABELS.items():
+            payload = artifacts.get(metrics_key)
+            if not isinstance(payload, dict):
+                continue
+            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            processed_cards.append(
+                {
+                    "label": label,
+                    "metrics_key": metrics_key,
+                    "summary": summary,
+                    "has_file": bool(payload.get("xlsx_base64")),
+                }
+            )
+        ctx["processed_data_cards"] = processed_cards
+        cap_payload = object.cap if isinstance(object.cap, dict) else {}
+        nexpose_section = cap_payload.get("nexpose") if isinstance(cap_payload, dict) else None
+        if not isinstance(nexpose_section, dict):
+            nexpose_section = {}
+        ctx["nexpose_distilled"] = bool(nexpose_section.get("distilled"))
         for dns_entry in artifacts.get("dns_issues", []) or []:
             domain = (dns_entry.get("domain") or "").strip()
             if domain:
@@ -1899,9 +1932,9 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             ip_cards.append(card_entry)
 
         nexpose_requirement_labels = {
-            "external_nexpose_csv.csv",
-            "internal_nexpose_csv.csv",
-            "iot_nexpose_csv.csv",
+            "external_nexpose_xml.xml",
+            "internal_nexpose_xml.xml",
+            "iot_nexpose_xml.xml",
         }
         reordered_requirements = []
         nexpose_requirements = []
@@ -1947,6 +1980,11 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             existing = required_file_lookup.get(slug) if slug else None
             if slug:
                 requirement["existing"] = existing
+            artifact_key = resolve_nexpose_requirement_artifact_key(requirement)
+            requirement["artifact_key"] = artifact_key
+            requirement["missing_matrix_entries"] = (
+                matrix_gap_summary.get(artifact_key, []) if artifact_key else []
+            )
             label = (requirement.get("label") or "").strip().lower()
             if existing and label == "dns_report.csv":
                 candidate_values = [
@@ -2105,17 +2143,6 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                         description_parts.append(f"for {requirement_context}")
                     data_file.description = " ".join(part for part in description_parts if part).strip()
             data_file.save()
-            if requirement_label.lower() == "nexpose_cap.csv":
-                distilled_selected = bool(request.POST.get("nexpose_distilled"))
-                project_cap = dict(project.cap or {})
-                nexpose_section = project_cap.get("nexpose")
-                if isinstance(nexpose_section, dict):
-                    nexpose_section = dict(nexpose_section)
-                else:
-                    nexpose_section = {}
-                nexpose_section["distilled"] = distilled_selected
-                project_cap["nexpose"] = nexpose_section
-                project.cap = project_cap
             project.rebuild_data_artifacts()
             messages.success(request, "Supporting data file uploaded.")
         else:
@@ -2124,6 +2151,155 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                 messages.error(request, error_message)
             else:
                 messages.error(request, "Unable to upload data file. Please review the form for errors.")
+        return redirect(self.get_success_url())
+
+
+class ProjectNexposeMissingMatrixDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Provide a CSV export of missing Nexpose matrix entries for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self, project: Project) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#supplementals"
+
+    def get(self, request, *args, **kwargs):
+        project = self.get_object()
+        artifact_key = (request.GET.get("artifact") or "").strip()
+        summary = summarize_nexpose_matrix_gaps(project.data_artifacts or {})
+        entries = summary.get(artifact_key)
+        if not entries:
+            messages.error(
+                request,
+                "No missing Nexpose matrix entries are available for download.",
+            )
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        buffer = io.StringIO()
+        fieldnames = [
+            "Vulnerability",
+            "Action Required",
+            "Remediation Impact",
+            "Vulnerability Threat",
+            "Category",
+            "CVE",
+        ]
+        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in entries:
+            if not isinstance(row, dict):
+                continue
+            writer.writerow({
+                "Vulnerability": row.get("Vulnerability", ""),
+                "Action Required": row.get("Action Required", ""),
+                "Remediation Impact": row.get("Remediation Impact", ""),
+                "Vulnerability Threat": row.get("Vulnerability Threat", ""),
+                "Category": row.get("Category", ""),
+                "CVE": row.get("CVE", ""),
+            })
+
+        response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+        add_content_disposition_header(response, "nexpose-missing.csv")
+        return response
+
+
+class ProjectNexposeDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Provide the processed Nexpose XLSX download for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self, project: Project) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#processed-data"
+
+    def _resolve_metrics_payload(self, project: Project, artifact: str) -> Optional[Dict[str, Any]]:
+        artifacts = project.data_artifacts or {}
+        if not isinstance(artifacts, dict):
+            return None
+        payload = artifacts.get(artifact)
+        if isinstance(payload, dict):
+            return payload
+        metrics_key = NEXPOSE_METRICS_KEY_MAP.get(artifact)
+        if metrics_key:
+            payload = artifacts.get(metrics_key)
+            if isinstance(payload, dict):
+                return payload
+        return None
+
+    def get(self, request, *args, **kwargs):
+        project = self.get_object()
+        artifact_key = (request.GET.get("artifact") or "").strip()
+        if not artifact_key:
+            messages.error(request, "A Nexpose artifact was not specified for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        payload = self._resolve_metrics_payload(project, artifact_key)
+        if not payload:
+            messages.error(request, "No Nexpose data file is available for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        workbook_b64 = payload.get("xlsx_base64")
+        if not workbook_b64:
+            messages.error(request, "The Nexpose data file is not available for download yet.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        try:
+            workbook_bytes = base64.b64decode(workbook_b64)
+        except (ValueError, binascii.Error):  # pragma: no cover - defensive guard
+            logger.exception("Failed to decode Nexpose XLSX payload")
+            messages.error(request, "Unable to decode the Nexpose data file.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        response = HttpResponse(
+            workbook_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        filename = payload.get("xlsx_filename") or "nexpose_data.xlsx"
+        add_content_disposition_header(response, filename)
+        return response
+
+
+class ProjectNexposeDistilledUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Toggle the Nexpose distilled flag for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#processed-data"
+
+    def post(self, request, *args, **kwargs):
+        project = self.get_object()
+        distilled_selected = bool(request.POST.get("nexpose_distilled"))
+        project_cap = dict(project.cap or {})
+        nexpose_section = project_cap.get("nexpose")
+        if isinstance(nexpose_section, dict):
+            nexpose_section = dict(nexpose_section)
+        else:
+            nexpose_section = {}
+        nexpose_section["distilled"] = distilled_selected
+        project_cap["nexpose"] = nexpose_section
+        project.cap = project_cap
+        project.save(update_fields=["cap"])
+        messages.success(request, "Updated Nexpose distilled preference.")
         return redirect(self.get_success_url())
 
 
@@ -2182,28 +2358,124 @@ class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View
 
     model = ProjectDataFile
 
+    def dispatch(self, request, *args, **kwargs):
+        # Ensure ``self.request`` is available for ``get_object`` fallbacks that
+        # rely on POST data before ``View.dispatch`` runs.
+        self.request = request
+        self.args = args
+        self.kwargs = kwargs
+        self.object = self.get_object()
+        if self.object is None:
+            if not request.user.is_authenticated:
+                return self.handle_not_authenticated()
+            project = self._resolve_project_from_request()
+            if project is None or not project.user_can_edit(request.user):
+                return self.handle_no_permission()
+            self._resolved_project = project
+            return self._handle_missing_file(request)
+        self._resolved_project = getattr(self.object, "project", None)
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_object(self, queryset=None):
+        if hasattr(self, "_data_file_cache"):
+            return self._data_file_cache
+
+        queryset = (queryset or self.get_queryset()).select_related("project")
+        pk = self.kwargs.get(self.pk_url_kwarg)
+        data_file = None
+        if pk is not None:
+            data_file = queryset.filter(pk=pk).first()
+
+        if data_file is None:
+            project = self._resolve_project_from_request()
+            slug = self._resolve_requirement_slug()
+            if project is not None and slug:
+                data_file = queryset.filter(project=project, requirement_slug=slug).first()
+
+        if data_file is not None and not hasattr(self, "_resolved_project"):
+            self._resolved_project = data_file.project
+
+        self._data_file_cache = data_file
+        return data_file
+
     def test_func(self):
-        return self.get_object().project.user_can_edit(self.request.user)
+        project = getattr(self, "_resolved_project", None)
+        if project is None and self.object is not None:
+            project = getattr(self.object, "project", None)
+        if project is None:
+            project = self._resolve_project_from_request()
+        if project is None:
+            return False
+        self._resolved_project = project
+        return project.user_can_edit(self.request.user)
 
     def handle_no_permission(self):
         messages.error(self.request, "You do not have permission to modify that project.")
         return redirect("home:dashboard")
 
     def get_success_url(self):
-        return (
-            reverse("rolodex:project_detail", kwargs={"pk": self.get_object().project.pk})
-            + "#supplementals"
+        project = getattr(self, "_resolved_project", None)
+        if project is not None:
+            return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#supplementals"
+        if self.object is not None and getattr(self.object, "project", None) is not None:
+            return (
+                reverse("rolodex:project_detail", kwargs={"pk": self.object.project.pk})
+                + "#supplementals"
+            )
+        return reverse("home:dashboard")
+
+    def _resolve_requirement_slug(self) -> str:
+        if hasattr(self, "_requirement_slug_cache"):
+            return self._requirement_slug_cache
+        slug = ""
+        if hasattr(self, "request"):
+            slug = (
+                self.request.POST.get("requirement_slug")
+                or self.request.GET.get("requirement_slug")
+                or ""
+            ).strip()
+        self._requirement_slug_cache = slug
+        return slug
+
+    def _resolve_project_from_request(self) -> Optional[Project]:
+        if hasattr(self, "_resolved_project") and self._resolved_project is not None:
+            return self._resolved_project
+        if not hasattr(self, "request"):
+            return None
+        project_id = self.request.POST.get("project_id") or self.request.GET.get("project_id")
+        try:
+            project_pk = int(project_id)
+        except (TypeError, ValueError):
+            return None
+        project = Project.objects.filter(pk=project_pk).first()
+        if project is not None:
+            self._resolved_project = project
+        return project
+
+    def _handle_missing_file(self, request):
+        messages.warning(
+            request,
+            "The selected data file could not be found. Please refresh the page and try again.",
         )
+        redirect_url = self.get_success_url()
+        if request.headers.get("x-requested-with") == "XMLHttpRequest":
+            return JsonResponse({"success": False, "redirect_url": redirect_url}, status=404)
+        return redirect(redirect_url)
 
     def post(self, request, *args, **kwargs):
-        data_file = self.get_object()
+        data_file = self.object
+        if data_file is None:
+            return self._handle_missing_file(request)
         if data_file.file:
             data_file.file.delete(save=False)
         project = data_file.project
         data_file.delete()
         project.rebuild_data_artifacts()
         messages.success(request, "Supporting data file deleted.")
-        return redirect(self.get_success_url())
+        success_url = self.get_success_url()
+        if request.headers.get("x-requested-with") == "XMLHttpRequest":
+            return JsonResponse({"success": True, "redirect_url": success_url})
+        return redirect(success_url)
 
 
 class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, View):

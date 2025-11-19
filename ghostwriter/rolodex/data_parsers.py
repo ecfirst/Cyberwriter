@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 # Standard Libraries
+import base64
 import csv
 import io
 import logging
 import re
-from collections import Counter
+import unicodedata
+from collections import Counter, OrderedDict
 from collections import abc
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
+
+try:  # pragma: no cover - optional hardening dependency
+    from defusedxml import ElementTree as DefusedElementTree
+except ImportError:  # pragma: no cover - fallback when defusedxml is unavailable
+    DefusedElementTree = None
+
+if DefusedElementTree is None:  # pragma: no cover - handled when defusedxml missing
+    from xml.etree import ElementTree as ElementTree
+else:  # pragma: no cover - exercised indirectly via parser tests
+    ElementTree = DefusedElementTree
 
 from django.apps import apps
 from django.core.files.base import File
 from django.db.utils import OperationalError, ProgrammingError
+
+from xlsxwriter.workbook import Workbook
 
 if False:  # pragma: no cover - typing only
     from ghostwriter.rolodex.models import Project, ProjectDataFile  # noqa: F401
@@ -25,6 +39,8 @@ from ghostwriter.rolodex.workbook import AD_DOMAIN_METRICS
 
 logger = logging.getLogger(__name__)
 
+
+EXCEL_CELL_CHARACTER_LIMIT = 32766
 
 DEFAULT_DNS_RECOMMENDATION_MAP: Dict[str, str] = {
     "One or more SOA fields are outside recommended ranges": "update SOA fields to follow best practice",
@@ -648,11 +664,16 @@ def build_ad_risk_contrib(
 def _decode_file(file_obj: File) -> Iterable[Dict[str, str]]:
     """Return a DictReader for the provided file object."""
 
-    file_obj.open("rb")
     try:
-        raw_bytes = file_obj.read() or b""
-    finally:
-        file_obj.close()
+        file_obj.open("rb")
+    except FileNotFoundError:
+        logger.warning("Uploaded data file is missing from storage", exc_info=True)
+        raw_bytes = b""
+    else:
+        try:
+            raw_bytes = file_obj.read() or b""
+        finally:
+            file_obj.close()
 
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
         try:
@@ -667,14 +688,676 @@ def _decode_file(file_obj: File) -> Iterable[Dict[str, str]]:
     return csv.DictReader(stream)
 
 
+def _read_binary_file(file_obj: File) -> bytes:
+    """Return the raw bytes stored in ``file_obj``."""
+
+    try:
+        file_obj.open("rb")
+    except FileNotFoundError:
+        logger.warning("Uploaded data file is missing from storage", exc_info=True)
+        return b""
+    try:
+        return file_obj.read() or b""
+    finally:
+        file_obj.close()
+
+
+def _collapse_whitespace(value: Any) -> str:
+    """Return ``value`` with consecutive whitespace collapsed."""
+
+    if value in (None, ""):
+        return ""
+    text = str(value)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_multiline_text(value: Any) -> str:
+    """Return ``value`` with paragraph-friendly spacing."""
+
+    if value in (None, ""):
+        return ""
+
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+    paragraphs: List[str] = []
+    current_lines: List[str] = []
+
+    for raw_line in text.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped:
+            if current_lines:
+                paragraphs.append(" ".join(current_lines))
+                current_lines = []
+            continue
+        current_lines.append(_collapse_whitespace(stripped))
+
+    if current_lines:
+        paragraphs.append(" ".join(current_lines))
+
+    return "\n\n".join(paragraphs)
+
+
+def _normalize_evidence_text(value: Any) -> str:
+    """Return ``value`` formatted for multi-line evidence blocks."""
+
+    if value in (None, ""):
+        return ""
+
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+    lines: List[str] = []
+    for raw_line in text.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped:
+            if lines and lines[-1] != "":
+                lines.append("")
+            continue
+        lines.append(_collapse_whitespace(stripped))
+
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    return "\n".join(lines)
+
+
+def _clean_ascii_text(value: Any) -> str:
+    """Return ``value`` normalized to ASCII with collapsed whitespace."""
+
+    if value in (None, ""):
+        return ""
+    normalized = unicodedata.normalize("NFKD", str(value))
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    return _collapse_whitespace(ascii_text)
+
+
+def _element_text(element: Optional["ElementTree.Element"]) -> str:
+    """Return the string content extracted from ``element``."""
+
+    if element is None:
+        return ""
+    text = "".join(element.itertext())
+    return text.strip()
+
+
+def _generate_key_variants(key: str) -> List[str]:
+    """Return possible attribute/child names for ``key``."""
+
+    variants: Set[str] = set()
+    parts = re.split(r"[-_]", key)
+    if parts:
+        camel = parts[0] + "".join(part.title() for part in parts[1:])
+        pascal = "".join(part.title() for part in parts)
+        variants.update({camel, pascal})
+    variants.update(
+        {
+            key,
+            key.replace("-", ""),
+            key.replace("-", "_"),
+            key.replace("_", ""),
+            key.lower(),
+            key.upper(),
+            key.title(),
+        }
+    )
+    return [variant for variant in variants if variant]
+
+
+def _normalize_xml_tag(tag: Optional[str]) -> str:
+    """Return a lowercase representation of ``tag`` without namespaces."""
+
+    if not tag:
+        return ""
+    text = str(tag)
+    if "}" in text:
+        text = text.rsplit("}", 1)[-1]
+    return text.strip().lower()
+
+
+def _get_element_field(element: Optional["ElementTree.Element"], key: str) -> str:
+    """Return ``key`` from ``element`` attributes or child elements."""
+
+    if element is None:
+        return ""
+    for candidate in _generate_key_variants(key):
+        value = element.attrib.get(candidate)
+        if value not in (None, ""):
+            return str(value).strip()
+    for candidate in _generate_key_variants(key):
+        child = element.find(candidate)
+        if child is not None:
+            text = _element_text(child)
+            if text:
+                return text
+    normalized_key = _normalize_xml_tag(key)
+    if not normalized_key:
+        return ""
+    for child in element:
+        if _normalize_xml_tag(getattr(child, "tag", "")) == normalized_key:
+            text = _element_text(child)
+            if text:
+                return text
+    return ""
+
+
+def _find_child_element(
+    element: Optional["ElementTree.Element"], key: str
+) -> Optional["ElementTree.Element"]:
+    """Return the first child element that matches ``key`` variants."""
+
+    if element is None:
+        return None
+    for candidate in _generate_key_variants(key):
+        found = element.find(candidate)
+        if found is not None:
+            return found
+    normalized_key = _normalize_xml_tag(key)
+    if not normalized_key:
+        return None
+    for child in element:
+        if _normalize_xml_tag(getattr(child, "tag", "")) == normalized_key:
+            return child
+    return None
+
+
+def _find_child_elements(
+    element: Optional["ElementTree.Element"], key: str
+) -> List["ElementTree.Element"]:
+    """Return all child elements that match ``key`` variants."""
+
+    if element is None:
+        return []
+    children: List["ElementTree.Element"] = []
+    seen_ids: Set[int] = set()
+    for candidate in _generate_key_variants(key):
+        if not candidate:
+            continue
+        for child in element.findall(candidate):
+            identifier = id(child)
+            if identifier in seen_ids:
+                continue
+            seen_ids.add(identifier)
+            children.append(child)
+    normalized_key = _normalize_xml_tag(key)
+    if not normalized_key:
+        return children
+    for child in element:
+        identifier = id(child)
+        if identifier in seen_ids:
+            continue
+        if _normalize_xml_tag(getattr(child, "tag", "")) == normalized_key:
+            seen_ids.add(identifier)
+            children.append(child)
+    return children
+
+
+def _truncate_excel_text(value: str, limit: int = EXCEL_CELL_CHARACTER_LIMIT) -> str:
+    """Ensure ``value`` fits within an Excel cell by truncating when needed."""
+
+    text = value or ""
+    if len(text) <= limit:
+        return text
+    ellipsis = "…"
+    return text[: max(0, limit - len(ellipsis))] + ellipsis
+
+
+def _safe_float(value: Any) -> float:
+    """Best effort conversion of ``value`` to ``float``."""
+
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return 0.0
+
+
+_VULN_DOWNGRADE_SUBSTRINGS: Tuple[str, ...] = (
+    "only if",
+    "context-dependent",
+    "might allow",
+    "when configured as a cgi script",
+    "extension in php",
+    "where an affected version",
+    "the potential for",
+    "disputed",
+    "are not affected",
+    "man-in-the-middle attackers to",
+    "which might",
+    "in certain configurations",
+    "may be vulnerable",
+    "could lead to",
+    "was configured pointing to",
+    "if an intermediary proxy is in use",
+    "when using a block cipher algorithm in cipher block chaining (cbc) mode",
+    "traffic amplification attacks",
+    "conduct drdos attacks",
+    "a drdos attack",
+    "anonymous root logins should only be allowed from system console",
+    "domain name server (dns) amplification attack",
+    "while this is not a definite vulnerability on its own",
+    "when used in",
+    "allows local users to",
+    "allows user-assisted remote attackers",
+    "on android",
+    "with physical access",
+    "physically proximate attackers",
+    "potentially exploitable",
+    "requires local system access",
+)
+
+_VULN_DOWNGRADE_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"function in the .* extension",
+        r"when\s+.+?\s+is\s+used",
+        r"when\s+.+?\s+are\s+used",
+        r"when\s+.+?\s+is\s+enabled",
+        r"when\s+.+?\s+setting\s+is\s+disabled",
+        r"when\s+.+?\s+are\s+enabled",
+        r"when\s+the\s+.+?\s+is\s+in\s+place",
+        r"when\s+.+?\s+is\s+being\s+used",
+        r"with\s+.+?\s+enabled",
+    )
+]
+
+_VULN_DOWNGRADE_PHRASES = (
+    "a carefully crafted, invalid isakmp cert request packet will cause the isakmpd daemon to attempt an out-of-bounds read, crashing the service.",
+    "a carefully crafted, invalid isakmp delete packet with a very large number of spi's will cause the isakmpd daemon to attempt an out-of-bounds read, crashing the service.",
+)
+
+
+def _should_adjust_vuln_code(description: str) -> bool:
+    """Return ``True`` when ``description`` indicates a potential finding."""
+
+    if not description:
+        return False
+    desc_lower = description.lower()
+    if any(token in desc_lower for token in _VULN_DOWNGRADE_SUBSTRINGS):
+        return True
+
+    if "potentially" in desc_lower and "timestamp response" not in desc_lower:
+        return True
+
+    if "on os x" in desc_lower and not any(
+        exclusion in desc_lower for exclusion in ("adobe flash", "adobe air")
+    ):
+        return True
+    if "on linux" in desc_lower and not any(
+        exclusion in desc_lower for exclusion in ("adobe flash", "adobe air")
+    ):
+        return True
+    if "on windows" in desc_lower and not any(
+        exclusion in desc_lower for exclusion in ("adobe flash", "adobe air")
+    ):
+        return True
+
+    if "when running on" in desc_lower or "when running with" in desc_lower:
+        return True
+
+    if "when using a block cipher algorithm in cipher block chaining (cbc) mode" in desc_lower:
+        return True
+
+    if any(phrase in desc_lower for phrase in _VULN_DOWNGRADE_PHRASES):
+        return True
+
+    for pattern in _VULN_DOWNGRADE_PATTERNS:
+        if pattern.search(description):
+            return True
+
+    return False
+
+
+def _adjust_vulnerability_code(code: str, description: str) -> str:
+    """Adjust Nexpose test codes based on descriptive context."""
+
+    normalized = (code or "").upper()
+    if normalized in {"VV", "VE"} and _should_adjust_vuln_code(description):
+        normalized = "VP"
+    if normalized == "VV":
+        return "VE"
+    return normalized
+
+
+def _map_test_status(raw_status: Any) -> str:
+    """Normalize Nexpose test status strings."""
+
+    text = _collapse_whitespace(raw_status)
+    if not text:
+        return ""
+    mapped = NEXPOSE_TEST_STATUS_MAP.get(text.lower())
+    if mapped:
+        return mapped
+    return text.upper()
+
+
+def _collect_node_hostnames(node: "ElementTree.Element") -> List[str]:
+    """Return a list of unique hostnames recorded for ``node``."""
+
+    hostnames: List[str] = []
+    for name_element in node.findall("./names/name"):
+        hostname = _collapse_whitespace(_element_text(name_element))
+        if hostname and hostname not in hostnames:
+            hostnames.append(hostname)
+    return hostnames
+
+
+def _extract_os_description(node: "ElementTree.Element") -> str:
+    """Select the best matching OS description for ``node``."""
+
+    os_entries = node.findall("./fingerprints/os")
+    if not os_entries:
+        os_entries = node.findall("./fingerprints/fingerprint")
+    fallback = ""
+    for os_element in os_entries:
+        certainty = _safe_float(_get_element_field(os_element, "certainty"))
+        vendor = _get_element_field(os_element, "vendor")
+        product = _get_element_field(os_element, "product")
+        family = _get_element_field(os_element, "family")
+        device_class = _get_element_field(os_element, "device-class") or _get_element_field(
+            os_element, "deviceClass"
+        )
+        if not fallback:
+            fallback = product or vendor or family or device_class or ""
+        if certainty == 1.0 and product:
+            return product
+        if certainty >= 0.67:
+            if vendor and vendor.lower() == "microsoft":
+                return product or "Microsoft Windows UNKNOWN"
+            if vendor:
+                return vendor
+            if family:
+                return family
+            if device_class:
+                return device_class
+    return fallback
+
+
+def _extract_test_evidence(test_element: "ElementTree.Element") -> str:
+    """Return the best-effort evidence string for ``test_element``."""
+
+    for key in ("evidence", "details", "description", "proof"):
+        evidence = _get_element_field(test_element, key)
+        if evidence:
+            return _normalize_evidence_text(evidence)
+    return _normalize_evidence_text(_element_text(test_element))
+
+
+def _extract_vulnerability_id(test_element: "ElementTree.Element") -> str:
+    """Return the vulnerability identifier linked to ``test_element``."""
+
+    for key in ("id", "vulnerability-id", "vulnerabilityId", "vuln-id"):
+        value = _get_element_field(test_element, key)
+        if value:
+            return value
+    return ""
+
+
+def _build_vulnerability_lookup(report_root: "ElementTree.Element") -> Dict[str, Dict[str, str]]:
+    """Return a mapping of vulnerability IDs to descriptive fields."""
+
+    lookup: Dict[str, Dict[str, str]] = {}
+    definitions = _find_child_element(report_root, "vulnerabilityDefinitions")
+    if definitions is None:
+        return lookup
+    for vulnerability in _find_child_elements(definitions, "vulnerability"):
+        vuln_id = (
+            _collapse_whitespace(_get_element_field(vulnerability, "id"))
+            or _collapse_whitespace(_element_text(vulnerability.find("id")))
+        )
+        if not vuln_id:
+            continue
+        title = _clean_ascii_text(
+            _element_text(vulnerability.find("title"))
+            or _get_element_field(vulnerability, "title")
+            or vuln_id
+        )
+        severity_text = _collapse_whitespace(
+            _element_text(vulnerability.find("severity"))
+            or _get_element_field(vulnerability, "severity")
+        )
+        severity_value = _coerce_int(severity_text)
+        description = _normalize_multiline_text(
+            _element_text(vulnerability.find("description"))
+            or _get_element_field(vulnerability, "description")
+        )
+        solution = _truncate_excel_text(
+            _normalize_multiline_text(
+                _element_text(vulnerability.find("solution"))
+                or _get_element_field(vulnerability, "solution")
+            )
+        )
+        references = _find_child_element(vulnerability, "references")
+        cve_ids: List[str] = []
+        reference_nodes = _find_child_elements(references, "reference")
+        for reference in reference_nodes:
+            source = _collapse_whitespace(_get_element_field(reference, "source"))
+            if source.upper() != "CVE":
+                continue
+            value = _collapse_whitespace(
+                _get_element_field(reference, "value") or _element_text(reference)
+            )
+            if value:
+                cve_ids.append(value)
+
+        cves_parent = _find_child_element(vulnerability, "cves")
+        cve_nodes = _find_child_elements(cves_parent, "cve")
+        for cve_node in cve_nodes:
+            identifier = _collapse_whitespace(
+                _get_element_field(cve_node, "id")
+                or _get_element_field(cve_node, "value")
+                or _element_text(cve_node)
+            )
+            if identifier:
+                cve_ids.append(identifier)
+
+        normalized_cves: List[str] = []
+        seen_cves: Set[str] = set()
+        for cve in cve_ids:
+            cleaned = cve.strip()
+            if not cleaned:
+                continue
+            key = cleaned.upper()
+            if key in seen_cves:
+                continue
+            seen_cves.add(key)
+            normalized_cves.append(cleaned)
+
+        entry = {
+            "title": title or vuln_id,
+            "severity": severity_value if severity_value is not None else severity_text,
+            "description": description,
+            "cves": ", ".join(normalized_cves),
+            "solution": solution,
+        }
+        lookup[vuln_id] = entry
+        normalized_id = vuln_id.lower()
+        if normalized_id and normalized_id not in lookup:
+            lookup[normalized_id] = entry
+    return lookup
+
+
+def _build_cve_links(cve_field: str) -> str:
+    """Return newline-delimited NIST references for the provided CVE string."""
+
+    text = str(cve_field or "").strip()
+    if not text:
+        return "No NIST reference available"
+    links = []
+    for token in re.split(r"[,;]", text):
+        candidate = token.strip()
+        if not candidate:
+            continue
+        links.append(f"http://web.nvd.nist.gov/view/vuln/detail?vulnId={candidate}")
+    return "\n".join(links) if links else "No NIST reference available"
+
+
+def _adjust_matrix_impact(threat: str, status_code: str) -> str:
+    """Return ``threat`` with ``<EC>`` placeholders tailored to ``status_code``."""
+
+    if not threat:
+        return ""
+    replacement = "can"
+    if (status_code or "").upper() == "VP":
+        replacement = "may"
+    return threat.replace("<EC>", replacement)
+
+
+def _apply_matrix_metadata_to_finding(
+    entry: Dict[str, Any],
+    vulnerability_matrix: Optional[Dict[str, Dict[str, str]]],
+    cve_links: str,
+) -> bool:
+    """Populate matrix-backed fields for a finding entry and return success state."""
+
+    entry.setdefault("Impact", "")
+    entry.setdefault("Solution", "")
+    entry.setdefault("Category", "")
+    entry["References"] = cve_links
+    if not vulnerability_matrix:
+        return False
+
+    key = _normalize_matrix_key(entry.get("Vulnerability Title"))
+    if not key:
+        return False
+    metadata = vulnerability_matrix.get(key)
+    if not metadata:
+        return False
+
+    threat_text = metadata.get("vulnerability_threat") or ""
+    entry["Impact"] = _adjust_matrix_impact(
+        threat_text,
+        entry.get("Vulnerability Test Result Code", ""),
+    )
+    entry["Solution"] = metadata.get("action_required") or ""
+    entry["Category"] = metadata.get("category") or ""
+    return True
+
+
+def _build_nexpose_finding_entry(
+    *,
+    ip_address: str,
+    hostnames: str,
+    os_description: str,
+    port: str,
+    protocol: str,
+    test_element: "ElementTree.Element",
+    vulnerability_lookup: Dict[str, Dict[str, str]],
+    vulnerability_matrix: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Tuple[Optional[Dict[str, str]], Optional[Dict[str, str]]]:
+    """Return a populated finding entry for ``test_element`` if possible."""
+
+    vulnerability_id = _extract_vulnerability_id(test_element)
+    if not vulnerability_id:
+        return None, None
+    definition = vulnerability_lookup.get(vulnerability_id) or vulnerability_lookup.get(
+        vulnerability_id.lower(), {}
+    )
+    title = _clean_ascii_text(definition.get("title") or vulnerability_id)
+    severity = definition.get("severity")
+    severity_value = _coerce_int(severity)
+    description = definition.get("description") or ""
+    cve_ids = definition.get("cves") or ""
+    remediation = definition.get("solution") or ""
+    evidence = _extract_test_evidence(test_element)
+    status = _adjust_vulnerability_code(
+        _map_test_status(_get_element_field(test_element, "status")),
+        description,
+    )
+    cve_links = _build_cve_links(cve_ids)
+
+    entry: Dict[str, Any] = {
+        "Asset IP Address": ip_address,
+        "Hostname(s)": hostnames,
+        "Asset Operating System": os_description,
+        "Service Port": port,
+        "Protocol": protocol,
+        "Vulnerability Test Result Code": status,
+        "Vulnerability ID": vulnerability_id,
+        "Vulnerability CVE IDs": cve_ids,
+        "Vulnerability Severity Level": severity_value if severity_value is not None else severity,
+        "Vulnerability Title": title,
+        "Details": description,
+        "Evidence": evidence,
+        "Detailed Remediation": remediation,
+    }
+    entry.setdefault("Impact", "")
+    entry.setdefault("Solution", "")
+    entry.setdefault("Category", "")
+    entry["References"] = cve_links
+    has_matrix_metadata = _apply_matrix_metadata_to_finding(
+        entry, vulnerability_matrix, cve_links
+    )
+    missing_row: Optional[Dict[str, str]] = None
+    if not has_matrix_metadata:
+        missing_row = {
+            "Vulnerability": entry.get("Vulnerability Title", ""),
+            "Action Required": "",
+            "Remediation Impact": "",
+            "Vulnerability Threat": "",
+            "Category": "",
+            "CVE": cve_links,
+        }
+
+    return entry, missing_row
+
+
+
+def _detect_nexpose_xml_artifact_key(values: Iterable[Any]) -> Optional[str]:
+    """Infer the artifact key for any Nexpose XML specific ``values``."""
+
+    normalized = " ".join(
+        str(value).strip().lower() for value in values if value and str(value).strip()
+    )
+    if not normalized or "nexpose_xml" not in normalized:
+        return None
+    for keyword, artifact_key in NEXPOSE_XML_ARTIFACT_MAP.items():
+        if keyword in normalized:
+            return artifact_key
+    return None
+
+
+def _resolve_nexpose_xml_artifact_key(data_file: "ProjectDataFile") -> Optional[str]:
+    """Infer the artifact key that should store a Nexpose XML upload."""
+
+    candidates = [
+        (data_file.requirement_label or ""),
+        (data_file.requirement_slug or ""),
+        (data_file.requirement_context or ""),
+        (data_file.description or ""),
+    ]
+    filename = getattr(data_file, "filename", "")
+    if filename:
+        candidates.append(filename)
+    return _detect_nexpose_xml_artifact_key(candidates)
+
+
+def resolve_nexpose_requirement_artifact_key(
+    requirement: Mapping[str, Any]
+) -> Optional[str]:
+    """Infer the artifact key that corresponds to a workbook requirement."""
+
+    if not isinstance(requirement, abc.Mapping):
+        return None
+    candidates = [
+        requirement.get("label", ""),
+        requirement.get("slug", ""),
+        requirement.get("context", ""),
+        requirement.get("requirement_context", ""),
+    ]
+    return _detect_nexpose_xml_artifact_key(candidates)
+
+
 def _parse_ip_list(file_obj: File) -> List[str]:
     """Parse a newline-delimited text file into a list of IP entries."""
 
-    file_obj.open("rb")
     try:
-        raw_bytes = file_obj.read() or b""
-    finally:
-        file_obj.close()
+        file_obj.open("rb")
+    except FileNotFoundError:
+        logger.warning("Uploaded data file is missing from storage", exc_info=True)
+        raw_bytes = b""
+    else:
+        try:
+            raw_bytes = file_obj.read() or b""
+        finally:
+            file_obj.close()
 
     try:
         text = raw_bytes.decode("utf-8")
@@ -1357,6 +2040,32 @@ def normalize_nexpose_artifacts_map(artifacts: Any) -> Any:
     return normalized
 
 
+def summarize_nexpose_matrix_gaps(artifacts: Any) -> Dict[str, List[Dict[str, str]]]:
+    """Return artifact-scoped missing Nexpose matrix entries."""
+
+    if not isinstance(artifacts, dict):
+        return {}
+    gap_data = artifacts.get("nexpose_matrix_gaps")
+    if not isinstance(gap_data, dict):
+        return {}
+    missing_by_artifact = gap_data.get("missing_by_artifact")
+    if not isinstance(missing_by_artifact, dict):
+        return {}
+    summary: Dict[str, List[Dict[str, str]]] = {}
+    for artifact_key, payload in missing_by_artifact.items():
+        entries = payload.get("entries") if isinstance(payload, dict) else payload
+        if isinstance(entries, list) and entries:
+            summary[artifact_key] = entries
+    return summary
+
+
+def has_open_nexpose_matrix_gaps(artifacts: Any) -> bool:
+    """Return ``True`` if any Nexpose XML findings are missing matrix entries."""
+
+    summary = summarize_nexpose_matrix_gaps(artifacts)
+    return any(summary.values())
+
+
 def _build_web_issue_ai_response(
     summary: Dict[str, Any], *, require_burp_csv: bool
 ) -> Optional[str]:
@@ -1471,6 +2180,108 @@ def parse_nexpose_vulnerability_report(
     return summaries
 
 
+def parse_nexpose_xml_report(
+    file_obj: File,
+    *,
+    vulnerability_matrix: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Dict[str, List[Dict[str, str]]]:
+    """Parse a ``nexpose_xml.xml`` upload into structured findings and software entries."""
+
+    findings: List[Dict[str, str]] = []
+    software_entries: List[Dict[str, str]] = []
+    missing_matrix_rows: Dict[str, Dict[str, str]] = {}
+
+    raw_bytes = _read_binary_file(file_obj)
+    if not raw_bytes.strip():
+        return {"findings": findings, "software": software_entries}
+
+    try:
+        report_root = ElementTree.fromstring(raw_bytes)
+    except ElementTree.ParseError:  # pragma: no cover - invalid XML is ignored
+        logger.warning("Unable to parse Nexpose XML upload", exc_info=True)
+        return {"findings": findings, "software": software_entries}
+
+    vulnerability_lookup = _build_vulnerability_lookup(report_root)
+    nodes_parent = report_root.find("nodes")
+    if nodes_parent is None:
+        return {"findings": findings, "software": software_entries}
+
+    for node in nodes_parent.findall("node"):
+        ip_address = _collapse_whitespace(_get_element_field(node, "address"))
+        hostnames = _collect_node_hostnames(node)
+        hostname_text = "; ".join(hostnames)
+        os_description = _extract_os_description(node)
+
+        for test_element in node.findall("./tests/test"):
+            entry, missing_row = _build_nexpose_finding_entry(
+                ip_address=ip_address,
+                hostnames=hostname_text,
+                os_description=os_description,
+                port="",
+                protocol="",
+                test_element=test_element,
+                vulnerability_lookup=vulnerability_lookup,
+                vulnerability_matrix=vulnerability_matrix,
+            )
+            if entry:
+                findings.append(entry)
+            if missing_row:
+                key = (missing_row.get("Vulnerability") or "").strip().lower()
+                if key:
+                    missing_matrix_rows[key] = missing_row
+
+        for endpoint in node.findall("./endpoints/endpoint"):
+            port = _collapse_whitespace(_get_element_field(endpoint, "port"))
+            protocol = _collapse_whitespace(_get_element_field(endpoint, "protocol")).upper()
+            for service in endpoint.findall("./services/service"):
+                for test_element in service.findall("./tests/test"):
+                    entry, missing_row = _build_nexpose_finding_entry(
+                        ip_address=ip_address,
+                        hostnames=hostname_text,
+                        os_description=os_description,
+                        port=port,
+                        protocol=protocol,
+                        test_element=test_element,
+                        vulnerability_lookup=vulnerability_lookup,
+                        vulnerability_matrix=vulnerability_matrix,
+                    )
+                    if entry:
+                        findings.append(entry)
+                    if missing_row:
+                        key = (missing_row.get("Vulnerability") or "").strip().lower()
+                        if key:
+                            missing_matrix_rows[key] = missing_row
+
+        software_fingerprints = node.findall("./software/fingerprint")
+        if not software_fingerprints:
+            software_fingerprints = node.findall("./software/softwareFingerprint")
+        system_label = ip_address or hostname_text or "Unknown System"
+        display_system = system_label
+        if hostname_text:
+            if ip_address:
+                display_system = f"{ip_address} ({hostname_text})"
+            else:
+                display_system = hostname_text
+        for fingerprint in software_fingerprints:
+            product = _collapse_whitespace(_get_element_field(fingerprint, "product"))
+            version = _collapse_whitespace(_get_element_field(fingerprint, "version"))
+            if not (product or version):
+                continue
+            software_entries.append(
+                {"System": display_system, "Software": product, "Version": version}
+            )
+
+    missing_entries = sorted(
+        missing_matrix_rows.values(),
+        key=lambda row: (row.get("Vulnerability") or "").lower(),
+    )
+    return {
+        "findings": findings,
+        "software": software_entries,
+        "missing_matrix_entries": missing_entries,
+    }
+
+
 NEXPOSE_ARTIFACT_DEFINITIONS: Dict[str, Dict[str, str]] = {
     "external_nexpose_csv.csv": {
         "artifact_key": "external_nexpose_vulnerabilities",
@@ -1493,6 +2304,505 @@ LEGACY_NEXPOSE_ARTIFACT_ALIASES: Dict[str, str] = {
 NEXPOSE_ARTIFACT_KEYS = {
     definition["artifact_key"] for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
 }.union(LEGACY_NEXPOSE_ARTIFACT_ALIASES.keys())
+
+
+NEXPOSE_TEST_STATUS_MAP = {
+    "potential": "VP",
+    "vulnerable-exploited": "VE",
+    "vulnerable-version": "VV",
+}
+
+NEXPOSE_XML_ARTIFACT_MAP = {
+    "external": "external_nexpose_findings",
+    "internal": "internal_nexpose_findings",
+    "iot": "iot_iomt_nexpose_findings",
+    "iomt": "iot_iomt_nexpose_findings",
+}
+
+NEXPOSE_METRICS_KEY_MAP = {
+    "external_nexpose_findings": "external_nexpose_metrics",
+    "internal_nexpose_findings": "internal_nexpose_metrics",
+    "iot_iomt_nexpose_findings": "iot_iomt_nexpose_metrics",
+}
+
+NEXPOSE_METRICS_LABELS = {
+    "external_nexpose_metrics": "External Nexpose",
+    "internal_nexpose_metrics": "Internal Nexpose",
+    "iot_iomt_nexpose_metrics": "IoT/IoMT Nexpose",
+}
+
+NEXPOSE_TAB_INDEX_ENTRIES = [
+    "Unique Issues  -:-  Unique issues found across all scanned systems",
+    "Issues by Majority Type  -:-  From the Unique Issues, a listing of those that are the same 'type' (missing patch, configuration item, etc) that represent the majority of the issues found",
+    "Subset of Majority Items  -:-  From the Majority Type, a listing of those that are the same application, vendor, service, etc that are responsible for the bulk of the Majority issues",
+    "All Issues  -:-  All issues identified. May include 'duplicate' findings (same issue/system, different ports)",
+    "High Risk Issues  -:-  All 'High' risk issues identified",
+    "Medium Risk Issues  -:-  All 'Medium' risk issues identified",
+    "Low Risk Issues  -:-  All 'Low' risk issues identified",
+]
+
+
+def _derive_risk_from_score(score: Optional[int]) -> str:
+    """Convert a Nexpose score into a High/Medium/Low risk bucket."""
+
+    if score is None:
+        return "Low"
+    if score >= 8:
+        return "High"
+    if score <= 3:
+        return "Low"
+    return "Medium"
+
+
+def _build_host_identifier(ip_address: str, hostnames: str) -> str:
+    """Return a combined identifier for an asset."""
+
+    ip_text = (ip_address or "").strip()
+    hostname_text = (hostnames or "").strip()
+    if ip_text and hostname_text:
+        return f"{ip_text} ({hostname_text})"
+    if ip_text:
+        return ip_text
+    if hostname_text:
+        return hostname_text
+    return "Unknown Host"
+
+
+def _format_port_display(port_value: str, protocol: str) -> str:
+    """Render the combined port/protocol string for workbook tables."""
+
+    port_text = (port_value or "").strip()
+    proto_text = (protocol or "").strip().upper()
+    if not port_text:
+        return "N/A"
+    if proto_text:
+        return f"{port_text}.{proto_text}"
+    return port_text
+
+
+def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build summary metrics, top lists, and workbook bytes for Nexpose findings."""
+
+    total_entries: List[Dict[str, Any]] = []
+    unique_entries: "OrderedDict[Tuple[int, str], Dict[str, Any]]" = OrderedDict()
+    seen_total_keys: Set[Tuple[str, str, str, int]] = set()
+    host_counters: Dict[str, Dict[str, int]] = {}
+    impact_counter: Counter[str] = Counter()
+    high_issues: List[Dict[str, Any]] = []
+    med_issues: List[Dict[str, Any]] = []
+    low_issues: List[Dict[str, Any]] = []
+
+    for entry in findings or []:
+        ip_address = (entry.get("Asset IP Address") or "").strip()
+        hostnames = (entry.get("Hostname(s)") or "").strip()
+        port = (entry.get("Service Port") or "").strip()
+        protocol = (entry.get("Protocol") or "").strip()
+        title = (entry.get("Vulnerability Title") or entry.get("Vulnerability ID") or "").strip()
+        if not title:
+            title = "Untitled Vulnerability"
+        severity = _coerce_int(entry.get("Vulnerability Severity Level")) or 0
+        impact = (entry.get("Impact") or "").strip()
+        solution = (entry.get("Solution") or "").strip()
+        category = (entry.get("Category") or "").strip()
+        details = (entry.get("Details") or "").strip()
+        evidence = (entry.get("Evidence") or "").strip()
+        remediation = (entry.get("Detailed Remediation") or solution or "").strip()
+        host_identifier = _build_host_identifier(ip_address, hostnames)
+        risk = _derive_risk_from_score(severity)
+        port_display = _format_port_display(port, protocol)
+
+        normalized_entry = {
+            "ip": ip_address,
+            "hostnames": hostnames,
+            "host_id": host_identifier,
+            "port": port_display,
+            "issue": title,
+            "impact": impact,
+            "details": details,
+            "evidence": evidence,
+            "remediation": remediation,
+            "risk": risk,
+            "category": category,
+            "severity": severity,
+        }
+
+        total_key = (ip_address, hostnames, title.lower(), severity)
+        if total_key not in seen_total_keys:
+            total_entries.append(normalized_entry)
+            seen_total_keys.add(total_key)
+
+        unique_key = (severity, title.lower())
+        if unique_key not in unique_entries:
+            unique_entries[unique_key] = {
+                "risk": risk,
+                "issue": title,
+                "impact": impact,
+                "remediation": solution or remediation,
+                "category": category,
+                "severity": severity,
+            }
+
+        bucket = host_counters.setdefault(host_identifier, {"high": 0, "med": 0, "low": 0})
+        if severity >= 8:
+            bucket["high"] += 1
+            high_issues.append(normalized_entry)
+        elif severity >= 4:
+            bucket["med"] += 1
+            med_issues.append(normalized_entry)
+        else:
+            bucket["low"] += 1
+            low_issues.append(normalized_entry)
+
+        if impact:
+            impact_counter[impact] += 1
+
+    total_count = len(total_entries)
+    unique_values = list(unique_entries.values())
+    unique_count = len(unique_values)
+    unique_high = sum(1 for entry in unique_values if entry.get("severity", 0) >= 8)
+    unique_med = sum(1 for entry in unique_values if 4 <= entry.get("severity", 0) <= 7)
+    unique_low = sum(1 for entry in unique_values if entry.get("severity", 0) <= 3)
+    category_counter: Counter[str] = Counter(
+        (entry.get("category") or "").strip() for entry in unique_values if entry.get("category")
+    )
+    majority_type = None
+    majority_value = 0
+    for candidate in ("OOD", "ISC", "IWC"):
+        count = category_counter.get(candidate, 0)
+        if count > majority_value:
+            majority_type = candidate
+            majority_value = count
+
+    summary = {
+        "total": total_count,
+        "total_high": len(high_issues),
+        "total_med": len(med_issues),
+        "total_low": len(low_issues),
+        "unique": unique_count,
+        "unique_high": unique_high,
+        "unique_med": unique_med,
+        "unique_low": unique_low,
+        "unique_high_med": unique_high + unique_med,
+        "total_ood": category_counter.get("OOD", 0),
+        "total_isc": category_counter.get("ISC", 0),
+        "total_iwc": category_counter.get("IWC", 0),
+    }
+
+    host_rows = [
+        {
+            "host": host,
+            "high": counts.get("high", 0),
+            "med": counts.get("med", 0),
+            "low": counts.get("low", 0),
+        }
+        for host, counts in sorted(host_counters.items(), key=lambda item: item[0].lower())
+    ]
+
+    top_hosts = []
+    for host in host_rows:
+        score = host["high"] * 3 + host["med"] * 2 + host["low"]
+        top_hosts.append({**host, "score": score})
+    top_hosts.sort(key=lambda item: (-item["score"], -(item["high"] + item["med"] + item["low"]), item["host"].lower()))
+    top_hosts = top_hosts[:10]
+
+    top_impacts = [
+        {"impact": impact, "count": count}
+        for impact, count in impact_counter.most_common(10)
+    ]
+
+    majority_unique = [
+        entry
+        for entry in unique_values
+        if majority_type and (entry.get("category") or "").strip() == majority_type
+    ]
+    majority_subset = [
+        entry
+        for entry in total_entries
+        if majority_type and (entry.get("category") or "").strip() == majority_type
+    ]
+
+    metrics_payload: Dict[str, Any] = {
+        "summary": summary,
+        "host_counts": host_rows,
+        "top_hosts": top_hosts,
+        "top_impacts": top_impacts,
+        "tab_index_entries": NEXPOSE_TAB_INDEX_ENTRIES,
+        "unique_issues": unique_values,
+        "majority_type": majority_type,
+        "majority_unique": majority_unique,
+        "majority_subset": majority_subset,
+        "all_issues": total_entries,
+        "high_issues": high_issues,
+        "med_issues": med_issues,
+        "low_issues": low_issues,
+        "xlsx_filename": "nexpose_data.xlsx",
+    }
+
+    workbook_bytes = _render_nexpose_metrics_workbook(metrics_payload)
+    if workbook_bytes:
+        metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
+
+    return metrics_payload
+
+
+def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
+    """Create an XLSX workbook for the processed Nexpose metrics."""
+
+    buffer = io.BytesIO()
+    workbook = Workbook(buffer, {"in_memory": True})
+
+    def header_format(color: str):
+        fmt = workbook.add_format(
+            {
+                "bold": True,
+                "border": 1,
+                "font_color": "#000000",
+                "bg_color": color,
+                "pattern": 1,
+            }
+        )
+        return fmt
+
+    summary_header_cache: Dict[str, Any] = {}
+
+    def get_header(color: str):
+        if color not in summary_header_cache:
+            summary_header_cache[color] = header_format(color)
+        return summary_header_cache[color]
+
+    summary_data_fmt = workbook.add_format({"border": 1, "font_color": "#000000"})
+    summary_band_fmt = workbook.add_format({"border": 1, "bg_color": "#99CCFF", "font_color": "#000000"})
+    text_data_fmt = workbook.add_format({"border": 1, "text_wrap": True, "font_color": "#000000"})
+    text_band_fmt = workbook.add_format({"border": 1, "text_wrap": True, "bg_color": "#99CCFF", "font_color": "#000000"})
+
+    def _calc_text_width(value: Any) -> int:
+        if value is None:
+            return 0
+        text = str(value)
+        lines = text.splitlines() or [text]
+        return max(len(line) for line in lines)
+
+    def write_table(
+        worksheet,
+        *,
+        start_row: int,
+        start_col: int,
+        headers: List[str],
+        rows: List[List[Any]],
+        header_colors: Optional[List[str]] = None,
+        data_format=text_data_fmt,
+        band_format=text_band_fmt,
+        width_tracker: Optional[Dict[int, int]] = None,
+    ) -> None:
+        for idx, header in enumerate(headers):
+            color = (header_colors[idx] if header_colors and idx < len(header_colors) else (header_colors[0] if header_colors else "#0066CC"))
+            worksheet.write(start_row, start_col + idx, header, get_header(color))
+            if width_tracker is not None:
+                column_index = start_col + idx
+                width_tracker[column_index] = max(
+                    width_tracker.get(column_index, 0),
+                    _calc_text_width(header),
+                )
+        for row_index, row in enumerate(rows):
+            fmt = band_format if row_index % 2 == 1 else data_format
+            for col_index, value in enumerate(row):
+                worksheet.write(start_row + 1 + row_index, start_col + col_index, value, fmt)
+                if width_tracker is not None:
+                    column_index = start_col + col_index
+                    width_tracker[column_index] = max(
+                        width_tracker.get(column_index, 0),
+                        _calc_text_width(value),
+                    )
+
+    def apply_autofit(worksheet, width_tracker: Dict[int, int], columns: Iterable[int]) -> None:
+        for column in columns:
+            width = width_tracker.get(column, 10)
+            worksheet.set_column(column, column, min(width + 2, 60))
+
+    exec_ws = workbook.add_worksheet("Executive Summary")
+    exec_width_tracker: Dict[int, int] = {}
+
+    host_rows = [
+        [row["host"], row["high"], row["med"], row["low"]]
+        for row in metrics.get("host_counts", [])
+    ]
+    write_table(
+        exec_ws,
+        start_row=0,
+        start_col=0,
+        headers=["Host", "High", "Medium", "Low"],
+        rows=host_rows,
+        header_colors=["#0066CC", "#0066CC", "#0066CC", "#0066CC"],
+        data_format=summary_data_fmt,
+        band_format=summary_band_fmt,
+        width_tracker=exec_width_tracker,
+    )
+
+    summary = metrics.get("summary") or {}
+    totals_rows = [[
+        summary.get("total", 0),
+        summary.get("total_high", 0),
+        summary.get("total_med", 0),
+        summary.get("total_low", 0),
+    ]]
+    write_table(
+        exec_ws,
+        start_row=0,
+        start_col=5,
+        headers=["Total", "Total High", "Total Medium", "Total Low"],
+        rows=totals_rows,
+        header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
+        data_format=summary_data_fmt,
+        band_format=summary_band_fmt,
+        width_tracker=exec_width_tracker,
+    )
+
+    unique_rows = [[
+        summary.get("unique", 0),
+        summary.get("unique_high", 0),
+        summary.get("unique_med", 0),
+        summary.get("unique_low", 0),
+    ]]
+    write_table(
+        exec_ws,
+        start_row=3,
+        start_col=5,
+        headers=["Unique Total", "Unique High", "Unique Medium", "Unique Low"],
+        rows=unique_rows,
+        header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
+        data_format=summary_data_fmt,
+        band_format=summary_band_fmt,
+        width_tracker=exec_width_tracker,
+    )
+
+    top_host_rows = [
+        [row.get("host"), row.get("high"), row.get("med"), row.get("low")]
+        for row in metrics.get("top_hosts", [])
+    ]
+    write_table(
+        exec_ws,
+        start_row=6,
+        start_col=5,
+        headers=["Top Risk Hosts", "High", "Medium", "Low"],
+        rows=top_host_rows,
+        header_colors=["#FF0000", "#FF0000", "#FF9900", "#99CC00"],
+        data_format=summary_data_fmt,
+        band_format=summary_band_fmt,
+        width_tracker=exec_width_tracker,
+    )
+
+    impact_rows = [
+        [item.get("impact"), item.get("count", 0)]
+        for item in metrics.get("top_impacts", [])
+    ]
+    impact_headers = ["Top 10 Issue Impacts", "Count"]
+    write_table(
+        exec_ws,
+        start_row=0,
+        start_col=10,
+        headers=impact_headers,
+        rows=impact_rows,
+        header_colors=["#0066CC", "#0066CC"],
+        data_format=text_data_fmt,
+        band_format=text_band_fmt,
+        width_tracker=exec_width_tracker,
+    )
+
+    tab_index_rows = [[entry] for entry in metrics.get("tab_index_entries", [])]
+    write_table(
+        exec_ws,
+        start_row=16,
+        start_col=10,
+        headers=["Tab Index"],
+        rows=tab_index_rows,
+        header_colors=["#CCFFFF"],
+        data_format=text_data_fmt,
+        band_format=text_band_fmt,
+        width_tracker=exec_width_tracker,
+    )
+
+    exec_columns_to_fit = list(range(0, 4)) + list(range(5, 9)) + [10, 11]
+    if hasattr(exec_ws, "autofit"):
+        exec_ws.autofit()
+    else:
+        apply_autofit(exec_ws, exec_width_tracker, exec_columns_to_fit)
+
+    def write_issue_sheet(name: str, data_rows: List[List[Any]], headers: List[str]) -> None:
+        ws = workbook.add_worksheet(name)
+        ws.set_column(0, len(headers) - 1, 35)
+        write_table(
+            ws,
+            start_row=0,
+            start_col=0,
+            headers=headers,
+            rows=data_rows,
+            header_colors=["#0066CC"] * len(headers),
+            data_format=text_data_fmt,
+            band_format=text_band_fmt,
+        )
+
+    unique_headers = ["Risk", "Issue", "Impact", "Remediation", "Category"]
+    unique_rows_table = [
+        [entry.get("risk"), entry.get("issue"), entry.get("impact"), entry.get("remediation"), entry.get("category")]
+        for entry in metrics.get("unique_issues", [])
+    ]
+    write_issue_sheet("Unique Issues", unique_rows_table, unique_headers)
+
+    majority_rows = [
+        [entry.get("risk"), entry.get("issue"), entry.get("impact"), entry.get("remediation"), entry.get("category")]
+        for entry in metrics.get("majority_unique", [])
+    ]
+    write_issue_sheet("Issues by Majority Type", majority_rows, unique_headers)
+
+    def build_full_rows(items: List[Dict[str, Any]]) -> List[List[Any]]:
+        rows = []
+        for item in items:
+            rows.append(
+                [
+                    item.get("ip"),
+                    item.get("hostnames"),
+                    item.get("port"),
+                    item.get("issue"),
+                    item.get("impact"),
+                    item.get("details"),
+                    item.get("evidence"),
+                    item.get("remediation"),
+                    item.get("risk"),
+                    item.get("category"),
+                ]
+            )
+        return rows
+
+    full_headers = [
+        "IP Address",
+        "Hostname(s)",
+        "Port",
+        "Issue",
+        "Impact",
+        "Issue Details",
+        "Evidence",
+        "Remediation",
+        "Risk",
+        "Category",
+    ]
+
+    workbook.add_worksheet("Subset of Majority Issues")
+
+    all_rows = build_full_rows(metrics.get("all_issues", []))
+    write_issue_sheet("All Issues", all_rows, full_headers)
+
+    high_rows = build_full_rows(metrics.get("high_issues", []))
+    write_issue_sheet("High Risk Issues", high_rows, full_headers)
+
+    med_rows = build_full_rows(metrics.get("med_issues", []))
+    write_issue_sheet("Medium Risk Issues", med_rows, full_headers)
+
+    low_rows = build_full_rows(metrics.get("low_issues", []))
+    write_issue_sheet("Low Risk Issues", low_rows, full_headers)
+
+    workbook.close()
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def _categorize_web_risk(raw_value: str) -> Optional[str]:
@@ -1862,12 +3172,12 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     dns_results: Dict[str, List[Dict[str, str]]] = {}
     web_results: Dict[str, Dict[str, Counter[Tuple[str, str]]]] = {}
     web_cap_entries: List[Dict[str, Any]] = []
-    nexpose_cap_entries: List[Dict[str, Any]] = []
     ip_results: Dict[str, List[str]] = {
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
 
     firewall_results: List[Dict[str, Any]] = []
+    missing_matrix_tracker: Dict[str, Dict[str, Dict[str, str]]] = {}
     nexpose_definitions_by_key: Dict[str, str] = {
         definition["artifact_key"]: definition["label"]
         for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
@@ -1883,6 +3193,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
+        xml_artifact_key = _resolve_nexpose_xml_artifact_key(data_file)
         if label == "dns_report.csv":
             domain = (data_file.requirement_context or data_file.description or data_file.filename).strip()
             domain = domain or "Unknown Domain"
@@ -1904,10 +3215,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_cap_entries = parse_burp_cap_report(data_file.file)
             if parsed_cap_entries:
                 web_cap_entries.extend(parsed_cap_entries)
-        elif label in {"nexpose-cap.csv", "nexpose_cap.csv"}:
-            parsed_nexpose_cap = parse_nexpose_cap_report(data_file.file)
-            if parsed_nexpose_cap:
-                nexpose_cap_entries.extend(parsed_nexpose_cap)
         elif label == "firewall_csv.csv":
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
@@ -1923,6 +3230,54 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     "label": definition["label"],
                     **parsed_vulnerabilities,
                 }
+        elif xml_artifact_key:
+            parsed_xml = parse_nexpose_xml_report(
+                data_file.file, vulnerability_matrix=vulnerability_matrix
+            )
+            existing_entry = artifacts.get(xml_artifact_key)
+            combined_findings: List[Dict[str, str]] = []
+            combined_software: List[Dict[str, str]] = []
+            if isinstance(existing_entry, dict):
+                existing_findings = existing_entry.get("findings")
+                existing_software = existing_entry.get("software")
+                if isinstance(existing_findings, list):
+                    combined_findings.extend(existing_findings)
+                if isinstance(existing_software, list):
+                    combined_software.extend(existing_software)
+            parsed_findings = parsed_xml.get("findings") if isinstance(parsed_xml, dict) else []
+            parsed_software = parsed_xml.get("software") if isinstance(parsed_xml, dict) else []
+            parsed_missing = (
+                parsed_xml.get("missing_matrix_entries")
+                if isinstance(parsed_xml, dict)
+                else []
+            )
+            if isinstance(parsed_findings, list):
+                combined_findings.extend(parsed_findings)
+            if isinstance(parsed_software, list):
+                combined_software.extend(parsed_software)
+            if isinstance(parsed_missing, list) and parsed_missing:
+                tracker = missing_matrix_tracker.setdefault(xml_artifact_key, {})
+                for row in parsed_missing:
+                    if not isinstance(row, dict):
+                        continue
+                    title = (row.get("Vulnerability") or "").strip()
+                    if not title:
+                        continue
+                    tracker[title.lower()] = {
+                        "Vulnerability": title,
+                        "Action Required": row.get("Action Required", ""),
+                        "Remediation Impact": row.get("Remediation Impact", ""),
+                        "Vulnerability Threat": row.get("Vulnerability Threat", ""),
+                        "Category": row.get("Category", ""),
+                        "CVE": row.get("CVE", ""),
+                    }
+            artifacts[xml_artifact_key] = {
+                "findings": combined_findings,
+                "software": combined_software,
+            }
+            metrics_key = NEXPOSE_METRICS_KEY_MAP.get(xml_artifact_key)
+            if metrics_key:
+                artifacts[metrics_key] = _build_nexpose_metrics_payload(combined_findings)
         else:
             requirement_slug = (data_file.requirement_slug or "").strip()
             if requirement_slug:
@@ -1998,9 +3353,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     if web_cap_entries:
         artifacts["web_cap_map"] = web_cap_entries
 
-    if nexpose_cap_entries:
-        artifacts["nexpose_cap_map"] = nexpose_cap_entries
-
     for artifact_key, values in ip_results.items():
         if values:
             artifacts[artifact_key] = values
@@ -2020,6 +3372,21 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             "med": _coerce_severity_group(details.get("med")),
             "low": _coerce_severity_group(details.get("low")),
         }
+
+    if missing_matrix_tracker:
+        missing_by_artifact: Dict[str, Dict[str, Any]] = {}
+        for artifact_key, rows in missing_matrix_tracker.items():
+            if not rows:
+                continue
+            ordered = sorted(
+                rows.values(), key=lambda row: (row.get("Vulnerability") or "").lower()
+            )
+            if ordered:
+                missing_by_artifact[artifact_key] = {"entries": ordered}
+        if missing_by_artifact:
+            artifacts["nexpose_matrix_gaps"] = {
+                "missing_by_artifact": missing_by_artifact
+            }
 
     return artifacts
 
