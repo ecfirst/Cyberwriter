@@ -9,6 +9,7 @@ import io
 import logging
 import re
 import unicodedata
+from base64 import b64decode
 from collections import Counter, OrderedDict
 from collections import abc
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
@@ -539,6 +540,354 @@ def load_web_issue_matrix() -> Dict[str, Dict[str, str]]:
         }
 
     return matrix
+
+
+def _normalize_issue_name(value: str) -> str:
+    """Normalize Burp issue names for grouping and matrix lookups."""
+
+    if "Vulnerable Software detected" in value:
+        return "Vulnerable Software detected"
+    if "PostgreSQL injection" in value:
+        return "SQL injection"
+    if "SQL Server injection" in value:
+        return "SQL injection"
+    return value
+
+
+def _get_matrix_entry(
+    lookup_title: str, web_issues_matrix: Optional[Mapping[str, Dict[str, str]]]
+) -> Optional[Dict[str, str]]:
+    """Return a web issue matrix entry matching ``lookup_title`` when available."""
+
+    if not web_issues_matrix:
+        return None
+
+    normalized = _normalize_matrix_key(lookup_title)
+    if not normalized:
+        return None
+
+    if isinstance(web_issues_matrix, dict):
+        entry = web_issues_matrix.get(normalized)
+        if entry:
+            return entry
+
+    for _, entry in getattr(web_issues_matrix, "items", lambda: [])():
+        if not isinstance(entry, dict):
+            continue
+        issue_key = _normalize_matrix_key(entry.get("issue"))
+        if issue_key and issue_key == normalized:
+            return entry
+
+    return None
+
+
+def _compute_lookup_title(issue_name: str) -> str:
+    """Derive the lookup title for matrix resolution."""
+
+    if " includes a vulnerable version of the library " in issue_name:
+        return "includes a vulnerable version of the library"
+    if "Vulnerable version of the library " in issue_name:
+        return "includes a vulnerable version of the library"
+    if "Detected Deserialization" in issue_name:
+        return "Detected Deserialization"
+    if " Vulnerable Software detected" in issue_name or "Vulnerable version of " in issue_name:
+        return "Vulnerable Software detected"
+    if "Cross-Site Request Forgery (CSRF)" in issue_name:
+        return "Cross-site request forgery"
+    return issue_name
+
+
+def _clean_burp_text(text: str) -> str:
+    """Clean Burp XML strings into normalized plain text."""
+
+    replacements = {
+        "<p>": "",
+        "</p>": "\n",
+        "<br>": "\n",
+        "</br>": "\n",
+        "<br/>": "\n",
+        "<b>": "'",
+        "</b>": "'",
+        "<i>": "'",
+        "</i>": "'",
+        "<pre>": "",
+        "</pre>": "\n",
+        "&lt;": "<",
+        "&gt;": ">",
+        "&amp;": "&",
+        "&quote;": "'",
+        "&quot;": "'",
+        "<ul>": "\n",
+        "</ul>": "",
+        "<li>": "",
+        "</li>": "\n",
+        "<table>": "",
+        "</table>": "",
+        "<tr>": "",
+        "</tr>": "\n",
+        "<td>": "",
+        "</td>": "",
+        "<h4>": "",
+        "</h4>": ":\n",
+        "Burp Suite": "ecfirst",
+        "Burp ": "ecfirst ",
+    }
+
+    cleaned = text.replace("\n", " ")
+    for target, replacement in replacements.items():
+        cleaned = cleaned.replace(target, replacement)
+
+    cleaned = re.sub(r"<a href=\".*?\">", "", cleaned)
+    cleaned = cleaned.replace("</a>", "")
+    cleaned = cleaned.replace(
+        "<div style=\"font-size:8px\">This issue was reported by ActiveScan++</div>",
+        "",
+    )
+    cleaned = cleaned.replace(
+        "Refer to Backslash Powered Scanning for further details and guidance interpreting results.",
+        "",
+    )
+
+    while "  " in cleaned:
+        cleaned = cleaned.replace("  ", " ")
+
+    return cleaned.strip()
+
+
+def _compute_burp_score(severity: str, confidence: str) -> int:
+    """Calculate Burp numeric score based on severity and confidence."""
+
+    base_map = {"High": 9, "Medium": 6, "Low": 3, "Information": 1}
+    modifier_map = {"Certain": 1, "Firm": 0, "Tentative": -1}
+
+    base = base_map.get(severity, 0)
+    modifier = modifier_map.get(confidence, 0)
+    if severity == "Information":
+        modifier = 0
+    return base + modifier
+
+
+def _parse_burp_background(issue: ElementTree.Element, issue_name: str) -> str:
+    """Return background text for an issue."""
+
+    background_elem = issue.find("issueBackground")
+    if background_elem is not None and background_elem.text:
+        return _clean_burp_text(background_elem.text)
+
+    if issue_name == "Vulnerable Software detected":
+        return (
+            "Software that is out of date may contain known unpatched vulnerabilities "
+            "that attacker can exploit to compromise the application, system and/or users."
+        )
+
+    issue_detail_elem = issue.find("issueDetail")
+    if issue_detail_elem is not None and issue_detail_elem.text:
+        return _clean_burp_text(issue_detail_elem.text)
+
+    return ""
+
+
+def _parse_burp_remediation(issue: ElementTree.Element) -> str:
+    """Return remediation text or a placeholder when absent."""
+
+    remediation_elem = issue.find("remediationBackground")
+    if remediation_elem is not None and remediation_elem.text:
+        return _clean_burp_text(remediation_elem.text)
+
+    remediation_detail_elem = issue.find("remediationDetail")
+    if remediation_detail_elem is not None and remediation_detail_elem.text:
+        return _clean_burp_text(remediation_detail_elem.text)
+
+    return "<<CUSTOM_REMED>>"
+
+
+def _parse_burp_fix(issue_name: str, web_issues_matrix: Optional[Mapping[str, Dict[str, str]]]) -> str:
+    """Return fix text from the web issues matrix when present."""
+
+    lookup_title = _compute_lookup_title(issue_name)
+    matrix_entry = _get_matrix_entry(lookup_title, web_issues_matrix)
+    if matrix_entry:
+        return matrix_entry.get("fix", "")
+    return ""
+
+
+def _parse_burp_impact(issue_name: str, web_issues_matrix: Optional[Mapping[str, Dict[str, str]]]) -> str:
+    """Return impact text from the web issues matrix when present."""
+
+    lookup_title = _compute_lookup_title(issue_name)
+    matrix_entry = _get_matrix_entry(lookup_title, web_issues_matrix)
+    if matrix_entry:
+        return matrix_entry.get("impact", "")
+    return ""
+
+
+def _decode_burp_response(issue: ElementTree.Element) -> Optional[str]:
+    """Return the decoded response body from the first requestresponse block."""
+
+    for rr in issue.findall("requestresponse"):
+        response_elem = rr.find("response")
+        if response_elem is None or response_elem.text is None:
+            continue
+
+        text = response_elem.text
+        if response_elem.get("base64", "false").lower() == "true":
+            try:
+                decoded = b64decode(text)
+                return decoded.decode("utf-8", errors="replace")
+            except Exception:  # pragma: no cover - defensive fallback
+                return None
+        return text
+
+    return None
+
+
+def _parse_burp_details(issue: ElementTree.Element, issue_name: str) -> str:
+    """Return evidence/details text for an issue."""
+
+    issue_detail_elem = issue.find("issueDetail")
+    issue_background_elem = issue.find("issueBackground")
+    issue_type = (issue.findtext("type") or "").strip()
+    path_text = (issue.findtext("path") or "").strip()
+
+    if issue_detail_elem is not None and issue_detail_elem.text:
+        if (issue_background_elem is not None and issue_background_elem.text) or (
+            issue_name == "Vulnerable Software detected"
+        ):
+            return _clean_burp_text(issue_detail_elem.text)
+
+    response_text = _decode_burp_response(issue)
+
+    if (
+        issue_type == "134217728"
+        and issue_name == "Detailed Error Messages Revealed"
+        and "ScriptResource.axd" not in path_text
+        and "WebResource.axd" not in path_text
+        and response_text
+    ):
+        t1 = response_text.find("</html>")
+        if t1 >= 0:
+            t2 = t1 + 7
+        else:
+            t2 = 0
+        if t2 == len(response_text):
+            opening_index = response_text.find("<html ")
+            if opening_index >= 0:
+                t2 = opening_index + 6
+        snippet = response_text[t2:]
+        if len(snippet) >= 32000:
+            snippet = f"{snippet[:30000]} ... [SNIP] ..."
+        if t1 >= 0:
+            return f"... {snippet}"
+        return snippet
+
+    if (
+        issue_type == "5245344"
+        and issue_name == "Frameable response (potential Clickjacking)"
+        and "ScriptResource.axd" not in path_text
+        and "WebResource.axd" not in path_text
+        and response_text
+    ):
+        header_end = response_text.find("\r\n\r\n")
+        headers = response_text[:header_end] if header_end >= 0 else response_text
+        return f"{headers}\n... [SNIP] ..."
+
+    return "See response(s)"
+
+
+def parse_burp_xml_report(
+    file_obj: File, web_issues_matrix: Optional[Mapping[str, Dict[str, str]]] = None
+) -> List[Dict[str, Any]]:
+    """Parse a Burp XML export into normalized finding entries."""
+
+    raw_content = file_obj.read()
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+
+    if isinstance(raw_content, bytes):
+        xml_content = raw_content.decode("utf-8", errors="replace")
+    else:
+        xml_content = str(raw_content)
+
+    try:
+        root = ElementTree.fromstring(xml_content)
+    except ElementTree.ParseError:
+        return []
+
+    grouped: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = {}
+
+    for issue in root.findall("issue"):
+        severity = (issue.findtext("severity") or "").strip() or "Low"
+        confidence = (issue.findtext("confidence") or "").strip()
+        risk_label = "Low" if severity == "Information" else severity
+        score = _compute_burp_score(severity, confidence)
+
+        issue_name_raw = (issue.findtext("name") or "").strip()
+        issue_name = _normalize_issue_name(issue_name_raw)
+        host_name = (issue.findtext("host") or "").strip()
+        path = (issue.findtext("location") or issue.findtext("path") or "").strip()
+        details = _parse_burp_details(issue, issue_name)
+
+        path_detail_key = f"{path}::{details}"
+        risk_key = f"{risk_label}::{score}"
+
+        risk_entry = grouped.setdefault(risk_key, {})
+        issue_entry = risk_entry.setdefault(issue_name, {})
+        host_entry = issue_entry.setdefault(
+            host_name,
+            {
+                "background": _parse_burp_background(issue, issue_name),
+                "remediation": _parse_burp_remediation(issue),
+                "impact": _parse_burp_impact(issue_name, web_issues_matrix),
+                "fix": _parse_burp_fix(issue_name, web_issues_matrix),
+                "paths": {},
+            },
+        )
+
+        if path_detail_key in host_entry["paths"]:
+            continue
+
+        host_entry["paths"][path_detail_key] = {"path": path, "details": details}
+
+        if not host_entry.get("background"):
+            host_entry["background"] = _parse_burp_background(issue, issue_name)
+        if not host_entry.get("remediation"):
+            host_entry["remediation"] = _parse_burp_remediation(issue)
+        if not host_entry.get("impact"):
+            host_entry["impact"] = _parse_burp_impact(issue_name, web_issues_matrix)
+        if not host_entry.get("fix"):
+            host_entry["fix"] = _parse_burp_fix(issue_name, web_issues_matrix)
+
+    findings: List[Dict[str, Any]] = []
+
+    for risk_key in sorted(grouped.keys()):
+        risk_label, score_text = risk_key.split("::", 1)
+        score = int(score_text) if score_text.isdigit() else _coerce_int(score_text) or 0
+
+        for issue_name, host_map in grouped[risk_key].items():
+            for host_name, host_data in host_map.items():
+                remediation_text = host_data.get("remediation", "")
+                fix_text = host_data.get("fix", "")
+                detailed_remediation = (
+                    remediation_text if remediation_text != "<<CUSTOM_REMED>>" else fix_text
+                )
+
+                for path_detail in host_data.get("paths", {}).values():
+                    findings.append(
+                        {
+                            "Risk": risk_label,
+                            "Issue": issue_name,
+                            "Impact": host_data.get("impact", ""),
+                            "Background": host_data.get("background", ""),
+                            "Fix": fix_text,
+                            "Host": host_name,
+                            "Path": path_detail.get("path", ""),
+                            "Evidence": path_detail.get("details", ""),
+                            "Detailed Remediation": detailed_remediation,
+                            "Score": score,
+                        }
+                    )
+
+    return findings
 
 
 def _default_password_compliance_matrix() -> Dict[str, Dict[str, Any]]:
@@ -3190,6 +3539,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     vulnerability_matrix = load_vulnerability_matrix()
     web_issue_matrix = load_web_issue_matrix()
     burp_csv_uploaded = False
+    parsed_web_findings: List[Dict[str, Any]] = []
 
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
@@ -3215,6 +3565,10 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_cap_entries = parse_burp_cap_report(data_file.file)
             if parsed_cap_entries:
                 web_cap_entries.extend(parsed_cap_entries)
+        elif label == "burp_xml.xml":
+            findings = parse_burp_xml_report(data_file.file, web_issue_matrix)
+            if findings:
+                parsed_web_findings.extend(findings)
         elif label == "firewall_csv.csv":
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
@@ -3347,11 +3701,14 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 require_burp_csv=burp_csv_uploaded,
             )
             if ai_response:
-                web_summary["ai_response"] = ai_response
+            web_summary["ai_response"] = ai_response
             artifacts["web_issues"] = web_summary
 
     if web_cap_entries:
         artifacts["web_cap_map"] = web_cap_entries
+
+    if parsed_web_findings:
+        artifacts["web_findings"] = parsed_web_findings
 
     for artifact_key, values in ip_results.items():
         if values:

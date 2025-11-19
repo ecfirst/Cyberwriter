@@ -2825,6 +2825,87 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(high_items[0]["impact"], "SQL matrix impact")
         self.assertEqual(high_items[0]["fix"], "Use parameterized queries")
 
+    def test_burp_xml_upload_populates_web_findings(self):
+        WebIssueMatrixEntry.objects.create(
+            title="SQL injection",
+            impact="Matrix impact",
+            fix="Matrix fix",
+        )
+
+        WebIssueMatrixEntry.objects.create(
+            title="Vulnerable Software detected",
+            impact="Outdated impact",
+            fix="Update software",
+        )
+
+        response_payload = "HTTP/1.1 200 OK\r\nHeader: value\r\n\r\n<html>content</html>"
+        xml_payload = f"""<?xml version='1.0' encoding='UTF-8'?>
+<issues>
+  <issue>
+    <serialNumber>1</serialNumber>
+    <type>134217728</type>
+    <name>SQL Server injection</name>
+    <host ip='192.0.2.1'>app.example.com</host>
+    <path>/login</path>
+    <location>/login</location>
+    <severity>High</severity>
+    <confidence>Firm</confidence>
+    <issueBackground><p>Some background</p></issueBackground>
+    <issueDetail><b>Example evidence</b></issueDetail>
+    <remediationBackground>Patch immediately</remediationBackground>
+    <requestresponse>
+      <response base64='true'>{base64_response}</response>
+    </requestresponse>
+  </issue>
+  <issue>
+    <serialNumber>2</serialNumber>
+    <type>99999</type>
+    <name>Vulnerable Software detected on host</name>
+    <host ip='198.51.100.2'>app.example.com</host>
+    <path>/status</path>
+    <location>/status</location>
+    <severity>Information</severity>
+    <confidence>Certain</confidence>
+    <issueDetail>Software outdated</issueDetail>
+    <remediationDetail></remediationDetail>
+  </issue>
+</issues>
+""".format(base64_response=base64.b64encode(response_payload.encode()).decode())
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "burp_xml.xml",
+                xml_payload.encode(),
+                content_type="text/xml",
+            ),
+            requirement_label="burp_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        findings = self.project.data_artifacts.get("web_findings")
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), 2)
+
+        sorted_findings = sorted(findings, key=lambda entry: (entry["Issue"], entry["Path"]))
+        sql_finding, vuln_finding = sorted_findings
+
+        self.assertEqual(sql_finding["Issue"], "SQL injection")
+        self.assertEqual(sql_finding["Risk"], "High")
+        self.assertEqual(sql_finding["Score"], 9)
+        self.assertEqual(sql_finding["Impact"], "Matrix impact")
+        self.assertEqual(sql_finding["Detailed Remediation"], "Patch immediately")
+        self.assertIn("Example evidence", sql_finding["Evidence"])
+
+        self.assertEqual(vuln_finding["Issue"], "Vulnerable Software detected")
+        self.assertEqual(vuln_finding["Risk"], "Low")
+        self.assertEqual(vuln_finding["Score"], 1)
+        self.assertEqual(vuln_finding["Impact"], "Outdated impact")
+        self.assertEqual(vuln_finding["Detailed Remediation"], "Update software")
+
     def test_nexpose_metrics_populate_cap_map(self):
         xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
 <NexposeReport version='1.0'>
