@@ -1448,12 +1448,14 @@ class ProjectDataResponsesUpdateTests(TestCase):
         labels = [requirement.get("label") for requirement in requirements]
 
         self.assertIn("burp_csv.csv", labels)
+        self.assertIn("burp_xml.xml", labels)
         dns_indexes = [index for index, label in enumerate(labels) if label == "dns_report.csv"]
         self.assertTrue(dns_indexes)
         burp_index = labels.index("burp_csv.csv")
         self.assertEqual(burp_index, max(dns_indexes) + 1)
+        self.assertEqual(labels[burp_index + 1], "burp_xml.xml")
         self.assertEqual(
-            labels[burp_index + 1 : burp_index + 4],
+            labels[burp_index + 2 : burp_index + 5],
             [
                 "external_nexpose_xml.xml",
                 "internal_nexpose_xml.xml",
@@ -1480,16 +1482,18 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(
             labels[burp_index + 1 : burp_index + 4],
             [
+                "burp_xml.xml",
                 "external_nexpose_xml.xml",
                 "internal_nexpose_xml.xml",
-                "iot_nexpose_xml.xml",
             ],
         )
         self.assertEqual(
-            labels[burp_index + 4 : burp_index + 6],
+            labels[burp_index + 4 : burp_index + 8],
             [
+                "iot_nexpose_xml.xml",
                 IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_EXTERNAL].label,
                 IP_ARTIFACT_DEFINITIONS[IP_ARTIFACT_TYPE_INTERNAL].label,
+                "burp_cap.csv",
             ],
         )
 

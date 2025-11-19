@@ -1936,6 +1936,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             "internal_nexpose_xml.xml",
             "iot_nexpose_xml.xml",
         }
+        burp_requirement_labels = {"burp_csv.csv", "burp_xml.xml"}
         reordered_requirements = []
         nexpose_requirements = []
         burp_insert_index = None
@@ -1945,7 +1946,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                 nexpose_requirements.append(requirement)
                 continue
             reordered_requirements.append(requirement)
-            if label == "burp_csv.csv":
+            if label in burp_requirement_labels:
                 burp_insert_index = len(reordered_requirements)
         if nexpose_requirements:
             if burp_insert_index is None:
@@ -2006,7 +2007,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                     fail_count = 0
                 requirement["parsed_fail_count"] = fail_count
                 setattr(existing, "parsed_fail_count", fail_count)
-            if label == "burp_csv.csv":
+            if label in burp_requirement_labels:
                 supplemental_cards.append({"card_type": "required", "data": requirement})
                 pending_ip_cards_after_burp = True
                 continue
