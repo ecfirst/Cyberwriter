@@ -1769,15 +1769,16 @@ def _parse_ip_list(file_obj: File) -> List[str]:
 
 
 FIREWALL_REPORT_FIELD_SPECS: Tuple[Tuple[str, str], ...] = (
-    ("risk", "Risk"),
-    ("issue", "Issue"),
-    ("devices", "Devices"),
-    ("solution", "Solution"),
-    ("impact", "Impact"),
-    ("details", "Details"),
-    ("reference", "Reference"),
-    ("accepted", "Accepted"),
-    ("type", "Type"),
+    ("Risk", "Risk"),
+    ("Issue", "Issue"),
+    ("Devices", "Devices"),
+    ("Solution", "Solution"),
+    ("Impact", "Impact"),
+    ("Details", "Details"),
+    ("Reference", "Reference"),
+    ("Score", "Score"),
+    ("Accepted", "Accepted"),
+    ("Type", "Type"),
 )
 
 
@@ -2383,20 +2384,28 @@ def parse_firewall_report(file_obj: File) -> List[Dict[str, Any]]:
 
     findings: List[Dict[str, Any]] = []
     for row in _decode_file(file_obj):
-        normalized_entry: Dict[str, Any] = {}
+        normalized_entry: "OrderedDict[str, Any]" = OrderedDict()
         has_content = False
 
         for field_key, header in FIREWALL_REPORT_FIELD_SPECS:
+            if field_key == "Score":
+                raw_score = _get_case_insensitive(row, header)
+                parsed_score = _parse_firewall_score(raw_score)
+                score_value = (
+                    parsed_score
+                    if parsed_score is not None
+                    else (str(raw_score).strip() if raw_score is not None else "")
+                )
+                normalized_entry[field_key] = score_value
+                if score_value not in (None, ""):
+                    has_content = True
+                continue
+
             value = _get_case_insensitive(row, header)
             text_value = str(value).strip() if value is not None else ""
             normalized_entry[field_key] = text_value
             if text_value:
                 has_content = True
-
-        score_value = _parse_firewall_score(_get_case_insensitive(row, "Score"))
-        normalized_entry["score"] = score_value
-        if score_value is not None:
-            has_content = True
 
         if has_content:
             findings.append(normalized_entry)
@@ -2713,12 +2722,12 @@ def _summarize_firewall_vulnerabilities(
         if not isinstance(entry, dict):
             continue
 
-        risk_value = _normalize_firewall_risk(str(entry.get("risk") or ""))
+        risk_value = _normalize_firewall_risk(str(_get_case_insensitive(entry, "Risk") or ""))
         if not risk_value:
             continue
 
-        issue_text = (entry.get("issue") or "").strip()
-        impact_text = _first_sentence(entry.get("impact") or "")
+        issue_text = (_get_case_insensitive(entry, "Issue") or "").strip()
+        impact_text = _first_sentence(_get_case_insensitive(entry, "Impact") or "")
 
         if not issue_text and not impact_text:
             continue

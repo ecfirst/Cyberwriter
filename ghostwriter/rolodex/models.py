@@ -1318,7 +1318,10 @@ class Project(models.Model):
                     normalized_entry.update(cap_defaults)
 
                 for key, value in entry.items():
-                    if key == "score":
+                    key_text = str(key)
+                    normalized_key = key_text.lower()
+
+                    if normalized_key == "score":
                         score_value = _coerce_finding_score(value)
                         if score_value is not None:
                             normalized_entry["finding_score"] = score_value
@@ -1326,7 +1329,7 @@ class Project(models.Model):
 
                     normalized_value = _normalize_firewall_value(value)
                     if normalized_value is not None:
-                        normalized_entry[key] = normalized_value
+                        normalized_entry[normalized_key] = normalized_value
 
                 if normalized_entry:
                     firewall_cap_entries.append(normalized_entry)
