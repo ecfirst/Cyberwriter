@@ -255,12 +255,6 @@
                                 Download Missing
                               </a>
                             {% endif %}
-                            {% if requirement.label == 'nexpose_cap.csv' %}
-                              <div class="custom-control custom-switch mt-2 mt-md-0 ml-md-3">
-                                <input type="checkbox" class="custom-control-input" id="id_distilled_{{ requirement.slug }}" name="nexpose_distilled" value="1">
-                                <label class="custom-control-label" for="id_distilled_{{ requirement.slug }}">Distilled</label>
-                              </div>
-                            {% endif %}
                           </div>
                         </form>
                       </div>
@@ -411,6 +405,30 @@
                 </div>
               </div>
             {% endfor %}
+          </div>
+          <div class="card mb-3">
+            <div class="card-body">
+              <form method="post" action="{% url 'rolodex:project_nexpose_distilled_update' project.id %}" class="mb-0">
+                {% csrf_token %}
+                <div class="custom-control custom-switch">
+                  <input
+                    type="checkbox"
+                    class="custom-control-input"
+                    id="id_nexpose_distilled"
+                    name="nexpose_distilled"
+                    value="1"
+                    {% if nexpose_distilled %}checked{% endif %}
+                  >
+                  <label class="custom-control-label" for="id_nexpose_distilled">
+                    Distill Nexpose CAP issues to remediation actions
+                  </label>
+                </div>
+                <p class="text-muted small mt-2 mb-3">
+                  When enabled, CAP exports replace the vulnerability title with the remediation action text.
+                </p>
+                <button type="submit" class="btn btn-primary btn-sm">Save Preference</button>
+              </form>
+            </div>
           </div>
         {% else %}
           <p class="text-muted offset-2 col-8">No Nexpose XML uploads have been processed yet.</p>

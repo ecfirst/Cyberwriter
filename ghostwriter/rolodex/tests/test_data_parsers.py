@@ -2825,21 +2825,74 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(high_items[0]["impact"], "SQL matrix impact")
         self.assertEqual(high_items[0]["fix"], "Use parameterized queries")
 
-    def test_nexpose_cap_upload_populates_cap_map(self):
-        csv_lines = [
-            "Systems,Action,Sev,Issue,ecfirst",
-            "db01.example.com,Patch OpenSSL,5,SSL Certificate Expired,Yes",
-            "web-tier,Restrict Access,3,,",
-        ]
+    def test_nexpose_metrics_populate_cap_map(self):
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <scans>
+    <scan id='1' name='Scan' startTime='20230101T000000000' endTime='20230101T010000000' status='finished'/>
+  </scans>
+  <nodes>
+    <node address='192.0.2.10' status='alive'>
+      <names>
+        <name>alpha.example.com</name>
+        <name>beta</name>
+      </names>
+      <fingerprints>
+        <os certainty='1.00' vendor='Microsoft' product='Windows 10'/>
+      </fingerprints>
+      <tests>
+        <test id='vuln-host' status='vulnerable-exploited'>
+          <Paragraph>
+            <Paragraph>Host proof</Paragraph>
+          </Paragraph>
+        </test>
+      </tests>
+      <endpoints>
+        <endpoint protocol='tcp' port='443' status='open'>
+          <services>
+            <service name='HTTPS'>
+              <tests>
+                <test id='vuln-service' status='potential'>
+                  <Paragraph>
+                    <Paragraph>Service proof</Paragraph>
+                  </Paragraph>
+                </test>
+              </tests>
+            </service>
+          </services>
+        </endpoint>
+      </endpoints>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability>
+      <id>vuln-host</id>
+      <title>Fancy — Vulnerability</title>
+      <severity>7</severity>
+      <description>Node description</description>
+      <solution>Apply patches</solution>
+    </vulnerability>
+    <vulnerability>
+      <id>vuln-service</id>
+      <title>Service Vuln</title>
+      <severity>5</severity>
+      <description>Service description</description>
+      <solution>Service fix</solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
 
         upload = ProjectDataFile.objects.create(
             project=self.project,
             file=SimpleUploadedFile(
-                "nexpose_cap.csv",
-                "\n".join(csv_lines).encode("utf-8"),
-                content_type="text/csv",
+                "external_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
             ),
-            requirement_label="nexpose_cap.csv",
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
         )
         self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
 
@@ -2852,16 +2905,16 @@ class NexposeDataParserTests(TestCase):
             nexpose_section.get("nexpose_cap_map"),
             [
                 {
-                    "systems": "db01.example.com",
-                    "action": "Patch OpenSSL",
-                    "score": 5,
-                    "issue": "SSL Certificate Expired",
-                    "ecfirst": "Yes",
+                    "systems": "192.0.2.10 (alpha.example.com; beta)",
+                    "action": "Apply patches",
+                    "score": 7,
+                    "issue": "Fancy Vulnerability",
                 },
                 {
-                    "systems": "web-tier",
-                    "action": "Restrict Access",
-                    "score": 3,
+                    "systems": "192.0.2.10 (alpha.example.com; beta) (P)",
+                    "action": "Service fix",
+                    "score": 5,
+                    "issue": "Service Vuln",
                 },
             ],
         )

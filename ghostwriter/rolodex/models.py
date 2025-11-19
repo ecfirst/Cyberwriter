@@ -765,6 +765,7 @@ class Project(models.Model):
 
         from ghostwriter.rolodex.data_parsers import (
             NEXPOSE_ARTIFACT_KEYS,
+            NEXPOSE_METRICS_KEY_MAP,
             build_ad_risk_contrib,
             build_project_artifacts,
             build_workbook_ad_response,
@@ -820,6 +821,103 @@ class Project(models.Model):
             if isinstance(value, (int, float)):
                 return bool(value)
             return bool(value)
+
+        def _normalize_issue_key(value: Any) -> str:
+            if value in (None, ""):
+                return ""
+            return str(value).strip().lower()
+
+        def _format_system_label(finding: Dict[str, Any]) -> str:
+            ip_address = (finding.get("Asset IP Address") or "").strip()
+            hostnames = (finding.get("Hostname(s)") or "").strip()
+            if ip_address:
+                label = ip_address
+                if hostnames:
+                    label = f"{label} [{hostnames}]"
+            elif hostnames:
+                label = hostnames
+            else:
+                return ""
+            status_code = (finding.get("Vulnerability Test Result Code") or "").strip().upper()
+            if status_code == "VP":
+                label = f"{label} (P)"
+            return label
+
+        def _build_nexpose_cap_entries_from_metrics() -> List[Dict[str, Any]]:
+            issue_map: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+            findings_lookup: Dict[str, List[Dict[str, Any]]] = {}
+
+            for artifact_key in NEXPOSE_METRICS_KEY_MAP.keys():
+                artifact_entry = artifacts.get(artifact_key)
+                if not isinstance(artifact_entry, dict):
+                    continue
+                findings = artifact_entry.get("findings")
+                if not isinstance(findings, list):
+                    continue
+                for finding in findings:
+                    if not isinstance(finding, dict):
+                        continue
+                    title = (finding.get("Vulnerability Title") or finding.get("Vulnerability ID") or "").strip()
+                    key = _normalize_issue_key(title)
+                    if not key:
+                        continue
+                    findings_lookup.setdefault(key, []).append(finding)
+
+            for metrics_key in NEXPOSE_METRICS_KEY_MAP.values():
+                metrics_payload = artifacts.get(metrics_key)
+                if not isinstance(metrics_payload, dict):
+                    continue
+                unique_issues = metrics_payload.get("unique_issues")
+                if not isinstance(unique_issues, list):
+                    continue
+                for issue_entry in unique_issues:
+                    if not isinstance(issue_entry, dict):
+                        continue
+                    title = (issue_entry.get("issue") or "").strip()
+                    key = _normalize_issue_key(title)
+                    if not key:
+                        continue
+                    issue_record = issue_map.setdefault(key, {"issue": title})
+                    if not issue_record.get("issue"):
+                        issue_record["issue"] = title
+                    severity = _safe_int(issue_entry.get("severity"))
+                    current_score = issue_record.get("score")
+                    if severity is not None and (current_score is None or severity > current_score):
+                        issue_record["score"] = severity
+                    remediation = (issue_entry.get("remediation") or "").strip()
+                    if remediation and not issue_record.get("action"):
+                        issue_record["action"] = remediation
+
+            cap_entries: List[Dict[str, Any]] = []
+            for key, meta in issue_map.items():
+                systems: List[str] = []
+                seen_hosts: Set[str] = set()
+                for finding in findings_lookup.get(key, []):
+                    label = _format_system_label(finding)
+                    if not label or label in seen_hosts:
+                        continue
+                    seen_hosts.add(label)
+                    systems.append(label)
+
+                entry: Dict[str, Any] = {}
+                issue_text = (meta.get("issue") or "").strip()
+                if issue_text:
+                    entry["issue"] = issue_text
+                action_text = (meta.get("action") or "").strip()
+                if action_text:
+                    entry["action"] = action_text
+                systems_text = "\n".join(systems)
+                if systems_text:
+                    entry["systems"] = systems_text
+                score_value = coerce_cap_score(meta.get("score"))
+                if score_value is not None:
+                    entry["score"] = score_value
+                if entry:
+                    cap_entries.append(entry)
+
+            return cap_entries
+
+        nexpose_cap_entries = _build_nexpose_cap_entries_from_metrics()
 
         def _is_explicit_no(value: Any) -> bool:
             if isinstance(value, bool):
@@ -1802,7 +1900,7 @@ class Project(models.Model):
         else:
             nexpose_section = {}
 
-        raw_nexpose_entries = artifacts.get("nexpose_cap_map")
+        raw_nexpose_entries = nexpose_cap_entries
         normalized_nexpose_entries: List[Dict[str, Any]] = []
         if isinstance(raw_nexpose_entries, list):
             for entry in raw_nexpose_entries:

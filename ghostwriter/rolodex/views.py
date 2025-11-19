@@ -1907,6 +1907,11 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                 }
             )
         ctx["processed_data_cards"] = processed_cards
+        cap_payload = object.cap if isinstance(object.cap, dict) else {}
+        nexpose_section = cap_payload.get("nexpose") if isinstance(cap_payload, dict) else None
+        if not isinstance(nexpose_section, dict):
+            nexpose_section = {}
+        ctx["nexpose_distilled"] = bool(nexpose_section.get("distilled"))
         for dns_entry in artifacts.get("dns_issues", []) or []:
             domain = (dns_entry.get("domain") or "").strip()
             if domain:
@@ -2138,17 +2143,6 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                         description_parts.append(f"for {requirement_context}")
                     data_file.description = " ".join(part for part in description_parts if part).strip()
             data_file.save()
-            if requirement_label.lower() == "nexpose_cap.csv":
-                distilled_selected = bool(request.POST.get("nexpose_distilled"))
-                project_cap = dict(project.cap or {})
-                nexpose_section = project_cap.get("nexpose")
-                if isinstance(nexpose_section, dict):
-                    nexpose_section = dict(nexpose_section)
-                else:
-                    nexpose_section = {}
-                nexpose_section["distilled"] = distilled_selected
-                project_cap["nexpose"] = nexpose_section
-                project.cap = project_cap
             project.rebuild_data_artifacts()
             messages.success(request, "Supporting data file uploaded.")
         else:
@@ -2275,6 +2269,38 @@ class ProjectNexposeDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin,
         filename = payload.get("xlsx_filename") or "nexpose_data.xlsx"
         add_content_disposition_header(response, filename)
         return response
+
+
+class ProjectNexposeDistilledUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Toggle the Nexpose distilled flag for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": self.get_object().pk}) + "#processed-data"
+
+    def post(self, request, *args, **kwargs):
+        project = self.get_object()
+        distilled_selected = bool(request.POST.get("nexpose_distilled"))
+        project_cap = dict(project.cap or {})
+        nexpose_section = project_cap.get("nexpose")
+        if isinstance(nexpose_section, dict):
+            nexpose_section = dict(nexpose_section)
+        else:
+            nexpose_section = {}
+        nexpose_section["distilled"] = distilled_selected
+        project_cap["nexpose"] = nexpose_section
+        project.cap = project_cap
+        project.save(update_fields=["cap"])
+        messages.success(request, "Updated Nexpose distilled preference.")
+        return redirect(self.get_success_url())
 
 
 class ProjectIPArtifactUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View):

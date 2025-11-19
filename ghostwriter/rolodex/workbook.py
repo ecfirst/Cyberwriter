@@ -566,10 +566,6 @@ def build_data_configuration(
     internal_nexpose_total = _as_int(_get_nested(data, ("internal_nexpose", "total"), 0))
     iot_nexpose_total = _as_int(_get_nested(data, ("iot_iomt_nexpose", "total"), 0))
 
-    nexpose_totals = [external_nexpose_total, internal_nexpose_total, iot_nexpose_total]
-    if any(total > 0 for total in nexpose_totals):
-        add_required("nexpose_cap.csv")
-
     if external_nexpose_total > 0:
         add_required("external_nexpose_xml.xml")
 

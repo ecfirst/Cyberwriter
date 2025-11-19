@@ -3172,7 +3172,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     dns_results: Dict[str, List[Dict[str, str]]] = {}
     web_results: Dict[str, Dict[str, Counter[Tuple[str, str]]]] = {}
     web_cap_entries: List[Dict[str, Any]] = []
-    nexpose_cap_entries: List[Dict[str, Any]] = []
     ip_results: Dict[str, List[str]] = {
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
@@ -3216,10 +3215,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_cap_entries = parse_burp_cap_report(data_file.file)
             if parsed_cap_entries:
                 web_cap_entries.extend(parsed_cap_entries)
-        elif label in {"nexpose-cap.csv", "nexpose_cap.csv"}:
-            parsed_nexpose_cap = parse_nexpose_cap_report(data_file.file)
-            if parsed_nexpose_cap:
-                nexpose_cap_entries.extend(parsed_nexpose_cap)
         elif label == "firewall_csv.csv":
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
@@ -3357,9 +3352,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     if web_cap_entries:
         artifacts["web_cap_map"] = web_cap_entries
-
-    if nexpose_cap_entries:
-        artifacts["nexpose_cap_map"] = nexpose_cap_entries
 
     for artifact_key, values in ip_results.items():
         if values:

@@ -1774,69 +1774,25 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(vulnerabilities["med"], {"total_unique": 0, "items": []})
         self.assertEqual(vulnerabilities["low"], {"total_unique": 0, "items": []})
 
-    def test_nexpose_cap_upload_sets_cap_map_and_distilled_flag(self):
-        upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
-        self.addCleanup(
-            lambda: [
-                (data_file.file.delete(save=False), data_file.delete())
-                for data_file in list(self.project.data_files.all())
-            ]
+    def test_nexpose_distilled_toggle_updates_cap(self):
+        toggle_url = reverse(
+            "rolodex:project_nexpose_distilled_update", kwargs={"pk": self.project.pk}
         )
 
-        csv_content = "Systems,Action,Sev\napp01,Apply critical patch,4\n"
-        response = self.client_auth.post(
-            upload_url,
-            {
-                "file": SimpleUploadedFile(
-                    "nexpose_cap.csv",
-                    csv_content.encode("utf-8"),
-                    content_type="text/csv",
-                ),
-                "requirement_slug": "required_nexpose_cap_csv",
-                "requirement_label": "nexpose_cap.csv",
-                "requirement_context": "",
-                "description": "",
-                "nexpose_distilled": "1",
-            },
-        )
+        response = self.client_auth.post(toggle_url, {"nexpose_distilled": "1"})
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, f"{self.detail_url}#supplementals")
+        self.assertEqual(response.url, f"{self.detail_url}#processed-data")
 
         self.project.refresh_from_db()
         nexpose_section = self.project.cap.get("nexpose")
         self.assertIsInstance(nexpose_section, dict)
-        self.assertIn("distilled", nexpose_section)
-        self.assertTrue(nexpose_section["distilled"])
-        self.assertEqual(
-            nexpose_section.get("nexpose_cap_map"),
-            [
-                {
-                    "systems": "app01",
-                    "action": "Apply critical patch",
-                    "score": 4,
-                }
-            ],
-        )
+        self.assertTrue(nexpose_section.get("distilled"))
 
-        response = self.client_auth.post(
-            upload_url,
-            {
-                "file": SimpleUploadedFile(
-                    "nexpose_cap.csv",
-                    csv_content.encode("utf-8"),
-                    content_type="text/csv",
-                ),
-                "requirement_slug": "required_nexpose_cap_csv",
-                "requirement_label": "nexpose_cap.csv",
-                "requirement_context": "",
-                "description": "",
-            },
-        )
+        response = self.client_auth.post(toggle_url, {})
         self.assertEqual(response.status_code, 302)
         self.project.refresh_from_db()
         nexpose_section = self.project.cap.get("nexpose")
-        self.assertIn("distilled", nexpose_section)
-        self.assertFalse(nexpose_section["distilled"])
+        self.assertFalse(nexpose_section.get("distilled"))
 
     def test_external_ip_submission_creates_artifact(self):
         upload_url = reverse("rolodex:project_ip_artifact_upload", kwargs={"pk": self.project.pk})
