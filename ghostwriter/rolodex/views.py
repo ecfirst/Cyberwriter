@@ -2159,11 +2159,16 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                 data_file.requirement_slug = requirement_slug
                 data_file.requirement_label = requirement_label
                 data_file.requirement_context = requirement_context
-                if not data_file.description:
-                    description_parts = [requirement_label]
-                    if requirement_context:
-                        description_parts.append(f"for {requirement_context}")
-                    data_file.description = " ".join(part for part in description_parts if part).strip()
+            elif requirement_label:
+                # Preserve the label even if the slug/context are missing so parsing logic can
+                # still route the upload appropriately.
+                data_file.requirement_label = requirement_label
+                data_file.requirement_context = requirement_context
+            if not data_file.description:
+                description_parts = [requirement_label]
+                if requirement_context:
+                    description_parts.append(f"for {requirement_context}")
+                data_file.description = " ".join(part for part in description_parts if part).strip()
             data_file.save()
             project.rebuild_data_artifacts()
             messages.success(request, "Supporting data file uploaded.")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 # Standard Libraries
 import base64
+import os
 import csv
 import io
 import logging
@@ -4957,7 +4958,13 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     missing_web_issue_matrix: Set[str] = set()
 
     for data_file in project.data_files.all():
-        label = (data_file.requirement_label or "").strip().lower()
+        file_name = os.path.basename(getattr(data_file.file, "name", ""))
+        label = (
+            data_file.requirement_label
+            or data_file.requirement_slug
+            or file_name
+            or ""
+        ).strip().lower()
         xml_artifact_key = _resolve_nexpose_xml_artifact_key(data_file)
         if label == "dns_report.csv":
             domain = (data_file.requirement_context or data_file.description or data_file.filename).strip()
