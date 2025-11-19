@@ -1020,6 +1020,40 @@ class ProjectDetailViewTests(TestCase):
         self.assertContains(response, "Download Nexpose Data file")
         self.assertContains(response, "?artifact=external_nexpose_metrics")
 
+    def test_processed_data_tab_shows_firewall_card(self):
+        workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
+        self.project.data_artifacts = {
+            "firewall_metrics": {
+                "summary": {
+                    "unique": 3,
+                    "unique_high": 1,
+                    "unique_med": 1,
+                    "unique_low": 1,
+                },
+                "devices": [
+                    {
+                        "device": "FW-1",
+                        "total_high": 1,
+                        "total_med": 1,
+                        "total_low": 0,
+                        "ood": "yes",
+                    }
+                ],
+                "xlsx_base64": workbook_b64,
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.uri)
+        self.assertContains(response, "Firewall Findings")
+        self.assertContains(response, "Download Firewall Data file")
+        self.assertContains(
+            response,
+            reverse(
+                "rolodex:project_firewall_data_download", kwargs={"pk": self.project.pk}
+            ),
+        )
+
 
 class ProjectNexposeMissingMatrixDownloadTests(TestCase):
     """Tests for downloading missing Nexpose matrix entries."""

@@ -386,25 +386,60 @@
                 <div class="card mb-3">
                   <div class="card-body">
                     <h5 class="card-title">{{ card.label }}</h5>
-                    <dl class="row small mb-3">
-                      <dt class="col-6">Total Count</dt>
-                      <dd class="col-6 text-right">{{ card.summary.total|default:0 }}</dd>
-                      <dt class="col-6">Total Highs</dt>
-                      <dd class="col-6 text-right">{{ card.summary.total_high|default:0 }}</dd>
-                      <dt class="col-6">Total Mediums</dt>
-                      <dd class="col-6 text-right">{{ card.summary.total_med|default:0 }}</dd>
-                      <dt class="col-6">Total Lows</dt>
-                      <dd class="col-6 text-right">{{ card.summary.total_low|default:0 }}</dd>
-                      <dt class="col-6">Unique Count</dt>
-                      <dd class="col-6 text-right">{{ card.summary.unique|default:0 }}</dd>
-                      {% if card.type == "web" %}
+                    {% if card.type == "firewall" %}
+                      <dl class="row small mb-3">
+                        <dt class="col-6">Total Count</dt>
+                        <dd class="col-6 text-right">{{ card.summary.unique|default:0 }}</dd>
+                        <dt class="col-6">Total Highs</dt>
+                        <dd class="col-6 text-right">{{ card.summary.unique_high|default:0 }}</dd>
+                        <dt class="col-6">Total Mediums</dt>
+                        <dd class="col-6 text-right">{{ card.summary.unique_med|default:0 }}</dd>
+                        <dt class="col-6">Total Lows</dt>
+                        <dd class="col-6 text-right">{{ card.summary.unique_low|default:0 }}</dd>
+                      </dl>
+                      {% if card.devices %}
+                        <div class="small mb-3">
+                          <h6>Device Metrics</h6>
+                          <ul class="list-unstyled mb-0">
+                            {% for device in card.devices %}
+                              <li class="mb-1">
+                                <strong>{{ device.device }}</strong> — High: {{ device.total_high|default:0 }}, Medium: {{ device.total_med|default:0 }}, Low: {{ device.total_low|default:0 }}, OOD: {{ device.ood|default:"no"|title }}
+                              </li>
+                            {% endfor %}
+                          </ul>
+                        </div>
+                      {% endif %}
+                    {% elif card.type == "web" %}
+                      <dl class="row small mb-3">
+                        <dt class="col-6">Total Count</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total|default:0 }}</dd>
+                        <dt class="col-6">Total Highs</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total_high|default:0 }}</dd>
+                        <dt class="col-6">Total Mediums</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total_med|default:0 }}</dd>
+                        <dt class="col-6">Total Lows</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total_low|default:0 }}</dd>
+                        <dt class="col-6">Unique Count</dt>
+                        <dd class="col-6 text-right">{{ card.summary.unique|default:0 }}</dd>
                         <dt class="col-6">Unique Highs</dt>
                         <dd class="col-6 text-right">{{ card.summary.unique_high|default:0 }}</dd>
                         <dt class="col-6">Unique Mediums</dt>
                         <dd class="col-6 text-right">{{ card.summary.unique_med|default:0 }}</dd>
                         <dt class="col-6">Unique Lows</dt>
                         <dd class="col-6 text-right">{{ card.summary.unique_low|default:0 }}</dd>
-                      {% else %}
+                      </dl>
+                    {% else %}
+                      <dl class="row small mb-3">
+                        <dt class="col-6">Total Count</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total|default:0 }}</dd>
+                        <dt class="col-6">Total Highs</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total_high|default:0 }}</dd>
+                        <dt class="col-6">Total Mediums</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total_med|default:0 }}</dd>
+                        <dt class="col-6">Total Lows</dt>
+                        <dd class="col-6 text-right">{{ card.summary.total_low|default:0 }}</dd>
+                        <dt class="col-6">Unique Count</dt>
+                        <dd class="col-6 text-right">{{ card.summary.unique|default:0 }}</dd>
                         <dt class="col-6">Unique High/Medium</dt>
                         <dd class="col-6 text-right">{{ card.summary.unique_high_med|default:0 }}</dd>
                         <dt class="col-6">OOD Count</dt>
@@ -413,12 +448,16 @@
                         <dd class="col-6 text-right">{{ card.summary.total_isc|default:0 }}</dd>
                         <dt class="col-6">IWC Count</dt>
                         <dd class="col-6 text-right">{{ card.summary.total_iwc|default:0 }}</dd>
-                      {% endif %}
-                    </dl>
+                      </dl>
+                    {% endif %}
                     {% if card.has_file %}
                       {% if card.type == "web" %}
                         <a class="btn btn-outline-primary btn-sm" href="{% url 'rolodex:project_web_data_download' project.id %}">
                           Download Web Data file
+                        </a>
+                      {% elif card.type == "firewall" %}
+                        <a class="btn btn-outline-primary btn-sm" href="{% url 'rolodex:project_firewall_data_download' project.id %}">
+                          Download Firewall Data file
                         </a>
                       {% else %}
                         <a class="btn btn-outline-primary btn-sm" href="{% url 'rolodex:project_nexpose_data_download' project.id %}?artifact={{ card.metrics_key }}">

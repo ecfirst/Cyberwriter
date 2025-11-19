@@ -4160,6 +4160,349 @@ def _render_web_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
     return buffer.getvalue()
 
 
+def _coerce_firewall_score(value: Any) -> Optional[float]:
+    """Attempt to coerce a firewall score into a float."""
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        normalized = text.replace(",", "")
+        try:
+            return float(normalized)
+        except ValueError:
+            return None
+
+    return None
+
+
+def _normalize_firewall_type(raw_value: Any) -> str:
+    """Normalize firewall finding types to expected buckets."""
+
+    text = str(raw_value or "").strip().lower()
+    if text.startswith("rule"):
+        return "Rule"
+    if text.startswith("config"):
+        return "Config"
+    if text.startswith("complex"):
+        return "Complexity"
+    if text.startswith("vuln"):
+        return "Vuln"
+    return text.title() if text else ""
+
+
+def _classify_firewall_score(score: Optional[float]) -> str:
+    """Return the severity bucket for a firewall score value."""
+
+    if score is not None and score >= 7:
+        return "high"
+    if score is not None and score >= 4:
+        return "med"
+    return "low"
+
+
+FIREWALL_TABLE_HEADERS = [
+    "Issue",
+    "Impact",
+    "Devices",
+    "Details",
+    "Solution",
+    "Reference",
+    "Risk",
+    "Accepted",
+    "Score",
+]
+
+
+FIREWALL_TAB_INDEX_ENTRIES = [
+    "All Issues  -:-  All issues identified",
+    "High Risk Issues  -:-  All 'High' risk issues identified",
+    "Medium Risk Issues  -:-  All 'Medium' risk issues identified",
+    "Low Risk Issues  -:-  All 'Low' risk issues identified",
+    "Vulnerability Issues  -:-  All issues related to known vulnerabilities identified",
+    "Rule Issues  -:-  All issues related to rules identified",
+    "Config Issues  -:-  All issues related to configuration settings identified",
+    "Complexity Issues  -:-  All issues related to rules/configuration settings that add to the firewall complexity identified",
+]
+
+
+def _build_firewall_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Calculate firewall metrics and render an XLSX workbook from findings."""
+
+    if not isinstance(findings, list) or not findings:
+        return {}
+
+    normalized_entries: List[Dict[str, Any]] = []
+    impact_counter: Counter[str] = Counter()
+
+    for entry in findings:
+        if not isinstance(entry, dict):
+            continue
+
+        issue = _get_case_insensitive(entry, "Issue") or ""
+        impact = _get_case_insensitive(entry, "Impact") or ""
+        devices = _get_case_insensitive(entry, "Devices") or ""
+        details = _get_case_insensitive(entry, "Details") or ""
+        solution = _get_case_insensitive(entry, "Solution") or ""
+        reference = _get_case_insensitive(entry, "Reference") or ""
+        risk = _get_case_insensitive(entry, "Risk") or ""
+        accepted = _get_case_insensitive(entry, "Accepted") or "No"
+        type_value = _normalize_firewall_type(_get_case_insensitive(entry, "Type"))
+        score_value = _coerce_firewall_score(_get_case_insensitive(entry, "Score"))
+        score_display: Any = score_value if score_value is not None else (
+            _get_case_insensitive(entry, "Score") or ""
+        )
+
+        normalized_entry = {
+            "Issue": issue,
+            "Impact": impact,
+            "Devices": devices,
+            "Details": details,
+            "Solution": solution,
+            "Reference": reference,
+            "Risk": risk,
+            "Accepted": accepted or "No",
+            "Score": score_display,
+            "ScoreValue": score_value,
+            "Type": type_value,
+        }
+
+        if impact:
+            impact_counter[impact] += 1
+
+        normalized_entries.append(normalized_entry)
+
+    if not normalized_entries:
+        return {}
+
+    def filter_by_score(bucket: str) -> List[Dict[str, Any]]:
+        return [
+            entry
+            for entry in normalized_entries
+            if _classify_firewall_score(entry.get("ScoreValue")) == bucket
+        ]
+
+    def filter_by_type(target: str) -> List[Dict[str, Any]]:
+        return [
+            entry
+            for entry in normalized_entries
+            if (entry.get("Type") or "").lower() == target.lower()
+        ]
+
+    unique_count = len(normalized_entries)
+    high_entries = filter_by_score("high")
+    med_entries = filter_by_score("med")
+    low_entries = filter_by_score("low")
+
+    rule_entries = filter_by_type("Rule")
+    config_entries = filter_by_type("Config")
+    complexity_entries = filter_by_type("Complexity")
+    vuln_entries = filter_by_type("Vuln")
+
+    rule_count = len(rule_entries)
+    config_count = len(config_entries)
+    complexity_count = len(complexity_entries)
+    vuln_count = len(vuln_entries)
+
+    majority_type = "Config"
+    minority_type = "Config"
+    if rule_count > config_count:
+        majority_type = "Rules"
+        minority_type = "Config"
+    elif rule_count < config_count:
+        majority_type = "Config"
+        minority_type = "Rules"
+    else:
+        majority_type = minority_type = "Even"
+
+    majority_count = max(rule_count, config_count)
+    minority_count = min(rule_count, config_count)
+
+    devices: Dict[str, Dict[str, Any]] = {}
+    for entry in normalized_entries:
+        device_text = entry.get("Devices") or ""
+        device_list = [value.strip() for value in device_text.splitlines() if value.strip()]
+        if not device_list:
+            continue
+
+        bucket = _classify_firewall_score(entry.get("ScoreValue"))
+        entry_type = (entry.get("Type") or "").lower()
+        for device in device_list:
+            stats = devices.setdefault(
+                device,
+                {"total_high": 0, "total_med": 0, "total_low": 0, "ood": "no"},
+            )
+            if bucket == "high":
+                stats["total_high"] += 1
+            elif bucket == "med":
+                stats["total_med"] += 1
+            else:
+                stats["total_low"] += 1
+            if entry_type == "vuln":
+                stats["ood"] = "yes"
+
+    device_rows = [
+        {
+            "device": name,
+            "total_high": stats.get("total_high", 0),
+            "total_med": stats.get("total_med", 0),
+            "total_low": stats.get("total_low", 0),
+            "ood": stats.get("ood", "no"),
+        }
+        for name, stats in sorted(devices.items(), key=lambda item: item[0].lower())
+    ]
+
+    top_impacts = [
+        {"impact": impact, "count": count}
+        for impact, count in impact_counter.most_common(10)
+    ]
+
+    summary = {
+        "unique": unique_count,
+        "unique_high": len(high_entries),
+        "unique_med": len(med_entries),
+        "unique_low": len(low_entries),
+        "rule_count": rule_count,
+        "config_count": config_count,
+        "complexity_count": complexity_count,
+        "vuln_count": vuln_count,
+        "majority_type": majority_type,
+        "minority_type": minority_type,
+        "majority_count": majority_count,
+        "minority_count": minority_count,
+    }
+
+    metrics_payload: Dict[str, Any] = {
+        "summary": summary,
+        "devices": device_rows,
+        "top_impacts": top_impacts,
+        "tab_index_entries": FIREWALL_TAB_INDEX_ENTRIES,
+        "all_issues": normalized_entries,
+        "high_issues": high_entries,
+        "med_issues": med_entries,
+        "low_issues": low_entries,
+        "rule_issues": rule_entries,
+        "config_issues": config_entries,
+        "complexity_issues": complexity_entries,
+        "vuln_issues": vuln_entries,
+        "xlsx_filename": "firewall_data.xlsx",
+    }
+
+    workbook_bytes = _render_firewall_metrics_workbook(metrics_payload)
+    if workbook_bytes:
+        metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
+
+    return metrics_payload
+
+
+def _render_firewall_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
+    """Create the firewall metrics workbook."""
+
+    buffer = io.BytesIO()
+    workbook = Workbook(buffer, {"in_memory": True})
+
+    def header_format(color: str):
+        return workbook.add_format(
+            {
+                "bold": True,
+                "border": 1,
+                "font_color": "#000000",
+                "bg_color": color,
+                "pattern": 1,
+            }
+        )
+
+    summary_data_fmt = workbook.add_format({"border": 1, "font_color": "#000000"})
+    summary_band_fmt = workbook.add_format({"border": 1, "bg_color": "#99CCFF", "font_color": "#000000"})
+    text_data_fmt = workbook.add_format({"border": 1, "text_wrap": True, "font_color": "#000000"})
+    text_band_fmt = workbook.add_format({"border": 1, "text_wrap": True, "bg_color": "#99CCFF", "font_color": "#000000"})
+
+    def _calc_text_width(value: Any) -> int:
+        if value is None:
+            return 0
+        text = str(value)
+        lines = text.splitlines() or [text]
+        return max(len(line) for line in lines)
+
+    def write_issue_table(worksheet, entries: List[Dict[str, Any]]):
+        width_tracker: Dict[int, int] = {}
+        for col, header in enumerate(FIREWALL_TABLE_HEADERS):
+            worksheet.write(0, col, header, header_format("#0066CC"))
+            width_tracker[col] = _calc_text_width(header)
+        for row_idx, entry in enumerate(entries):
+            fmt = text_band_fmt if row_idx % 2 == 1 else text_data_fmt
+            row_values = [
+                entry.get("Issue"),
+                entry.get("Impact"),
+                entry.get("Devices"),
+                entry.get("Details"),
+                entry.get("Solution"),
+                entry.get("Reference"),
+                entry.get("Risk"),
+                entry.get("Accepted"),
+                entry.get("Score"),
+            ]
+            for col_idx, value in enumerate(row_values):
+                worksheet.write(1 + row_idx, col_idx, value, fmt)
+                width_tracker[col_idx] = max(width_tracker.get(col_idx, 0), _calc_text_width(value))
+        for col_idx, width in width_tracker.items():
+            worksheet.set_column(col_idx, col_idx, min(max(width + 2, 12), 60))
+
+    exec_ws = workbook.add_worksheet("Executive Summary")
+
+    summary_headers = ["Total", "Total High", "Total Medium", "Total Low"]
+    summary_colors = ["#0066CC", "#FF0000", "#FF9900", "#99CC00"]
+    summary_values = [
+        metrics.get("summary", {}).get("unique", 0),
+        metrics.get("summary", {}).get("unique_high", 0),
+        metrics.get("summary", {}).get("unique_med", 0),
+        metrics.get("summary", {}).get("unique_low", 0),
+    ]
+    for col, header in enumerate(summary_headers):
+        exec_ws.write(0, col, header, header_format(summary_colors[col]))
+        exec_ws.write(1, col, summary_values[col], summary_data_fmt)
+        exec_ws.set_column(col, col, 18)
+
+    top_impacts = metrics.get("top_impacts", []) or []
+    exec_ws.write(0, 5, "Top 10 Issue Impacts", header_format("#0066CC"))
+    exec_ws.write(0, 6, "Count", header_format("#0066CC"))
+    for idx, entry in enumerate(top_impacts):
+        fmt = summary_band_fmt if idx % 2 == 1 else summary_data_fmt
+        exec_ws.write(1 + idx, 5, entry.get("impact", ""), fmt)
+        exec_ws.write(1 + idx, 6, entry.get("count", 0), fmt)
+    exec_ws.set_column(5, 5, 40)
+    exec_ws.set_column(6, 6, 12)
+
+    tab_entries = metrics.get("tab_index_entries") or FIREWALL_TAB_INDEX_ENTRIES
+    exec_ws.write(16, 5, "Tab Index", header_format("#CCFFFF"))
+    exec_ws.set_column(5, 5, 80)
+    for idx, entry in enumerate(tab_entries):
+        fmt = summary_band_fmt if idx % 2 == 1 else summary_data_fmt
+        exec_ws.write(17 + idx, 5, entry, fmt)
+
+    issue_sets = [
+        ("All Issues", metrics.get("all_issues", []) or []),
+        ("High Risk Issues", metrics.get("high_issues", []) or []),
+        ("Medium Risk Issues", metrics.get("med_issues", []) or []),
+        ("Low Risk Issues", metrics.get("low_issues", []) or []),
+        ("Rule Issues", metrics.get("rule_issues", []) or []),
+        ("Config Issues", metrics.get("config_issues", []) or []),
+        ("Complexity Issues", metrics.get("complexity_issues", []) or []),
+        ("Vulnerability Issues", metrics.get("vuln_issues", []) or []),
+    ]
+
+    for title, entries in issue_sets:
+        sheet = workbook.add_worksheet(title)
+        write_issue_table(sheet, entries)
+
+    workbook.close()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def _build_web_summary_from_findings(
     findings: List[Dict[str, Any]], web_issue_matrix: Optional[Dict[str, Dict[str, str]]]
 ) -> Optional[Dict[str, Any]]:
@@ -4736,6 +5079,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     if firewall_results:
         artifacts["firewall_findings"] = firewall_results
+        firewall_metrics = _build_firewall_metrics_payload(firewall_results)
+        if firewall_metrics:
+            artifacts["firewall_metrics"] = firewall_metrics
         artifacts["firewall_vulnerabilities"] = _summarize_firewall_vulnerabilities(
             firewall_results
         )

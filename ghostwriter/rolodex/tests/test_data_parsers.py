@@ -1086,6 +1086,17 @@ class NexposeDataParserTests(TestCase):
         artifact = self.project.data_artifacts.get("firewall_findings")
         self.assertIsInstance(artifact, list)
 
+        metrics = self.project.data_artifacts.get("firewall_metrics")
+        self.assertIsInstance(metrics, dict)
+        summary = metrics.get("summary") if isinstance(metrics, dict) else None
+        self.assertIsInstance(summary, dict)
+        self.assertEqual(summary.get("unique"), 6)
+        self.assertEqual(summary.get("unique_high"), 3)
+        self.assertEqual(summary.get("unique_med"), 2)
+        self.assertEqual(summary.get("unique_low"), 1)
+        self.assertEqual(metrics.get("xlsx_filename"), "firewall_data.xlsx")
+        self.assertTrue(metrics.get("xlsx_base64"))
+
         summaries = self.project.data_artifacts.get("firewall_vulnerabilities")
         self.assertEqual(summaries["high"]["total_unique"], 2)
         self.assertEqual(
