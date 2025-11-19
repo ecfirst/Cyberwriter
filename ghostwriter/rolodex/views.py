@@ -1978,6 +1978,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         inserted_ip_cards = False
         pending_ip_cards_after_burp = False
         for requirement in required_files:
+            label = (requirement.get("label") or "").strip().lower()
             slug = requirement.get("slug")
             existing = required_file_lookup.get(slug) if slug else None
             if slug:
@@ -1990,7 +1991,6 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             requirement["missing_web_matrix_entries"] = (
                 web_issue_gap_summary if label == "burp_xml.xml" else []
             )
-            label = (requirement.get("label") or "").strip().lower()
             if existing and label == "dns_report.csv":
                 candidate_values = [
                     existing.requirement_context,

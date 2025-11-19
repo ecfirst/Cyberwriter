@@ -1501,15 +1501,15 @@ class ProjectDataResponsesUpdateTests(TestCase):
         requirements = response.context["required_data_files"]
         labels = [requirement.get("label") for requirement in requirements]
 
-        self.assertIn("burp_csv.csv", labels)
         self.assertIn("burp_xml.xml", labels)
+        for absent in ("burp_cap.csv", "burp-cap.csv", "burp_csv.csv"):
+            self.assertNotIn(absent, labels)
         dns_indexes = [index for index, label in enumerate(labels) if label == "dns_report.csv"]
         self.assertTrue(dns_indexes)
-        burp_index = labels.index("burp_csv.csv")
+        burp_index = labels.index("burp_xml.xml")
         self.assertEqual(burp_index, max(dns_indexes) + 1)
-        self.assertEqual(labels[burp_index + 1], "burp_xml.xml")
         self.assertEqual(
-            labels[burp_index + 2 : burp_index + 5],
+            labels[burp_index + 1 : burp_index + 4],
             [
                 "external_nexpose_xml.xml",
                 "internal_nexpose_xml.xml",
