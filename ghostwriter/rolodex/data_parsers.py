@@ -1833,14 +1833,29 @@ def _get_local_name(element: ElementTree.Element) -> str:
     return tag
 
 
+def _find_children(element: Optional[ElementTree.Element], tag: str) -> List[ElementTree.Element]:
+    """Return children matching ``tag`` (case-insensitive, namespace agnostic)."""
+
+    if element is None:
+        return []
+
+    target = tag.lower()
+    return [child for child in element if _get_local_name(child).lower() == target]
+
+
+def _find_child(element: Optional[ElementTree.Element], tag: str) -> Optional[ElementTree.Element]:
+    """Return the first child matching ``tag`` (case-insensitive)."""
+
+    children = _find_children(element, tag)
+    return children[0] if children else None
+
+
 def _get_child_text(element: Optional[ElementTree.Element], tag: str) -> str:
     """Retrieve text from the first child matching ``tag`` (namespace insensitive)."""
 
-    if element is None:
-        return ""
-    for child in element:
-        if _get_local_name(child) == tag:
-            return (child.text or "").strip()
+    child = _find_child(element, tag)
+    if child is not None:
+        return (child.text or "").strip()
     return ""
 
 
@@ -2258,14 +2273,14 @@ def _render_table_rows(
 ) -> List[str]:
     """Render the provided table element using ``converter`` for each row."""
 
-    headings_elem = table.find("headings")
+    headings_elem = _find_child(table, "headings")
     headings: List[str] = []
     if headings_elem is not None:
         for heading in headings_elem:
             headings.append(_normalize_text(heading.text or ""))
 
     rows: List[str] = []
-    for row in table.findall("row"):
+    for row in _find_children(table, "row"):
         values = [(_normalize_text(cell.text or "")) for cell in row]
         rows.append(converter(values, headings))
     return rows
@@ -2275,7 +2290,7 @@ def _render_list_items(list_element: ElementTree.Element) -> List[str]:
     """Return list item text for the provided list element."""
 
     items: List[str] = []
-    for item in list_element.findall("item"):
+    for item in _find_children(list_element, "item"):
         text = _normalize_text(item.text or "")
         if text:
             items.append(text)
@@ -2414,16 +2429,16 @@ def _parse_device_names(root: ElementTree.Element) -> List[str]:
 
     devices: List[str] = []
     information = None
-    document = root.find("document") if _get_local_name(root) != "document" else root
+    document = _find_child(root, "document") if _get_local_name(root) != "document" else root
     if document is not None:
-        information = document.find("information")
+        information = _find_child(document, "information")
     if information is None:
-        information = root.find("information")
+        information = _find_child(root, "information")
 
     if information is None:
         return devices
 
-    devices_parent = information.find("devices")
+    devices_parent = _find_child(information, "devices")
     if devices_parent is None:
         return devices
 
@@ -2475,7 +2490,7 @@ def _parse_vuln_audit(
                     risk_value = "Low"
                 risk = risk_value
 
-                for item in subsection.findall("item"):
+                for item in _find_children(subsection, "item"):
                     label = _get_child_text(item, "label")
                     value = _get_child_text(item, "value")
                     if label == "CVSSv2 Score":
@@ -2485,24 +2500,30 @@ def _parse_vuln_audit(
                         impact = _get_impact(value)
 
             elif title == "Summary":
-                details = _normalize_text(subsection.findtext("text") or subsection.text or "")
+                text_element = _find_child(subsection, "text")
+                details = _normalize_text(
+                    (text_element.text if text_element is not None else subsection.text) or ""
+                )
             elif title in {"Affected Devices", "Affected Device"}:
-                list_element = subsection.find("list")
+                list_element = _find_child(subsection, "list")
                 if list_element is not None:
-                    for item in list_element.findall("item"):
+                    for item in _find_children(list_element, "item"):
                         item_text = _normalize_text(item.text or "")
                         if item_text:
                             devices_text.append(item_text)
                 else:
-                    text_content = _normalize_text(subsection.findtext("text") or subsection.text or "")
+                    text_element = _find_child(subsection, "text")
+                    text_content = _normalize_text(
+                        (text_element.text if text_element is not None else subsection.text) or ""
+                    )
                     if text_content:
                         for device_name in device_names:
                             if device_name and device_name in text_content:
                                 devices_text.append(device_name)
             elif title in {"Vendor Security Advisory", "Vendor Security Advisories"}:
-                list_element = subsection.find("list")
+                list_element = _find_child(subsection, "list")
                 if list_element is not None:
-                    for item in list_element.findall("item"):
+                    for item in _find_children(list_element, "item"):
                         link = _get_child_text(item, "weblink") or _normalize_text(item.text or "")
                         if link:
                             reference.append(link)
@@ -2556,15 +2577,15 @@ def _parse_security_audit(section: ElementTree.Element) -> List[Dict[str, Any]]:
             name = _get_local_name(subsection)
             sub_ref = subsection.attrib.get("ref", "")
             if name == "issuedetails":
-                devices_parent = subsection.find("devices")
+                devices_parent = _find_child(subsection, "devices")
                 if devices_parent is not None:
-                    for device in devices_parent.findall("device"):
+                    for device in _find_children(devices_parent, "device"):
                         device_name = _get_child_text(device, "name") or (device.text or "")
                         normalized = _normalize_text(device_name)
                         if normalized:
                             devices.append(normalized)
 
-                ratings_parent = subsection.find("ratings")
+                ratings_parent = _find_child(subsection, "ratings")
                 if ratings_parent is not None:
                     for rating_child in ratings_parent:
                         local_name = _get_local_name(rating_child)
