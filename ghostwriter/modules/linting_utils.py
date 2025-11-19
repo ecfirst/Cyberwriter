@@ -687,33 +687,33 @@ LINTER_CONTEXT = {
                 "10.20.30.40",
                 "172.16.50.5",
             ],
-            "firewall_findings": {
-                "vulnerabilities": {
-                    "high": {
-                        "total_unique": 1,
-                        "items": [
-                            {
-                                "issue": "Overly permissive inbound access",
-                                "impact": "Increases the exposed attack surface for external actors.",
-                                "count": 1,
-                            }
-                        ],
-                    },
-                    "med": {
-                        "total_unique": 1,
-                        "items": [
-                            {
-                                "issue": "Stale decommissioned network objects",
-                                "impact": "Obsolete objects complicate reviews and obscure risky rules.",
-                                "count": 1,
-                            }
-                        ],
-                    },
-                    "low": {
-                        "total_unique": 0,
-                        "items": [],
-                    },
+            "firewall_findings": [
+                {
+                    "Risk": "High",
+                    "Issue": "Overly permissive inbound access",
+                    "Impact": "Increases the exposed attack surface for external actors.",
+                    "Solution": "Restrict inbound traffic to authorized sources",
+                    "Devices": "Firewall01",
+                    "Details": "Rule allows any source to sensitive networks",
+                    "Reference": "",
+                    "Score": 9.0,
+                    "Accepted": "No",
+                    "Type": "Rule",
+                }
+            ],
+            "firewall_vulnerabilities": {
+                "high": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "issue": "Overly permissive inbound access",
+                            "impact": "Increases the exposed attack surface for external actors.",
+                            "count": 1,
+                        }
+                    ],
                 },
+                "med": {"total_unique": 0, "items": []},
+                "low": {"total_unique": 0, "items": []},
             },
             "external_nexpose_vulnerabilities": {
                 "label": "External Nexpose Vulnerabilities",

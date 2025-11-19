@@ -1764,9 +1764,9 @@ class ProjectDataResponsesUpdateTests(TestCase):
         artifacts = self.project.data_artifacts
         self.assertIn("firewall_findings", artifacts)
         findings = artifacts["firewall_findings"]
-        self.assertNotIn("findings", findings)
+        self.assertIsInstance(findings, list)
 
-        vulnerabilities = findings["vulnerabilities"]
+        vulnerabilities = artifacts.get("firewall_vulnerabilities")
         self.assertEqual(vulnerabilities["high"]["total_unique"], 1)
         self.assertEqual(
             vulnerabilities["high"]["items"],

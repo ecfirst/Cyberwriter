@@ -1002,11 +1002,9 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("firewall_findings")
-        self.assertIsInstance(artifact, dict)
-        self.assertNotIn("findings", artifact)
-        self.assertIn("vulnerabilities", artifact)
+        self.assertIsInstance(artifact, list)
 
-        summaries = artifact["vulnerabilities"]
+        summaries = self.project.data_artifacts.get("firewall_vulnerabilities")
         self.assertEqual(summaries["high"]["total_unique"], 2)
         self.assertEqual(
             summaries["high"]["items"],
@@ -1126,6 +1124,105 @@ class NexposeDataParserTests(TestCase):
         responses = self.project.data_responses.get("firewall")
         self.assertIsInstance(responses, dict)
         self.assertEqual(responses.get("firewall_periodic_reviews"), "Yes")
+
+    def test_firewall_xml_parsing_includes_all_sections(self):
+        xml_content = """
+<document>
+  <information>
+    <devices>
+      <device><name>FW-EDGE</name></device>
+      <device><name>FW-CORE</name></device>
+    </devices>
+  </information>
+  <section ref="VULNAUDIT">
+    <section ref="VULNAUDIT.TEST1">
+      <title>Sample Vulnerability</title>
+      <infobox>
+        <title>Risk: Critical</title>
+        <item><label>CVSSv2 Score</label><value>9.5</value></item>
+        <item><label>CVSSv2 Base</label><value>X/X/X/C:/P:/C 9.5</value></item>
+      </infobox>
+      <section>
+        <title>Summary</title>
+        <text>Example summary text.</text>
+      </section>
+      <section>
+        <title>Affected Device</title>
+        <text>Impacts FW-EDGE interface</text>
+      </section>
+      <section>
+        <title>Vendor Security Advisory</title>
+        <list><item><weblink>http://example.com/advisory</weblink></item></list>
+      </section>
+    </section>
+  </section>
+  <section ref="SECURITYAUDIT">
+    <section ref="FILTER.TEST">
+      <title>SSH Protocol Version 1 Supported</title>
+      <issuedetails>
+        <devices><device><name>FW-EDGE</name></device></devices>
+        <ratings><rating>Informational</rating><cvssv2-temporal score="0" /></ratings>
+      </issuedetails>
+      <section ref="IMPACT"><text>Impact placeholder</text></section>
+      <section ref="RECOMMENDATION"><text>Disable SSHv1</text></section>
+      <section ref="FINDING"><text>Legacy SSH protocol enabled.</text></section>
+    </section>
+  </section>
+  <section ref="COMPLEXITY">
+    <section ref="COMPLEXITY.ITEM">
+      <title>FirewallA Settings</title>
+      <section>
+        <title>FirewallA Filter Rules</title>
+        <table>
+          <headings>
+            <heading>Rule</heading><heading>Action</heading><heading>Source</heading><heading>Src Port</heading>
+            <heading>Destination</heading><heading>Dst Port</heading><heading>Protocol</heading><heading>Service</heading>
+          </headings>
+          <row>
+            <entry>1</entry><entry>Allow</entry><entry>Any</entry><entry></entry><entry>Internal</entry><entry>80</entry><entry>TCP</entry><entry>HTTP</entry>
+          </row>
+        </table>
+      </section>
+    </section>
+  </section>
+</document>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "firewall_xml.xml", xml_content.encode("utf-8"), content_type="text/xml"
+            ),
+            requirement_label="firewall_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        findings = self.project.data_artifacts.get("firewall_findings")
+        self.assertIsInstance(findings, list)
+        self.assertGreaterEqual(len(findings), 3)
+
+        vuln_entry = next(item for item in findings if item.get("Type") == "Vuln")
+        self.assertEqual(vuln_entry.get("Risk"), "High")
+        self.assertIn("base CVSSv2 score of 9.5", vuln_entry.get("Impact"))
+        self.assertIn("FW-EDGE", vuln_entry.get("Devices"))
+
+        security_entry = next(item for item in findings if item.get("Type") == "Rule")
+        self.assertEqual(
+            security_entry.get("Impact"),
+            "Although flaws have been identified with SSH protocol version 2, fundamental flaws exist in protocol version 1",
+        )
+        self.assertEqual(security_entry.get("Solution"), "Disable SSHv1")
+
+        complexity_entry = next(item for item in findings if item.get("Type") == "Complexity")
+        self.assertEqual(complexity_entry.get("Score"), 1)
+        self.assertIn("Rule '1'", complexity_entry.get("Details"))
+
+        firewall_summary = self.project.data_artifacts.get("firewall_vulnerabilities")
+        self.assertIsInstance(firewall_summary, dict)
+        self.assertGreaterEqual(firewall_summary.get("high", {}).get("total_unique", 0), 1)
 
     def test_normalize_web_issue_artifacts(self):
         payload = {

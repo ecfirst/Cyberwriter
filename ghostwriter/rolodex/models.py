@@ -1276,8 +1276,18 @@ class Project(models.Model):
 
         firewall_cap_entries: List[Dict[str, Any]] = []
         firewall_artifact = artifacts.get("firewall_findings")
-        if isinstance(firewall_artifact, dict):
+        firewall_findings: Optional[List[Dict[str, Any]]]
+        if isinstance(firewall_artifact, list):
+            firewall_findings = firewall_artifact
+        elif isinstance(firewall_artifact, dict):
             firewall_findings = firewall_artifact.get("findings")
+            if isinstance(firewall_findings, list):
+                artifacts["firewall_findings"] = firewall_findings
+            else:
+                firewall_findings = None
+            vulnerabilities = firewall_artifact.get("vulnerabilities")
+            if vulnerabilities and not artifacts.get("firewall_vulnerabilities"):
+                artifacts["firewall_vulnerabilities"] = vulnerabilities
         else:
             firewall_findings = None
 
@@ -1354,10 +1364,8 @@ class Project(models.Model):
         else:
             existing_cap.pop("firewall", None)
 
-        if isinstance(firewall_artifact, dict):
-            firewall_artifact.pop("findings", None)
-            if not firewall_artifact.get("vulnerabilities"):
-                artifacts.pop("firewall_findings", None)
+        if not firewall_findings:
+            artifacts.pop("firewall_findings", None)
 
         workbook_dns_response = build_workbook_dns_response(workbook_payload)
         if workbook_dns_response:
