@@ -2555,7 +2555,7 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
         fmt = workbook.add_format({
             "bold": True,
             "border": 1,
-            "font_color": "#FFFFFF",
+            "font_color": "#000000",
             "bg_color": color,
         })
         return fmt
@@ -2572,6 +2572,13 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
     text_data_fmt = workbook.add_format({"border": 1, "text_wrap": True})
     text_band_fmt = workbook.add_format({"border": 1, "text_wrap": True, "bg_color": "#99CCFF"})
 
+    def _calc_text_width(value: Any) -> int:
+        if value is None:
+            return 0
+        text = str(value)
+        lines = text.splitlines() or [text]
+        return max(len(line) for line in lines)
+
     def write_table(
         worksheet,
         *,
@@ -2582,20 +2589,35 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
         header_colors: Optional[List[str]] = None,
         data_format=text_data_fmt,
         band_format=text_band_fmt,
+        width_tracker: Optional[Dict[int, int]] = None,
     ) -> None:
         for idx, header in enumerate(headers):
             color = (header_colors[idx] if header_colors and idx < len(header_colors) else (header_colors[0] if header_colors else "#0066CC"))
             worksheet.write(start_row, start_col + idx, header, get_header(color))
+            if width_tracker is not None:
+                column_index = start_col + idx
+                width_tracker[column_index] = max(
+                    width_tracker.get(column_index, 0),
+                    _calc_text_width(header),
+                )
         for row_index, row in enumerate(rows):
             fmt = band_format if row_index % 2 == 1 else data_format
             for col_index, value in enumerate(row):
                 worksheet.write(start_row + 1 + row_index, start_col + col_index, value, fmt)
+                if width_tracker is not None:
+                    column_index = start_col + col_index
+                    width_tracker[column_index] = max(
+                        width_tracker.get(column_index, 0),
+                        _calc_text_width(value),
+                    )
+
+    def apply_autofit(worksheet, width_tracker: Dict[int, int], columns: Iterable[int]) -> None:
+        for column in columns:
+            width = width_tracker.get(column, 10)
+            worksheet.set_column(column, column, min(width + 2, 60))
 
     exec_ws = workbook.add_worksheet("Executive Summary")
-    exec_ws.set_column(0, 3, 28)
-    exec_ws.set_column(5, 8, 18)
-    exec_ws.set_column(10, 10, 45)
-    exec_ws.set_column(11, 11, 12)
+    exec_width_tracker: Dict[int, int] = {}
 
     host_rows = [
         [row["host"], row["high"], row["med"], row["low"]]
@@ -2610,6 +2632,7 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
         header_colors=["#0066CC", "#0066CC", "#0066CC", "#0066CC"],
         data_format=summary_data_fmt,
         band_format=summary_band_fmt,
+        width_tracker=exec_width_tracker,
     )
 
     summary = metrics.get("summary") or {}
@@ -2628,6 +2651,7 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
         header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
         data_format=summary_data_fmt,
         band_format=summary_band_fmt,
+        width_tracker=exec_width_tracker,
     )
 
     unique_rows = [[
@@ -2645,6 +2669,7 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
         header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
         data_format=summary_data_fmt,
         band_format=summary_band_fmt,
+        width_tracker=exec_width_tracker,
     )
 
     top_host_rows = [
@@ -2660,6 +2685,7 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
         header_colors=["#FF0000", "#FF0000", "#FF9900", "#99CC00"],
         data_format=summary_data_fmt,
         band_format=summary_band_fmt,
+        width_tracker=exec_width_tracker,
     )
 
     impact_rows = [
@@ -2676,6 +2702,7 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
         header_colors=["#0066CC", "#0066CC"],
         data_format=text_data_fmt,
         band_format=text_band_fmt,
+        width_tracker=exec_width_tracker,
     )
 
     tab_index_rows = [[entry] for entry in metrics.get("tab_index_entries", [])]
@@ -2688,6 +2715,13 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
         header_colors=["#CCFFFF"],
         data_format=text_data_fmt,
         band_format=text_band_fmt,
+        width_tracker=exec_width_tracker,
+    )
+
+    apply_autofit(
+        exec_ws,
+        exec_width_tracker,
+        list(range(0, 4)) + list(range(5, 9)) + [10, 11],
     )
 
     def write_issue_sheet(name: str, data_rows: List[List[Any]], headers: List[str]) -> None:
@@ -2749,8 +2783,7 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
         "Category",
     ]
 
-    subset_rows = build_full_rows(metrics.get("majority_subset", []))
-    write_issue_sheet("Subset of Majority Issues", subset_rows, full_headers)
+    workbook.add_worksheet("Subset of Majority Issues")
 
     all_rows = build_full_rows(metrics.get("all_issues", []))
     write_issue_sheet("All Issues", all_rows, full_headers)
