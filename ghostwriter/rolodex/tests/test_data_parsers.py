@@ -94,6 +94,88 @@ class NexposeDataParserTests(TestCase):
         buffer.close()
         return SimpleUploadedFile(filename, content, content_type="text/csv")
 
+    def _build_nipper_xml_file(self, filename: str = "nipper_xml.xml") -> SimpleUploadedFile:
+        xml_content = """
+<xml>
+  <document>
+    <information>
+      <devices>
+        <device><name>Alpha</name></device>
+        <device><name>Bravo</name></device>
+      </devices>
+    </information>
+    <section ref="VULNAUDIT">
+      <section ref="VULNAUDIT.F1">
+        <title>Outdated Firmware</title>
+        <infobox>
+          <title>Risk: Critical</title>
+          <item><label>CVSSv2 Score</label><value>9.0</value></item>
+          <item><label>CVSSv2 Base</label><value>AV:N/AC:L/Au:N/C:C/I:P/A:C 9.0</value></item>
+        </infobox>
+        <section ref="Summary">
+          <title>Summary</title>
+          <text>Firmware contains vulnerabilities shown in Table .</text>
+        </section>
+        <section>
+          <title>Affected Devices</title>
+          <list>
+            <item><text>Alpha</text></item>
+            <item><text>Bravo</text></item>
+          </list>
+        </section>
+        <section>
+          <title>Vendor Security Advisory</title>
+          <list><item weblink="http://advisory.test/alpha"/></list>
+        </section>
+      </section>
+    </section>
+    <section ref="SECURITYAUDIT">
+      <section ref="FILTER.SSH">
+        <title>SSH Protocol Version 1 Supported</title>
+        <issuedetails>
+          <devices><device><name>Alpha</name></device></devices>
+          <ratings>
+            <rating>Informational</rating>
+            <cvssv2-temporal score="0" />
+          </ratings>
+        </issuedetails>
+        <section ref="IMPACT"><text>Placeholder impact</text></section>
+        <section ref="RECOMMENDATION"><text>Disable SSH v1</text></section>
+        <section ref="FINDING">
+          <text>Rules shown in Table and documented</text>
+          <table>
+            <headings>
+              <heading>Rule</heading>
+              <heading>Action</heading>
+              <heading>Source</heading>
+              <heading>Destination</heading>
+              <heading>Protocol</heading>
+            </headings>
+            <row>
+              <column>10</column>
+              <column>Allow</column>
+              <column>Any</column>
+              <column>Any</column>
+              <column>Any</column>
+            </row>
+          </table>
+        </section>
+      </section>
+    </section>
+    <section ref="COMPLEXITY">
+      <section>
+        <title>Alpha Settings</title>
+        <text>Complexity item requiring review</text>
+      </section>
+    </section>
+  </document>
+</xml>
+""".strip()
+
+        return SimpleUploadedFile(
+            filename, xml_content.encode("utf-8"), content_type="application/xml"
+        )
+
     def test_external_nexpose_csv_updates_data_artifacts(self):
         def add_entries(collection, title, impact, severity, count):
             for _ in range(count):
@@ -1002,11 +1084,9 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("firewall_findings")
-        self.assertIsInstance(artifact, dict)
-        self.assertNotIn("findings", artifact)
-        self.assertIn("vulnerabilities", artifact)
+        self.assertIsInstance(artifact, list)
 
-        summaries = artifact["vulnerabilities"]
+        summaries = self.project.data_artifacts.get("firewall_vulnerabilities")
         self.assertEqual(summaries["high"]["total_unique"], 2)
         self.assertEqual(
             summaries["high"]["items"],
@@ -1126,6 +1206,65 @@ class NexposeDataParserTests(TestCase):
         responses = self.project.data_responses.get("firewall")
         self.assertIsInstance(responses, dict)
         self.assertEqual(responses.get("firewall_periodic_reviews"), "Yes")
+
+    def test_nipper_xml_parsing_respects_tier(self):
+        self.project.project_type.project_type = "Gold"
+        self.project.project_type.save(update_fields=["project_type"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=self._build_nipper_xml_file(),
+            requirement_label="nipper_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        findings = self.project.data_artifacts.get("firewall_findings")
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), 2)
+
+        vuln_entry = findings[0]
+        self.assertEqual(vuln_entry.get("Risk"), "High")
+        self.assertEqual(vuln_entry.get("Devices"), "Alpha\nBravo")
+        self.assertEqual(vuln_entry.get("Reference"), "http://advisory.test/alpha")
+        self.assertIn("base CVSSv2 score", vuln_entry.get("Impact"))
+        self.assertIn("shown below", vuln_entry.get("Details"))
+
+        security_entry = findings[1]
+        self.assertEqual(security_entry.get("Type"), "Rule")
+        self.assertEqual(security_entry.get("Risk"), "Low")
+        self.assertEqual(security_entry.get("Score"), 1)
+        self.assertIn("Alpha", security_entry.get("Devices"))
+        self.assertIn("Rule '10'", security_entry.get("Details"))
+        self.assertIn("fundamental flaws exist", security_entry.get("Impact"))
+
+        vulnerabilities = self.project.data_artifacts.get("firewall_vulnerabilities")
+        self.assertIsInstance(vulnerabilities, dict)
+        self.assertGreater(vulnerabilities.get("high", {}).get("total_unique", 0), 0)
+
+    def test_nipper_complexity_included_for_tier_three(self):
+        self.project.project_type.project_type = "Platinum"
+        self.project.project_type.save(update_fields=["project_type"])
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=self._build_nipper_xml_file(),
+            requirement_label="nipper_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        findings = self.project.data_artifacts.get("firewall_findings")
+        self.assertEqual(len(findings), 3)
+        complexity_entry = findings[-1]
+        self.assertEqual(complexity_entry.get("Type"), "Complexity")
+        self.assertEqual(complexity_entry.get("Risk"), "Low")
+        self.assertIn("Alpha", complexity_entry.get("Devices"))
+        self.assertIn("Complexity item", complexity_entry.get("Details"))
 
     def test_normalize_web_issue_artifacts(self):
         payload = {

@@ -1276,7 +1276,9 @@ class Project(models.Model):
 
         firewall_cap_entries: List[Dict[str, Any]] = []
         firewall_artifact = artifacts.get("firewall_findings")
-        if isinstance(firewall_artifact, dict):
+        if isinstance(firewall_artifact, list):
+            firewall_findings = firewall_artifact
+        elif isinstance(firewall_artifact, dict):
             firewall_findings = firewall_artifact.get("findings")
         else:
             firewall_findings = None
@@ -1354,10 +1356,10 @@ class Project(models.Model):
         else:
             existing_cap.pop("firewall", None)
 
-        if isinstance(firewall_artifact, dict):
-            firewall_artifact.pop("findings", None)
-            if not firewall_artifact.get("vulnerabilities"):
-                artifacts.pop("firewall_findings", None)
+        if firewall_artifact and "firewall_vulnerabilities" not in artifacts:
+            summarized = _summarize_firewall_vulnerabilities(firewall_findings or [])
+            if summarized:
+                artifacts["firewall_vulnerabilities"] = summarized
 
         workbook_dns_response = build_workbook_dns_response(workbook_payload)
         if workbook_dns_response:
