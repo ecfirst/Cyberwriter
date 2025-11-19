@@ -1857,6 +1857,7 @@ def _read_file_bytes(file_obj: File) -> bytes:
     """Best-effort file reader that resets the pointer for reuse."""
 
     raw_bytes: Any = b""
+    storage_handle = None
 
     try:
         file_obj.open("rb")
@@ -1875,13 +1876,32 @@ def _read_file_bytes(file_obj: File) -> bytes:
         raw_bytes = file_obj.read() or b""
     except Exception:
         raw_bytes = b""
-    finally:
+
+    # Some storage backends return an empty payload when the FileField wrapper
+    # has already been consumed or closed. Fall back to opening the file by
+    # name through its storage backend to ensure the original upload bytes are
+    # available for parsing.
+    if not raw_bytes:
         try:
-            file_obj.seek(0)
+            storage = getattr(file_obj, "storage", None)
+            name = getattr(file_obj, "name", None)
+            if storage and name:
+                storage_handle = storage.open(name, "rb")
+                raw_bytes = storage_handle.read() or b""
         except Exception:
-            pass
+            raw_bytes = b""
+
+    try:
+        file_obj.seek(0)
+    except Exception:
+        pass
+    try:
+        file_obj.close()
+    except Exception:
+        pass
+    if storage_handle:
         try:
-            file_obj.close()
+            storage_handle.close()
         except Exception:
             pass
 
