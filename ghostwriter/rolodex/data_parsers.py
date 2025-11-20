@@ -2490,11 +2490,7 @@ def parse_nipper_firewall_report(
             "VULNAUDIT.CONCLUSIONS",
             "VULNAUDIT.RECOMMENDATIONS",
         }
-        for section in parent.iter():
-            if section is parent:
-                continue
-            if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
-                continue
+        for section in _find_child_elements(parent, "section"):
             section_ref = (section.attrib.get("ref") or "").upper()
             if section_ref in skip_refs:
                 continue
@@ -2577,11 +2573,7 @@ def parse_nipper_firewall_report(
                 "SECURITY.FINDINGS.SUMMARY",
             }
 
-            for section in parent.iter():
-                if section is parent:
-                    continue
-                if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
-                    continue
+            for section in _find_child_elements(parent, "section"):
                 section_ref = (section.attrib.get("ref") or "").upper()
                 if section_ref in skip_refs:
                     continue
@@ -2664,11 +2656,7 @@ def parse_nipper_firewall_report(
             )
             default_solution = "Review these items and address them appropriately"
 
-            for section in parent.iter():
-                if section is parent:
-                    continue
-                if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
-                    continue
+            for section in _find_child_elements(parent, "section"):
                 title = (_get_element_field(section, "title") or "").strip()
                 if title.lower() in skip_titles:
                     continue
