@@ -2191,12 +2191,16 @@ def _summarize_firewall_vulnerabilities(
         if not isinstance(entry, dict):
             continue
 
-        risk_value = _normalize_firewall_risk(str(entry.get("risk") or ""))
+        risk_raw = entry.get("risk")
+        if risk_raw is None:
+            risk_raw = entry.get("Risk")
+
+        risk_value = _normalize_firewall_risk(str(risk_raw or ""))
         if not risk_value:
             continue
 
-        issue_text = (entry.get("issue") or "").strip()
-        impact_text = _first_sentence(entry.get("impact") or "")
+        issue_text = (entry.get("issue") or entry.get("Issue") or "").strip()
+        impact_text = _first_sentence(entry.get("impact") or entry.get("Impact") or "")
 
         if not issue_text and not impact_text:
             continue
@@ -2369,6 +2373,11 @@ def _build_firewall_metrics_payload(
         "unique_high": summary_high,
         "unique_med": summary_med,
         "unique_low": summary_low,
+        # Legacy aliases used by templates and downstream consumers
+        "total": unique_count,
+        "total_high": summary_high,
+        "total_med": summary_med,
+        "total_low": summary_low,
         "rule_count": rule_count,
         "config_count": config_count,
         "complexity_count": complexity_count,
@@ -5107,6 +5116,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     if firewall_entries:
         artifacts["firewall_metrics"] = _build_firewall_metrics_payload(firewall_entries)
+        artifacts["firewall_vulnerabilities"] = _summarize_firewall_vulnerabilities(
+            firewall_entries
+        )
 
     for artifact_key, details in nexpose_results.items():
         artifacts[artifact_key] = {

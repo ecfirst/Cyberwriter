@@ -937,6 +937,11 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(summary.get("unique_high"), 1)
         self.assertEqual(summary.get("unique_med"), 1)
         self.assertEqual(summary.get("unique_low"), 1)
+        # Legacy aliases remain available for templates
+        self.assertEqual(summary.get("total"), 3)
+        self.assertEqual(summary.get("total_high"), 1)
+        self.assertEqual(summary.get("total_med"), 1)
+        self.assertEqual(summary.get("total_low"), 1)
         self.assertEqual(summary.get("rule_count"), 1)
         self.assertEqual(summary.get("config_count"), 1)
         self.assertEqual(summary.get("vuln_count"), 1)
@@ -950,6 +955,19 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(edge.get("ood"), "yes")
 
         self.assertIn("xlsx_base64", metrics)
+
+    def test_firewall_vulnerabilities_summary_from_findings(self):
+        findings = [
+            {"Risk": "High", "Issue": "A", "Impact": "Severe", "Score": "8.0"},
+            {"Risk": "Medium", "Issue": "B", "Impact": "Moderate", "Score": "5.0"},
+            {"Risk": "Low", "Issue": "C", "Impact": "Minor", "Score": "3.0"},
+        ]
+
+        summary = data_parsers._summarize_firewall_vulnerabilities(findings)
+
+        self.assertEqual(summary["high"]["total_unique"], 1)
+        self.assertEqual(summary["med"]["total_unique"], 1)
+        self.assertEqual(summary["low"]["total_unique"], 1)
 
     def test_firewall_global_entry_created_from_workbook_response(self):
         workbook_payload = {
