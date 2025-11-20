@@ -4616,6 +4616,8 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         project_type_label = ""
     assessment_tier = assessment_map.get(project_type_label, 3)
 
+    firewall_xml_seen = False
+
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
         xml_artifact_key = _resolve_nexpose_xml_artifact_key(data_file)
@@ -4634,6 +4636,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
         parsed_firewall: List[Dict[str, Any]] = []
         if looks_like_xml:
+            firewall_xml_seen = True
             parsed_firewall = parse_firewall_xml_report(
                 data_file.file,
                 assessment_tier=assessment_tier,
@@ -4671,6 +4674,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 if issue_name:
                     missing_web_issue_matrix.add(issue_name)
         elif _matches_label("firewall_xml.xml") or file_name_lower.endswith("firewall_xml.xml"):
+            firewall_xml_seen = True
             parsed_firewall = parse_firewall_xml_report(
                 data_file.file,
                 assessment_tier=assessment_tier,
@@ -4679,6 +4683,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 firewall_results.extend(parsed_firewall)
             _rewind_uploaded_file(data_file.file)
         elif _matches_label("firewall_csv.csv"):
+            if firewall_xml_seen:
+                _rewind_uploaded_file(data_file.file)
+                continue
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
                 firewall_results.extend(parsed_firewall)
