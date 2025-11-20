@@ -1787,6 +1787,8 @@ def _get_case_insensitive(row: Dict[str, Any], key: str) -> Any:
         return row[key]
     lowered = key.lower()
     for candidate_key, value in row.items():
+        if not isinstance(candidate_key, str):
+            continue
         if candidate_key.lower() == lowered:
             return value
     return ""
@@ -2736,9 +2738,29 @@ def parse_firewall_xml_report(
 ) -> List[Dict[str, Any]]:
     """Parse a Nipper XML export into normalized firewall findings."""
 
-    raw_content = file_obj.read()
+    raw_content: Any = b""
+    should_close = False
+    if hasattr(file_obj, "open"):
+        try:
+            file_obj.open("rb")
+            should_close = True
+        except Exception:  # pragma: no cover - defensive guard
+            should_close = False
+
     if hasattr(file_obj, "seek"):
-        file_obj.seek(0)
+        try:
+            file_obj.seek(0)
+        except Exception:  # pragma: no cover - defensive guard
+            pass
+
+    try:
+        raw_content = file_obj.read() or b""
+    finally:
+        if should_close:
+            try:
+                file_obj.close()
+            except Exception:  # pragma: no cover - defensive guard
+                pass
 
     if isinstance(raw_content, bytes):
         xml_content = raw_content.decode("utf-8", errors="replace")

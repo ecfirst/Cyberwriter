@@ -14,16 +14,18 @@ from django.test import TestCase
 # Ghostwriter Libraries
 from ghostwriter.factories import GenerateMockProject, OpenAIConfigurationFactory
 from ghostwriter.rolodex.data_parsers import (
+    DEFAULT_GENERAL_CAP_MAP,
     NEXPOSE_ARTIFACT_DEFINITIONS,
-    normalize_nexpose_artifact_payload,
-    normalize_nexpose_artifacts_map,
-    load_general_cap_map,
+    build_workbook_password_response,
     load_dns_soa_cap_map,
+    load_general_cap_map,
     load_password_cap_map,
     load_password_compliance_matrix,
-    build_workbook_password_response,
+    normalize_nexpose_artifact_payload,
+    normalize_nexpose_artifacts_map,
     parse_dns_report,
-    DEFAULT_GENERAL_CAP_MAP,
+    parse_firewall_xml_report,
+    _get_case_insensitive,
 )
 from ghostwriter.rolodex.models import (
     DNSCapMapping,
@@ -1319,6 +1321,43 @@ class NexposeDataParserTests(TestCase):
         vuln_entry = next(item for item in findings if item.get("Type") == "Vuln")
         self.assertEqual(vuln_entry.get("Risk"), "High")
         self.assertIn("Edge-2", vuln_entry.get("Devices"))
+
+    def test_firewall_xml_rewinds_before_parsing(self):
+        xml_content = """
+<document>
+  <information>
+    <devices>
+      <device><name>Edge-3</name></device>
+    </devices>
+  </information>
+  <section ref="VULNAUDIT">
+    <section ref="VULNAUDIT.TEST4">
+      <title>Edge Firmware Vulnerability Three</title>
+      <infobox>
+        <title>Risk: High</title>
+        <item><label>CVSSv2 Score</label><value>8.0</value></item>
+        <item><label>CVSSv2 Base</label><value>X/X/X/C:/C:/P 8.0</value></item>
+      </infobox>
+      <section>
+        <title>Summary</title>
+        <text>Edge platform issue summary 3.</text>
+      </section>
+    </section>
+  </section>
+</document>
+"""
+
+        stream = io.BytesIO(xml_content.encode("utf-8"))
+        # Simulate a previously consumed file handle
+        stream.read()
+
+        findings = parse_firewall_xml_report(stream, assessment_tier=2)
+        self.assertIsInstance(findings, list)
+        self.assertTrue(any(entry.get("Issue") for entry in findings))
+
+    def test_get_case_insensitive_ignores_none_keys(self):
+        row = {None: "ignored", "Risk": "High"}
+        self.assertEqual(_get_case_insensitive(row, "Risk"), "High")
 
     def test_normalize_web_issue_artifacts(self):
         payload = {
