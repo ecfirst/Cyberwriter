@@ -2443,11 +2443,13 @@ def parse_nipper_firewall_report(
                 pass
         raw_bytes = file_obj.read()
     except Exception:  # pragma: no cover - unexpected I/O failure
+        logger.info("Failed to read Nipper firewall report", exc_info=True)
         return []
 
     try:
         root = ElementTree.fromstring(raw_bytes)
     except ElementTree.ParseError:
+        logger.info("Unable to parse Nipper firewall XML", exc_info=True)
         return []
 
     document = _find_child_element(root, "document") or root
@@ -2467,7 +2469,11 @@ def parse_nipper_firewall_report(
         "titanium": 3,
     }
     normalized_tier = (project_type or "").strip().lower()
-    tier = tier_map.get(normalized_tier, 3 if normalized_tier else 1)
+    tier = tier_map.get(normalized_tier, 3)
+
+    logger.info(
+        "Parsing Nipper firewall report (tier=%s); bytes_read=%s", normalized_tier or "auto", len(raw_bytes)
+    )
 
     findings: List[Dict[str, Any]] = []
     applicable_refs = ["VULNAUDIT"]
@@ -2484,7 +2490,9 @@ def parse_nipper_firewall_report(
             "VULNAUDIT.CONCLUSIONS",
             "VULNAUDIT.RECOMMENDATIONS",
         }
-        for section in parent:
+        for section in parent.iter():
+            if section is parent:
+                continue
             if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
                 continue
             section_ref = (section.attrib.get("ref") or "").upper()
@@ -2556,6 +2564,7 @@ def parse_nipper_firewall_report(
                 }
             )
 
+    security_sections: List[ElementTree.Element] = []
     if "SECURITYAUDIT" in applicable_refs:
         security_sections = _iter_nipper_sections(root, "SECURITYAUDIT")
         if security_sections:
@@ -2569,7 +2578,9 @@ def parse_nipper_firewall_report(
                 "SECURITY.FINDINGS.SUMMARY",
             }
 
-            for section in parent:
+            for section in parent.iter():
+                if section is parent:
+                    continue
                 if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
                     continue
                 section_ref = (section.attrib.get("ref") or "").upper()
@@ -2644,6 +2655,7 @@ def parse_nipper_firewall_report(
                     }
                 )
 
+    complexity_sections: List[ElementTree.Element] = []
     if "COMPLEXITY" in applicable_refs:
         complexity_sections = _iter_nipper_sections(root, "COMPLEXITY")
         if complexity_sections:
@@ -2654,7 +2666,9 @@ def parse_nipper_firewall_report(
             )
             default_solution = "Review these items and address them appropriately"
 
-            for section in parent:
+            for section in parent.iter():
+                if section is parent:
+                    continue
                 if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
                     continue
                 title = (_get_element_field(section, "title") or "").strip()
@@ -2700,6 +2714,14 @@ def parse_nipper_firewall_report(
                         "Type": section_type,
                     }
                 )
+
+    logger.info(
+        "Finished Nipper firewall parsing: vulnaudit_sections=%d security_sections=%d complexity_sections=%d findings=%d",
+        len(vulnaudit_sections),
+        len(security_sections),
+        len(complexity_sections),
+        len(findings),
+    )
 
     return findings
 
@@ -4609,8 +4631,15 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             if parsed_firewall:
                 firewall_results.extend(parsed_firewall)
         elif label == "firewall_xml.xml":
+            logger.info(
+                "Processing firewall XML upload '%s' for project ID=%s", file_label, getattr(project, "id", "?")
+            )
             parsed_firewall_xml = parse_nipper_firewall_report(
                 data_file.file, project_type_value
+            )
+            logger.info(
+                "Firewall XML parsing completed with %s findings",
+                len(parsed_firewall_xml) if parsed_firewall_xml is not None else "no",
             )
             if parsed_firewall_xml is not None:
                 artifacts["firewall_findings"] = parsed_firewall_xml
