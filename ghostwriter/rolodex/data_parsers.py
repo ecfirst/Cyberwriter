@@ -4501,6 +4501,34 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         for artifact_key, label in nexpose_definitions_by_key.items()
     }
 
+    def _resolve_project_type() -> Optional[str]:
+        workbook_data = getattr(project, "workbook_data", None)
+        if isinstance(workbook_data, Mapping):
+            workbook_project = workbook_data.get("project")
+            if isinstance(workbook_project, Mapping):
+                project_type = (workbook_project.get("type") or "").strip()
+                if project_type:
+                    return project_type
+
+        extra_fields = getattr(project, "extra_fields", None)
+        if isinstance(extra_fields, Mapping):
+            project_type = (extra_fields.get("type") or "").strip()
+            if project_type:
+                return project_type
+
+        attribute_type = (getattr(project, "type", None) or "").strip()
+        if attribute_type:
+            return attribute_type
+
+        project_type_obj = getattr(project, "project_type", None)
+        if project_type_obj:
+            project_type = (getattr(project_type_obj, "project_type", None) or "").strip()
+            if project_type:
+                return project_type
+        return None
+
+    project_type_value = _resolve_project_type()
+
     vulnerability_matrix = load_vulnerability_matrix()
     web_issue_matrix = load_web_issue_matrix()
     parsed_web_findings: List[Dict[str, Any]] = []
@@ -4535,7 +4563,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 firewall_results.extend(parsed_firewall)
         elif label == "firewall_xml.xml":
             parsed_firewall_xml = parse_nipper_firewall_report(
-                data_file.file, project.type
+                data_file.file, project_type_value
             )
             if parsed_firewall_xml:
                 artifacts["firewall_findings"] = parsed_firewall_xml

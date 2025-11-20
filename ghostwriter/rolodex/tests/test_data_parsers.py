@@ -1184,8 +1184,8 @@ class NexposeDataParserTests(TestCase):
         )
         self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
 
-        self.project.type = "titanium"
-        self.project.save(update_fields=["type"])
+        self.project.workbook_data = {"project": {"type": "titanium"}}
+        self.project.save(update_fields=["workbook_data"])
         self.project.rebuild_data_artifacts()
         self.project.refresh_from_db()
 
