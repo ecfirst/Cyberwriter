@@ -12,7 +12,7 @@ import unicodedata
 from base64 import b64decode
 from collections import Counter, OrderedDict
 from collections import abc
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 try:  # pragma: no cover - optional hardening dependency
     from defusedxml import ElementTree as DefusedElementTree
@@ -2081,6 +2081,50 @@ def parse_firewall_report(file_obj: File) -> List[Dict[str, Any]]:
     return findings
 
 
+def _get_nipper_impact(block: str) -> str:
+    """Return an impact string derived from a CVSSv2 vector ``block``."""
+
+    segments = (block or "").split("/")
+    if len(segments) < 6:
+        return ""
+
+    conf_code = segments[3].split(":")[-1].strip().upper()
+    integ_code = segments[4].split(":")[-1].strip().upper()
+    avail_segment = segments[5].split()
+    avail_code = avail_segment[0].split(":")[-1].strip().upper() if avail_segment else ""
+    score = avail_segment[1] if len(avail_segment) > 1 else ""
+
+    conf_phrase = {
+        "N": "has no impact on the confidentiality of the system(s)",
+        "P": "allows considerable disclosure of information",
+        "C": "allows for total information disclosure, providing access to any / all data",
+    }.get(conf_code, "has no impact on the confidentiality of the system(s)")
+
+    integ_phrase = {
+        "N": "has no impact on the integrity of the system(s)",
+        "P": "allows for the modification of some data or system files",
+        "C": "allows an attacker to modify any files or information on the target system(s)",
+    }.get(integ_code, "has no impact on the integrity of the system(s)")
+
+    avail_phrase = {
+        "N": "has no impact on the availability of the system(s)",
+        "P": "can result in reduced performance or loss of some functionality",
+        "C": "can result in total loss of availability of the attacked resource(s)",
+    }.get(avail_code, "has no impact on the availability of the system(s)")
+
+    impact_score = score if score else ""
+    impact_template = (
+        "This vulnerability {conf_phrase}, {integ_phrase}, and {avail_phrase}"
+    )
+    if impact_score:
+        impact_template = (
+            f"{impact_template} with a base CVSSv2 score of {{score}}"
+        )
+    return impact_template.format(
+        conf_phrase=conf_phrase, integ_phrase=integ_phrase, avail_phrase=avail_phrase, score=impact_score
+    )
+
+
 def _normalize_firewall_risk(value: str) -> Optional[str]:
     """Map textual firewall risk levels to ``high``/``med``/``low`` buckets."""
 
@@ -2113,6 +2157,22 @@ def _first_sentence(value: str) -> str:
     normalized = " ".join(text.split())
     parts = _SENTENCE_BOUNDARY_RE.split(normalized, maxsplit=1)
     return parts[0].strip()
+
+
+def _safe_float(value: Any) -> Any:
+    """Attempt to convert ``value`` to a float, returning the original on failure."""
+
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return value
+        try:
+            return float(text)
+        except ValueError:
+            return value
+    return value
 
 
 def _summarize_firewall_vulnerabilities(
@@ -2162,6 +2222,448 @@ def _summarize_firewall_vulnerabilities(
         }
 
     return summaries
+
+
+def _normalize_nipper_text(value: str) -> str:
+    """Return normalized text with Nipper-specific replacements applied."""
+
+    text = (value or "").strip()
+    if not text:
+        return ""
+
+    replacements = {
+        "shown in Table and": "shown below and",
+    }
+    for needle, replacement in replacements.items():
+        text = text.replace(needle, replacement)
+
+    trailing_replacements = ["in Table .", "in Table "]
+    for trailing in trailing_replacements:
+        if text.endswith(trailing):
+            text = text[: -len(trailing)].rstrip() + " below:"
+            break
+
+    return _collapse_whitespace(text)
+
+
+def _parse_nipper_table(
+    table_element: "ElementTree.Element",
+    headings: List[str],
+    row_parser: Callable[[Dict[str, str]], str],
+) -> List[str]:
+    """Convert a Nipper table into formatted rows using ``row_parser``."""
+
+    rows: List[str] = []
+    normalized_headings = [heading.strip() for heading in headings]
+
+    for row in _find_child_elements(table_element, "row"):
+        cell_values: List[str] = []
+        for cell in _find_child_elements(row, "cell"):
+            cell_values.append(_element_text(cell))
+        if not cell_values and list(row):
+            cell_values = [_element_text(child) for child in row]
+        heading_map = {
+            heading: cell_values[index] if index < len(cell_values) else ""
+            for index, heading in enumerate(normalized_headings)
+        }
+        parsed_row = row_parser(heading_map)
+        if parsed_row:
+            rows.append(parsed_row)
+    return rows
+
+
+def _nipper_rules_row(row: Dict[str, str]) -> str:
+    rule = (row.get("Rule") or row.get("rule") or "").strip()
+    action = (row.get("Action") or row.get("action") or "").strip()
+    src = (row.get("Source") or row.get("source") or "").strip()
+    srcp = (row.get("Src Port") or row.get("src port") or "").strip()
+    dst = (row.get("Destination") or row.get("destination") or "").strip()
+    dstp = (row.get("Dst Port") or row.get("dst port") or "").strip()
+    proto = (row.get("Protocol") or row.get("protocol") or "").strip()
+    service = (row.get("Service") or row.get("service") or "").strip()
+
+    if proto.lower() == "any":
+        proto = "Any Protocol"
+    if not proto:
+        proto = service
+    if "any" in service.lower():
+        service = "Any Service"
+
+    if srcp and dstp:
+        return f"Rule '{rule}'-:- {action} '{proto or service}' from '{src}:{srcp}' to '{dst}:{dstp}'"
+    return f"Rule '{rule}'-:- {action} '{proto or service}' from '{src}' to '{dst}'"
+
+
+def _nipper_security_table_row(row: Dict[str, str]) -> str:
+    parts = []
+    for heading, value in row.items():
+        if heading:
+            parts.append(f"{heading}:[{value}]")
+    return " ".join(parts).strip()
+
+
+def _nipper_complex_table_row(row: Dict[str, str]) -> str:
+    name = (row.get("Name") or row.get("name") or "").strip()
+    address = (row.get("Address") or row.get("address") or "").strip()
+    protocol = (row.get("Protocol") or row.get("protocol") or "").strip()
+    dst = (row.get("Destination Port") or row.get("destination port") or "").strip()
+
+    if not protocol:
+        return f"{name} :: {address}".strip()
+    return f"{name} :: [{protocol}]{dst}".strip()
+
+
+def _get_nipper_finding(
+    block: Optional["ElementTree.Element"],
+    ref: str,
+    *,
+    is_complexity: bool = False,
+) -> str:
+    """Build a combined description string from a Nipper evidence block."""
+
+    if block is None:
+        return ""
+
+    parts: List[str] = []
+    remaining_rows = 225 if is_complexity else 222
+    truncation = "...Due to the large number of findings the evidence has been truncated..."
+
+    for child in block:
+        tag = _normalize_xml_tag(getattr(child, "tag", ""))
+        if tag in {"text", "para", "p"}:
+            text_value = _normalize_nipper_text(_element_text(child))
+            if text_value:
+                parts.append(text_value)
+            continue
+
+        if tag == "list":
+            rows: List[str] = []
+            for item in _find_child_elements(child, "item"):
+                text_value = _normalize_nipper_text(_element_text(item))
+                if text_value:
+                    rows.append(text_value)
+            for row in rows:
+                if remaining_rows <= 0:
+                    break
+                parts.append(row)
+                remaining_rows -= 1
+            if remaining_rows <= 0:
+                parts.append(truncation)
+                break
+            continue
+
+        if tag == "table":
+            heading_elements = _find_child_elements(child, "heading")
+            if not heading_elements:
+                heading_elements = _find_child_elements(_find_child_element(child, "headings"), "heading")
+            headings = [_element_text(element) for element in heading_elements]
+            if not headings and list(child):
+                headings = [
+                    _normalize_nipper_text(_normalize_xml_tag(getattr(table_child, "tag", "")))
+                    for table_child in list(child)[0]
+                ]
+
+            if ref.startswith("FILTER."):
+                parser = _nipper_rules_row
+            elif is_complexity and "filter rules" in (_get_element_field(block, "title") or "").lower():
+                parser = _nipper_rules_row
+            elif is_complexity:
+                parser = _nipper_complex_table_row
+            else:
+                parser = _nipper_security_table_row
+
+            rows = _parse_nipper_table(child, headings, parser)
+            for row in rows:
+                if remaining_rows <= 0:
+                    break
+                parts.append(row)
+                remaining_rows -= 1
+            if remaining_rows <= 0:
+                parts.append(truncation)
+                break
+            continue
+
+        nested_text = _normalize_nipper_text(_element_text(child))
+        if nested_text:
+            parts.append(nested_text)
+
+    return "\n".join(part for part in parts if part)
+
+
+def _iter_nipper_sections(root: "ElementTree.Element", ref: str) -> List["ElementTree.Element"]:
+    """Return sections matching ``ref`` from the provided XML tree."""
+
+    matches: List["ElementTree.Element"] = []
+    normalized_ref = (ref or "").strip().lower()
+    for section in root.iter():
+        if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
+            continue
+        section_ref = section.attrib.get("ref") or section.attrib.get("name") or ""
+        if section_ref.strip().lower() == normalized_ref:
+            matches.append(section)
+    return matches
+
+
+def parse_nipper_firewall_report(
+    file_obj: File, project_type: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Parse a Nipper XML export into normalized firewall findings."""
+
+    try:
+        raw_bytes = file_obj.read()
+    except Exception:  # pragma: no cover - unexpected I/O failure
+        return []
+
+    try:
+        root = ElementTree.fromstring(raw_bytes)
+    except ElementTree.ParseError:
+        return []
+
+    document = _find_child_element(root, "document") or root
+    info_block = _find_child_element(document, "information")
+    devices_node = _find_child_element(info_block, "devices")
+    device_names = [
+        _get_element_field(device, "name")
+        for device in _find_child_elements(devices_node, "device")
+        if _get_element_field(device, "name")
+    ]
+
+    tier_map = {"silver": 1, "gold": 2, "cloudfirst": 2, "platinum": 3, "titanium": 3}
+    tier = tier_map.get((project_type or "").strip().lower(), 1)
+
+    findings: List[Dict[str, Any]] = []
+    applicable_refs = ["VULNAUDIT"]
+    if tier >= 2:
+        applicable_refs.append("SECURITYAUDIT")
+    if tier >= 3:
+        applicable_refs.append("COMPLEXITY")
+
+    vulnaudit_sections = _iter_nipper_sections(root, "VULNAUDIT")
+    if vulnaudit_sections:
+        parent = vulnaudit_sections[0]
+        skip_refs = {
+            "VULNAUDIT.INTRO",
+            "VULNAUDIT.CONCLUSIONS",
+            "VULNAUDIT.RECOMMENDATIONS",
+        }
+        for section in parent:
+            if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
+                continue
+            section_ref = (section.attrib.get("ref") or "").upper()
+            if section_ref in skip_refs:
+                continue
+
+            issue = _get_element_field(section, "title")
+            risk = ""
+            impact = ""
+            score: Any = ""
+            devices = ""
+            reference = ""
+            details = ""
+
+            for child in section:
+                child_tag = _normalize_xml_tag(getattr(child, "tag", ""))
+                child_title = (_get_element_field(child, "title") or "").strip()
+                if child_tag == "infobox":
+                    risk_text = _get_element_field(child, "title")
+                    if ": " in risk_text:
+                        risk_text = risk_text.split(": ")[-1]
+                    normalized_risk = risk_text.strip()
+                    if normalized_risk.lower() == "critical":
+                        normalized_risk = "High"
+                    if normalized_risk.lower() == "informational":
+                        normalized_risk = "Low"
+                    risk = normalized_risk
+
+                    for item in _find_child_elements(child, "item"):
+                        label = (item.attrib.get("label") or "").strip()
+                        value = _element_text(item)
+                        if label == "CVSSv2 Score":
+                            score = _safe_float(value)
+                        elif label == "CVSSv2 Base":
+                            impact = _get_nipper_impact(value)
+                elif child_title.lower() == "summary":
+                    details = _element_text(child)
+                elif child_title.lower() == "affected devices":
+                    device_entries = []
+                    for item in _find_child_elements(child, "item"):
+                        item_text = _element_text(item)
+                        if item_text:
+                            device_entries.append(item_text)
+                    devices = "\n".join(device_entries)
+                elif child_title.lower() == "affected device":
+                    device_text = _element_text(child)
+                    matched_devices = [name for name in device_names if name and name in device_text]
+                    devices = "\n".join(matched_devices)
+                elif child_title.lower() in {"vendor security advisory", "vendor security advisories"}:
+                    advisories: List[str] = []
+                    for item in _find_child_elements(child, "item"):
+                        link = item.attrib.get("weblink") or _element_text(item)
+                        if link:
+                            advisories.append(link)
+                    reference = "\n".join(advisories)
+
+            findings.append(
+                {
+                    "Risk": risk,
+                    "Issue": issue,
+                    "Devices": devices,
+                    "Solution": "Apply a patch, upgrade the OS or apply vendor mitigations",
+                    "Impact": impact,
+                    "Details": details,
+                    "Reference": reference,
+                    "Score": score,
+                    "Accepted": "No",
+                    "Type": "Vuln",
+                }
+            )
+
+    if "SECURITYAUDIT" in applicable_refs:
+        security_sections = _iter_nipper_sections(root, "SECURITYAUDIT")
+        if security_sections:
+            parent = security_sections[0]
+            skip_refs = {
+                "SECURITY.INTRODUCTION",
+                "SECURITY.CONCLUSIONS",
+                "SECURITY.RECOMMENDATIONS",
+                "SECURITY.MITIGATIONS",
+                "SECURITY.CLASSIFICATIONS",
+                "SECURITY.FINDINGS.SUMMARY",
+            }
+
+            for section in parent:
+                if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
+                    continue
+                section_ref = (section.attrib.get("ref") or "").upper()
+                if section_ref in skip_refs:
+                    continue
+
+                issue = _get_element_field(section, "title")
+                reference = "N/A"
+                risk = ""
+                impact = ""
+                devices = ""
+                solution = ""
+                details = ""
+                score: Any = ""
+                section_type = "Rule" if section_ref.startswith("FILTER") else "Config"
+
+                for subsection in section:
+                    sub_tag = _normalize_xml_tag(getattr(subsection, "tag", ""))
+                    sub_ref = (subsection.attrib.get("ref") or "").upper()
+                    if sub_tag == "issuedetails":
+                        issue_devices: List[str] = []
+                        for device in _find_child_elements(_find_child_element(subsection, "devices"), "device"):
+                            name = _get_element_field(device, "name")
+                            if name:
+                                issue_devices.append(name)
+                        devices = "\n".join(issue_devices)
+
+                        ratings = _find_child_element(subsection, "ratings")
+                        for rating in ratings or []:
+                            rating_tag = _normalize_xml_tag(getattr(rating, "tag", ""))
+                            if rating_tag == "rating":
+                                rating_value = (_element_text(rating) or "").strip()
+                                if rating_value.lower() == "informational":
+                                    rating_value = "Low"
+                                if rating_value.lower() == "critical":
+                                    rating_value = "High"
+                                risk = rating_value
+                            elif rating_tag == "cvssv2-temporal":
+                                rating_score = rating.attrib.get("score") or ""
+                                if rating_score == "0":
+                                    rating_score = "1"
+                                score = _safe_float(rating_score)
+
+                    elif sub_ref == "IMPACT":
+                        if issue == "SSH Protocol Version 1 Supported":
+                            impact = (
+                                "Although flaws have been identified with SSH protocol version 2, "
+                                "fundamental flaws exist in protocol version 1"
+                            )
+                        else:
+                            impact = _get_nipper_finding(subsection, section_ref)
+                    elif sub_ref == "RECOMMENDATION":
+                        for child in subsection:
+                            solution = _element_text(child)
+                            if solution:
+                                break
+                    elif sub_ref == "FINDING":
+                        details = _get_nipper_finding(subsection, section_ref)
+
+                findings.append(
+                    {
+                        "Risk": risk,
+                        "Issue": issue,
+                        "Devices": devices,
+                        "Solution": solution,
+                        "Impact": impact,
+                        "Details": details,
+                        "Reference": reference,
+                        "Score": score,
+                        "Accepted": "No",
+                        "Type": section_type,
+                    }
+                )
+
+    if "COMPLEXITY" in applicable_refs:
+        complexity_sections = _iter_nipper_sections(root, "COMPLEXITY")
+        if complexity_sections:
+            parent = complexity_sections[0]
+            skip_titles = {"introduction", "no filter rules found", "no issues found"}
+            default_impact = (
+                "While not a technical vulnerability, adherence to best practice calls for these items to be addressed"
+            )
+            default_solution = "Review these items and address them appropriately"
+
+            for section in parent:
+                if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
+                    continue
+                title = (_get_element_field(section, "title") or "").strip()
+                if title.lower() in skip_titles:
+                    continue
+
+                devices: List[str] = []
+                details_parts: List[str] = []
+                risk = "Low"
+                score = 1
+                reference = "N/A"
+                section_type = "Complexity"
+
+                for subsection in section:
+                    if _normalize_xml_tag(getattr(subsection, "tag", "")) != "section":
+                        continue
+                    subtitle = (_get_element_field(subsection, "title") or "").strip()
+                    if subtitle:
+                        devices.append(subtitle.split()[0])
+
+                    table_title = (subtitle or "").lower()
+                    is_filter_rules = "filter rules" in table_title
+                    if is_filter_rules:
+                        details_parts.append(
+                            _get_nipper_finding(subsection, "FILTER.", is_complexity=True)
+                        )
+                    else:
+                        details_parts.append(
+                            _get_nipper_finding(subsection, "COMPLEXITY", is_complexity=True)
+                        )
+
+                findings.append(
+                    {
+                        "Risk": risk,
+                        "Issue": title,
+                        "Devices": "\n".join([device for device in devices if device]),
+                        "Solution": default_solution,
+                        "Impact": default_impact,
+                        "Details": "\n".join([part for part in details_parts if part]),
+                        "Reference": reference,
+                        "Score": score,
+                        "Accepted": "No",
+                        "Type": section_type,
+                    }
+                )
+
+    return findings
 
 
 def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
@@ -4031,6 +4533,12 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
                 firewall_results.extend(parsed_firewall)
+        elif label == "firewall_xml.xml":
+            parsed_firewall_xml = parse_nipper_firewall_report(
+                data_file.file, project.type
+            )
+            if parsed_firewall_xml:
+                artifacts["firewall_findings"] = parsed_firewall_xml
         elif label in NEXPOSE_ARTIFACT_DEFINITIONS:
             parsed_vulnerabilities = parse_nexpose_vulnerability_report(
                 data_file.file, vulnerability_matrix=vulnerability_matrix
@@ -4139,10 +4647,10 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             artifacts[artifact_key] = values
 
     if firewall_results:
-        artifacts["firewall_findings"] = {
-            "findings": firewall_results,
-            "vulnerabilities": _summarize_firewall_vulnerabilities(firewall_results),
-        }
+        artifacts["firewall_cap_findings"] = firewall_results
+        artifacts["firewall_vulnerabilities"] = _summarize_firewall_vulnerabilities(
+            firewall_results
+        )
 
     for artifact_key, details in nexpose_results.items():
         artifacts[artifact_key] = {

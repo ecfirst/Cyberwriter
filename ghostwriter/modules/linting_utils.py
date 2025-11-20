@@ -687,34 +687,72 @@ LINTER_CONTEXT = {
                 "10.20.30.40",
                 "172.16.50.5",
             ],
-            "firewall_findings": {
-                "vulnerabilities": {
-                    "high": {
-                        "total_unique": 1,
-                        "items": [
-                            {
-                                "issue": "Overly permissive inbound access",
-                                "impact": "Increases the exposed attack surface for external actors.",
-                                "count": 1,
-                            }
-                        ],
-                    },
-                    "med": {
-                        "total_unique": 1,
-                        "items": [
-                            {
-                                "issue": "Stale decommissioned network objects",
-                                "impact": "Obsolete objects complicate reviews and obscure risky rules.",
-                                "count": 1,
-                            }
-                        ],
-                    },
-                    "low": {
-                        "total_unique": 0,
-                        "items": [],
-                    },
+            "firewall_findings": [
+                {
+                    "Risk": "High",
+                    "Issue": "Overly permissive inbound access",
+                    "Devices": "Edge-FW01",
+                    "Solution": "Review inbound access and enforce least privilege",
+                    "Impact": "Increases the exposed attack surface for external actors.",
+                    "Details": "Numerous any-to-any rules allow unsolicited ingress.",
+                    "Reference": "Vendor advisory",
+                    "Score": 8.5,
+                    "Accepted": "No",
+                    "Type": "Vuln",
+                },
+                {
+                    "Risk": "Medium",
+                    "Issue": "Stale decommissioned network objects",
+                    "Devices": "Core-FW02",
+                    "Solution": "Remove unused objects from policy",
+                    "Impact": "Obsolete objects complicate reviews and obscure risky rules.",
+                    "Details": "Objects no longer referenced in active rules remain in the configuration.",
+                    "Reference": "",
+                    "Score": 5.0,
+                    "Accepted": "No",
+                    "Type": "Config",
+                },
+            ],
+            "firewall_vulnerabilities": {
+                "high": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "issue": "Overly permissive inbound access",
+                            "impact": "Increases the exposed attack surface for external actors.",
+                            "count": 1,
+                        }
+                    ],
+                },
+                "med": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "issue": "Stale decommissioned network objects",
+                            "impact": "Obsolete objects complicate reviews and obscure risky rules.",
+                            "count": 1,
+                        }
+                    ],
+                },
+                "low": {
+                    "total_unique": 0,
+                    "items": [],
                 },
             },
+            "firewall_cap_findings": [
+                {
+                    "risk": "High",
+                    "issue": "Overly permissive inbound access",
+                    "devices": "Edge-FW01",
+                    "solution": "Restrict inbound rules to required services",
+                    "impact": "Increases the exposed attack surface for external actors.",
+                    "details": "Rules allow broad ingress from any source to internal networks.",
+                    "reference": "",
+                    "accepted": "No",
+                    "type": "Vuln",
+                    "score": 8.5,
+                }
+            ],
             "external_nexpose_vulnerabilities": {
                 "label": "External Nexpose Vulnerabilities",
                 "high": {

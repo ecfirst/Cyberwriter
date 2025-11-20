@@ -1001,12 +1001,10 @@ class NexposeDataParserTests(TestCase):
         self.project.rebuild_data_artifacts()
         self.project.refresh_from_db()
 
-        artifact = self.project.data_artifacts.get("firewall_findings")
-        self.assertIsInstance(artifact, dict)
-        self.assertNotIn("findings", artifact)
-        self.assertIn("vulnerabilities", artifact)
+        self.assertIn("firewall_vulnerabilities", self.project.data_artifacts)
+        self.assertNotIn("firewall_findings", self.project.data_artifacts)
 
-        summaries = artifact["vulnerabilities"]
+        summaries = self.project.data_artifacts.get("firewall_vulnerabilities")
         self.assertEqual(summaries["high"]["total_unique"], 2)
         self.assertEqual(
             summaries["high"]["items"],
@@ -1126,6 +1124,92 @@ class NexposeDataParserTests(TestCase):
         responses = self.project.data_responses.get("firewall")
         self.assertIsInstance(responses, dict)
         self.assertEqual(responses.get("firewall_periodic_reviews"), "Yes")
+
+    def test_firewall_xml_is_parsed(self):
+        xml_content = b"""
+<root>
+  <document>
+    <information>
+      <devices>
+        <device><name>FW-EDGE</name></device>
+      </devices>
+    </information>
+  </document>
+  <section ref=\"VULNAUDIT\">
+    <section ref=\"VULNAUDIT.TEST\" title=\"Sample Vulnerability\">
+      <infobox title=\"Risk: Critical\">
+        <item label=\"CVSSv2 Score\">8.5</item>
+        <item label=\"CVSSv2 Base\">X/X/X/C:P/I:C/A:P 8.5</item>
+      </infobox>
+      <section title=\"Summary\">Issue summary content</section>
+      <section title=\"Affected Device\">Device FW-EDGE is impacted</section>
+      <section title=\"Vendor Security Advisory\"><item weblink=\"http://vendor.example/advisory\" /></section>
+    </section>
+  </section>
+  <section ref=\"SECURITYAUDIT\">
+    <section ref=\"FILTER.TEST\" title=\"Rule Finding\">
+      <issuedetails>
+        <devices><device><name>FW-EDGE</name></device></devices>
+        <ratings>
+          <rating>Informational</rating>
+          <cvssv2-temporal score=\"0\" />
+        </ratings>
+      </issuedetails>
+      <section ref=\"IMPACT\"><text>Impact text here.</text></section>
+      <section ref=\"RECOMMENDATION\"><text>Fix it</text></section>
+      <section ref=\"FINDING\"><list><item>Rule item one</item></list></section>
+    </section>
+  </section>
+  <section ref=\"COMPLEXITY\">
+    <section title=\"FW-EDGE Filter Rules\">
+      <section title=\"FW-EDGE Filter Rules\">
+        <table>
+          <headings>
+            <heading>Rule</heading><heading>Action</heading><heading>Source</heading><heading>Src Port</heading><heading>Destination</heading><heading>Dst Port</heading><heading>Protocol</heading><heading>Service</heading>
+          </headings>
+          <row><cell>1</cell><cell>Allow</cell><cell>Any</cell><cell>Any</cell><cell>Any</cell><cell>80</cell><cell>TCP</cell><cell>HTTP</cell></row>
+        </table>
+      </section>
+    </section>
+  </section>
+</root>
+        """
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "firewall_xml.xml", xml_content, content_type="application/xml"
+            ),
+            requirement_label="firewall_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.type = "titanium"
+        self.project.save(update_fields=["type"])
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        findings = self.project.data_artifacts.get("firewall_findings")
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), 3)
+
+        vuln_entry = findings[0]
+        self.assertEqual(vuln_entry["Risk"], "High")
+        self.assertEqual(vuln_entry["Issue"], "Sample Vulnerability")
+        self.assertEqual(vuln_entry["Devices"], "FW-EDGE")
+        self.assertEqual(vuln_entry["Reference"], "http://vendor.example/advisory")
+        self.assertEqual(vuln_entry["Type"], "Vuln")
+
+        security_entry = [row for row in findings if row.get("Type") == "Rule"][0]
+        self.assertEqual(security_entry["Reference"], "N/A")
+        self.assertEqual(security_entry["Devices"], "FW-EDGE")
+        self.assertEqual(security_entry["Risk"], "Low")
+        self.assertEqual(security_entry["Score"], 1)
+        self.assertTrue(security_entry["Details"].startswith("Rule item one"))
+
+        complexity_entry = [row for row in findings if row.get("Type") == "Complexity"][0]
+        self.assertEqual(complexity_entry["Score"], 1)
+        self.assertIn("Rule '1'", complexity_entry["Details"])
 
     def test_normalize_web_issue_artifacts(self):
         payload = {

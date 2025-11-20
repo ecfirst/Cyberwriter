@@ -1278,8 +1278,17 @@ class Project(models.Model):
         firewall_artifact = artifacts.get("firewall_findings")
         if isinstance(firewall_artifact, dict):
             firewall_findings = firewall_artifact.get("findings")
+        elif isinstance(firewall_artifact, list):
+            firewall_findings = firewall_artifact
         else:
             firewall_findings = None
+
+        if not firewall_findings:
+            firewall_alt = artifacts.get("firewall_cap_findings")
+            if isinstance(firewall_alt, list):
+                firewall_findings = firewall_alt
+            elif isinstance(firewall_alt, dict):
+                firewall_findings = firewall_alt.get("findings")
 
         def _normalize_firewall_value(value: Any) -> Optional[str]:
             if value in (None, ""):
@@ -1356,8 +1365,6 @@ class Project(models.Model):
 
         if isinstance(firewall_artifact, dict):
             firewall_artifact.pop("findings", None)
-            if not firewall_artifact.get("vulnerabilities"):
-                artifacts.pop("firewall_findings", None)
 
         workbook_dns_response = build_workbook_dns_response(workbook_payload)
         if workbook_dns_response:
