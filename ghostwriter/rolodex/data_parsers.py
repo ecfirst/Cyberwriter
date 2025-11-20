@@ -2460,13 +2460,24 @@ def _parse_device_names(root: ElementTree.Element) -> List[str]:
     return devices
 
 
+def _iter_issue_sections(parent: ElementTree.Element) -> Iterable[ElementTree.Element]:
+    """Yield issue/section nodes within ``parent``, skipping wrapper elements."""
+
+    for child in list(parent):
+        local_name = _get_local_name(child).lower()
+        if local_name in {"section", "issue"}:
+            yield child
+        elif local_name in {"sections", "issues"}:
+            yield from _iter_issue_sections(child)
+
+
 def _parse_vuln_audit(
     section: ElementTree.Element, device_names: List[str]
 ) -> List[Dict[str, Any]]:
     """Parse the VULNAUDIT section into finding dictionaries."""
 
     findings: List[Dict[str, Any]] = []
-    for child in list(section):
+    for child in _iter_issue_sections(section):
         ref_value = child.attrib.get("ref", "")
         if ref_value in {
             "VULNAUDIT.INTRO",
@@ -2568,7 +2579,7 @@ def _parse_security_audit(section: ElementTree.Element) -> List[Dict[str, Any]]:
         "SECURITY.FINDINGS.SUMMARY",
     }
 
-    for child in list(section):
+    for child in _iter_issue_sections(section):
         ref_value = child.attrib.get("ref", "")
         if ref_value in skip_refs:
             continue
@@ -2656,7 +2667,7 @@ def _parse_complexity(section: ElementTree.Element) -> List[Dict[str, Any]]:
         "No Issues Found",
     }
 
-    for child in list(section):
+    for child in _iter_issue_sections(section):
         title = _get_child_text(child, "title")
         if title in skip_titles:
             continue
