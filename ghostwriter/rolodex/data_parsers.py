@@ -1853,6 +1853,16 @@ def _strip_element_namespaces(document_root: Optional["ElementTree.Element"]) ->
             element.tag = tag.split("}", 1)[-1]
 
 
+def _element_tag_equals(element: Any, name: str) -> bool:
+    """Return ``True`` if ``element`` tag matches ``name`` case-insensitively."""
+
+    tag = getattr(element, "tag", None)
+    if not isinstance(tag, str):
+        return False
+    normalized = tag.split("}", 1)[-1].lower()
+    return normalized == name.lower()
+
+
 def _read_file_bytes(file_obj: File) -> bytes:
     """Best-effort file reader that resets the pointer for reuse."""
 
@@ -1923,10 +1933,18 @@ def _collect_device_names(document_root: Optional["ElementTree.Element"]) -> Lis
     devices_root = document_root.find("document/information/devices") or document_root.find(
         ".//information/devices"
     )
+    if devices_root is None:
+        for element in document_root.iter():
+            if _element_tag_equals(element, "devices"):
+                devices_root = element
+                break
     device_names: List[str] = []
     if devices_root is not None:
         for device in devices_root:
-            name = _element_text(device.find("name"))
+            if _element_tag_equals(device, "name"):
+                name = _element_text(device)
+            else:
+                name = _element_text(device.find("name"))
             if name:
                 device_names.append(name)
     return device_names
@@ -2244,7 +2262,17 @@ def parse_nipper_xml_report(file_obj: File, project: "Project") -> List[Dict[str
     selected_sections = _resolve_assessment_tier(project)
 
     sections = list(root.findall("./document/section")) or list(root.findall(".//section"))
-    section_map = {section.attrib.get("ref", ""): section for section in sections}
+    if not sections:
+        sections = [element for element in root.iter() if _element_tag_equals(element, "section")]
+
+    section_map = {}
+    for section in sections:
+        ref_value = None
+        for ref_key in ("ref", "REF", "Ref"):
+            ref_value = section.attrib.get(ref_key)
+            if ref_value:
+                break
+        section_map[ref_value or ""] = section
 
     if "VULNAUDIT" in selected_sections:
         findings.extend(_parse_vulnaudit_sections(section_map.get("VULNAUDIT"), device_names))
