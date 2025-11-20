@@ -734,6 +734,29 @@ LINTER_CONTEXT = {
                     }
                 ],
             },
+            "firewall_vulnerabilities": {
+                "high": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "issue": "Overly permissive inbound access",
+                            "impact": "Increases the exposed attack surface for external actors.",
+                            "count": 1,
+                        }
+                    ],
+                },
+                "med": {
+                    "total_unique": 1,
+                    "items": [
+                        {
+                            "issue": "Stale decommissioned network objects",
+                            "impact": "Obsolete objects complicate reviews and obscure risky rules.",
+                            "count": 1,
+                        }
+                    ],
+                },
+                "low": {"total_unique": 0, "items": []},
+            },
             "external_nexpose_vulnerabilities": {
                 "label": "External Nexpose Vulnerabilities",
                 "high": {
