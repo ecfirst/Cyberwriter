@@ -2888,6 +2888,22 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(findings, list)
         self.assertEqual(len(findings), 2)
 
+        metrics = self.project.data_artifacts.get("web_metrics")
+        self.assertIsInstance(metrics, dict)
+        host_risk_counts = metrics.get("summary", {}).get("host_risk_counts")
+        self.assertIsInstance(host_risk_counts, list)
+        self.assertEqual(
+            host_risk_counts,
+            [
+                {
+                    "host": "app.example.com",
+                    "high": 1,
+                    "medium": 0,
+                    "low": 1,
+                }
+            ],
+        )
+
         sorted_findings = sorted(findings, key=lambda entry: (entry["Issue"], entry["Path"]))
         sql_finding, vuln_finding = sorted_findings
 
