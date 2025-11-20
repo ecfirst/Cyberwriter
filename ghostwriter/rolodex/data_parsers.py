@@ -2507,6 +2507,8 @@ def _parse_vuln_audit(
     findings: List[Dict[str, Any]] = []
     for child in _iter_issue_sections(section):
         ref_value = _get_attribute(child, "ref")
+        if ref_value and not ref_value.upper().startswith("VULNAUDIT"):
+            continue
         if ref_value in {
             "VULNAUDIT.INTRO",
             "VULNAUDIT.CONCLUSIONS",
@@ -2609,11 +2611,16 @@ def _parse_security_audit(section: ElementTree.Element) -> List[Dict[str, Any]]:
 
     for child in _iter_issue_sections(section):
         ref_value = _get_attribute(child, "ref")
+        if ref_value and not (
+            ref_value.upper().startswith("FILTER") or ref_value.upper().startswith("SECURITY")
+        ):
+            continue
         if ref_value in skip_refs:
             continue
 
         issue = _get_child_text(child, "title")
-        type_value = "Rule" if ref_value.startswith("FILTER") else "Config"
+        normalized_ref = (ref_value or "").upper()
+        type_value = "Rule" if normalized_ref.startswith("FILTER") else "Config"
         risk = ""
         impact = ""
         devices: List[str] = []
@@ -2696,6 +2703,9 @@ def _parse_complexity(section: ElementTree.Element) -> List[Dict[str, Any]]:
     }
 
     for child in _iter_issue_sections(section):
+        ref_value = _get_attribute(child, "ref")
+        if ref_value and not ref_value.upper().startswith("COMPLEXITY"):
+            continue
         title = _get_child_text(child, "title")
         if title in skip_titles:
             continue
@@ -2791,19 +2801,16 @@ def parse_firewall_xml_report(
     device_names = _parse_device_names(root)
     findings: List[Dict[str, Any]] = []
 
-    vuln_section = _get_section_by_ref(root, "VULNAUDIT")
-    if vuln_section is not None:
-        findings.extend(_parse_vuln_audit(vuln_section, device_names))
+    vuln_section = _get_section_by_ref(root, "VULNAUDIT") or root
+    findings.extend(_parse_vuln_audit(vuln_section, device_names))
 
     if assessment_tier >= 2:
-        security_section = _get_section_by_ref(root, "SECURITYAUDIT")
-        if security_section is not None:
-            findings.extend(_parse_security_audit(security_section))
+        security_section = _get_section_by_ref(root, "SECURITYAUDIT") or root
+        findings.extend(_parse_security_audit(security_section))
 
     if assessment_tier >= 3:
-        complexity_section = _get_section_by_ref(root, "COMPLEXITY")
-        if complexity_section is not None:
-            findings.extend(_parse_complexity(complexity_section))
+        complexity_section = _get_section_by_ref(root, "COMPLEXITY") or root
+        findings.extend(_parse_complexity(complexity_section))
 
     return findings
 

@@ -1457,6 +1457,58 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(findings, list)
         self.assertTrue(any(entry.get("Issue") for entry in findings))
 
+    def test_firewall_xml_parses_when_no_container_sections_present(self):
+        xml_content = """
+<document>
+  <information>
+    <devices>
+      <device><name>EdgeFlat</name></device>
+    </devices>
+  </information>
+  <section ref="VULNAUDIT.FLAT1">
+    <title>Flat Vuln</title>
+    <infobox><title>Risk: Critical</title></infobox>
+    <section><title>Summary</title><text>Flat vuln summary.</text></section>
+  </section>
+  <section ref="FILTER.FLATRULE">
+    <title>Flat Rule</title>
+    <issuedetails>
+      <devices><device><name>EdgeFlat</name></device></devices>
+      <ratings><rating>High</rating><cvssv2-temporal score="8" /></ratings>
+    </issuedetails>
+    <section ref="RECOMMENDATION"><text>Apply flat rule fix</text></section>
+    <section ref="FINDING"><text>Flat rule details</text></section>
+  </section>
+  <section ref="COMPLEXITY.FLAT">
+    <title>EdgeFlat Settings</title>
+    <section>
+      <title>EdgeFlat Filter Rules</title>
+      <table>
+        <headings>
+          <heading>Rule</heading><heading>Action</heading><heading>Source</heading><heading>Src Port</heading>
+          <heading>Destination</heading><heading>Dst Port</heading><heading>Protocol</heading><heading>Service</heading>
+        </headings>
+        <row><entry>10</entry><entry>Deny</entry><entry>Any</entry><entry></entry><entry>All</entry><entry></entry><entry>Any</entry><entry>Any</entry></row>
+      </table>
+    </section>
+  </section>
+</document>
+"""
+
+        findings = parse_firewall_xml_report(io.StringIO(xml_content), assessment_tier=3)
+        self.assertGreaterEqual(len(findings), 3)
+
+        vuln_entry = next(item for item in findings if item.get("Type") == "Vuln")
+        self.assertIn("Flat Vuln", vuln_entry.get("Issue"))
+        self.assertEqual(vuln_entry.get("Risk"), "High")
+
+        rule_entry = next(item for item in findings if item.get("Type") == "Rule")
+        self.assertEqual(rule_entry.get("Risk"), "High")
+        self.assertEqual(rule_entry.get("Score"), 8)
+
+        complexity_entry = next(item for item in findings if item.get("Type") == "Complexity")
+        self.assertIn("Rule '10'", complexity_entry.get("Details"))
+
     def test_get_case_insensitive_ignores_none_keys(self):
         row = {None: "ignored", "Risk": "High"}
         self.assertEqual(_get_case_insensitive(row, "Risk"), "High")
