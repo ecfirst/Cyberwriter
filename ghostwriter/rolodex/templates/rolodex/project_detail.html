@@ -410,6 +410,21 @@
                         <dd class="col-6 text-right">{{ card.summary.unique_med|default:0 }}</dd>
                         <dt class="col-6">Unique Lows</dt>
                         <dd class="col-6 text-right">{{ card.summary.unique_low|default:0 }}</dd>
+                        {% if card.summary.host_risk_counts %}
+                          <dt class="col-12 mt-2">Host Risk Counts</dt>
+                          <dd class="col-12">
+                            <ul class="list-unstyled small mb-0">
+                              {% for host in card.summary.host_risk_counts %}
+                                <li class="mb-1">
+                                  <span class="font-weight-bold">{{ host.host }}</span>:
+                                  High {{ host.high|default:0 }},
+                                  Med {{ host.medium|default:0 }},
+                                  Low {{ host.low|default:0 }}
+                                </li>
+                              {% endfor %}
+                            </ul>
+                          </dd>
+                        {% endif %}
                       {% elif card.type == "firewall" %}
                         <dt class="col-6">Rule Count</dt>
                         <dd class="col-6 text-right">{{ card.summary.rule_count|default:0 }}</dd>

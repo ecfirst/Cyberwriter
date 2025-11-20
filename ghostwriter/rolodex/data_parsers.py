@@ -4054,6 +4054,8 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
     total_entries: List[Dict[str, Any]] = []
     unique_entries: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
     impact_counter: Counter[str] = Counter()
+    host_risk_counts: Dict[str, Dict[str, int]] = {}
+    host_unique_keys: Set[Tuple[str, str, str]] = set()
 
     for finding in findings:
         issue = (finding.get("Issue") or "").strip()
@@ -4061,6 +4063,7 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
         background = finding.get("Background")
         fix = finding.get("Fix")
         risk = (finding.get("Risk") or "").strip()
+        host = (finding.get("Host") or "").strip()
         score = finding.get("Score")
         try:
             numeric_score = float(score) if score is not None else 0.0
@@ -4072,7 +4075,7 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
             "Impact": impact,
             "Background": background,
             "Fix": fix,
-            "Host": finding.get("Host"),
+            "Host": host,
             "Path": finding.get("Path"),
             "Evidence": finding.get("Evidence"),
             "Detailed Remediation": finding.get("Detailed Remediation"),
@@ -4081,6 +4084,21 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
         }
         total_entries.append(entry)
         impact_counter[impact] += 1
+
+        if host:
+            unique_host_key = (issue, risk, host)
+            if unique_host_key not in host_unique_keys:
+                host_unique_keys.add(unique_host_key)
+                risk_bucket = risk.lower()
+                host_entry = host_risk_counts.setdefault(
+                    host, {"high": 0, "medium": 0, "low": 0}
+                )
+                if risk_bucket == "high":
+                    host_entry["high"] += 1
+                elif risk_bucket == "medium":
+                    host_entry["medium"] += 1
+                else:
+                    host_entry["low"] += 1
 
         unique_key = (risk, issue, impact)
         existing = unique_entries.get(unique_key)
@@ -4112,6 +4130,15 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
         ),
         "unique_low": sum(1 for entry in unique_values if entry.get("Score", 0) <= 4.9),
         "uniquelow": None,  # populated below for legacy naming
+        "host_risk_counts": [
+            {
+                "host": host,
+                "high": counts.get("high", 0),
+                "medium": counts.get("medium", 0),
+                "low": counts.get("low", 0),
+            }
+            for host, counts in sorted(host_risk_counts.items())
+        ],
     }
     summary["uniquelow"] = summary["unique_low"]
 
