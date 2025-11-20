@@ -4617,6 +4617,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     assessment_tier = assessment_map.get(project_type_label, 3)
 
     firewall_xml_seen = False
+    firewall_xml_files: List[File] = []
 
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
@@ -4637,6 +4638,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         parsed_firewall: List[Dict[str, Any]] = []
         if looks_like_xml:
             firewall_xml_seen = True
+            firewall_xml_files.append(data_file.file)
             parsed_firewall = parse_firewall_xml_report(
                 data_file.file,
                 assessment_tier=assessment_tier,
@@ -4675,6 +4677,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     missing_web_issue_matrix.add(issue_name)
         elif _matches_label("firewall_xml.xml") or file_name_lower.endswith("firewall_xml.xml"):
             firewall_xml_seen = True
+            firewall_xml_files.append(data_file.file)
             parsed_firewall = parse_firewall_xml_report(
                 data_file.file,
                 assessment_tier=assessment_tier,
@@ -4806,6 +4809,17 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     for artifact_key, values in ip_results.items():
         if values:
             artifacts[artifact_key] = values
+
+    if firewall_xml_seen and not firewall_results:
+        for xml_file in firewall_xml_files:
+            parsed_firewall = parse_firewall_xml_report(
+                xml_file,
+                assessment_tier=assessment_tier,
+            )
+            _rewind_uploaded_file(xml_file)
+            if parsed_firewall:
+                firewall_results.extend(parsed_firewall)
+                break
 
     if firewall_results:
         artifacts["firewall_findings"] = firewall_results
