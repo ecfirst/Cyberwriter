@@ -4604,13 +4604,14 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         label = (data_file.requirement_label or "").strip().lower()
         xml_artifact_key = _resolve_nexpose_xml_artifact_key(data_file)
 
+        file_name_lower = (getattr(data_file.file, "name", "") or "").strip().lower()
         label_candidates = [
             label,
             (data_file.requirement_slug or "").strip().lower(),
             (data_file.requirement_context or "").strip().lower(),
             (data_file.description or "").strip().lower(),
             getattr(data_file, "filename", "").strip().lower(),
-            (getattr(data_file.file, "name", "") or "").strip().lower(),
+            file_name_lower,
         ]
         normalized_labels = [value for value in label_candidates if value]
 
@@ -4641,15 +4642,15 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 issue_name = (entry.get("issue") or "").strip() if isinstance(entry, dict) else ""
                 if issue_name:
                     missing_web_issue_matrix.add(issue_name)
-        elif _matches_label("firewall_csv.csv"):
-            parsed_firewall = parse_firewall_report(data_file.file)
-            if parsed_firewall:
-                firewall_results.extend(parsed_firewall)
-        elif _matches_label("firewall_xml.xml"):
+        elif _matches_label("firewall_xml.xml") or file_name_lower.endswith("firewall_xml.xml"):
             parsed_firewall = parse_firewall_xml_report(
                 data_file.file,
                 assessment_tier=assessment_tier,
             )
+            if parsed_firewall:
+                firewall_results.extend(parsed_firewall)
+        elif _matches_label("firewall_csv.csv"):
+            parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
                 firewall_results.extend(parsed_firewall)
         elif label in NEXPOSE_ARTIFACT_DEFINITIONS:
