@@ -579,7 +579,7 @@ def build_data_configuration(
         if not isinstance(firewall_source, dict):
             firewall_source = _get_nested(data, ("firewall",), {})
         if _as_int(_get_nested(firewall_source or {}, ("unique",), 0)) > 0:
-            add_required("firewall_csv.csv")
+            add_required("firewall_xml.xml")
 
         firewall_devices = _get_nested(firewall_source or {}, ("devices",), []) or []
         if isinstance(firewall_devices, list):

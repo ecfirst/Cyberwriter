@@ -1020,6 +1020,18 @@ class ProjectDetailViewTests(TestCase):
         self.assertContains(response, "Download Nexpose Data file")
         self.assertContains(response, "?artifact=external_nexpose_metrics")
 
+    def test_processed_data_tab_handles_firewall_summary_without_legacy_totals(self):
+        self.project.data_artifacts = {
+            "firewall_metrics": {
+                "summary": {"unique": 3, "unique_high": 1, "config_count": 2}
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.uri)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Firewall Findings")
+
 
 class ProjectNexposeMissingMatrixDownloadTests(TestCase):
     """Tests for downloading missing Nexpose matrix entries."""
@@ -1726,25 +1738,38 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.project.save(update_fields=["workbook_data"])
 
         upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
-        csv_content = "\n".join(
-            [
-                "Risk,Issue,Devices,Solution,Impact,Details,Reference,Score,Accepted,Type",
-                "High,Blocked traffic review,FW-1;FW-2,Adjust rule set,Service disruption,Traffic dropped,http://example.com,8.5,No,External",
-                ",,,,,,,,,",
-            ]
-        )
+        xml_content = b"""
+<root>
+  <document>
+    <information>
+      <devices><device><name>FW-1</name></device></devices>
+    </information>
+  </document>
+  <section ref=\"SECURITYAUDIT\">
+    <section ref=\"FILTER.TEST\" title=\"Blocked traffic review\">
+      <issuedetails>
+        <devices><device><name>FW-1</name></device></devices>
+        <ratings><rating>High</rating><cvssv2-temporal score=\"8.5\" /></ratings>
+      </issuedetails>
+      <section ref=\"IMPACT\"><text>Service disruption</text></section>
+      <section ref=\"RECOMMENDATION\"><text>Adjust rule set</text></section>
+      <section ref=\"FINDING\"><text>Traffic dropped</text></section>
+    </section>
+  </section>
+</root>
+"""
         upload = SimpleUploadedFile(
-            "firewall_csv.csv",
-            csv_content.encode("utf-8"),
-            content_type="text/csv",
+            "firewall_xml.xml",
+            xml_content,
+            content_type="application/xml",
         )
 
         response = self.client_auth.post(
             upload_url,
             {
                 "file": upload,
-                "requirement_slug": "required_firewall-csv-csv",
-                "requirement_label": "firewall_csv.csv",
+                "requirement_slug": "required_firewall-xml-xml",
+                "requirement_label": "firewall_xml.xml",
                 "requirement_context": "",
                 "description": "",
             },
@@ -1763,21 +1788,9 @@ class ProjectDataResponsesUpdateTests(TestCase):
 
         artifacts = self.project.data_artifacts
         self.assertIn("firewall_findings", artifacts)
-        findings = artifacts["firewall_findings"]
-        self.assertNotIn("findings", findings)
-
-        vulnerabilities = findings["vulnerabilities"]
-        self.assertEqual(vulnerabilities["high"]["total_unique"], 1)
-        self.assertEqual(
-            vulnerabilities["high"]["items"],
-            [
-                {
-                    "issue": "Blocked traffic review",
-                    "impact": "Service disruption",
-                    "count": 1,
-                }
-            ],
-        )
+        self.assertIn("firewall_metrics", artifacts)
+        metrics = artifacts["firewall_metrics"]
+        self.assertEqual(metrics.get("summary", {}).get("unique_high"), 1)
 
         firewall_cap = self.project.cap.get("firewall")
         self.assertIsInstance(firewall_cap, dict)

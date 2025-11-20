@@ -201,7 +201,7 @@ class WorkbookHelpersTests(SimpleTestCase):
         _, required_files = build_data_configuration(workbook_data)
 
         labels = [entry["label"] for entry in required_files]
-        self.assertIn("firewall_csv.csv", labels)
+        self.assertIn("firewall_xml.xml", labels)
 
     def test_firewall_device_questions_include_type_field(self):
         workbook_data = {
