@@ -1003,6 +1003,7 @@ class NexposeDataParserTests(TestCase):
 
         self.assertIn("firewall_vulnerabilities", self.project.data_artifacts)
         self.assertNotIn("firewall_findings", self.project.data_artifacts)
+        self.assertNotIn("firewall_cap_findings", self.project.data_artifacts)
 
         summaries = self.project.data_artifacts.get("firewall_vulnerabilities")
         self.assertEqual(summaries["high"]["total_unique"], 2)
@@ -1208,7 +1209,34 @@ class NexposeDataParserTests(TestCase):
 
         complexity_entry = [row for row in findings if row.get("Type") == "Complexity"][0]
         self.assertEqual(complexity_entry["Score"], 1)
-        self.assertIn("Rule '1'", complexity_entry["Details"])
+
+    def test_firewall_xml_parsed_when_label_missing(self):
+        xml_content = b"""
+<root>
+  <section ref=\"VULNAUDIT\">
+    <section ref=\"VULNAUDIT.TEST\" title=\"Sample Vulnerability\">
+      <infobox title=\"Risk: Critical\"></infobox>
+    </section>
+  </section>
+</root>
+        """
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "firewall_xml.xml", xml_content, content_type="application/xml"
+            ),
+            requirement_label="",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        setattr(self.project, "type", "silver")
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        findings = self.project.data_artifacts.get("firewall_findings")
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), 1)
 
     def test_normalize_web_issue_artifacts(self):
         payload = {

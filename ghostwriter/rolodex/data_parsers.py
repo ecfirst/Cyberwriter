@@ -7,6 +7,7 @@ import base64
 import csv
 import io
 import logging
+import os
 import re
 import unicodedata
 from base64 import b64decode
@@ -4539,7 +4540,12 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     missing_web_issue_matrix: Set[str] = set()
 
     for data_file in project.data_files.all():
-        label = (data_file.requirement_label or "").strip().lower()
+        file_label = (data_file.requirement_label or "").strip()
+        if not file_label:
+            file_name = os.path.basename(getattr(data_file.file, "name", ""))
+            file_label = file_name or file_label
+
+        label = file_label.lower()
         xml_artifact_key = _resolve_nexpose_xml_artifact_key(data_file)
         if label == "dns_report.csv":
             domain = (data_file.requirement_context or data_file.description or data_file.filename).strip()
@@ -4569,7 +4575,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             parsed_firewall_xml = parse_nipper_firewall_report(
                 data_file.file, project_type_value
             )
-            if parsed_firewall_xml:
+            if parsed_firewall_xml is not None:
                 artifacts["firewall_findings"] = parsed_firewall_xml
         elif label in NEXPOSE_ARTIFACT_DEFINITIONS:
             parsed_vulnerabilities = parse_nexpose_vulnerability_report(

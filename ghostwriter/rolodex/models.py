@@ -1947,6 +1947,7 @@ class Project(models.Model):
         artifacts.pop("web_cap_map", None)
         artifacts.pop("web_cap_entries", None)
         artifacts.pop("nexpose_cap_map", None)
+        artifacts.pop("firewall_cap_findings", None)
 
         self.data_artifacts = artifacts
         self.data_responses = existing_responses

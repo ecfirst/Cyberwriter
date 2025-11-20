@@ -739,20 +739,6 @@ LINTER_CONTEXT = {
                     "items": [],
                 },
             },
-            "firewall_cap_findings": [
-                {
-                    "risk": "High",
-                    "issue": "Overly permissive inbound access",
-                    "devices": "Edge-FW01",
-                    "solution": "Restrict inbound rules to required services",
-                    "impact": "Increases the exposed attack surface for external actors.",
-                    "details": "Rules allow broad ingress from any source to internal networks.",
-                    "reference": "",
-                    "accepted": "No",
-                    "type": "Vuln",
-                    "score": 8.5,
-                }
-            ],
             "external_nexpose_vulnerabilities": {
                 "label": "External Nexpose Vulnerabilities",
                 "high": {
