@@ -1271,6 +1271,55 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(vuln_entry.get("Risk"), "High")
         self.assertIn("Edge-1", vuln_entry.get("Devices"))
 
+    def test_firewall_xml_parses_when_label_and_filename_do_not_match(self):
+        xml_content = """
+<document>
+  <information>
+    <devices>
+      <device><name>Edge-2</name></device>
+    </devices>
+  </information>
+  <section ref="VULNAUDIT">
+    <section ref="VULNAUDIT.TEST3">
+      <title>Edge Firmware Vulnerability Two</title>
+      <infobox>
+        <title>Risk: High</title>
+        <item><label>CVSSv2 Score</label><value>7.5</value></item>
+        <item><label>CVSSv2 Base</label><value>X/X/X/C:/C:/P 7.5</value></item>
+      </infobox>
+      <section>
+        <title>Summary</title>
+        <text>Edge platform issue summary 2.</text>
+      </section>
+      <section>
+        <title>Affected Device</title>
+        <text>Applies to Edge-2 firmware</text>
+      </section>
+    </section>
+  </section>
+</document>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "report.xml", xml_content.encode("utf-8"), content_type="text/xml"
+            ),
+            requirement_label="custom_upload",
+            description="Unlabeled Nipper export",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        findings = self.project.data_artifacts.get("firewall_findings")
+        self.assertIsInstance(findings, list)
+        self.assertTrue(any(entry.get("Issue") for entry in findings))
+        vuln_entry = next(item for item in findings if item.get("Type") == "Vuln")
+        self.assertEqual(vuln_entry.get("Risk"), "High")
+        self.assertIn("Edge-2", vuln_entry.get("Devices"))
+
     def test_normalize_web_issue_artifacts(self):
         payload = {
             "web_issues": {

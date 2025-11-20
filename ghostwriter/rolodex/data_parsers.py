@@ -4690,6 +4690,16 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             if metrics_key:
                 artifacts[metrics_key] = _build_nexpose_metrics_payload(combined_findings)
         else:
+            # Attempt to parse unlabeled uploads as firewall XML when they resemble
+            # Nipper exports so findings are captured even without the expected label.
+            parsed_firewall = parse_firewall_xml_report(
+                data_file.file,
+                assessment_tier=assessment_tier,
+            )
+            if parsed_firewall:
+                firewall_results.extend(parsed_firewall)
+                continue
+
             requirement_slug = (data_file.requirement_slug or "").strip()
             if requirement_slug:
                 for definition in IP_ARTIFACT_DEFINITIONS.values():
