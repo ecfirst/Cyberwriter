@@ -1888,6 +1888,24 @@ def _read_file_bytes(file_obj: File) -> bytes:
     except Exception:
         raw_bytes = b""
 
+    # If the immediate read returned empty bytes, try again using the wrapped
+    # file handle that ``FieldFile`` objects often expose via ``.file``. Some
+    # storage backends keep the real file pointer on that attribute and only
+    # proxy reads through the wrapper, which can be exhausted by prior
+    # operations (e.g., validation). Re-seek and re-read from the underlying
+    # handle before falling back to storage-backed reopen logic.
+    if not raw_bytes and hasattr(file_obj, "file"):
+        wrapped_handle = getattr(file_obj, "file", None)
+        try:
+            if wrapped_handle and wrapped_handle is not file_obj:
+                try:
+                    wrapped_handle.seek(0)
+                except Exception:
+                    pass
+                raw_bytes = wrapped_handle.read() or b""
+        except Exception:
+            raw_bytes = b""
+
     # Some storage backends return an empty payload when the FileField wrapper
     # has already been consumed or closed. Fall back to opening the file by
     # name through its storage backend to ensure the original upload bytes are
