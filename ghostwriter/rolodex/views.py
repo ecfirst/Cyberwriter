@@ -249,6 +249,37 @@ def _build_grouped_data_responses(
     return grouped
 
 
+def _coerce_firewall_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure firewall summaries include legacy aliases and default counters."""
+
+    if not isinstance(summary, dict):
+        return {}
+
+    hydrated = dict(summary)
+
+    hydrated.setdefault("unique", hydrated.get("total", 0))
+    hydrated.setdefault("unique_high", hydrated.get("total_high", 0))
+    hydrated.setdefault("unique_med", hydrated.get("total_med", 0))
+    hydrated.setdefault("unique_low", hydrated.get("total_low", 0))
+
+    hydrated.setdefault("total", hydrated.get("unique", 0))
+    hydrated.setdefault("total_high", hydrated.get("unique_high", 0))
+    hydrated.setdefault("total_med", hydrated.get("unique_med", 0))
+    hydrated.setdefault("total_low", hydrated.get("unique_low", 0))
+
+    hydrated.setdefault("rule_count", 0)
+    hydrated.setdefault("config_count", 0)
+    hydrated.setdefault("complexity_count", 0)
+    hydrated.setdefault("vuln_count", 0)
+
+    hydrated.setdefault("majority_type", "Even")
+    hydrated.setdefault("minority_type", "Even")
+    hydrated.setdefault("majority_count", 0)
+    hydrated.setdefault("minority_count", 0)
+
+    return hydrated
+
+
 def _merge_endpoint_summary(section: Dict[str, Any], workbook_data: Dict[str, Any]) -> None:
     summary_keys = {
         "domains_str",
@@ -1927,7 +1958,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             )
         firewall_metrics = artifacts.get("firewall_metrics")
         if isinstance(firewall_metrics, dict):
-            summary = (
+            summary = _coerce_firewall_summary(
                 firewall_metrics.get("summary")
                 if isinstance(firewall_metrics.get("summary"), dict)
                 else {}

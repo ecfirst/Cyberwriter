@@ -1020,6 +1020,18 @@ class ProjectDetailViewTests(TestCase):
         self.assertContains(response, "Download Nexpose Data file")
         self.assertContains(response, "?artifact=external_nexpose_metrics")
 
+    def test_processed_data_tab_handles_firewall_summary_without_legacy_totals(self):
+        self.project.data_artifacts = {
+            "firewall_metrics": {
+                "summary": {"unique": 3, "unique_high": 1, "config_count": 2}
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.uri)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Firewall Findings")
+
 
 class ProjectNexposeMissingMatrixDownloadTests(TestCase):
     """Tests for downloading missing Nexpose matrix entries."""
