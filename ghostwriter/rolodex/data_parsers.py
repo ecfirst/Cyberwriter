@@ -1850,6 +1850,16 @@ def _find_child(element: Optional[ElementTree.Element], tag: str) -> Optional[El
     return children[0] if children else None
 
 
+def _get_attribute(element: ElementTree.Element, name: str, default: str = "") -> str:
+    """Return attribute ``name`` from ``element`` ignoring case."""
+
+    name_lower = (name or "").lower()
+    for attr_name, value in element.attrib.items():
+        if attr_name.lower() == name_lower:
+            return value
+    return default
+
+
 def _get_child_text(element: Optional[ElementTree.Element], tag: str) -> str:
     """Retrieve text from the first child matching ``tag`` (namespace insensitive)."""
 
@@ -1860,7 +1870,7 @@ def _get_child_text(element: Optional[ElementTree.Element], tag: str) -> str:
             return text
         # Fall back to common attributes when the value is stored as metadata
         for attr in ("text", "value", "name", "title"):
-            attr_value = child.attrib.get(attr)
+            attr_value = _get_attribute(child, attr)
             if attr_value:
                 return _normalize_text(attr_value)
     return ""
@@ -2427,7 +2437,7 @@ def _get_section_by_ref(root: ElementTree.Element, target_ref: str) -> Optional[
 
     normalized_target = (target_ref or "").lower()
     for element in root.iter():
-        ref_value = element.attrib.get("ref")
+        ref_value = _get_attribute(element, "ref")
         if ref_value and ref_value.lower() == normalized_target:
             return element
     return None
@@ -2478,7 +2488,7 @@ def _parse_vuln_audit(
 
     findings: List[Dict[str, Any]] = []
     for child in _iter_issue_sections(section):
-        ref_value = child.attrib.get("ref", "")
+        ref_value = _get_attribute(child, "ref")
         if ref_value in {
             "VULNAUDIT.INTRO",
             "VULNAUDIT.CONCLUSIONS",
@@ -2580,7 +2590,7 @@ def _parse_security_audit(section: ElementTree.Element) -> List[Dict[str, Any]]:
     }
 
     for child in _iter_issue_sections(section):
-        ref_value = child.attrib.get("ref", "")
+        ref_value = _get_attribute(child, "ref")
         if ref_value in skip_refs:
             continue
 
@@ -2595,7 +2605,7 @@ def _parse_security_audit(section: ElementTree.Element) -> List[Dict[str, Any]]:
 
         for subsection in list(child):
             name = _get_local_name(subsection)
-            sub_ref = subsection.attrib.get("ref", "")
+            sub_ref = _get_attribute(subsection, "ref")
             if name == "issuedetails":
                 devices_parent = _find_child(subsection, "devices")
                 if devices_parent is not None:
@@ -2617,7 +2627,7 @@ def _parse_security_audit(section: ElementTree.Element) -> List[Dict[str, Any]]:
                                 risk_value = "High"
                             risk = risk_value
                         elif local_name == "cvssv2-temporal":
-                            score_value = rating_child.attrib.get("score")
+                            score_value = _get_attribute(rating_child, "score")
                             parsed_score = _parse_firewall_score(score_value)
                             if parsed_score is not None:
                                 score = 1.0 if parsed_score == 0 else parsed_score
