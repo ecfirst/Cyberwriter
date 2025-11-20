@@ -1925,6 +1925,23 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
                     "type": "web",
                 }
             )
+        firewall_metrics = artifacts.get("firewall_metrics")
+        if isinstance(firewall_metrics, dict):
+            summary = (
+                firewall_metrics.get("summary")
+                if isinstance(firewall_metrics.get("summary"), dict)
+                else {}
+            )
+            processed_cards.append(
+                {
+                    "label": "Firewall Findings",
+                    "metrics_key": "firewall_metrics",
+                    "summary": summary,
+                    "devices": firewall_metrics.get("devices", []),
+                    "has_file": bool(firewall_metrics.get("xlsx_base64")),
+                    "type": "firewall",
+                }
+            )
         ctx["processed_data_cards"] = processed_cards
         cap_payload = object.cap if isinstance(object.cap, dict) else {}
         nexpose_section = cap_payload.get("nexpose") if isinstance(cap_payload, dict) else None
@@ -2362,6 +2379,50 @@ class ProjectWebDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin, Vie
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         filename = payload.get("xlsx_filename") or "burp_data.xlsx"
+        add_content_disposition_header(response, filename)
+        return response
+
+
+class ProjectFirewallDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Provide the processed firewall findings XLSX download for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def get_success_url(self, project: Project) -> str:
+        return reverse("rolodex:project_detail", kwargs={"pk": project.pk}) + "#processed-data"
+
+    def get(self, request, *args, **kwargs):
+        project = self.get_object()
+        artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+        payload = artifacts.get("firewall_metrics") if isinstance(artifacts, dict) else None
+        if not isinstance(payload, dict):
+            messages.error(request, "No firewall data file is available for download.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        workbook_b64 = payload.get("xlsx_base64")
+        if not workbook_b64:
+            messages.error(request, "The firewall data file is not available for download yet.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        try:
+            workbook_bytes = base64.b64decode(workbook_b64)
+        except (ValueError, binascii.Error):  # pragma: no cover - defensive guard
+            logger.exception("Failed to decode firewall XLSX payload")
+            messages.error(request, "Unable to decode the firewall data file.")
+            return HttpResponseRedirect(self.get_success_url(project))
+
+        response = HttpResponse(
+            workbook_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        filename = payload.get("xlsx_filename") or "firewall_data.xlsx"
         add_content_disposition_header(response, filename)
         return response
 

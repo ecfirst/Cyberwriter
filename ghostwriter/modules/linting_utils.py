@@ -713,31 +713,26 @@ LINTER_CONTEXT = {
                     "Type": "Config",
                 },
             ],
-            "firewall_vulnerabilities": {
-                "high": {
-                    "total_unique": 1,
-                    "items": [
-                        {
-                            "issue": "Overly permissive inbound access",
-                            "impact": "Increases the exposed attack surface for external actors.",
-                            "count": 1,
-                        }
-                    ],
+            "firewall_metrics": {
+                "summary": {
+                    "unique": 2,
+                    "unique_high": 1,
+                    "unique_med": 1,
+                    "unique_low": 0,
+                    "rule_count": 1,
+                    "config_count": 1,
+                    "complexity_count": 0,
+                    "vuln_count": 0,
                 },
-                "med": {
-                    "total_unique": 1,
-                    "items": [
-                        {
-                            "issue": "Stale decommissioned network objects",
-                            "impact": "Obsolete objects complicate reviews and obscure risky rules.",
-                            "count": 1,
-                        }
-                    ],
-                },
-                "low": {
-                    "total_unique": 0,
-                    "items": [],
-                },
+                "devices": [
+                    {
+                        "device": "Core-FW02",
+                        "total_high": 1,
+                        "total_med": 1,
+                        "total_low": 0,
+                        "ood": "no",
+                    }
+                ],
             },
             "external_nexpose_vulnerabilities": {
                 "label": "External Nexpose Vulnerabilities",

@@ -2225,6 +2225,188 @@ def _summarize_firewall_vulnerabilities(
     return summaries
 
 
+def _coerce_firewall_score(raw_value: Any) -> float:
+    """Normalize firewall scores to a float for risk bucketing."""
+
+    if isinstance(raw_value, (int, float)):
+        try:
+            return float(raw_value)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            return 0.0
+    if isinstance(raw_value, str):
+        text = raw_value.strip().replace(",", "")
+        if not text:
+            return 0.0
+        try:
+            return float(text)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _risk_bucket_from_score(score: float) -> str:
+    """Translate a numeric score into High/Medium/Low buckets."""
+
+    if score >= 7.0:
+        return "High"
+    if score >= 4.0:
+        return "Medium"
+    return "Low"
+
+
+def _extract_firewall_devices(devices_value: Any) -> List[str]:
+    """Split newline-delimited device strings into a normalized list."""
+
+    if devices_value in (None, ""):
+        return []
+    if isinstance(devices_value, str):
+        devices = [segment.strip() for segment in devices_value.split("\n") if segment.strip()]
+        return devices
+    if isinstance(devices_value, (list, tuple)):
+        devices: List[str] = []
+        for entry in devices_value:
+            if entry in (None, ""):
+                continue
+            devices.append(str(entry).strip())
+        return [device for device in devices if device]
+    return [str(devices_value).strip()]
+
+
+def _build_firewall_metrics_payload(
+    firewall_findings: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Construct summary metrics, device breakdowns, and workbook bytes."""
+
+    findings = firewall_findings or []
+    summary_high = summary_med = summary_low = 0
+    rule_count = config_count = complexity_count = vuln_count = 0
+    device_tracker: Dict[str, Dict[str, Any]] = {}
+    top_impacts_counter: Counter[str] = Counter()
+    all_issues: List[Dict[str, Any]] = []
+    high_issues: List[Dict[str, Any]] = []
+    med_issues: List[Dict[str, Any]] = []
+    low_issues: List[Dict[str, Any]] = []
+    rule_issues: List[Dict[str, Any]] = []
+    config_issues: List[Dict[str, Any]] = []
+    complexity_issues: List[Dict[str, Any]] = []
+    vuln_issues: List[Dict[str, Any]] = []
+
+    for entry in findings:
+        if not isinstance(entry, dict):
+            continue
+
+        score_value = _coerce_firewall_score(entry.get("Score"))
+        bucket = _risk_bucket_from_score(score_value)
+        if bucket == "High":
+            summary_high += 1
+        elif bucket == "Medium":
+            summary_med += 1
+        else:
+            summary_low += 1
+
+        type_value = (entry.get("Type") or "").strip()
+        normalized_type = type_value.lower()
+        if normalized_type in {"rule", "rules"}:
+            rule_count += 1
+            rule_issues.append(entry)
+        elif normalized_type in {"config", "configuration"}:
+            config_count += 1
+            config_issues.append(entry)
+        elif normalized_type == "complexity":
+            complexity_count += 1
+            complexity_issues.append(entry)
+        elif normalized_type in {"vuln", "vulnerability"}:
+            vuln_count += 1
+            vuln_issues.append(entry)
+
+        all_issues.append(entry)
+
+        if bucket == "High":
+            high_issues.append(entry)
+        elif bucket == "Medium":
+            med_issues.append(entry)
+        else:
+            low_issues.append(entry)
+
+        impact_value = (entry.get("Impact") or "").strip()
+        if impact_value:
+            top_impacts_counter[impact_value] += 1
+
+        devices = _extract_firewall_devices(entry.get("Devices"))
+        for device in devices:
+            device_key = device or "Unknown Device"
+            device_entry = device_tracker.setdefault(
+                device_key,
+                {"device": device_key, "total_high": 0, "total_med": 0, "total_low": 0, "ood": "no"},
+            )
+            if bucket == "High":
+                device_entry["total_high"] += 1
+            elif bucket == "Medium":
+                device_entry["total_med"] += 1
+            else:
+                device_entry["total_low"] += 1
+
+            if device_entry["ood"] != "yes" and normalized_type in {"vuln", "vulnerability"}:
+                device_entry["ood"] = "yes"
+
+    unique_count = len(all_issues)
+    majority_type: str
+    minority_type: str
+    majority_count = max(rule_count, config_count)
+    minority_count = min(rule_count, config_count)
+    if rule_count > config_count:
+        majority_type = "Rules"
+        minority_type = "Config"
+    elif rule_count < config_count:
+        majority_type = "Config"
+        minority_type = "Rules"
+    else:
+        majority_type = "Even"
+        minority_type = "Even"
+
+    summary = {
+        "unique": unique_count,
+        "unique_high": summary_high,
+        "unique_med": summary_med,
+        "unique_low": summary_low,
+        "rule_count": rule_count,
+        "config_count": config_count,
+        "complexity_count": complexity_count,
+        "vuln_count": vuln_count,
+        "majority_type": majority_type,
+        "minority_type": minority_type,
+        "majority_count": majority_count,
+        "minority_count": minority_count,
+    }
+
+    device_metrics = sorted(device_tracker.values(), key=lambda item: item["device"].lower())
+    top_impacts = [
+        {"impact": impact, "count": count}
+        for impact, count in top_impacts_counter.most_common(10)
+    ]
+
+    metrics_payload: Dict[str, Any] = {
+        "summary": summary,
+        "devices": device_metrics,
+        "top_impacts": top_impacts,
+        "all_issues": all_issues,
+        "high_issues": high_issues,
+        "med_issues": med_issues,
+        "low_issues": low_issues,
+        "rule_issues": rule_issues,
+        "config_issues": config_issues,
+        "complexity_issues": complexity_issues,
+        "vuln_issues": vuln_issues,
+        "xlsx_filename": "firewall_data.xlsx",
+    }
+
+    workbook_bytes = _render_firewall_metrics_workbook(metrics_payload)
+    if workbook_bytes:
+        metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
+
+    return metrics_payload
+
+
 def _normalize_nipper_text(value: str) -> str:
     """Return normalized text with Nipper-specific replacements applied."""
 
@@ -3888,6 +4070,190 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
     return metrics_payload
 
 
+def _render_firewall_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
+    """Create an XLSX workbook for processed firewall findings."""
+
+    buffer = io.BytesIO()
+    workbook = Workbook(buffer, {"in_memory": True})
+
+    def header_format(color: str):
+        return workbook.add_format(
+            {
+                "bold": True,
+                "border": 1,
+                "font_color": "#000000",
+                "bg_color": color,
+                "pattern": 1,
+            }
+        )
+
+    header_cache: Dict[str, Any] = {}
+
+    def get_header(color: str):
+        if color not in header_cache:
+            header_cache[color] = header_format(color)
+        return header_cache[color]
+
+    data_fmt = workbook.add_format({"border": 1, "text_wrap": True, "font_color": "#000000"})
+    band_fmt = workbook.add_format(
+        {"border": 1, "text_wrap": True, "bg_color": "#99CCFF", "font_color": "#000000"}
+    )
+
+    def _calc_text_width(value: Any) -> int:
+        if value is None:
+            return 0
+        text = str(value)
+        lines = text.splitlines() or [text]
+        return max(len(line) for line in lines)
+
+    def write_table(
+        worksheet,
+        *,
+        start_row: int,
+        start_col: int,
+        headers: List[str],
+        rows: List[List[Any]],
+        header_colors: Optional[List[str]] = None,
+        width_tracker: Optional[Dict[int, int]] = None,
+    ) -> None:
+        for idx, header in enumerate(headers):
+            color = header_colors[idx] if header_colors and idx < len(header_colors) else "#0066CC"
+            worksheet.write(start_row, start_col + idx, header, get_header(color))
+            if width_tracker is not None:
+                column_index = start_col + idx
+                width_tracker[column_index] = max(width_tracker.get(column_index, 0), _calc_text_width(header))
+        for row_index, row in enumerate(rows):
+            fmt = band_fmt if row_index % 2 == 1 else data_fmt
+            for col_index, value in enumerate(row):
+                worksheet.write(start_row + 1 + row_index, start_col + col_index, value, fmt)
+                if width_tracker is not None:
+                    column_index = start_col + col_index
+                    width_tracker[column_index] = max(width_tracker.get(column_index, 0), _calc_text_width(value))
+
+    def apply_autofit(worksheet, width_tracker: Dict[int, int], columns: Iterable[int]) -> None:
+        for column in columns:
+            width = width_tracker.get(column, 10)
+            worksheet.set_column(column, column, min(width + 2, 80))
+
+    summary = metrics.get("summary") or {}
+    exec_ws = workbook.add_worksheet("Executive Summary")
+    exec_tracker: Dict[int, int] = {}
+
+    summary_headers = ["Total", "Total High", "Total Medium", "Total Low"]
+    summary_colors = ["#0066CC", "#FF0000", "#FF9900", "#99CC00"]
+    summary_rows = [
+        [
+            summary.get("unique", 0),
+            summary.get("unique_high", 0),
+            summary.get("unique_med", 0),
+            summary.get("unique_low", 0),
+        ]
+    ]
+    write_table(
+        exec_ws,
+        start_row=0,
+        start_col=0,
+        headers=summary_headers,
+        rows=summary_rows,
+        header_colors=summary_colors,
+        width_tracker=exec_tracker,
+    )
+
+    top_impacts = metrics.get("top_impacts") or []
+    impact_rows = [[entry.get("impact", ""), entry.get("count", 0)] for entry in top_impacts]
+    write_table(
+        exec_ws,
+        start_row=0,
+        start_col=5,
+        headers=["Top 10 Issue Impacts", "Count"],
+        rows=impact_rows,
+        header_colors=["#0066CC", "#0066CC"],
+        width_tracker=exec_tracker,
+    )
+
+    tab_index_rows = [
+        ["All Issues  -:-  All issues identified"],
+        ["High Risk Issues  -:-  All 'High' risk issues identified"],
+        ["Medium Risk Issues  -:-  All 'Medium' risk issues identified"],
+        ["Low Risk Issues  -:-  All 'Low' risk issues identified"],
+        ["Vulnerability Issues  -:-  All issues related to known vulnerabilities identified"],
+        ["Rule Issues  -:-  All issues related to rules identified"],
+        ["Config Issues  -:-  All issues related to configuration settings identified"],
+        ["Complexity Issues  -:-  All issues related to rules/configuration settings that add to the firewall complexity identified"],
+    ]
+    write_table(
+        exec_ws,
+        start_row=16,
+        start_col=5,
+        headers=["Tab Index"],
+        rows=tab_index_rows,
+        header_colors=["#CCFFFF"],
+        width_tracker=exec_tracker,
+    )
+
+    apply_autofit(exec_ws, exec_tracker, range(0, 7))
+
+    issue_headers = [
+        "Issue",
+        "Impact",
+        "Devices",
+        "Details",
+        "Solution",
+        "Reference",
+        "Risk",
+        "Accepted",
+        "Score",
+    ]
+    issue_colors = ["#0066CC"] * len(issue_headers)
+
+    def _issue_rows(entries: Iterable[Dict[str, Any]]) -> List[List[Any]]:
+        rows: List[List[Any]] = []
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            rows.append(
+                [
+                    entry.get("Issue", ""),
+                    entry.get("Impact", ""),
+                    entry.get("Devices", ""),
+                    entry.get("Details", ""),
+                    entry.get("Solution", ""),
+                    entry.get("Reference", ""),
+                    entry.get("Risk", ""),
+                    entry.get("Accepted", ""),
+                    entry.get("Score", ""),
+                ]
+            )
+        return rows
+
+    def write_issue_sheet(name: str, entries: Iterable[Dict[str, Any]]):
+        worksheet = workbook.add_worksheet(name)
+        width_tracker: Dict[int, int] = {}
+        rows = _issue_rows(entries)
+        write_table(
+            worksheet,
+            start_row=0,
+            start_col=0,
+            headers=issue_headers,
+            rows=rows,
+            header_colors=issue_colors,
+            width_tracker=width_tracker,
+        )
+        apply_autofit(worksheet, width_tracker, range(len(issue_headers)))
+
+    write_issue_sheet("All Issues", metrics.get("all_issues"))
+    write_issue_sheet("High Risk Issues", metrics.get("high_issues"))
+    write_issue_sheet("Medium Risk Issues", metrics.get("med_issues"))
+    write_issue_sheet("Low Risk Issues", metrics.get("low_issues"))
+    write_issue_sheet("Rule Issues", metrics.get("rule_issues"))
+    write_issue_sheet("Config Issues", metrics.get("config_issues"))
+    write_issue_sheet("Complexity Issues", metrics.get("complexity_issues"))
+    write_issue_sheet("Vulnerability Issues", metrics.get("vuln_issues"))
+
+    workbook.close()
+    return buffer.getvalue()
+
+
 def _build_web_cap_entries_from_metrics(
     metrics: Optional[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
@@ -4536,7 +4902,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
 
-    firewall_results: List[Dict[str, Any]] = []
     missing_matrix_tracker: Dict[str, Dict[str, Dict[str, str]]] = {}
     nexpose_definitions_by_key: Dict[str, str] = {
         definition["artifact_key"]: definition["label"]
@@ -4612,10 +4977,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 issue_name = (entry.get("issue") or "").strip() if isinstance(entry, dict) else ""
                 if issue_name:
                     missing_web_issue_matrix.add(issue_name)
-        elif label == "firewall_csv.csv":
-            parsed_firewall = parse_firewall_report(data_file.file)
-            if parsed_firewall:
-                firewall_results.extend(parsed_firewall)
         elif label == "firewall_xml.xml":
             logger.info(
                 "Processing firewall XML upload '%s' for project ID=%s", file_label, getattr(project, "id", "?")
@@ -4736,11 +5097,16 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         if values:
             artifacts[artifact_key] = values
 
-    if firewall_results:
-        artifacts["firewall_cap_findings"] = firewall_results
-        artifacts["firewall_vulnerabilities"] = _summarize_firewall_vulnerabilities(
-            firewall_results
-        )
+    firewall_findings = artifacts.get("firewall_findings")
+    if isinstance(firewall_findings, dict):
+        firewall_entries = firewall_findings.get("findings") if isinstance(firewall_findings.get("findings"), list) else []
+    elif isinstance(firewall_findings, list):
+        firewall_entries = firewall_findings
+    else:
+        firewall_entries = []
+
+    if firewall_entries:
+        artifacts["firewall_metrics"] = _build_firewall_metrics_payload(firewall_entries)
 
     for artifact_key, details in nexpose_results.items():
         artifacts[artifact_key] = {
