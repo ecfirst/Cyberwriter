@@ -28,6 +28,7 @@ else:  # pragma: no cover - exercised indirectly via parser tests
 
 from django.apps import apps
 from django.core.files.base import File
+from django.core.files.storage import default_storage
 from django.db.utils import OperationalError, ProgrammingError
 
 from xlsxwriter.workbook import Workbook
@@ -1890,16 +1891,28 @@ def _read_file_bytes(file_obj: File) -> bytes:
     # Some storage backends return an empty payload when the FileField wrapper
     # has already been consumed or closed. Fall back to opening the file by
     # name through its storage backend to ensure the original upload bytes are
-    # available for parsing.
+    # available for parsing. If the model field does not expose a storage
+    # backend (or that backend fails), attempt the same path through the
+    # default storage so locally stored uploads are still readable.
     if not raw_bytes:
-        try:
-            storage = getattr(file_obj, "storage", None)
-            name = getattr(file_obj, "name", None)
-            if storage and name:
-                storage_handle = storage.open(name, "rb")
+        name = getattr(file_obj, "name", None)
+        storage_candidates = []
+        storage = getattr(file_obj, "storage", None)
+        if storage:
+            storage_candidates.append(storage)
+        storage_candidates.append(default_storage)
+
+        for backend in storage_candidates:
+            if not backend or not name:
+                continue
+            try:
+                storage_handle = backend.open(name, "rb")
                 raw_bytes = storage_handle.read() or b""
-        except Exception:
-            raw_bytes = b""
+                if raw_bytes:
+                    break
+            except Exception:
+                raw_bytes = b""
+                continue
 
     try:
         file_obj.seek(0)

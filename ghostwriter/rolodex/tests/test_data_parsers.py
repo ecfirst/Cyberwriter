@@ -23,6 +23,7 @@ from ghostwriter.rolodex.data_parsers import (
     load_password_compliance_matrix,
     build_workbook_password_response,
     parse_dns_report,
+    _read_file_bytes,
     DEFAULT_GENERAL_CAP_MAP,
 )
 from ghostwriter.rolodex.models import (
@@ -1040,6 +1041,36 @@ class NexposeDataParserTests(TestCase):
         self.assertIn("firewall_findings", artifacts)
         self.assertIn("firewall_metrics", artifacts)
         self.assertIn("firewall_vulnerabilities", artifacts)
+
+    def test_read_file_bytes_falls_back_to_default_storage(self):
+        """Ensure XML bytes are recovered via default storage when direct reads fail."""
+
+        class DummyFile:
+            def __init__(self):
+                self.name = "dummy.xml"
+                self.storage = None
+
+            def open(self, *_args, **_kwargs):
+                raise OSError("unreachable")
+
+            def seek(self, *_args, **_kwargs):
+                raise OSError("unreachable")
+
+            def read(self, *_args, **_kwargs):
+                return b""
+
+            def close(self):
+                return None
+
+        dummy = DummyFile()
+        with mock.patch(
+            "ghostwriter.rolodex.data_parsers.default_storage.open",
+            return_value=io.BytesIO(b"<xml></xml>"),
+        ) as mocked_open:
+            payload = _read_file_bytes(dummy)
+
+        self.assertEqual(payload, b"<xml></xml>")
+        mocked_open.assert_called_once_with("dummy.xml", "rb")
 
     def test_nipper_xml_parsing_respects_tier(self):
         self.project.project_type.project_type = "Gold"
