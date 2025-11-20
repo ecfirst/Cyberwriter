@@ -2412,16 +2412,17 @@ def _get_nipper_finding(
 
 
 def _iter_nipper_sections(root: "ElementTree.Element", ref: str) -> List["ElementTree.Element"]:
-    """Return sections matching ``ref`` from the provided XML tree."""
+    """Return sections (or parts) matching ``ref`` from the provided XML tree."""
 
     matches: List["ElementTree.Element"] = []
     normalized_ref = (ref or "").strip().lower()
-    for section in root.iter():
-        if _normalize_xml_tag(getattr(section, "tag", "")) != "section":
+    for node in root.iter():
+        tag = _normalize_xml_tag(getattr(node, "tag", ""))
+        if tag not in {"section", "part"}:
             continue
-        section_ref = section.attrib.get("ref") or section.attrib.get("name") or ""
-        if section_ref.strip().lower() == normalized_ref:
-            matches.append(section)
+        node_ref = node.attrib.get("ref") or node.attrib.get("name") or ""
+        if node_ref.strip().lower() == normalized_ref:
+            matches.append(node)
     return matches
 
 
@@ -2483,8 +2484,7 @@ def parse_nipper_firewall_report(
         applicable_refs.append("COMPLEXITY")
 
     vulnaudit_sections = _iter_nipper_sections(root, "VULNAUDIT")
-    if vulnaudit_sections:
-        parent = vulnaudit_sections[0]
+    for parent in vulnaudit_sections:
         skip_refs = {
             "VULNAUDIT.INTRO",
             "VULNAUDIT.CONCLUSIONS",
@@ -2567,8 +2567,7 @@ def parse_nipper_firewall_report(
     security_sections: List[ElementTree.Element] = []
     if "SECURITYAUDIT" in applicable_refs:
         security_sections = _iter_nipper_sections(root, "SECURITYAUDIT")
-        if security_sections:
-            parent = security_sections[0]
+        for parent in security_sections:
             skip_refs = {
                 "SECURITY.INTRODUCTION",
                 "SECURITY.CONCLUSIONS",
@@ -2658,8 +2657,7 @@ def parse_nipper_firewall_report(
     complexity_sections: List[ElementTree.Element] = []
     if "COMPLEXITY" in applicable_refs:
         complexity_sections = _iter_nipper_sections(root, "COMPLEXITY")
-        if complexity_sections:
-            parent = complexity_sections[0]
+        for parent in complexity_sections:
             skip_titles = {"introduction", "no filter rules found", "no issues found"}
             default_impact = (
                 "While not a technical vulnerability, adherence to best practice calls for these items to be addressed"
