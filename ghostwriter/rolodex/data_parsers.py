@@ -4571,13 +4571,31 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     for data_file in project.data_files.all():
         label = (data_file.requirement_label or "").strip().lower()
         xml_artifact_key = _resolve_nexpose_xml_artifact_key(data_file)
-        if label == "dns_report.csv":
+
+        label_candidates = [
+            label,
+            (data_file.requirement_slug or "").strip().lower(),
+            (data_file.requirement_context or "").strip().lower(),
+            (data_file.description or "").strip().lower(),
+            getattr(data_file, "filename", "").strip().lower(),
+            (getattr(data_file.file, "name", "") or "").strip().lower(),
+        ]
+        normalized_labels = [value for value in label_candidates if value]
+
+        def _matches_label(target: str) -> bool:
+            target_lower = target.lower()
+            return any(
+                value == target_lower or value.endswith(target_lower)
+                for value in normalized_labels
+            )
+
+        if _matches_label("dns_report.csv"):
             domain = (data_file.requirement_context or data_file.description or data_file.filename).strip()
             domain = domain or "Unknown Domain"
             parsed_dns = parse_dns_report(data_file.file)
             if parsed_dns:
                 dns_results.setdefault(domain, []).extend(parsed_dns)
-        elif label == "burp_xml.xml":
+        elif _matches_label("burp_xml.xml"):
             burp_payload = parse_burp_xml_report(data_file.file, web_issue_matrix)
             findings = burp_payload.get("findings") if isinstance(burp_payload, dict) else burp_payload
             if findings:
@@ -4591,11 +4609,11 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 issue_name = (entry.get("issue") or "").strip() if isinstance(entry, dict) else ""
                 if issue_name:
                     missing_web_issue_matrix.add(issue_name)
-        elif label == "firewall_csv.csv":
+        elif _matches_label("firewall_csv.csv"):
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
                 firewall_results.extend(parsed_firewall)
-        elif label == "firewall_xml.xml":
+        elif _matches_label("firewall_xml.xml"):
             parsed_firewall = parse_firewall_xml_report(
                 data_file.file,
                 assessment_tier=assessment_tier,
