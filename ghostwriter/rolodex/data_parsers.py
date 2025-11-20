@@ -2611,6 +2611,67 @@ def parse_nexpose_vulnerability_report(
     return summaries
 
 
+def _build_nexpose_vulnerability_summary_from_findings(
+    findings: Any,
+    *,
+    vulnerability_matrix: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Dict[str, _SeverityGroup]:
+    """Summarize Nexpose findings into vulnerability groupings."""
+
+    grouped: Dict[str, Counter] = {
+        "High": Counter(),
+        "Medium": Counter(),
+        "Low": Counter(),
+    }
+
+    if isinstance(findings, list):
+        for entry in findings:
+            if not isinstance(entry, dict):
+                continue
+            severity_value = _parse_severity_level(
+                entry.get("Vulnerability Severity Level")
+            )
+            severity_bucket = _categorize_severity(severity_value)
+            if not severity_bucket:
+                continue
+
+            title = str(entry.get("Vulnerability Title") or "").strip()
+            impact = str(entry.get("Impact") or "").strip()
+            if not title and not impact:
+                continue
+            grouped[severity_bucket][(title, impact)] += 1
+
+    severity_map = {
+        "High": "high",
+        "Medium": "med",
+        "Low": "low",
+    }
+
+    summaries: Dict[str, _SeverityGroup] = {}
+    for severity in ("High", "Medium", "Low"):
+        counter = grouped.get(severity, Counter())
+        ordered = sorted(
+            counter.items(),
+            key=lambda item: (
+                -item[1],
+                (item[0][0] or "").lower(),
+                (item[0][1] or "").lower(),
+            ),
+        )
+        items: List[Dict[str, Any]] = []
+        for (title, impact), count in ordered[:5]:
+            entry = {"title": title, "impact": impact, "count": count}
+            _apply_vulnerability_matrix_fields(entry, vulnerability_matrix)
+            items.append(entry)
+
+        summaries[severity_map[severity]] = _SeverityGroup(
+            total_unique=len(counter),
+            items=items,
+        )
+
+    return summaries
+
+
 def parse_nexpose_xml_report(
     file_obj: File,
     *,
@@ -2748,6 +2809,12 @@ NEXPOSE_XML_ARTIFACT_MAP = {
     "internal": "internal_nexpose_findings",
     "iot": "iot_iomt_nexpose_findings",
     "iomt": "iot_iomt_nexpose_findings",
+}
+
+NEXPOSE_FINDINGS_VULNERABILITY_MAP = {
+    "external_nexpose_findings": "external_nexpose_vulnerabilities",
+    "internal_nexpose_findings": "internal_nexpose_vulnerabilities",
+    "iot_iomt_nexpose_findings": "iot_iomt_nexpose_vulnerabilities",
 }
 
 NEXPOSE_METRICS_KEY_MAP = {
@@ -4143,6 +4210,28 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             "findings": firewall_results,
             "vulnerabilities": _summarize_firewall_vulnerabilities(firewall_results),
         }
+
+    for findings_key, vulnerability_key in NEXPOSE_FINDINGS_VULNERABILITY_MAP.items():
+        findings_entry = artifacts.get(findings_key)
+        findings = (
+            findings_entry.get("findings")
+            if isinstance(findings_entry, dict)
+            else None
+        )
+        if not findings:
+            continue
+
+        summary = _build_nexpose_vulnerability_summary_from_findings(
+            findings, vulnerability_matrix=vulnerability_matrix
+        )
+        if summary:
+            nexpose_results[vulnerability_key] = {
+                "label": nexpose_definitions_by_key.get(
+                    vulnerability_key,
+                    vulnerability_key.replace("_", " ").title(),
+                ),
+                **summary,
+            }
 
     for artifact_key, details in nexpose_results.items():
         artifacts[artifact_key] = {
