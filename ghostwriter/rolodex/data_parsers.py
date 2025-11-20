@@ -4502,8 +4502,16 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     }
 
     def _resolve_project_type() -> Optional[str]:
+        attribute_type = (getattr(project, "type", None) or "").strip()
+        if attribute_type:
+            return attribute_type
+
         workbook_data = getattr(project, "workbook_data", None)
         if isinstance(workbook_data, Mapping):
+            direct_type = (workbook_data.get("type") or "").strip()
+            if direct_type:
+                return direct_type
+
             workbook_project = workbook_data.get("project")
             if isinstance(workbook_project, Mapping):
                 project_type = (workbook_project.get("type") or "").strip()
@@ -4515,10 +4523,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             project_type = (extra_fields.get("type") or "").strip()
             if project_type:
                 return project_type
-
-        attribute_type = (getattr(project, "type", None) or "").strip()
-        if attribute_type:
-            return attribute_type
 
         project_type_obj = getattr(project, "project_type", None)
         if project_type_obj:
