@@ -1855,7 +1855,14 @@ def _get_child_text(element: Optional[ElementTree.Element], tag: str) -> str:
 
     child = _find_child(element, tag)
     if child is not None:
-        return (child.text or "").strip()
+        text = _element_text(child)
+        if text:
+            return text
+        # Fall back to common attributes when the value is stored as metadata
+        for attr in ("text", "value", "name", "title"):
+            attr_value = child.attrib.get(attr)
+            if attr_value:
+                return _normalize_text(attr_value)
     return ""
 
 
@@ -2418,8 +2425,10 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
 def _get_section_by_ref(root: ElementTree.Element, target_ref: str) -> Optional[ElementTree.Element]:
     """Return the first section element whose ``ref`` attribute matches ``target_ref``."""
 
+    normalized_target = (target_ref or "").lower()
     for element in root.iter():
-        if element.attrib.get("ref") == target_ref:
+        ref_value = element.attrib.get("ref")
+        if ref_value and ref_value.lower() == normalized_target:
             return element
     return None
 
