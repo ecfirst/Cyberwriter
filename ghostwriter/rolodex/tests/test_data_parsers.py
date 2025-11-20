@@ -1376,6 +1376,54 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(vuln_entry.get("Risk"), "High")
         self.assertIn("Edge-2", vuln_entry.get("Devices"))
 
+    def test_firewall_xml_parses_when_labeled_as_csv_with_generic_name(self):
+        xml_content = """
+<document>
+  <information>
+    <devices>
+      <device><name>Edge-Generic</name></device>
+    </devices>
+  </information>
+  <section ref="VULNAUDIT">
+    <section ref="VULNAUDIT.TEST_GENERIC">
+      <title>Generic Name Vulnerability</title>
+      <infobox>
+        <title>Risk: High</title>
+        <item><label>CVSSv2 Score</label><value>7.5</value></item>
+        <item><label>CVSSv2 Base</label><value>X/X/X/C:/C:/P 7.5</value></item>
+      </infobox>
+      <section>
+        <title>Summary</title>
+        <text>Generic filename XML summary.</text>
+      </section>
+      <section>
+        <title>Affected Device</title>
+        <text>Applies to Edge-Generic firmware</text>
+      </section>
+    </section>
+  </section>
+</document>
+"""
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "nipper_generic.xml", xml_content.encode("utf-8"), content_type="text/xml"
+            ),
+            requirement_label="firewall_csv.csv",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        findings = self.project.data_artifacts.get("firewall_findings")
+        self.assertIsInstance(findings, list)
+        vuln_entry = next(item for item in findings if item.get("Type") == "Vuln")
+        self.assertEqual(vuln_entry.get("Issue"), "Generic Name Vulnerability")
+        self.assertEqual(vuln_entry.get("Risk"), "High")
+        self.assertIn("Edge-Generic", vuln_entry.get("Devices"))
+
     def test_firewall_xml_rewinds_before_parsing(self):
         xml_content = """
 <document>

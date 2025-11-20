@@ -1177,6 +1177,22 @@ def _element_text(element: Optional["ElementTree.Element"]) -> str:
     return text.strip()
 
 
+def _rewind_uploaded_file(file_obj: File) -> None:
+    """Rewind an uploaded file for re-use by subsequent parsers."""
+
+    if hasattr(file_obj, "open"):
+        try:
+            file_obj.open("rb")
+        except Exception:  # pragma: no cover - defensive guard
+            pass
+
+    if hasattr(file_obj, "seek"):
+        try:
+            file_obj.seek(0)
+        except Exception:  # pragma: no cover - defensive guard
+            pass
+
+
 def _generate_key_variants(key: str) -> List[str]:
     """Return possible attribute/child names for ``key``."""
 
@@ -4605,6 +4621,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         xml_artifact_key = _resolve_nexpose_xml_artifact_key(data_file)
 
         file_name_lower = (getattr(data_file.file, "name", "") or "").strip().lower()
+        looks_like_xml = file_name_lower.endswith(".xml")
         label_candidates = [
             label,
             (data_file.requirement_slug or "").strip().lower(),
@@ -4614,6 +4631,17 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             file_name_lower,
         ]
         normalized_labels = [value for value in label_candidates if value]
+
+        parsed_firewall: List[Dict[str, Any]] = []
+        if looks_like_xml:
+            parsed_firewall = parse_firewall_xml_report(
+                data_file.file,
+                assessment_tier=assessment_tier,
+            )
+            _rewind_uploaded_file(data_file.file)
+            if parsed_firewall:
+                firewall_results.extend(parsed_firewall)
+                continue
 
         def _matches_label(target: str) -> bool:
             target_lower = target.lower()
@@ -4649,10 +4677,12 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             )
             if parsed_firewall:
                 firewall_results.extend(parsed_firewall)
+            _rewind_uploaded_file(data_file.file)
         elif _matches_label("firewall_csv.csv"):
             parsed_firewall = parse_firewall_report(data_file.file)
             if parsed_firewall:
                 firewall_results.extend(parsed_firewall)
+            _rewind_uploaded_file(data_file.file)
         elif label in NEXPOSE_ARTIFACT_DEFINITIONS:
             parsed_vulnerabilities = parse_nexpose_vulnerability_report(
                 data_file.file, vulnerability_matrix=vulnerability_matrix
