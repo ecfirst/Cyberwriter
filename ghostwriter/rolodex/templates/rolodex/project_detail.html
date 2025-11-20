@@ -388,19 +388,19 @@
                     <h5 class="card-title">{{ card.label }}</h5>
                     <dl class="row small mb-3">
                       <dt class="col-6">Total Count</dt>
-                      {% with total_count=card.summary.unique|default:card.summary.total %}
+                      {% with total_count=card.summary.total|default:card.summary.unique %}
                         <dd class="col-6 text-right">{{ total_count|default:0 }}</dd>
                       {% endwith %}
                       <dt class="col-6">Total Highs</dt>
-                      {% with total_high=card.summary.unique_high|default:card.summary.total_high %}
+                      {% with total_high=card.summary.total_high|default:card.summary.unique_high %}
                         <dd class="col-6 text-right">{{ total_high|default:0 }}</dd>
                       {% endwith %}
                       <dt class="col-6">Total Mediums</dt>
-                      {% with total_med=card.summary.unique_med|default:card.summary.total_med %}
+                      {% with total_med=card.summary.total_med|default:card.summary.unique_med %}
                         <dd class="col-6 text-right">{{ total_med|default:0 }}</dd>
                       {% endwith %}
                       <dt class="col-6">Total Lows</dt>
-                      {% with total_low=card.summary.unique_low|default:card.summary.total_low %}
+                      {% with total_low=card.summary.total_low|default:card.summary.unique_low %}
                         <dd class="col-6 text-right">{{ total_low|default:0 }}</dd>
                       {% endwith %}
                       {% if card.type == "web" %}
