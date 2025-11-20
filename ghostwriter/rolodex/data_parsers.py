@@ -2257,10 +2257,28 @@ def _parse_nipper_table(
     rows: List[str] = []
     normalized_headings = [heading.strip() for heading in headings]
 
-    for row in _find_child_elements(table_element, "row"):
+    def _iter_rows():
+        inline_rows = _find_child_elements(table_element, "row")
+        if inline_rows:
+            return inline_rows
+        body = _find_child_element(table_element, "tablebody")
+        if body is not None:
+            nested_rows = _find_child_elements(body, "tablerow")
+            if nested_rows:
+                return nested_rows
+        return []
+
+    for row in _iter_rows():
         cell_values: List[str] = []
-        for cell in _find_child_elements(row, "cell"):
-            cell_values.append(_element_text(cell))
+        nested_cells = _find_child_elements(row, "cell")
+        if not nested_cells:
+            nested_cells = _find_child_elements(row, "tablecell")
+        for cell in nested_cells:
+            items = _find_child_elements(cell, "item") or list(cell)
+            if items:
+                cell_values.append(_element_text(items[0]))
+            else:
+                cell_values.append(_element_text(cell))
         if not cell_values and list(row):
             cell_values = [_element_text(child) for child in row]
         heading_map = {
@@ -2339,7 +2357,9 @@ def _get_nipper_finding(
 
         if tag == "list":
             rows: List[str] = []
-            for item in _find_child_elements(child, "item"):
+            for item in _find_child_elements(child, "item") + _find_child_elements(
+                child, "listitem"
+            ):
                 text_value = _normalize_nipper_text(_element_text(item))
                 if text_value:
                     rows.append(text_value)
@@ -2411,6 +2431,16 @@ def parse_nipper_firewall_report(
     """Parse a Nipper XML export into normalized firewall findings."""
 
     try:
+        if hasattr(file_obj, "open"):
+            try:
+                file_obj.open("rb")
+            except Exception:
+                pass
+        if hasattr(file_obj, "seek"):
+            try:
+                file_obj.seek(0)
+            except Exception:
+                pass
         raw_bytes = file_obj.read()
     except Exception:  # pragma: no cover - unexpected I/O failure
         return []
@@ -2429,8 +2459,15 @@ def parse_nipper_firewall_report(
         if _get_element_field(device, "name")
     ]
 
-    tier_map = {"silver": 1, "gold": 2, "cloudfirst": 2, "platinum": 3, "titanium": 3}
-    tier = tier_map.get((project_type or "").strip().lower(), 1)
+    tier_map = {
+        "silver": 1,
+        "gold": 2,
+        "cloudfirst": 2,
+        "platinum": 3,
+        "titanium": 3,
+    }
+    normalized_tier = (project_type or "").strip().lower()
+    tier = tier_map.get(normalized_tier, 3 if normalized_tier else 1)
 
     findings: List[Dict[str, Any]] = []
     applicable_refs = ["VULNAUDIT"]
