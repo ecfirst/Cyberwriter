@@ -2652,6 +2652,7 @@ def parse_nipper_firewall_report(
         for device in _find_child_elements(devices_node, "device")
         if _get_element_field(device, "name")
     ]
+    device_name_set = set(device_names)
 
     tier_map = {
         "silver": 1,
@@ -2864,7 +2865,9 @@ def parse_nipper_firewall_report(
                         continue
                     subtitle = (_get_element_field(subsection, "title") or "").strip()
                     if subtitle:
-                        devices.append(subtitle.split()[0])
+                        first_word = subtitle.split()[0]
+                        if first_word and (not device_name_set or first_word in device_name_set):
+                            devices.append(first_word)
 
                     table_title = (subtitle or "").lower()
                     is_filter_rules = "filter rules" in table_title
