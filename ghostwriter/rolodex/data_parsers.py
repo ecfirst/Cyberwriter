@@ -2435,6 +2435,9 @@ def _normalize_nipper_text(value: str) -> str:
             text = text[: -len(trailing)].rstrip() + " below:"
             break
 
+    if re.search(r"in Table\s+\d+\s+below\.?$", text):
+        text = re.sub(r"in Table\s+\d+\s+below\.?$", "below:", text).rstrip()
+
     return _collapse_whitespace(text)
 
 
@@ -2467,7 +2470,15 @@ def _parse_nipper_table(
         for cell in nested_cells:
             items = _find_child_elements(cell, "item") or list(cell)
             if items:
-                cell_values.append(_element_text(items[0]))
+                item_values = []
+                for item in items:
+                    item_text = _collapse_whitespace(_element_text(item))
+                    if item_text:
+                        item_values.append(item_text)
+                if item_values:
+                    cell_values.append("; ".join(item_values))
+                else:
+                    cell_values.append(_element_text(cell))
             else:
                 cell_values.append(_element_text(cell))
         if not cell_values and list(row):
@@ -2575,9 +2586,19 @@ def _get_nipper_finding(
                     for table_child in list(child)[0]
                 ]
 
+            table_title = _normalize_nipper_text(_get_element_field(child, "title"))
+            if table_title:
+                parts.append(table_title)
+
+            headings_lower = [heading.lower() for heading in headings]
+
             if ref.startswith("FILTER."):
                 parser = _nipper_rules_row
-            elif is_complexity and "filter rules" in (_get_element_field(block, "title") or "").lower():
+            elif is_complexity and (
+                "filter rules" in (_get_element_field(block, "title") or "").lower()
+                or "filter rules" in (table_title or "").lower()
+                or "rule" in headings_lower
+            ):
                 parser = _nipper_rules_row
             elif is_complexity:
                 parser = _nipper_complex_table_row
@@ -2863,10 +2884,15 @@ def parse_nipper_firewall_report(
                 for subsection in section:
                     if _normalize_xml_tag(getattr(subsection, "tag", "")) != "section":
                         continue
+                    sub_ref = (subsection.attrib.get("ref") or "").upper()
                     subtitle = (_get_element_field(subsection, "title") or "").strip()
                     if subtitle:
                         first_word = subtitle.split()[0]
-                        if first_word and (not device_name_set or first_word in device_name_set):
+                        if first_word and (
+                            sub_ref.endswith(".10")
+                            or not device_name_set
+                            or first_word in device_name_set
+                        ):
                             devices.append(first_word)
 
                     table_title = (subtitle or "").lower()
