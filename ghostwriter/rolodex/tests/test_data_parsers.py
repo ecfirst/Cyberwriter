@@ -1099,8 +1099,63 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(security_entry["Score"], 1)
         self.assertTrue(security_entry["Details"].startswith("Rule item one"))
 
+    def test_complexity_table_rows_and_devices_are_parsed(self):
+        xml_content = b"""
+<root>
+  <section ref=\"COMPLEXITY\">
+    <section index=\"4.4\" title=\"Filter Rules Were Configured With No Comments\" ref=\"COMPLEX.RULES.NOCOMMENTS\">
+      <section index=\"4.4.1\" title=\"Overview\" ref=\"COMPLEX.RULES.NOCOMMENTS.OVERVIEW\">
+        <text>Overview text.</text>
+        <list><listitem>List item one</listitem></list>
+      </section>
+      <section index=\"4.4.2\" title=\"DEVICE-NAME Palo Alto Virtual System\" ref=\"COMPLEX.RULES.NOCOMMENTS.10\">
+        <text>Device-specific text.</text>
+        <table>
+          <headings>
+            <heading>Rule</heading>
+            <heading>Action</heading>
+            <heading>Source</heading>
+            <heading>Destination</heading>
+            <heading>Service</heading>
+          </headings>
+          <tablebody>
+            <tablerow>
+              <tablecell><item>Test-Rule</item></tablecell>
+              <tablecell><item>Allow</item></tablecell>
+              <tablecell><item>[Zone] One</item><item>[Zone] Two</item></tablecell>
+              <tablecell><item>[Zone] Three</item><item>[Zone] Four</item></tablecell>
+              <tablecell><item>Any</item></tablecell>
+            </tablerow>
+          </tablebody>
+        </table>
+      </section>
+    </section>
+  </section>
+</root>
+        """
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "firewall_xml.xml", xml_content, content_type="application/xml"
+            ),
+            requirement_label="firewall_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        setattr(self.project, "type", "titanium")
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        findings = self.project.data_artifacts.get("firewall_findings")
         complexity_entry = [row for row in findings if row.get("Type") == "Complexity"][0]
-        self.assertEqual(complexity_entry["Score"], 1)
+
+        self.assertIn("Overview text.\nList item one", complexity_entry["Details"])
+        self.assertIn(
+            "Rule 'Test-Rule'-:- Allow 'Any Service' from '[Zone] One; [Zone] Two' to '[Zone] Three; [Zone] Four'",
+            complexity_entry["Details"],
+        )
+        self.assertEqual(complexity_entry["Devices"], "DEVICE-NAME")
 
     def test_firewall_xml_parsed_when_label_missing(self):
         xml_content = b"""

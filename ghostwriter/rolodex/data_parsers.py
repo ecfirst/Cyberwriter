@@ -2467,7 +2467,15 @@ def _parse_nipper_table(
         for cell in nested_cells:
             items = _find_child_elements(cell, "item") or list(cell)
             if items:
-                cell_values.append(_element_text(items[0]))
+                item_values = []
+                for item in items:
+                    item_text = _element_text(item)
+                    if item_text:
+                        item_values.append(item_text)
+                if item_values:
+                    cell_values.append("; ".join(item_values))
+                else:
+                    cell_values.append(_element_text(cell))
             else:
                 cell_values.append(_element_text(cell))
         if not cell_values and list(row):
@@ -2863,10 +2871,15 @@ def parse_nipper_firewall_report(
                 for subsection in section:
                     if _normalize_xml_tag(getattr(subsection, "tag", "")) != "section":
                         continue
+                    sub_ref = (subsection.attrib.get("ref") or "").upper()
                     subtitle = (_get_element_field(subsection, "title") or "").strip()
                     if subtitle:
                         first_word = subtitle.split()[0]
-                        if first_word and (not device_name_set or first_word in device_name_set):
+                        if first_word and (
+                            sub_ref.endswith(".10")
+                            or not device_name_set
+                            or first_word in device_name_set
+                        ):
                             devices.append(first_word)
 
                     table_title = (subtitle or "").lower()
