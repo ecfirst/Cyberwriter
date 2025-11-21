@@ -3716,3 +3716,21 @@ input[type="color"]:focus,
 .workbook-scoring-grid {
   row-gap: 0.75rem;
 }
+
+.workbook-card-progress {
+  height: 0.6rem;
+}
+
+.workbook-card-progress .progress-bar {
+  font-size: 0.65rem;
+  line-height: 0.6rem;
+}
+
+.workbook-score-label {
+  min-width: 14ch;
+  white-space: nowrap;
+}
+
+.workbook-score-input-wrapper {
+  flex: 1 1 auto;
+}

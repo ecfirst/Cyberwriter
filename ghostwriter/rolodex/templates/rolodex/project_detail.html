@@ -134,18 +134,27 @@
               <div class="card-body text-center">
                 <h5 class="card-title mb-1">Scoring</h5>
                 <p class="card-text small mb-0">Enter scores for each in-scope area</p>
+                <div class="progress workbook-card-progress mt-2">
+                  <div class="progress-bar" id="workbook-progress-scoring" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
               </div>
             </div>
             <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGradesModal">
               <div class="card-body text-center">
                 <h5 class="card-title mb-1">Grades</h5>
                 <p class="card-text small mb-0">Review and adjust risk labels</p>
+                <div class="progress workbook-card-progress mt-2">
+                  <div class="progress-bar" id="workbook-progress-grades" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
               </div>
             </div>
             <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGeneralModal">
               <div class="card-body text-center">
                 <h5 class="card-title mb-1">General</h5>
                 <p class="card-text small mb-0">Capture schedule and environment details</p>
+                <div class="progress workbook-card-progress mt-2">
+                  <div class="progress-bar" id="workbook-progress-general" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
               </div>
             </div>
           </div>
@@ -946,6 +955,53 @@
         const riskScoreMap = parseJsonScript('project-risk-score-map') || {};
         const riskLabels = Object.keys(riskScoreMap);
 
+        const setCardProgress = function(cardKey, filled, total) {
+          const bar = document.getElementById('workbook-progress-' + cardKey);
+          if (!bar) {
+            return;
+          }
+          const percent = total ? Math.round((filled / total) * 100) : 0;
+          bar.style.width = percent + '%';
+          bar.setAttribute('aria-valuenow', percent);
+          bar.textContent = percent + '%';
+        };
+
+        const updateWorkbookCardProgress = function(cardKey) {
+          const shouldUpdate = function(target) {
+            return !cardKey || cardKey === target;
+          };
+          if (shouldUpdate('general')) {
+            const generalInputs = document.querySelectorAll('#workbook-general-fields input');
+            let filled = 0;
+            generalInputs.forEach(function(input) {
+              if ((input.value || '').trim()) {
+                filled += 1;
+              }
+            });
+            setCardProgress('general', filled, generalInputs.length);
+          }
+          if (shouldUpdate('scoring')) {
+            const scoreInputs = document.querySelectorAll('.workbook-score-input');
+            let filled = 0;
+            scoreInputs.forEach(function(input) {
+              if (!Number.isNaN(parseFloat(input.value))) {
+                filled += 1;
+              }
+            });
+            setCardProgress('scoring', filled, scoreInputs.length);
+          }
+          if (shouldUpdate('grades')) {
+            const gradeInputs = document.querySelectorAll('.workbook-grade-select');
+            let filled = 0;
+            gradeInputs.forEach(function(select) {
+              if ((select.value || '').trim()) {
+                filled += 1;
+              }
+            });
+            setCardProgress('grades', filled, gradeInputs.length);
+          }
+        };
+
         const formatDateForInput = function(value) {
           if (!value) {
             return '';
@@ -1061,11 +1117,15 @@
             input.id = 'workbook-general-' + field.key;
             const existing = workbookState.general && workbookState.general[field.key];
             input.value = existing ? formatDateForInput(existing) : '';
+            input.addEventListener('input', function() {
+              updateWorkbookCardProgress('general');
+            });
             col.appendChild(label);
             col.appendChild(input);
             fragment.appendChild(col);
           });
           container.appendChild(fragment);
+          updateWorkbookCardProgress('general');
         };
 
         const scoreValueAliases = {
@@ -1169,6 +1229,8 @@
             categoryState.grade = riskLabel;
             workbookState.external_internal_grades[category] = categoryState;
           });
+          updateWorkbookCardProgress('grades');
+          updateWorkbookCardProgress('scoring');
           return computedGrades;
         };
 
@@ -1217,7 +1279,7 @@
               const group = document.createElement('div');
               group.className = 'form-group row align-items-center';
               const label = document.createElement('label');
-              label.className = 'col-5 col-sm-6 col-md-5 col-form-label';
+              label.className = 'col-6 col-sm-6 col-md-5 col-form-label workbook-score-label';
               label.setAttribute('for', 'score-' + categoryKey + '-' + optionKey);
               label.textContent = titleize(options[optionKey] || optionKey);
               const input = document.createElement('input');
@@ -1233,10 +1295,11 @@
               input.value = typeof scoreValue === 'number' ? scoreValue : '';
               input.addEventListener('input', function() {
                 updateTotalsAndGrades();
+                updateWorkbookCardProgress('scoring');
               });
               group.appendChild(label);
               const inputWrapper = document.createElement('div');
-              inputWrapper.className = 'col-7 col-sm-6 col-md-7';
+              inputWrapper.className = 'col-6 col-sm-6 col-md-7 workbook-score-input-wrapper';
               inputWrapper.appendChild(input);
               group.appendChild(inputWrapper);
               cardBody.appendChild(group);
@@ -1269,6 +1332,7 @@
           });
           container.appendChild(fragment);
           updateTotalsAndGrades();
+          updateWorkbookCardProgress('scoring');
         };
 
         const computeOverallFromGrades = function(gradeValues) {
@@ -1337,6 +1401,9 @@
               placeholder.selected = true;
               select.insertBefore(placeholder, select.firstChild);
             }
+            select.addEventListener('change', function() {
+              updateWorkbookCardProgress('grades');
+            });
             calculatedGrades[categoryKey] = currentGrade;
             card.appendChild(label);
             card.appendChild(select);
@@ -1369,10 +1436,14 @@
             placeholder.selected = true;
             overallSelect.insertBefore(placeholder, overallSelect.firstChild);
           }
+          overallSelect.addEventListener('change', function() {
+            updateWorkbookCardProgress('grades');
+          });
           overallWrapper.appendChild(overallLabel);
           overallWrapper.appendChild(overallSelect);
           fragment.appendChild(overallWrapper);
           container.appendChild(fragment);
+          updateWorkbookCardProgress('grades');
         };
 
         const getCsrfToken = function() {
@@ -1494,6 +1565,7 @@
             if (overall && overallSelect) {
               overallSelect.value = overall;
             }
+            updateWorkbookCardProgress('grades');
           });
         }
 
