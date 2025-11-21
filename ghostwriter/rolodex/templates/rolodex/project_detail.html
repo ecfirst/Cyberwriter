@@ -125,9 +125,31 @@
              data-end="{{ project.end_date|date:'Y-m-d' }}"></div>
       </div>
 
-      <div id="workbook" class="tab-pane">
+      <div id="workbook" class="tab-pane" data-workbook-update-url="{% url 'rolodex:project_workbook_data_update' project.id %}">
         <h4>Workbook</h4>
         <hr/>
+        <div class="offset-2 col-8 mb-3">
+          <div class="card-deck flex-column flex-md-row">
+            <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookScoringModal">
+              <div class="card-body text-center">
+                <h5 class="card-title mb-1">Scoring</h5>
+                <p class="card-text small mb-0">Enter scores for each in-scope area</p>
+              </div>
+            </div>
+            <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGradesModal">
+              <div class="card-body text-center">
+                <h5 class="card-title mb-1">Grades</h5>
+                <p class="card-text small mb-0">Review and adjust risk labels</p>
+              </div>
+            </div>
+            <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGeneralModal">
+              <div class="card-body text-center">
+                <h5 class="card-title mb-1">General</h5>
+                <p class="card-text small mb-0">Capture schedule and environment details</p>
+              </div>
+            </div>
+          </div>
+        </div>
         <p class="text-justify offset-2 col-8">
           Upload the JSON workbook that powers the reporting workflow. Uploading a new workbook will replace the existing file
           and refresh the dynamic questions on the Data tab.
@@ -181,6 +203,82 @@
             {% endfor %}
           </div>
         {% endif %}
+        <div class="modal fade" id="workbookGeneralModal" tabindex="-1" role="dialog" aria-labelledby="workbookGeneralLabel"
+             aria-hidden="true">
+          <div class="modal-dialog modal-lg" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="workbookGeneralLabel">General Workbook Data</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                  <span aria-hidden="true">&times;</span>
+                </button>
+              </div>
+              <div class="modal-body">
+                <div id="workbook-general-fields" class="row"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="saveGeneralWorkbookData">Save General Data</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal fade" id="workbookScoringModal" tabindex="-1" role="dialog" aria-labelledby="workbookScoringLabel"
+             aria-hidden="true">
+          <div class="modal-dialog modal-lg" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="workbookScoringLabel">Scoring</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                  <span aria-hidden="true">&times;</span>
+                </button>
+              </div>
+              <div class="modal-body">
+                <p class="small text-muted">Scoring: 1-2~=Low; 2-4~=Medium; 4-6~=High</p>
+                <div id="workbook-scoring-groups"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="saveScoringWorkbookData">Save Scoring</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal fade" id="workbookGradesModal" tabindex="-1" role="dialog" aria-labelledby="workbookGradesLabel"
+             aria-hidden="true">
+          <div class="modal-dialog modal-lg" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="workbookGradesLabel">Grades</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                  <span aria-hidden="true">&times;</span>
+                </button>
+              </div>
+              <div class="modal-body">
+                <div class="mb-3" id="risk-score-legend"></div>
+                <div id="workbook-grades-fields"></div>
+              </div>
+              <div class="modal-footer d-flex flex-column flex-md-row align-items-stretch align-items-md-center justify-content-between">
+                <div class="mb-2 mb-md-0">
+                  <button type="button" class="btn btn-outline-primary mr-2" id="adjustGradeOverall">Adjust</button>
+                  <button type="button" class="btn btn-outline-secondary" id="resetGradeValues">Reset</button>
+                </div>
+                <div>
+                  <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+                  <button type="button" class="btn btn-primary" id="saveGradeWorkbookData">Save Grades</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {{ workbook_data_json|json_script:"project-workbook-data" }}
+        {{ project_scoping_json|json_script:"project-scoping-data" }}
+        {{ project_scoping_weights_json|json_script:"project-scoping-weights" }}
+        {{ project_scoping_config_json|json_script:"project-scoping-config" }}
+        {{ risk_score_map_json|json_script:"project-risk-score-map" }}
       </div>
 
       <div id="supplementals" class="tab-pane">
@@ -824,6 +922,534 @@
             storeProjectScrollPosition();
           });
         });
+
+        const workbookTab = document.getElementById('workbook');
+        const workbookUpdateUrl = workbookTab ? workbookTab.getAttribute('data-workbook-update-url') : null;
+        const parseJsonScript = function(id) {
+          const node = document.getElementById(id);
+          if (!node) {
+            return null;
+          }
+          try {
+            return JSON.parse(node.textContent);
+          } catch (error) {
+            return null;
+          }
+        };
+
+        const workbookState = parseJsonScript('project-workbook-data') || {};
+        const scopingState = parseJsonScript('project-scoping-data') || {};
+        const scopingWeights = parseJsonScript('project-scoping-weights') || {};
+        const scopingConfig = parseJsonScript('project-scoping-config') || {};
+        const riskScoreMap = parseJsonScript('project-risk-score-map') || {};
+        const riskLabels = Object.keys(riskScoreMap);
+
+        const titleize = function(value) {
+          return (value || '')
+            .toString()
+            .replace(/[_-]+/g, ' ')
+            .replace(/\w\S*/g, function(txt) {
+              return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
+            });
+        };
+
+        const scopeSelected = function(scopeKey) {
+          const scope = scopingState[scopeKey];
+          return scope && scope.selected;
+        };
+
+        const scoreToRisk = function(score) {
+          if (score === null || typeof score === 'undefined') {
+            return null;
+          }
+          const numericScore = parseFloat(score);
+          if (Number.isNaN(numericScore)) {
+            return null;
+          }
+          let detected = null;
+          Object.keys(riskScoreMap).forEach(function(risk) {
+            const bounds = riskScoreMap[risk] || {};
+            const min = typeof bounds.min === 'number' ? bounds.min : parseFloat(bounds.min);
+            const max = typeof bounds.max === 'number' ? bounds.max : parseFloat(bounds.max);
+            if (Number.isNaN(min) || Number.isNaN(max) || detected) {
+              return;
+            }
+            if (numericScore >= min && numericScore <= max) {
+              detected = risk;
+            }
+          });
+          return detected;
+        };
+
+        const buildRiskLegend = function() {
+          const legendContainer = document.getElementById('risk-score-legend');
+          if (!legendContainer) {
+            return;
+          }
+          const fragments = document.createDocumentFragment();
+          const list = document.createElement('ul');
+          list.className = 'list-unstyled mb-0';
+          Object.keys(riskScoreMap).forEach(function(risk) {
+            const bounds = riskScoreMap[risk];
+            if (!bounds) {
+              return;
+            }
+            const item = document.createElement('li');
+            item.textContent = risk + ': ' + bounds.min + ' - ' + bounds.max;
+            list.appendChild(item);
+          });
+          fragments.appendChild(list);
+          legendContainer.innerHTML = '';
+          legendContainer.appendChild(fragments);
+        };
+
+        const workbookGeneralFieldConfig = [
+          {key: 'external_start', label: 'External Start Date', scope: 'external', type: 'date'},
+          {key: 'external_end', label: 'External End Date', scope: 'external', type: 'date'},
+          {key: 'internal_start', label: 'Internal Start Date', scope: 'internal', type: 'date'},
+          {key: 'internal_end', label: 'Internal End Date', scope: 'internal', type: 'date'},
+          {key: 'cloud_start', label: 'Cloud Start Date', scope: 'cloud', type: 'date'},
+          {key: 'cloud_end', label: 'Cloud End Date', scope: 'cloud', type: 'date'},
+          {key: 'wireless', label: 'Wireless Date', scope: 'wireless', type: 'date'},
+          {key: 'firewall', label: 'Firewall Date', scope: 'firewall', type: 'date'},
+          {key: 'internal_subnets', label: 'Internal Subnets', scope: 'internal', type: 'text'},
+          {key: 'cloud_provider', label: 'Cloud Provider', scope: 'cloud', type: 'text'},
+        ];
+
+        const renderGeneralFields = function() {
+          const container = document.getElementById('workbook-general-fields');
+          if (!container) {
+            return;
+          }
+          container.innerHTML = '';
+          const fragment = document.createDocumentFragment();
+          workbookGeneralFieldConfig.forEach(function(field) {
+            if (!scopeSelected(field.scope)) {
+              return;
+            }
+            const col = document.createElement('div');
+            col.className = 'col-md-6 form-group';
+            const label = document.createElement('label');
+            label.setAttribute('for', 'workbook-general-' + field.key);
+            label.textContent = field.label;
+            const input = document.createElement('input');
+            input.type = field.type;
+            input.className = 'form-control';
+            input.id = 'workbook-general-' + field.key;
+            input.value = workbookState.general && workbookState.general[field.key] ? workbookState.general[field.key] : '';
+            col.appendChild(label);
+            col.appendChild(input);
+            fragment.appendChild(col);
+          });
+          container.appendChild(fragment);
+        };
+
+        const getScoresFromInputs = function() {
+          const scoreInputs = document.querySelectorAll('.workbook-score-input');
+          const scores = {};
+          scoreInputs.forEach(function(input) {
+            const category = input.getAttribute('data-category');
+            const option = input.getAttribute('data-option');
+            if (!category || !option) {
+              return;
+            }
+            const value = parseFloat(input.value);
+            const sanitized = Number.isNaN(value) ? null : Math.min(Math.max(value, 0), 6);
+            if (!scores[category]) {
+              scores[category] = {};
+            }
+            scores[category][option] = sanitized;
+          });
+          return scores;
+        };
+
+        const updateTotalsAndGrades = function() {
+          const scoreGroups = document.querySelectorAll('.workbook-score-group');
+          const computedGrades = {};
+          scoreGroups.forEach(function(group) {
+            const category = group.getAttribute('data-category');
+            const totalDisplay = group.querySelector('.workbook-score-total');
+            const gradeDisplay = group.querySelector('.workbook-score-grade');
+            const inputs = group.querySelectorAll('.workbook-score-input');
+            const weightLookup = scopingWeights[category] || {};
+            const hasWeights = Object.keys(weightLookup).length > 0;
+            let total = 0;
+            let weightTotal = 0;
+            let populated = false;
+            inputs.forEach(function(input) {
+              const option = input.getAttribute('data-option');
+              const raw = parseFloat(input.value);
+              const value = Number.isNaN(raw) ? 0 : Math.min(Math.max(raw, 0), 6);
+              const weight = weightLookup[option];
+              if (hasWeights && typeof weight === 'number') {
+                total += value * weight;
+                weightTotal += weight;
+              } else if (!hasWeights) {
+                total += value;
+                weightTotal += 1;
+              }
+              if (!Number.isNaN(raw)) {
+                populated = true;
+              }
+            });
+            if (!populated) {
+              if (totalDisplay) { totalDisplay.textContent = '—'; }
+              if (gradeDisplay) { gradeDisplay.textContent = '—'; }
+              computedGrades[category] = null;
+              return;
+            }
+            const divisor = weightTotal || inputs.length || 1;
+            const normalizedTotal = total / divisor;
+            const roundedTotal = Math.round(normalizedTotal * 10) / 10;
+            const riskLabel = scoreToRisk(roundedTotal);
+            if (totalDisplay) {
+              totalDisplay.textContent = roundedTotal.toFixed(1);
+            }
+            if (gradeDisplay) {
+              gradeDisplay.textContent = riskLabel || '—';
+            }
+            computedGrades[category] = {total: roundedTotal, grade: riskLabel};
+            if (!workbookState.external_internal_grades) {
+              workbookState.external_internal_grades = {};
+            }
+            const categoryState = workbookState.external_internal_grades[category] || {};
+            categoryState.total = roundedTotal;
+            categoryState.grade = riskLabel;
+            workbookState.external_internal_grades[category] = categoryState;
+          });
+          return computedGrades;
+        };
+
+        const optionIsSelected = function(categoryKey, optionKey) {
+          const scope = scopingState[categoryKey];
+          if (!scope) {
+            return false;
+          }
+          if (optionKey === 'selected') {
+            return scope.selected;
+          }
+          return Boolean(scope[optionKey]);
+        };
+
+        const renderScoringGroups = function() {
+          const container = document.getElementById('workbook-scoring-groups');
+          if (!container) {
+            return;
+          }
+          container.innerHTML = '';
+          const fragment = document.createDocumentFragment();
+          Object.keys(scopingState).forEach(function(categoryKey) {
+            if (!scopeSelected(categoryKey)) {
+              return;
+            }
+            const options = scopingConfig[categoryKey] && scopingConfig[categoryKey].options ? scopingConfig[categoryKey].options : {};
+            const optionKeys = Object.keys(scopingState[categoryKey]).filter(function(optionKey) {
+              return optionKey !== 'selected' && optionIsSelected(categoryKey, optionKey);
+            });
+            if (!optionKeys.length) {
+              return;
+            }
+            const card = document.createElement('div');
+            card.className = 'card mb-3 workbook-score-group';
+            card.setAttribute('data-category', categoryKey);
+            const cardHeader = document.createElement('div');
+            cardHeader.className = 'card-header font-weight-bold';
+            const categoryConfig = scopingConfig[categoryKey] || {};
+            cardHeader.textContent = categoryConfig.label || titleize(categoryKey);
+            const cardBody = document.createElement('div');
+            cardBody.className = 'card-body';
+            optionKeys.forEach(function(optionKey) {
+              const group = document.createElement('div');
+              group.className = 'form-group';
+              const label = document.createElement('label');
+              label.setAttribute('for', 'score-' + categoryKey + '-' + optionKey);
+              label.textContent = titleize(options[optionKey] || optionKey);
+              const input = document.createElement('input');
+              input.type = 'number';
+              input.className = 'form-control workbook-score-input';
+              input.step = '0.1';
+              input.min = '0';
+              input.max = '6';
+              input.id = 'score-' + categoryKey + '-' + optionKey;
+              input.setAttribute('data-category', categoryKey);
+              input.setAttribute('data-option', optionKey);
+              const scoreValue = workbookState.external_internal_grades
+                && workbookState.external_internal_grades[categoryKey]
+                && workbookState.external_internal_grades[categoryKey][optionKey]
+                ? workbookState.external_internal_grades[categoryKey][optionKey].score
+                : null;
+              input.value = typeof scoreValue === 'number' ? scoreValue : '';
+              input.addEventListener('input', function() {
+                updateTotalsAndGrades();
+              });
+              group.appendChild(label);
+              group.appendChild(input);
+              cardBody.appendChild(group);
+            });
+
+            const totalRow = document.createElement('div');
+            totalRow.className = 'd-flex justify-content-between align-items-center border-top pt-2 mt-2';
+            const totalLabel = document.createElement('strong');
+            totalLabel.textContent = 'Total';
+            const totalValue = document.createElement('span');
+            totalValue.className = 'workbook-score-total';
+            totalValue.textContent = '—';
+            const gradeLabel = document.createElement('strong');
+            gradeLabel.textContent = 'Grade';
+            const gradeValue = document.createElement('span');
+            gradeValue.className = 'workbook-score-grade';
+            gradeValue.textContent = '—';
+            const totalWrapper = document.createElement('div');
+            totalWrapper.appendChild(totalLabel);
+            totalWrapper.appendChild(document.createElement('br'));
+            totalWrapper.appendChild(totalValue);
+            const gradeWrapper = document.createElement('div');
+            gradeWrapper.className = 'text-right';
+            gradeWrapper.appendChild(gradeLabel);
+            gradeWrapper.appendChild(document.createElement('br'));
+            gradeWrapper.appendChild(gradeValue);
+            totalRow.appendChild(totalWrapper);
+            totalRow.appendChild(gradeWrapper);
+            cardBody.appendChild(totalRow);
+
+            card.appendChild(cardHeader);
+            card.appendChild(cardBody);
+            fragment.appendChild(card);
+          });
+          container.appendChild(fragment);
+          updateTotalsAndGrades();
+        };
+
+        const computeOverallFromGrades = function(gradeValues) {
+          const totals = [];
+          Object.keys(gradeValues).forEach(function(key) {
+            if (!scopeSelected(key)) {
+              return;
+            }
+            const risk = gradeValues[key];
+            const bounds = riskScoreMap[risk];
+            if (!bounds) {
+              return;
+            }
+            const midpoint = (parseFloat(bounds.min) + parseFloat(bounds.max)) / 2;
+            if (Number.isNaN(midpoint)) {
+              return;
+            }
+            const adjusted = key === 'wireless' ? midpoint * 0.9 : midpoint;
+            totals.push(adjusted);
+          });
+          if (!totals.length) {
+            return null;
+          }
+          const average = totals.reduce(function(sum, value) { return sum + value; }, 0) / totals.length;
+          return scoreToRisk(Math.round(average * 10) / 10);
+        };
+
+        const renderGradeFields = function() {
+          const container = document.getElementById('workbook-grades-fields');
+          if (!container) {
+            return;
+          }
+          container.innerHTML = '';
+          const fragment = document.createDocumentFragment();
+          const calculatedGrades = {};
+          const computedTotals = updateTotalsAndGrades();
+          Object.keys(scopingState).forEach(function(categoryKey) {
+            if (!scopeSelected(categoryKey)) {
+              return;
+            }
+            const card = document.createElement('div');
+            card.className = 'form-group';
+            const label = document.createElement('label');
+            label.setAttribute('for', 'grade-' + categoryKey);
+            const categoryConfig = scopingConfig[categoryKey] || {};
+            label.textContent = (categoryConfig.label || titleize(categoryKey)) + ' Grade';
+            const select = document.createElement('select');
+            select.className = 'form-control workbook-grade-select';
+            select.id = 'grade-' + categoryKey;
+            select.setAttribute('data-category', categoryKey);
+            const currentGrade = (workbookState.report_card && workbookState.report_card[categoryKey])
+              || (computedTotals && computedTotals[categoryKey] && computedTotals[categoryKey].grade) || '';
+            riskLabels.forEach(function(labelValue) {
+              const option = document.createElement('option');
+              option.value = labelValue;
+              option.textContent = labelValue;
+              if (labelValue === currentGrade) {
+                option.selected = true;
+              }
+              select.appendChild(option);
+            });
+            if (!currentGrade) {
+              const placeholder = document.createElement('option');
+              placeholder.value = '';
+              placeholder.textContent = 'Select grade';
+              placeholder.selected = true;
+              select.insertBefore(placeholder, select.firstChild);
+            }
+            calculatedGrades[categoryKey] = currentGrade;
+            card.appendChild(label);
+            card.appendChild(select);
+            fragment.appendChild(card);
+          });
+          const overallWrapper = document.createElement('div');
+          overallWrapper.className = 'form-group';
+          const overallLabel = document.createElement('label');
+          overallLabel.setAttribute('for', 'grade-overall');
+          overallLabel.textContent = 'Overall';
+          const overallSelect = document.createElement('select');
+          overallSelect.className = 'form-control workbook-grade-select';
+          overallSelect.id = 'grade-overall';
+          overallSelect.setAttribute('data-category', 'overall');
+          const existingOverall = workbookState.report_card && workbookState.report_card.overall;
+          const computedOverall = computeOverallFromGrades(calculatedGrades);
+          riskLabels.forEach(function(labelValue) {
+            const option = document.createElement('option');
+            option.value = labelValue;
+            option.textContent = labelValue;
+            if (labelValue === (existingOverall || computedOverall)) {
+              option.selected = true;
+            }
+            overallSelect.appendChild(option);
+          });
+          if (!existingOverall && !computedOverall) {
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Select grade';
+            placeholder.selected = true;
+            overallSelect.insertBefore(placeholder, overallSelect.firstChild);
+          }
+          overallWrapper.appendChild(overallLabel);
+          overallWrapper.appendChild(overallSelect);
+          fragment.appendChild(overallWrapper);
+          container.appendChild(fragment);
+        };
+
+        const getCsrfToken = function() {
+          const cookieString = document.cookie || '';
+          const cookies = cookieString.split(';');
+          for (let i = 0; i < cookies.length; i += 1) {
+            const cookie = cookies[i].trim();
+            if (cookie.startsWith('csrftoken=')) {
+              return decodeURIComponent(cookie.substring('csrftoken='.length));
+            }
+          }
+          return null;
+        };
+
+        const submitWorkbookUpdate = function(payload, onSuccess) {
+          if (!workbookUpdateUrl) {
+            return;
+          }
+          fetch(workbookUpdateUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': getCsrfToken() || ''
+            },
+            body: JSON.stringify(payload || {})
+          }).then(function(response) {
+            if (!response.ok) {
+              throw new Error('Unable to update workbook data');
+            }
+            return response.json();
+          }).then(function(data) {
+            if (data && data.workbook_data) {
+              Object.assign(workbookState, data.workbook_data);
+              renderGeneralFields();
+              renderScoringGroups();
+              renderGradeFields();
+            }
+            if (typeof onSuccess === 'function') {
+              onSuccess();
+            }
+          }).catch(function(error) {
+            console.error(error);
+            alert('Unable to save workbook data.');
+          });
+        };
+
+        const saveGeneralButton = document.getElementById('saveGeneralWorkbookData');
+        if (saveGeneralButton) {
+          saveGeneralButton.addEventListener('click', function() {
+            const payload = {};
+            workbookGeneralFieldConfig.forEach(function(field) {
+              if (!scopeSelected(field.scope)) {
+                return;
+              }
+              const input = document.getElementById('workbook-general-' + field.key);
+              if (!input) {
+                return;
+              }
+              if (!payload.general) {
+                payload.general = {};
+              }
+              payload.general[field.key] = input.value || null;
+            });
+            submitWorkbookUpdate(payload, function() {
+              $('#workbookGeneralModal').modal('hide');
+            });
+          });
+        }
+
+        const saveScoringButton = document.getElementById('saveScoringWorkbookData');
+        if (saveScoringButton) {
+          saveScoringButton.addEventListener('click', function() {
+            const payload = {scores: getScoresFromInputs()};
+            submitWorkbookUpdate(payload, function() {
+              $('#workbookScoringModal').modal('hide');
+            });
+          });
+        }
+
+        const saveGradesButton = document.getElementById('saveGradeWorkbookData');
+        if (saveGradesButton) {
+          saveGradesButton.addEventListener('click', function() {
+            const selects = document.querySelectorAll('.workbook-grade-select');
+            const payload = {grades: {}};
+            selects.forEach(function(select) {
+              const category = select.getAttribute('data-category');
+              if (!category) {
+                return;
+              }
+              payload.grades[category] = select.value || null;
+            });
+            submitWorkbookUpdate(payload, function() {
+              $('#workbookGradesModal').modal('hide');
+            });
+          });
+        }
+
+        const resetButton = document.getElementById('resetGradeValues');
+        if (resetButton) {
+          resetButton.addEventListener('click', function() {
+            renderGradeFields();
+          });
+        }
+
+        const adjustButton = document.getElementById('adjustGradeOverall');
+        if (adjustButton) {
+          adjustButton.addEventListener('click', function() {
+            const selects = document.querySelectorAll('.workbook-grade-select');
+            const grades = {};
+            selects.forEach(function(select) {
+              const category = select.getAttribute('data-category');
+              if (!category || category === 'overall') {
+                return;
+              }
+              grades[category] = select.value || null;
+            });
+            const overall = computeOverallFromGrades(grades);
+            const overallSelect = document.getElementById('grade-overall');
+            if (overall && overallSelect) {
+              overallSelect.value = overall;
+            }
+          });
+        }
+
+        renderGeneralFields();
+        renderScoringGroups();
+        renderGradeFields();
+        buildRiskLegend();
       });
     })(jQuery);
 
