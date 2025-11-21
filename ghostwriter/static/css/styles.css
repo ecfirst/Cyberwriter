@@ -3714,7 +3714,7 @@ input[type="color"]:focus,
 ----------------------------------------------------- */
 
 .workbook-scoring-grid {
-  row-gap: 0.75rem;
+  row-gap: 0.5rem;
 }
 
 .workbook-card-progress {
@@ -3727,7 +3727,7 @@ input[type="color"]:focus,
 }
 
 .workbook-score-label {
-  min-width: 14ch;
+  min-width: 16ch;
   white-space: nowrap;
 }
 
