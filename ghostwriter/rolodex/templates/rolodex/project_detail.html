@@ -1265,7 +1265,7 @@
               return;
             }
             const column = document.createElement('div');
-            column.className = 'col-12 col-lg-6 col-xl-4 d-flex';
+            column.className = 'col-12 col-lg-6 col-xl-4 d-flex workbook-score-column';
             const card = document.createElement('div');
             card.className = 'card mb-2 workbook-score-group h-100 w-100';
             card.setAttribute('data-category', categoryKey);
@@ -1277,9 +1277,9 @@
             cardBody.className = 'card-body d-flex flex-column';
             optionKeys.forEach(function(optionKey) {
               const group = document.createElement('div');
-              group.className = 'form-group row align-items-center';
+              group.className = 'form-group row align-items-center mb-2';
               const label = document.createElement('label');
-              label.className = 'col-7 col-sm-7 col-md-7 col-lg-7 col-form-label pr-2 workbook-score-label';
+              label.className = 'col-8 col-sm-8 col-md-8 col-lg-8 col-form-label pr-1 workbook-score-label';
               label.setAttribute('for', 'score-' + categoryKey + '-' + optionKey);
               label.textContent = titleize(options[optionKey] || optionKey);
               const input = document.createElement('input');
@@ -1299,7 +1299,7 @@
               });
               group.appendChild(label);
               const inputWrapper = document.createElement('div');
-              inputWrapper.className = 'col-5 col-sm-5 col-md-5 col-lg-5 pl-2 workbook-score-input-wrapper';
+              inputWrapper.className = 'col-4 col-sm-4 col-md-4 col-lg-4 pl-1 workbook-score-input-wrapper';
               inputWrapper.appendChild(input);
               group.appendChild(inputWrapper);
               cardBody.appendChild(group);
