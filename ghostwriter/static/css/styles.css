@@ -3743,3 +3743,18 @@ input[type="color"]:focus,
 .workbook-score-input-wrapper {
   flex: 1 1 auto;
 }
+
+.workbook-area-grid {
+  row-gap: 0.75rem;
+}
+
+.workbook-area-col {
+  display: flex;
+}
+
+@media (min-width: 1400px) {
+  .workbook-area-grid .workbook-area-col {
+    flex: 0 0 20%;
+    max-width: 20%;
+  }
+}

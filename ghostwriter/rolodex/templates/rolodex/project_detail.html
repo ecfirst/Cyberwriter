@@ -1416,7 +1416,7 @@
             }
             const modalId = 'workbook-area-modal-' + areaKey;
             const column = document.createElement('div');
-            column.className = 'col-12 col-sm-6 col-lg-4 col-xl-3 d-flex';
+            column.className = 'col-12 col-sm-6 col-lg-4 col-xl-3 d-flex workbook-area-col';
             const card = document.createElement('div');
             card.className = 'card workbook-entry-card mb-3 workbook-area-card flex-fill';
             card.setAttribute('role', 'button');
@@ -1429,9 +1429,6 @@
             cardTitle.className = 'card-title mb-1';
             const areaConfig = scopingConfig[areaKey] || {};
             cardTitle.textContent = areaConfig.label || titleize(areaKey);
-            const cardText = document.createElement('p');
-            cardText.className = 'card-text small mb-0';
-            cardText.textContent = 'Capture ' + cardTitle.textContent + ' metrics';
             const progress = document.createElement('div');
             progress.className = 'progress workbook-card-progress mt-2';
             const progressBar = document.createElement('div');
@@ -1443,7 +1440,6 @@
             progressBar.setAttribute('aria-valuemax', '100');
             progress.appendChild(progressBar);
             cardBody.appendChild(cardTitle);
-            cardBody.appendChild(cardText);
             cardBody.appendChild(progress);
             card.appendChild(cardBody);
             column.appendChild(card);
