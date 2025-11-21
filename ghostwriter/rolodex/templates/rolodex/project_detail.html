@@ -1010,7 +1010,7 @@
             if (!areaKey || (cardKey && cardKey !== areaKey)) {
               return;
             }
-            const inputs = card.querySelectorAll('[data-area-field="' + areaKey + '"]');
+            const inputs = document.querySelectorAll('[data-area-field="' + areaKey + '"]');
             let filled = 0;
             inputs.forEach(function(input) {
               if ((input.value || '').toString().trim()) {
@@ -1059,6 +1059,41 @@
               {key: 'total_leaks', label: 'Total Leaked Creds found', type: 'number'},
             ],
           },
+        };
+
+        const createAreaFieldGroup = function(areaKey, subkey, field) {
+          const inlineLayout = field.layout !== 'stacked' && field.type !== 'text';
+          const formGroup = document.createElement('div');
+          formGroup.className = inlineLayout
+            ? 'form-group row align-items-center mb-2'
+            : 'form-group';
+          const label = document.createElement('label');
+          label.className = inlineLayout
+            ? 'col-12 col-sm-6 col-md-5 col-lg-6 col-form-label font-weight-bold pr-sm-2'
+            : 'font-weight-bold';
+          label.setAttribute('for', 'area-' + subkey + '-' + field.key);
+          label.textContent = field.label;
+          const input = document.createElement('input');
+          input.type = field.type || 'text';
+          input.className = 'form-control';
+          input.id = 'area-' + subkey + '-' + field.key;
+          input.setAttribute('data-area-field', areaKey);
+          const existing = workbookState[subkey] && workbookState[subkey][field.key];
+          input.value = typeof existing === 'number' ? existing : (existing || '');
+          input.addEventListener('input', function() {
+            updateWorkbookCardProgress(areaKey);
+          });
+          if (inlineLayout) {
+            const inputWrapper = document.createElement('div');
+            inputWrapper.className = 'col-12 col-sm-6 col-md-7 col-lg-6';
+            inputWrapper.appendChild(input);
+            formGroup.appendChild(label);
+            formGroup.appendChild(inputWrapper);
+          } else {
+            formGroup.appendChild(label);
+            formGroup.appendChild(input);
+          }
+          return formGroup;
         };
 
         const scoreToRisk = function(score) {
@@ -1369,7 +1404,7 @@
           cardContainer.innerHTML = '';
           modalContainer.innerHTML = '';
           const deck = document.createElement('div');
-          deck.className = 'card-deck flex-column flex-md-row flex-wrap';
+          deck.className = 'row workbook-area-grid';
           const modalFragment = document.createDocumentFragment();
           Object.keys(scopingState).forEach(function(areaKey) {
             if (!scopeSelected(areaKey)) {
@@ -1380,8 +1415,10 @@
               return;
             }
             const modalId = 'workbook-area-modal-' + areaKey;
+            const column = document.createElement('div');
+            column.className = 'col-12 col-md-6 col-lg-4 d-flex';
             const card = document.createElement('div');
-            card.className = 'card workbook-entry-card mb-3 workbook-area-card';
+            card.className = 'card workbook-entry-card mb-3 workbook-area-card flex-fill';
             card.setAttribute('role', 'button');
             card.setAttribute('data-toggle', 'modal');
             card.setAttribute('data-target', '#' + modalId);
@@ -1409,7 +1446,8 @@
             cardBody.appendChild(cardText);
             cardBody.appendChild(progress);
             card.appendChild(cardBody);
-            deck.appendChild(card);
+            column.appendChild(card);
+            deck.appendChild(column);
 
             const modal = document.createElement('div');
             modal.className = 'modal fade';
@@ -1457,24 +1495,7 @@
               const config = areaSubsectionConfig[subkey];
               if (config && Array.isArray(config.fields)) {
                 config.fields.forEach(function(field) {
-                  const formGroup = document.createElement('div');
-                  formGroup.className = 'form-group';
-                  const label = document.createElement('label');
-                  label.className = 'font-weight-bold';
-                  label.setAttribute('for', 'area-' + subkey + '-' + field.key);
-                  label.textContent = field.label;
-                  const input = document.createElement('input');
-                  input.type = field.type || 'text';
-                  input.className = 'form-control';
-                  input.id = 'area-' + subkey + '-' + field.key;
-                  input.setAttribute('data-area-field', areaKey);
-                  const existing = workbookState[subkey] && workbookState[subkey][field.key];
-                  input.value = typeof existing === 'number' ? existing : (existing || '');
-                  input.addEventListener('input', function() {
-                    updateWorkbookCardProgress(areaKey);
-                  });
-                  formGroup.appendChild(label);
-                  formGroup.appendChild(input);
+                  const formGroup = createAreaFieldGroup(areaKey, subkey, field);
                   subBody.appendChild(formGroup);
                 });
               } else {
