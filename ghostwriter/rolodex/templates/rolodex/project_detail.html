@@ -1482,12 +1482,12 @@
             const modalBody = document.createElement('div');
             modalBody.className = 'modal-body';
             const modalRow = document.createElement('div');
-            modalRow.className = 'row';
+            modalRow.className = 'row workbook-area-modal-grid';
             subkeys.forEach(function(subkey) {
               const col = document.createElement('div');
-              col.className = 'col-12';
+              col.className = 'col-12 col-lg-6 col-xl-4 d-flex workbook-area-modal-col';
               const subCard = document.createElement('div');
-              subCard.className = 'card mb-3';
+              subCard.className = 'card mb-3 flex-fill';
               const subHeader = document.createElement('div');
               subHeader.className = 'card-header font-weight-bold';
               const subkeyLabel = (areaSubsectionConfig[subkey] && areaSubsectionConfig[subkey].label)

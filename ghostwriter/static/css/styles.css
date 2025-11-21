@@ -3768,3 +3768,11 @@ input[type="color"]:focus,
     max-width: 20%;
   }
 }
+
+.workbook-area-modal-grid {
+  row-gap: 0.75rem;
+}
+
+.workbook-area-modal-col {
+  display: flex;
+}
