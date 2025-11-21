@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from copy import deepcopy
 from decimal import Decimal
+import math
 from typing import Any, Dict, Mapping, MutableMapping, Optional
 
 from ghostwriter.reporting.models import RiskScoreRangeMapping
@@ -28,6 +29,18 @@ GENERAL_FIELDS = {
     "internal_subnets",
     "cloud_provider",
 }
+
+OSINT_FIELDS = {
+    "total_domains",
+    "total_hostnames",
+    "total_ips",
+    "total_cloud",
+    "total_buckets",
+    "total_squat",
+    "total_leaks",
+}
+
+AREA_FIELDS = {"osint": OSINT_FIELDS}
 
 
 def _as_decimal(value: Any) -> Optional[Decimal]:
@@ -56,6 +69,28 @@ def _score_to_risk(score: Optional[Decimal], score_map: Mapping[str, Any]) -> Op
     return None
 
 
+def _as_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, Decimal)):
+        return int(value)
+    if isinstance(value, float):
+        if math.isnan(value):
+            return None
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(float(text))
+        except ValueError:
+            return None
+    return None
+
+
 def _normalize_general_payload(payload: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     normalized: Dict[str, Any] = {}
     if not isinstance(payload, Mapping):
@@ -66,6 +101,17 @@ def _normalize_general_payload(payload: Optional[Mapping[str, Any]]) -> Dict[str
             normalized[field] = None
         else:
             normalized[field] = str(value)
+    return normalized
+
+
+def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    allowed_fields = AREA_FIELDS.get(area, set())
+    if not allowed_fields or not isinstance(payload, Mapping):
+        return normalized
+    for field in allowed_fields:
+        if field in payload:
+            normalized[field] = _as_int(payload.get(field))
     return normalized
 
 
@@ -130,6 +176,7 @@ def build_workbook_entry_payload(
     general: Optional[Mapping[str, Any]] = None,
     scores: Optional[Mapping[str, Any]] = None,
     grades: Optional[Mapping[str, Any]] = None,
+    areas: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return updated workbook data for inline workbook entry."""
 
@@ -140,6 +187,12 @@ def build_workbook_entry_payload(
     if general:
         normalized_general = _normalize_general_payload(general)
         normalized_workbook.setdefault("general", {}).update(normalized_general)
+
+    if isinstance(areas, Mapping):
+        for area_key, area_payload in areas.items():
+            normalized_area = _normalize_area_payload(area_key, area_payload)
+            if normalized_area:
+                normalized_workbook.setdefault(area_key, {}).update(normalized_area)
 
     score_updates: MutableMapping[str, MutableMapping[str, Any]] = {}
     category_scores: Dict[str, Optional[Decimal]] = {}

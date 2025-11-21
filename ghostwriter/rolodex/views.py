@@ -1943,6 +1943,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         dns_issue_counts: Dict[str, int] = {}
         artifacts = normalize_nexpose_artifacts_map(object.data_artifacts or {})
         object.data_artifacts = artifacts
+        ctx["project_data_artifacts_json"] = artifacts
         matrix_gap_summary = summarize_nexpose_matrix_gaps(artifacts)
         ctx["nexpose_matrix_gap_summary"] = matrix_gap_summary
         ctx["has_nexpose_matrix_gaps"] = bool(matrix_gap_summary)
@@ -2183,6 +2184,57 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
     model = Project
 
+    @staticmethod
+    def _parse_osint_csv(upload) -> tuple[Optional[list[dict[str, str]]], Optional[dict[str, int]], Optional[str]]:
+        required_headers = {
+            "domain": "Domain",
+            "hostname": "Hostname",
+            "altnames": "altNames",
+            "ip": "IP",
+            "port": "Port",
+            "info": "Info",
+            "tools": "tools",
+        }
+        try:
+            content = upload.read().decode("utf-8-sig")
+        except Exception:
+            return None, None, "Unable to read the uploaded CSV file."
+
+        reader = csv.DictReader(io.StringIO(content))
+        header_lookup = {header.lower(): header for header in (reader.fieldnames or [])}
+        missing_headers = [
+            label for key, label in required_headers.items() if key not in header_lookup
+        ]
+        if missing_headers:
+            return None, None, f"Missing required OSINT headers: {', '.join(missing_headers)}"
+
+        rows: list[dict[str, str]] = []
+        domain_set: set[str] = set()
+        hostname_set: set[str] = set()
+        ip_set: set[str] = set()
+        for row in reader:
+            normalized_row: dict[str, str] = {}
+            for key, label in required_headers.items():
+                source_header = header_lookup.get(key) or label
+                normalized_row[label] = (row.get(source_header) or "").strip()
+            rows.append(normalized_row)
+            domain_value = normalized_row.get("Domain", "").strip().lower()
+            hostname_value = normalized_row.get("Hostname", "").strip().lower()
+            ip_value = normalized_row.get("IP", "").strip().lower()
+            if domain_value:
+                domain_set.add(domain_value)
+            if hostname_value:
+                hostname_set.add(hostname_value)
+            if ip_value:
+                ip_set.add(ip_value)
+
+        metrics = {
+            "total_domains": len(domain_set),
+            "total_hostnames": len(hostname_set),
+            "total_ips": len(ip_set),
+        }
+        return rows, metrics, None
+
     def test_func(self):
         return self.get_object().user_can_edit(self.request.user)
 
@@ -2192,6 +2244,29 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
     def post(self, request, *args, **kwargs):
         project = self.get_object()
+        if request.FILES:
+            upload = request.FILES.get("osint_csv")
+            if not upload:
+                return JsonResponse({"error": "No OSINT CSV provided."}, status=400)
+
+            rows, metrics, error_message = self._parse_osint_csv(upload)
+            if error_message:
+                return JsonResponse({"error": error_message}, status=400)
+
+            workbook_payload = build_workbook_entry_payload(
+                project=project,
+                areas={"osint": metrics or {}},
+            )
+            artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            artifacts = dict(artifacts)
+            if rows is not None:
+                artifacts["osint"] = rows
+            project.workbook_data = workbook_payload
+            project.data_artifacts = artifacts
+            project.save(update_fields=["workbook_data", "data_artifacts"])
+            return JsonResponse(
+                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            )
         try:
             payload = json.loads(request.body.decode("utf-8")) if request.body else {}
         except json.JSONDecodeError:
@@ -2202,11 +2277,12 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             general=payload.get("general"),
             scores=payload.get("scores"),
             grades=payload.get("grades"),
+            areas=payload.get("areas"),
         )
 
         project.workbook_data = workbook_payload
         project.save(update_fields=["workbook_data"])
-        return JsonResponse({"workbook_data": workbook_payload})
+        return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts})
 
 
 class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
