@@ -1188,7 +1188,7 @@
           if (!container) {
             return;
           }
-          container.classList.add('row');
+          container.classList.add('row', 'workbook-scoring-grid');
           container.innerHTML = '';
           const fragment = document.createDocumentFragment();
           Object.keys(scopingState).forEach(function(categoryKey) {
@@ -1217,7 +1217,7 @@
               const group = document.createElement('div');
               group.className = 'form-group row align-items-center';
               const label = document.createElement('label');
-              label.className = 'col-7 col-sm-8 col-form-label';
+              label.className = 'col-5 col-sm-6 col-md-5 col-form-label';
               label.setAttribute('for', 'score-' + categoryKey + '-' + optionKey);
               label.textContent = titleize(options[optionKey] || optionKey);
               const input = document.createElement('input');
@@ -1236,7 +1236,7 @@
               });
               group.appendChild(label);
               const inputWrapper = document.createElement('div');
-              inputWrapper.className = 'col-5 col-sm-4';
+              inputWrapper.className = 'col-7 col-sm-6 col-md-7';
               inputWrapper.appendChild(input);
               group.appendChild(inputWrapper);
               cardBody.appendChild(group);
