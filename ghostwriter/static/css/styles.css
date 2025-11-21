@@ -3718,8 +3718,8 @@ input[type="color"]:focus,
 }
 
 .workbook-score-column {
-  padding-left: 0.5rem;
-  padding-right: 0.5rem;
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
 }
 
 .workbook-card-progress {
