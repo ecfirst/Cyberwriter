@@ -128,93 +128,103 @@
       <div id="workbook" class="tab-pane" data-workbook-update-url="{% url 'rolodex:project_workbook_data_update' project.id %}">
         <h4>Workbook</h4>
         <hr/>
-        <div class="offset-2 col-8 mb-3">
-          <div class="card-deck flex-column flex-md-row">
-            <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookScoringModal">
-              <div class="card-body text-center">
-                <h5 class="card-title mb-1">Scoring</h5>
-                <p class="card-text small mb-0">Enter scores for each in-scope area</p>
-                <div class="progress workbook-card-progress mt-2">
-                  <div class="progress-bar" id="workbook-progress-scoring" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+        <div class="row mb-3">
+          <div class="col-12">
+            <div class="card-deck flex-column flex-md-row">
+              <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookScoringModal">
+                <div class="card-body text-center">
+                  <h5 class="card-title mb-1">Scoring</h5>
+                  <p class="card-text small mb-0">Enter scores for each in-scope area</p>
+                  <div class="progress workbook-card-progress mt-2">
+                    <div class="progress-bar" id="workbook-progress-scoring" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGradesModal">
-              <div class="card-body text-center">
-                <h5 class="card-title mb-1">Grades</h5>
-                <p class="card-text small mb-0">Review and adjust risk labels</p>
-                <div class="progress workbook-card-progress mt-2">
-                  <div class="progress-bar" id="workbook-progress-grades" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+              <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGradesModal">
+                <div class="card-body text-center">
+                  <h5 class="card-title mb-1">Grades</h5>
+                  <p class="card-text small mb-0">Review and adjust risk labels</p>
+                  <div class="progress workbook-card-progress mt-2">
+                    <div class="progress-bar" id="workbook-progress-grades" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGeneralModal">
-              <div class="card-body text-center">
-                <h5 class="card-title mb-1">General</h5>
-                <p class="card-text small mb-0">Capture schedule and environment details</p>
-                <div class="progress workbook-card-progress mt-2">
-                  <div class="progress-bar" id="workbook-progress-general" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+              <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGeneralModal">
+                <div class="card-body text-center">
+                  <h5 class="card-title mb-1">General</h5>
+                  <p class="card-text small mb-0">Capture schedule and environment details</p>
+                  <div class="progress workbook-card-progress mt-2">
+                    <div class="progress-bar" id="workbook-progress-general" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
-        <p class="text-justify offset-2 col-8">
-          Upload the JSON workbook that powers the reporting workflow. Uploading a new workbook will replace the existing file
-          and refresh the dynamic questions on the Data tab.
-        </p>
-        <form id="project-workbook-form" class="offset-2 col-8" method="post"
-              action="{% url 'rolodex:project_workbook' project.id %}"
-              enctype="multipart/form-data">
-          {% csrf_token %}
-          <div class="form-group">
-            <label for="id_workbook_file">{{ workbook_form.workbook_file.label }}</label>
-            {{ workbook_form.workbook_file }}
-          </div>
-          <button type="submit" class="btn btn-primary" data-default-text="Upload Workbook">Upload Workbook</button>
-        </form>
-
-        {% if project.workbook_file %}
-          <div class="alert alert-secondary offset-2 col-8 mt-4">
-            <div class="d-flex justify-content-between align-items-center flex-column flex-md-row">
-              <div>
-                <strong>Current workbook:</strong>
-                <a href="{{ project.workbook_file.url }}" download>{{ project.workbook_file.name|cut:"project_workbooks/"|default_if_none:"workbook.json" }}</a>
+        <div class="row mb-3">
+          <div class="col-12" id="workbook-area-cards"></div>
+        </div>
+        <div class="row justify-content-center">
+          <div class="col-12 col-xl-11">
+            <p class="text-justify">
+              Upload the JSON workbook that powers the reporting workflow. Uploading a new workbook will replace the existing file
+              and refresh the dynamic questions on the Data tab.
+            </p>
+            <form id="project-workbook-form" method="post"
+                  action="{% url 'rolodex:project_workbook' project.id %}"
+                  enctype="multipart/form-data">
+              {% csrf_token %}
+              <div class="form-group">
+                <label for="id_workbook_file">{{ workbook_form.workbook_file.label }}</label>
+                {{ workbook_form.workbook_file }}
               </div>
-              <form method="post" action="{% url 'rolodex:project_workbook' project.id %}">
-                {% csrf_token %}
-                <input type="hidden" name="clear_workbook" value="1"/>
-                <button type="submit" class="btn btn-outline-danger btn-sm">Remove Workbook</button>
-              </form>
-            </div>
-          </div>
-          {% if not workbook_sections %}
-            <div class="alert alert-info offset-2 col-8 mt-4">
-              Workbook uploaded successfully. No preview data is available for this workbook yet.
-            </div>
-          {% endif %}
-        {% else %}
-          <div class="alert alert-warning offset-2 col-8 mt-4">No workbook has been uploaded yet.</div>
-        {% endif %}
+              <button type="submit" class="btn btn-primary" data-default-text="Upload Workbook">Upload Workbook</button>
+            </form>
 
-        {% if workbook_sections %}
-          <div class="offset-2 col-8 mt-4">
-            <h5>Workbook Data</h5>
-          </div>
-          <div class="offset-2 col-8">
-            {% for section in workbook_sections %}
-              <div class="card mb-3">
-                <div class="card-header font-weight-bold">{{ section.title }}</div>
-                <div class="card-body">
-                  {% include "rolodex/includes/workbook_value.html" with node=section.tree %}
+            {% if project.workbook_file %}
+              <div class="alert alert-secondary mt-4">
+                <div class="d-flex justify-content-between align-items-center flex-column flex-md-row">
+                  <div>
+                    <strong>Current workbook:</strong>
+                    <a href="{{ project.workbook_file.url }}" download>{{ project.workbook_file.name|cut:"project_workbooks/"|default_if_none:"workbook.json" }}</a>
+                  </div>
+                  <form method="post" action="{% url 'rolodex:project_workbook' project.id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="clear_workbook" value="1"/>
+                    <button type="submit" class="btn btn-outline-danger btn-sm">Remove Workbook</button>
+                  </form>
                 </div>
               </div>
-            {% endfor %}
+              {% if not workbook_sections %}
+                <div class="alert alert-info mt-4">
+                  Workbook uploaded successfully. No preview data is available for this workbook yet.
+                </div>
+              {% endif %}
+            {% else %}
+              <div class="alert alert-warning mt-4">No workbook has been uploaded yet.</div>
+            {% endif %}
+
+            {% if workbook_sections %}
+              <div class="mt-4">
+                <h5>Workbook Data</h5>
+              </div>
+              <div>
+                {% for section in workbook_sections %}
+                  <div class="card mb-3">
+                    <div class="card-header font-weight-bold">{{ section.title }}</div>
+                    <div class="card-body">
+                      {% include "rolodex/includes/workbook_value.html" with node=section.tree %}
+                    </div>
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
           </div>
-        {% endif %}
+        </div>
+        <div id="workbook-area-modals"></div>
         <div class="modal fade" id="workbookGeneralModal" tabindex="-1" role="dialog" aria-labelledby="workbookGeneralLabel"
              aria-hidden="true">
-          <div class="modal-dialog modal-lg" role="document">
+          <div class="modal-dialog modal-xl workbook-modal" role="document">
             <div class="modal-content">
               <div class="modal-header">
                 <h5 class="modal-title" id="workbookGeneralLabel">General Workbook Data</h5>
@@ -235,7 +245,7 @@
 
         <div class="modal fade" id="workbookScoringModal" tabindex="-1" role="dialog" aria-labelledby="workbookScoringLabel"
              aria-hidden="true">
-          <div class="modal-dialog modal-lg" role="document">
+          <div class="modal-dialog modal-xl workbook-modal" role="document">
             <div class="modal-content">
               <div class="modal-header">
                 <h5 class="modal-title" id="workbookScoringLabel">Scoring</h5>
@@ -257,7 +267,7 @@
 
         <div class="modal fade" id="workbookGradesModal" tabindex="-1" role="dialog" aria-labelledby="workbookGradesLabel"
              aria-hidden="true">
-          <div class="modal-dialog modal-lg" role="document">
+          <div class="modal-dialog modal-xl workbook-modal" role="document">
             <div class="modal-content">
               <div class="modal-header">
                 <h5 class="modal-title" id="workbookGradesLabel">Grades</h5>
@@ -286,6 +296,7 @@
         </div>
 
         {{ workbook_data_json|json_script:"project-workbook-data" }}
+        {{ project_data_artifacts_json|json_script:"project-data-artifacts" }}
         {{ project_scoping_json|json_script:"project-scoping-data" }}
         {{ project_scoping_weights_json|json_script:"project-scoping-weights" }}
         {{ project_scoping_config_json|json_script:"project-scoping-config" }}
@@ -949,6 +960,7 @@
         };
 
         const workbookState = parseJsonScript('project-workbook-data') || {};
+        const dataArtifactsState = parseJsonScript('project-data-artifacts') || {};
         const scopingState = parseJsonScript('project-scoping-data') || {};
         const scopingWeights = parseJsonScript('project-scoping-weights') || {};
         const scopingConfig = parseJsonScript('project-scoping-config') || {};
@@ -1000,6 +1012,21 @@
             });
             setCardProgress('grades', filled, gradeInputs.length);
           }
+          const areaCards = document.querySelectorAll('.workbook-area-card');
+          areaCards.forEach(function(card) {
+            const areaKey = card.getAttribute('data-area-key');
+            if (!areaKey || (cardKey && cardKey !== areaKey)) {
+              return;
+            }
+            const inputs = document.querySelectorAll('[data-area-field="' + areaKey + '"]');
+            let filled = 0;
+            inputs.forEach(function(input) {
+              if ((input.value || '').toString().trim()) {
+                filled += 1;
+              }
+            });
+            setCardProgress(areaKey, filled, inputs.length);
+          });
         };
 
         const formatDateForInput = function(value) {
@@ -1025,6 +1052,56 @@
         const scopeSelected = function(scopeKey) {
           const scope = scopingState[scopeKey];
           return scope && scope.selected;
+        };
+
+        const areaSubsectionConfig = {
+          osint: {
+            label: 'OSINT',
+            fields: [
+              {key: 'total_domains', label: 'Total domains found', type: 'number'},
+              {key: 'total_hostnames', label: 'Total hostnames/subdomains found', type: 'number'},
+              {key: 'total_ips', label: 'Total IPs found', type: 'number'},
+              {key: 'total_cloud', label: 'Total Cloud Providers found', type: 'number'},
+              {key: 'total_buckets', label: 'Total Open Buckets found', type: 'number'},
+              {key: 'total_squat', label: 'Total Domain Squatters found', type: 'number'},
+              {key: 'total_leaks', label: 'Total Leaked Creds found', type: 'number'},
+            ],
+          },
+        };
+
+        const createAreaFieldGroup = function(areaKey, subkey, field) {
+          const inlineLayout = field.layout !== 'stacked' && field.type !== 'text';
+          const formGroup = document.createElement('div');
+          formGroup.className = inlineLayout
+            ? 'form-group row align-items-center mb-2'
+            : 'form-group';
+          const label = document.createElement('label');
+          label.className = inlineLayout
+            ? 'col-12 col-sm-6 col-md-5 col-lg-6 col-form-label font-weight-bold pr-sm-2'
+            : 'font-weight-bold';
+          label.setAttribute('for', 'area-' + subkey + '-' + field.key);
+          label.textContent = field.label;
+          const input = document.createElement('input');
+          input.type = field.type || 'text';
+          input.className = 'form-control';
+          input.id = 'area-' + subkey + '-' + field.key;
+          input.setAttribute('data-area-field', areaKey);
+          const existing = workbookState[subkey] && workbookState[subkey][field.key];
+          input.value = typeof existing === 'number' ? existing : (existing || '');
+          input.addEventListener('input', function() {
+            updateWorkbookCardProgress(areaKey);
+          });
+          if (inlineLayout) {
+            const inputWrapper = document.createElement('div');
+            inputWrapper.className = 'col-12 col-sm-6 col-md-7 col-lg-6';
+            inputWrapper.appendChild(input);
+            formGroup.appendChild(label);
+            formGroup.appendChild(inputWrapper);
+          } else {
+            formGroup.appendChild(label);
+            formGroup.appendChild(input);
+          }
+          return formGroup;
         };
 
         const scoreToRisk = function(score) {
@@ -1244,6 +1321,252 @@
             return scope.selected;
           }
           return Boolean(scope[optionKey]);
+        };
+
+        const getAreaSubkeys = function(areaKey) {
+          const scope = scopingState[areaKey] || {};
+          return Object.keys(scope).filter(function(optionKey) {
+            return optionKey !== 'selected' && optionIsSelected(areaKey, optionKey);
+          });
+        };
+
+        const saveAreaData = function(areaKey, subkeys, modalId) {
+          if (!Array.isArray(subkeys) || !subkeys.length) {
+            return;
+          }
+          const payload = {areas: {}};
+          subkeys.forEach(function(subkey) {
+            const config = areaSubsectionConfig[subkey];
+            if (!config || !config.fields) {
+              return;
+            }
+            const fieldPayload = {};
+            config.fields.forEach(function(field) {
+              const input = document.getElementById('area-' + subkey + '-' + field.key);
+              if (!input) {
+                return;
+              }
+              const rawValue = (input.value || '').trim();
+              if (field.type === 'number') {
+                fieldPayload[field.key] = rawValue === '' ? null : Number(rawValue);
+              } else {
+                fieldPayload[field.key] = rawValue || null;
+              }
+            });
+            payload.areas[subkey] = fieldPayload;
+          });
+          submitWorkbookUpdate(payload, function() {
+            if (modalId) {
+              $('#' + modalId).modal('hide');
+            }
+          });
+        };
+
+        const uploadOsintCsv = function(file, areaKey, modalId) {
+          if (!workbookUpdateUrl || !file) {
+            return;
+          }
+          const formData = new FormData();
+          formData.append('osint_csv', file);
+          fetch(workbookUpdateUrl, {
+            method: 'POST',
+            headers: {
+              'X-CSRFToken': getCsrfToken() || ''
+            },
+            body: formData,
+          }).then(function(response) {
+            return response.json().then(function(data) {
+              if (!response.ok) {
+                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
+                throw new Error(message);
+              }
+              return data;
+            });
+          }).then(function(data) {
+            if (data && data.workbook_data) {
+              Object.assign(workbookState, data.workbook_data);
+            }
+            if (data && data.data_artifacts) {
+              Object.assign(dataArtifactsState, data.data_artifacts);
+            }
+            renderGeneralFields();
+            renderScoringGroups();
+            renderGradeFields();
+            renderAreaCards();
+            updateWorkbookCardProgress(areaKey);
+            if (modalId) {
+              $('#' + modalId).modal('show');
+            }
+          }).catch(function(error) {
+            console.error(error);
+            alert(error.message || 'Unable to save workbook data.');
+          });
+        };
+
+        const renderAreaCards = function() {
+          const cardContainer = document.getElementById('workbook-area-cards');
+          const modalContainer = document.getElementById('workbook-area-modals');
+          if (!cardContainer || !modalContainer) {
+            return;
+          }
+          cardContainer.innerHTML = '';
+          modalContainer.innerHTML = '';
+          const deck = document.createElement('div');
+          deck.className = 'row workbook-area-grid';
+          const modalFragment = document.createDocumentFragment();
+          Object.keys(scopingState).forEach(function(areaKey) {
+            if (!scopeSelected(areaKey)) {
+              return;
+            }
+            const subkeys = getAreaSubkeys(areaKey);
+            if (!subkeys.length) {
+              return;
+            }
+            const modalId = 'workbook-area-modal-' + areaKey;
+            const column = document.createElement('div');
+            column.className = 'col-12 col-sm-6 col-lg-4 col-xl-3 d-flex workbook-area-col';
+            const card = document.createElement('div');
+            card.className = 'card workbook-entry-card mb-3 workbook-area-card flex-fill';
+            card.setAttribute('role', 'button');
+            card.setAttribute('data-toggle', 'modal');
+            card.setAttribute('data-target', '#' + modalId);
+            card.setAttribute('data-area-key', areaKey);
+            const cardBody = document.createElement('div');
+            cardBody.className = 'card-body text-center';
+            const cardTitle = document.createElement('h5');
+            cardTitle.className = 'card-title mb-1';
+            const areaConfig = scopingConfig[areaKey] || {};
+            cardTitle.textContent = areaConfig.label || titleize(areaKey);
+            const progress = document.createElement('div');
+            progress.className = 'progress workbook-card-progress mt-2';
+            const progressBar = document.createElement('div');
+            progressBar.className = 'progress-bar';
+            progressBar.id = 'workbook-progress-' + areaKey;
+            progressBar.setAttribute('role', 'progressbar');
+            progressBar.setAttribute('style', 'width: 0%');
+            progressBar.setAttribute('aria-valuemin', '0');
+            progressBar.setAttribute('aria-valuemax', '100');
+            progress.appendChild(progressBar);
+            cardBody.appendChild(cardTitle);
+            cardBody.appendChild(progress);
+            card.appendChild(cardBody);
+            column.appendChild(card);
+            deck.appendChild(column);
+
+            const modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = modalId;
+            modal.tabIndex = -1;
+            modal.setAttribute('role', 'dialog');
+            modal.setAttribute('aria-labelledby', modalId + '-label');
+            modal.setAttribute('aria-hidden', 'true');
+            const modalDialog = document.createElement('div');
+            modalDialog.className = 'modal-dialog modal-xl workbook-modal';
+            modalDialog.setAttribute('role', 'document');
+            const modalContent = document.createElement('div');
+            modalContent.className = 'modal-content';
+            const modalHeader = document.createElement('div');
+            modalHeader.className = 'modal-header';
+            const modalTitle = document.createElement('h5');
+            modalTitle.className = 'modal-title';
+            modalTitle.id = modalId + '-label';
+            modalTitle.textContent = (areaConfig.label || titleize(areaKey)) + ' Workbook Data';
+            const modalClose = document.createElement('button');
+            modalClose.type = 'button';
+            modalClose.className = 'close';
+            modalClose.setAttribute('data-dismiss', 'modal');
+            modalClose.setAttribute('aria-label', 'Close');
+            modalClose.innerHTML = '<span aria-hidden="true">&times;</span>';
+            modalHeader.appendChild(modalTitle);
+            modalHeader.appendChild(modalClose);
+            const modalBody = document.createElement('div');
+            modalBody.className = 'modal-body';
+            const modalRow = document.createElement('div');
+            modalRow.className = 'row workbook-area-modal-grid';
+            subkeys.forEach(function(subkey) {
+              const col = document.createElement('div');
+              col.className = 'col-12 col-lg-6 col-xl-4 d-flex workbook-area-modal-col';
+              const subCard = document.createElement('div');
+              subCard.className = 'card mb-3 flex-fill';
+              const subHeader = document.createElement('div');
+              subHeader.className = 'card-header font-weight-bold';
+              const subkeyLabel = (areaSubsectionConfig[subkey] && areaSubsectionConfig[subkey].label)
+                ? areaSubsectionConfig[subkey].label
+                : subkey.toUpperCase();
+              subHeader.textContent = subkeyLabel;
+              const subBody = document.createElement('div');
+              subBody.className = 'card-body';
+              const config = areaSubsectionConfig[subkey];
+              if (config && Array.isArray(config.fields)) {
+                config.fields.forEach(function(field) {
+                  const formGroup = createAreaFieldGroup(areaKey, subkey, field);
+                  subBody.appendChild(formGroup);
+                });
+              } else {
+                const empty = document.createElement('p');
+                empty.className = 'mb-0';
+                empty.textContent = 'No workbook fields are available for this area yet.';
+                subBody.appendChild(empty);
+              }
+              if (subkey === 'osint') {
+                const uploadWrapper = document.createElement('div');
+                uploadWrapper.className = 'mt-2';
+                const uploadInput = document.createElement('input');
+                uploadInput.type = 'file';
+                uploadInput.accept = '.csv,text/csv';
+                uploadInput.className = 'd-none';
+                uploadInput.id = 'area-' + subkey + '-upload';
+                uploadInput.addEventListener('change', function(event) {
+                  if (event.target.files && event.target.files[0]) {
+                    uploadOsintCsv(event.target.files[0], areaKey, modalId);
+                    event.target.value = '';
+                  }
+                });
+                const uploadButton = document.createElement('button');
+                uploadButton.type = 'button';
+                uploadButton.className = 'btn btn-outline-primary';
+                uploadButton.textContent = 'Upload OSINT CSV';
+                uploadButton.addEventListener('click', function() {
+                  uploadInput.click();
+                });
+                uploadWrapper.appendChild(uploadInput);
+                uploadWrapper.appendChild(uploadButton);
+                subBody.appendChild(uploadWrapper);
+              }
+              subCard.appendChild(subHeader);
+              subCard.appendChild(subBody);
+              col.appendChild(subCard);
+              modalRow.appendChild(col);
+            });
+            modalBody.appendChild(modalRow);
+            const modalFooter = document.createElement('div');
+            modalFooter.className = 'modal-footer';
+            const closeButton = document.createElement('button');
+            closeButton.type = 'button';
+            closeButton.className = 'btn btn-secondary';
+            closeButton.setAttribute('data-dismiss', 'modal');
+            closeButton.textContent = 'Close';
+            const saveButton = document.createElement('button');
+            saveButton.type = 'button';
+            saveButton.className = 'btn btn-primary';
+            saveButton.textContent = 'Save ' + (areaConfig.label || titleize(areaKey));
+            saveButton.addEventListener('click', function() {
+              saveAreaData(areaKey, subkeys, modalId);
+            });
+            modalFooter.appendChild(closeButton);
+            modalFooter.appendChild(saveButton);
+            modalContent.appendChild(modalHeader);
+            modalContent.appendChild(modalBody);
+            modalContent.appendChild(modalFooter);
+            modalDialog.appendChild(modalContent);
+            modal.appendChild(modalDialog);
+            modalFragment.appendChild(modal);
+          });
+          if (deck.children.length) {
+            cardContainer.appendChild(deck);
+          }
+          modalContainer.appendChild(modalFragment);
+          updateWorkbookCardProgress();
         };
 
         const renderScoringGroups = function() {
@@ -1480,10 +1803,14 @@
           }).then(function(data) {
             if (data && data.workbook_data) {
               Object.assign(workbookState, data.workbook_data);
-              renderGeneralFields();
-              renderScoringGroups();
-              renderGradeFields();
             }
+            if (data && data.data_artifacts) {
+              Object.assign(dataArtifactsState, data.data_artifacts);
+            }
+            renderGeneralFields();
+            renderScoringGroups();
+            renderGradeFields();
+            renderAreaCards();
             if (typeof onSuccess === 'function') {
               onSuccess();
             }
@@ -1573,6 +1900,7 @@
         }
 
         renderGeneralFields();
+        renderAreaCards();
         renderScoringGroups();
         renderGradeFields();
         buildRiskLegend();
