@@ -3735,6 +3735,16 @@ input[type="color"]:focus,
   line-height: 0.6rem;
 }
 
+.workbook-modal {
+  max-width: 90vw;
+}
+
+@media (min-width: 1400px) {
+  .workbook-modal {
+    max-width: 1300px;
+  }
+}
+
 .workbook-score-label {
   min-width: 18ch;
   white-space: nowrap;

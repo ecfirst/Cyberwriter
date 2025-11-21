@@ -128,95 +128,103 @@
       <div id="workbook" class="tab-pane" data-workbook-update-url="{% url 'rolodex:project_workbook_data_update' project.id %}">
         <h4>Workbook</h4>
         <hr/>
-        <div class="offset-2 col-8 mb-3">
-          <div class="card-deck flex-column flex-md-row">
-            <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookScoringModal">
-              <div class="card-body text-center">
-                <h5 class="card-title mb-1">Scoring</h5>
-                <p class="card-text small mb-0">Enter scores for each in-scope area</p>
-                <div class="progress workbook-card-progress mt-2">
-                  <div class="progress-bar" id="workbook-progress-scoring" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+        <div class="row mb-3">
+          <div class="col-12">
+            <div class="card-deck flex-column flex-md-row">
+              <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookScoringModal">
+                <div class="card-body text-center">
+                  <h5 class="card-title mb-1">Scoring</h5>
+                  <p class="card-text small mb-0">Enter scores for each in-scope area</p>
+                  <div class="progress workbook-card-progress mt-2">
+                    <div class="progress-bar" id="workbook-progress-scoring" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGradesModal">
-              <div class="card-body text-center">
-                <h5 class="card-title mb-1">Grades</h5>
-                <p class="card-text small mb-0">Review and adjust risk labels</p>
-                <div class="progress workbook-card-progress mt-2">
-                  <div class="progress-bar" id="workbook-progress-grades" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+              <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGradesModal">
+                <div class="card-body text-center">
+                  <h5 class="card-title mb-1">Grades</h5>
+                  <p class="card-text small mb-0">Review and adjust risk labels</p>
+                  <div class="progress workbook-card-progress mt-2">
+                    <div class="progress-bar" id="workbook-progress-grades" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGeneralModal">
-              <div class="card-body text-center">
-                <h5 class="card-title mb-1">General</h5>
-                <p class="card-text small mb-0">Capture schedule and environment details</p>
-                <div class="progress workbook-card-progress mt-2">
-                  <div class="progress-bar" id="workbook-progress-general" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+              <div class="card workbook-entry-card mb-3" role="button" data-toggle="modal" data-target="#workbookGeneralModal">
+                <div class="card-body text-center">
+                  <h5 class="card-title mb-1">General</h5>
+                  <p class="card-text small mb-0">Capture schedule and environment details</p>
+                  <div class="progress workbook-card-progress mt-2">
+                    <div class="progress-bar" id="workbook-progress-general" role="progressbar" style="width: 0%" aria-valuemin="0" aria-valuemax="100"></div>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
-        <div class="offset-2 col-8 mb-3" id="workbook-area-cards"></div>
-        <p class="text-justify offset-2 col-8">
-          Upload the JSON workbook that powers the reporting workflow. Uploading a new workbook will replace the existing file
-          and refresh the dynamic questions on the Data tab.
-        </p>
-        <form id="project-workbook-form" class="offset-2 col-8" method="post"
-              action="{% url 'rolodex:project_workbook' project.id %}"
-              enctype="multipart/form-data">
-          {% csrf_token %}
-          <div class="form-group">
-            <label for="id_workbook_file">{{ workbook_form.workbook_file.label }}</label>
-            {{ workbook_form.workbook_file }}
-          </div>
-          <button type="submit" class="btn btn-primary" data-default-text="Upload Workbook">Upload Workbook</button>
-        </form>
-
-        {% if project.workbook_file %}
-          <div class="alert alert-secondary offset-2 col-8 mt-4">
-            <div class="d-flex justify-content-between align-items-center flex-column flex-md-row">
-              <div>
-                <strong>Current workbook:</strong>
-                <a href="{{ project.workbook_file.url }}" download>{{ project.workbook_file.name|cut:"project_workbooks/"|default_if_none:"workbook.json" }}</a>
+        <div class="row mb-3">
+          <div class="col-12" id="workbook-area-cards"></div>
+        </div>
+        <div class="row justify-content-center">
+          <div class="col-12 col-xl-11">
+            <p class="text-justify">
+              Upload the JSON workbook that powers the reporting workflow. Uploading a new workbook will replace the existing file
+              and refresh the dynamic questions on the Data tab.
+            </p>
+            <form id="project-workbook-form" method="post"
+                  action="{% url 'rolodex:project_workbook' project.id %}"
+                  enctype="multipart/form-data">
+              {% csrf_token %}
+              <div class="form-group">
+                <label for="id_workbook_file">{{ workbook_form.workbook_file.label }}</label>
+                {{ workbook_form.workbook_file }}
               </div>
-              <form method="post" action="{% url 'rolodex:project_workbook' project.id %}">
-                {% csrf_token %}
-                <input type="hidden" name="clear_workbook" value="1"/>
-                <button type="submit" class="btn btn-outline-danger btn-sm">Remove Workbook</button>
-              </form>
-            </div>
-          </div>
-          {% if not workbook_sections %}
-            <div class="alert alert-info offset-2 col-8 mt-4">
-              Workbook uploaded successfully. No preview data is available for this workbook yet.
-            </div>
-          {% endif %}
-        {% else %}
-          <div class="alert alert-warning offset-2 col-8 mt-4">No workbook has been uploaded yet.</div>
-        {% endif %}
+              <button type="submit" class="btn btn-primary" data-default-text="Upload Workbook">Upload Workbook</button>
+            </form>
 
-        {% if workbook_sections %}
-          <div class="offset-2 col-8 mt-4">
-            <h5>Workbook Data</h5>
-          </div>
-          <div class="offset-2 col-8">
-            {% for section in workbook_sections %}
-              <div class="card mb-3">
-                <div class="card-header font-weight-bold">{{ section.title }}</div>
-                <div class="card-body">
-                  {% include "rolodex/includes/workbook_value.html" with node=section.tree %}
+            {% if project.workbook_file %}
+              <div class="alert alert-secondary mt-4">
+                <div class="d-flex justify-content-between align-items-center flex-column flex-md-row">
+                  <div>
+                    <strong>Current workbook:</strong>
+                    <a href="{{ project.workbook_file.url }}" download>{{ project.workbook_file.name|cut:"project_workbooks/"|default_if_none:"workbook.json" }}</a>
+                  </div>
+                  <form method="post" action="{% url 'rolodex:project_workbook' project.id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="clear_workbook" value="1"/>
+                    <button type="submit" class="btn btn-outline-danger btn-sm">Remove Workbook</button>
+                  </form>
                 </div>
               </div>
-            {% endfor %}
+              {% if not workbook_sections %}
+                <div class="alert alert-info mt-4">
+                  Workbook uploaded successfully. No preview data is available for this workbook yet.
+                </div>
+              {% endif %}
+            {% else %}
+              <div class="alert alert-warning mt-4">No workbook has been uploaded yet.</div>
+            {% endif %}
+
+            {% if workbook_sections %}
+              <div class="mt-4">
+                <h5>Workbook Data</h5>
+              </div>
+              <div>
+                {% for section in workbook_sections %}
+                  <div class="card mb-3">
+                    <div class="card-header font-weight-bold">{{ section.title }}</div>
+                    <div class="card-body">
+                      {% include "rolodex/includes/workbook_value.html" with node=section.tree %}
+                    </div>
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
           </div>
-        {% endif %}
+        </div>
         <div id="workbook-area-modals"></div>
         <div class="modal fade" id="workbookGeneralModal" tabindex="-1" role="dialog" aria-labelledby="workbookGeneralLabel"
              aria-hidden="true">
-          <div class="modal-dialog modal-lg" role="document">
+          <div class="modal-dialog modal-xl workbook-modal" role="document">
             <div class="modal-content">
               <div class="modal-header">
                 <h5 class="modal-title" id="workbookGeneralLabel">General Workbook Data</h5>
@@ -237,7 +245,7 @@
 
         <div class="modal fade" id="workbookScoringModal" tabindex="-1" role="dialog" aria-labelledby="workbookScoringLabel"
              aria-hidden="true">
-          <div class="modal-dialog modal-lg" role="document">
+          <div class="modal-dialog modal-xl workbook-modal" role="document">
             <div class="modal-content">
               <div class="modal-header">
                 <h5 class="modal-title" id="workbookScoringLabel">Scoring</h5>
@@ -259,7 +267,7 @@
 
         <div class="modal fade" id="workbookGradesModal" tabindex="-1" role="dialog" aria-labelledby="workbookGradesLabel"
              aria-hidden="true">
-          <div class="modal-dialog modal-lg" role="document">
+          <div class="modal-dialog modal-xl workbook-modal" role="document">
             <div class="modal-content">
               <div class="modal-header">
                 <h5 class="modal-title" id="workbookGradesLabel">Grades</h5>
@@ -1453,7 +1461,7 @@
             modal.setAttribute('aria-labelledby', modalId + '-label');
             modal.setAttribute('aria-hidden', 'true');
             const modalDialog = document.createElement('div');
-            modalDialog.className = 'modal-dialog modal-lg';
+            modalDialog.className = 'modal-dialog modal-xl workbook-modal';
             modalDialog.setAttribute('role', 'document');
             const modalContent = document.createElement('div');
             modalContent.className = 'modal-content';
