@@ -40,7 +40,9 @@ OSINT_FIELDS = {
     "total_leaks",
 }
 
-AREA_FIELDS = {"osint": OSINT_FIELDS}
+DNS_FIELDS = {"records", "unique"}
+
+AREA_FIELDS = {"osint": OSINT_FIELDS, "dns": DNS_FIELDS}
 
 
 def _as_decimal(value: Any) -> Optional[Decimal]:
@@ -107,6 +109,31 @@ def _normalize_general_payload(payload: Optional[Mapping[str, Any]]) -> Dict[str
 def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     normalized: Dict[str, Any] = {}
     allowed_fields = AREA_FIELDS.get(area, set())
+    if area == "dns":
+        normalized_records = []
+        records = payload.get("records") if isinstance(payload, Mapping) else None
+        if isinstance(records, list):
+            for entry in records:
+                if not isinstance(entry, Mapping):
+                    continue
+                domain_value = str(entry.get("domain") or "").strip()
+                if not domain_value:
+                    continue
+                normalized_entry = {
+                    "domain": domain_value,
+                    "total": _as_int(entry.get("total")),
+                }
+                zone_transfer_value = entry.get("zone_transfer")
+                if isinstance(zone_transfer_value, str):
+                    choice = zone_transfer_value.strip().lower()
+                    if choice in {"yes", "no"}:
+                        normalized_entry["zone_transfer"] = choice
+                normalized_records.append(normalized_entry)
+        if "unique" in (payload or {}):
+            normalized_unique = _as_int(payload.get("unique"))
+            normalized["unique"] = normalized_unique
+        normalized["records"] = normalized_records
+        return normalized
     if not allowed_fields or not isinstance(payload, Mapping):
         return normalized
     for field in allowed_fields:
