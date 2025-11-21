@@ -1157,6 +1157,76 @@ class NexposeDataParserTests(TestCase):
         )
         self.assertEqual(complexity_entry["Devices"], "DEVICE-NAME")
 
+    def test_complexity_rule_tables_include_titles_and_rows(self):
+        xml_content = b"""
+<root>
+  <section ref=\"COMPLEXITY\">
+    <section index=\"4.6\" title=\"Disabled Filter Rules Were Configured\" ref=\"COMPLEX.RULES.DISABLE\">
+      <section index=\"4.6.1\" title=\"Overview\" ref=\"COMPLEX.RULES.DISABLE.OVERVIEW\">
+        <text>Overview text about disabled rules.</text>
+      </section>
+      <section index=\"4.6.2\" title=\"OH001L-FW-vsys1 Palo Alto Virtual System\" ref=\"COMPLEX.RULES.DISABLE.10\">
+        <text>ecfirst identified one disabled rule was configured on OH001L-FW-vsys1. The disabled filter rule is detailed in Table 37 below.</text>
+        <table index=\"37\" title=\" Security Policy (The Security Policy hold the rules for allowing or denying access to Services, Applications and Resources) disabled rules\" ref=\"COMPLEX.RULES.DISABLE.10.55\">
+          <headings>
+            <heading>Rule</heading>
+            <heading>Active</heading>
+            <heading>Action</heading>
+            <heading>Source</heading>
+            <heading>Destination</heading>
+            <heading>Service</heading>
+            <heading>UTM Features</heading>
+            <heading>HIP Profiles</heading>
+            <heading>Log</heading>
+            <heading>Comment</heading>
+          </headings>
+          <tablebody>
+            <tablerow>
+              <tablecell><item>Allow-Trusted-to-Legacy</item></tablecell>
+              <tablecell><item>No</item></tablecell>
+              <tablecell><item>Allow</item></tablecell>
+              <tablecell><item>[Zone] ASC DATA</item><item>[Zone] ASC WIFI</item><item>[Zone] Data</item><item>[Zone] GH-WIFI</item><item>[Host] Any</item><item>[User] Any</item></tablecell>
+              <tablecell><item>[Zone] Legacy</item><item>[Host] Any</item></tablecell>
+              <tablecell><item>Any</item></tablecell>
+              <tablecell><item>Anti-Spyware: GH-Spyware</item><item>Anti-Virus: GH_Antivirus_Block_All</item><item>File Blocking: GH_File_Blocking</item><item>URL Filtering: GH_URL_Staff_Restricted</item><item>Vulnerablility Protection: GH_Vulnerability</item><item>Wildfire Analysis: GH_WildFire</item></tablecell>
+              <tablecell></tablecell>
+              <tablecell><item>Log Forwarding - ArcticWolf Syslog</item><item>Log - At Session End</item></tablecell>
+              <tablecell><item></item></tablecell>
+            </tablerow>
+          </tablebody>
+        </table>
+      </section>
+    </section>
+  </section>
+</root>
+        """
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "firewall_xml.xml", xml_content, content_type="application/xml"
+            ),
+            requirement_label="firewall_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+
+        setattr(self.project, "type", "titanium")
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        findings = self.project.data_artifacts.get("firewall_findings")
+        complexity_entry = [row for row in findings if row.get("Type") == "Complexity"][0]
+
+        self.assertIn("below:", complexity_entry["Details"])
+        self.assertIn(
+            "Security Policy (The Security Policy hold the rules for allowing or denying access to Services, Applications and Resources) disabled rules",
+            complexity_entry["Details"],
+        )
+        self.assertIn(
+            "Rule 'Allow-Trusted-to-Legacy'-:- Allow 'Any Service' from '[Zone] ASC DATA; [Zone] ASC WIFI; [Zone] Data; [Zone] GH-WIFI; [Host] Any; [User] Any' to '[Zone] Legacy; [Host] Any'",
+            complexity_entry["Details"],
+        )
+
     def test_firewall_xml_parsed_when_label_missing(self):
         xml_content = b"""
 <root>

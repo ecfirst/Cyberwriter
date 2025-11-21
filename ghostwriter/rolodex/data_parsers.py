@@ -2435,6 +2435,9 @@ def _normalize_nipper_text(value: str) -> str:
             text = text[: -len(trailing)].rstrip() + " below:"
             break
 
+    if re.search(r"in Table\s+\d+\s+below\.?$", text):
+        text = re.sub(r"in Table\s+\d+\s+below\.?$", "below:", text).rstrip()
+
     return _collapse_whitespace(text)
 
 
@@ -2469,7 +2472,7 @@ def _parse_nipper_table(
             if items:
                 item_values = []
                 for item in items:
-                    item_text = _element_text(item)
+                    item_text = _collapse_whitespace(_element_text(item))
                     if item_text:
                         item_values.append(item_text)
                 if item_values:
@@ -2583,9 +2586,19 @@ def _get_nipper_finding(
                     for table_child in list(child)[0]
                 ]
 
+            table_title = _normalize_nipper_text(_get_element_field(child, "title"))
+            if table_title:
+                parts.append(table_title)
+
+            headings_lower = [heading.lower() for heading in headings]
+
             if ref.startswith("FILTER."):
                 parser = _nipper_rules_row
-            elif is_complexity and "filter rules" in (_get_element_field(block, "title") or "").lower():
+            elif is_complexity and (
+                "filter rules" in (_get_element_field(block, "title") or "").lower()
+                or "filter rules" in (table_title or "").lower()
+                or "rule" in headings_lower
+            ):
                 parser = _nipper_rules_row
             elif is_complexity:
                 parser = _nipper_complex_table_row
