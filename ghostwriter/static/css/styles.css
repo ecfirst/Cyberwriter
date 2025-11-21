@@ -3722,6 +3722,10 @@ input[type="color"]:focus,
   padding-right: 0.35rem;
 }
 
+.workbook-score-body {
+  padding: 0.75rem 0.65rem;
+}
+
 .workbook-card-progress {
   height: 0.6rem;
 }
