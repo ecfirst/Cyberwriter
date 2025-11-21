@@ -3708,3 +3708,38 @@ input[type="color"]:focus,
 .dynamic-question-item ul li + li {
   margin-top: 0.35rem;
 }
+
+/* ---------------------------------------------------
+    WORKBOOK MODALS
+----------------------------------------------------- */
+
+.workbook-scoring-grid {
+  row-gap: 0.5rem;
+}
+
+.workbook-score-column {
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+}
+
+.workbook-score-body {
+  padding: 0.75rem 0.65rem;
+}
+
+.workbook-card-progress {
+  height: 0.6rem;
+}
+
+.workbook-card-progress .progress-bar {
+  font-size: 0.65rem;
+  line-height: 0.6rem;
+}
+
+.workbook-score-label {
+  min-width: 18ch;
+  white-space: nowrap;
+}
+
+.workbook-score-input-wrapper {
+  flex: 1 1 auto;
+}

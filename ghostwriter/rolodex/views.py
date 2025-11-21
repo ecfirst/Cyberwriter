@@ -71,6 +71,7 @@ from ghostwriter.rolodex.forms_workbook import (
     ProjectWorkbookForm,
 )
 from ghostwriter.rolodex.models import (
+    PROJECT_SCOPING_CONFIGURATION,
     Client,
     ClientContact,
     ClientInvite,
@@ -88,6 +89,7 @@ from ghostwriter.rolodex.models import (
     ProjectScope,
     ProjectSubTask,
     ProjectTarget,
+    normalize_project_scoping,
 )
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
 from ghostwriter.rolodex.data_parsers import (
@@ -106,8 +108,13 @@ from ghostwriter.rolodex.workbook import (
     normalize_scope_selection,
     prepare_data_responses_initial,
 )
-from ghostwriter.rolodex.workbook_defaults import ensure_data_responses_defaults
+from ghostwriter.rolodex.workbook_defaults import (
+    ensure_data_responses_defaults,
+    normalize_workbook_payload,
+)
+from ghostwriter.rolodex.workbook_entry import build_workbook_entry_payload
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
+from ghostwriter.reporting.models import RiskScoreRangeMapping
 
 # Using __name__ resolves to ghostwriter.rolodex.views
 logger = logging.getLogger(__name__)
@@ -1894,7 +1901,8 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             project_risks=object.risks,
         )
         ctx["workbook_form"] = ProjectWorkbookForm()
-        ctx["workbook_sections"] = build_workbook_sections(object.workbook_data)
+        normalized_workbook = normalize_workbook_payload(object.workbook_data)
+        ctx["workbook_sections"] = build_workbook_sections(normalized_workbook)
         ctx["data_file_form"] = ProjectDataFileForm()
         ctx["data_questions"] = questions
         normalized_responses = prepare_data_responses_initial(
@@ -1906,6 +1914,20 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             initial=normalized_responses,
         )
         ctx["data_responses_form"] = data_responses_form
+        ctx["project_scoping_json"] = normalize_project_scoping(object.scoping)
+        ctx["project_scoping_weights_json"] = {
+            category: {option: float(weight) for option, weight in weights.items()}
+            for category, weights in object.scoping_weights.items()
+        }
+        ctx["project_scoping_config_json"] = {
+            key: {"label": value.get("label"), "options": value.get("options", {})}
+            for key, value in PROJECT_SCOPING_CONFIGURATION.items()
+        }
+        ctx["risk_score_map_json"] = {
+            risk: {"min": float(bounds[0]), "max": float(bounds[1])}
+            for risk, bounds in RiskScoreRangeMapping.get_risk_score_map().items()
+        }
+        ctx["workbook_data_json"] = normalized_workbook
         ctx["data_responses_fields"] = {
             definition["key"]: data_responses_form[definition["key"]]
             for definition in questions
@@ -2154,6 +2176,37 @@ class ProjectWorkbookUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                     "Unable to upload workbook. Please ensure you selected a valid JSON file.",
                 )
         return redirect(self.get_success_url())
+
+
+class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """Handle inline workbook data updates for a project."""
+
+    model = Project
+
+    def test_func(self):
+        return self.get_object().user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        messages.error(self.request, "You do not have permission to modify that project.")
+        return redirect("home:dashboard")
+
+    def post(self, request, *args, **kwargs):
+        project = self.get_object()
+        try:
+            payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+        except json.JSONDecodeError:
+            return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+        workbook_payload = build_workbook_entry_payload(
+            project=project,
+            general=payload.get("general"),
+            scores=payload.get("scores"),
+            grades=payload.get("grades"),
+        )
+
+        project.workbook_data = workbook_payload
+        project.save(update_fields=["workbook_data"])
+        return JsonResponse({"workbook_data": workbook_payload})
 
 
 class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
