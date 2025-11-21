@@ -1109,6 +1109,7 @@
             const col = document.createElement('div');
             col.className = 'col-md-6 form-group';
             const label = document.createElement('label');
+            label.className = 'font-weight-bold';
             label.setAttribute('for', 'workbook-general-' + field.key);
             label.textContent = field.label;
             const input = document.createElement('input');
@@ -1376,6 +1377,7 @@
             const card = document.createElement('div');
             card.className = 'form-group';
             const label = document.createElement('label');
+            label.className = 'font-weight-bold';
             label.setAttribute('for', 'grade-' + categoryKey);
             const categoryConfig = scopingConfig[categoryKey] || {};
             label.textContent = (categoryConfig.label || titleize(categoryKey)) + ' Grade';
@@ -1412,6 +1414,7 @@
           const overallWrapper = document.createElement('div');
           overallWrapper.className = 'form-group';
           const overallLabel = document.createElement('label');
+          overallLabel.className = 'font-weight-bold';
           overallLabel.setAttribute('for', 'grade-overall');
           overallLabel.textContent = 'Overall';
           const overallSelect = document.createElement('select');
