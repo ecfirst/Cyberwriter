@@ -9,7 +9,7 @@ import datetime
 import io
 import json
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 # Django Imports
 from django import forms
@@ -2389,6 +2389,60 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 data_file.file.delete(save=False)
             data_file.delete()
 
+    @classmethod
+    def _sync_dns_cap_map(cls, project: Project, artifacts: Mapping[str, Any]) -> bool:
+        cap_payload = project.cap if isinstance(project.cap, dict) else {}
+        cap_payload = dict(cap_payload)
+
+        dns_cap_section = cap_payload.get("dns")
+        if isinstance(dns_cap_section, dict):
+            dns_cap_section = dict(dns_cap_section)
+        else:
+            dns_cap_section = {}
+
+        dns_cap_map: dict[str, dict[str, dict[str, Any]]] = {}
+        dns_artifacts = artifacts.get("dns_issues") if isinstance(artifacts, Mapping) else None
+        if isinstance(dns_artifacts, list):
+            for artifact_entry in dns_artifacts:
+                if not isinstance(artifact_entry, Mapping):
+                    continue
+                domain_value = artifact_entry.get("domain")
+                domain_text = cls._normalize_domain(domain_value)
+                if not domain_text:
+                    continue
+
+                issues = artifact_entry.get("issues")
+                if not isinstance(issues, list):
+                    continue
+
+                domain_map = dns_cap_map.setdefault(domain_text, {})
+                for issue_entry in issues:
+                    if isinstance(issue_entry, Mapping):
+                        issue_text = (issue_entry.get("issue") or "").strip()
+                        cap_value = issue_entry.get("cap")
+                    else:
+                        issue_text = str(issue_entry or "").strip()
+                        cap_value = ""
+                    if not issue_text:
+                        continue
+                    recommendation_text = "" if cap_value is None else str(cap_value)
+                    domain_map[issue_text] = {"score": 2, "recommendation": recommendation_text}
+
+        if dns_cap_map:
+            dns_cap_section["dns_cap_map"] = dns_cap_map
+        else:
+            dns_cap_section.pop("dns_cap_map", None)
+
+        if dns_cap_section:
+            cap_payload["dns"] = dns_cap_section
+        else:
+            cap_payload.pop("dns", None)
+
+        if cap_payload != project.cap:
+            project.cap = cap_payload
+            return True
+        return False
+
     def _save_dns_report_file(
         self, project: Project, domain: str, raw_bytes: Optional[bytes], upload_name: str
     ) -> None:
@@ -2497,9 +2551,14 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 artifacts = dict(artifacts)
                 if rows is not None:
                     artifacts["osint"] = rows
+                cap_changed = self._sync_dns_cap_map(project, artifacts)
+
                 project.workbook_data = workbook_payload
                 project.data_artifacts = artifacts
-                project.save(update_fields=["workbook_data", "data_artifacts"])
+                update_fields = ["workbook_data", "data_artifacts"]
+                if cap_changed:
+                    update_fields.append("cap")
+                project.save(update_fields=update_fields)
                 return JsonResponse(
                     {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
                 )
@@ -2572,9 +2631,14 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 artifacts = self._prune_dns_artifacts(artifacts, dns_records)
                 self._prune_dns_data_files(project, dns_records)
 
+                cap_changed = self._sync_dns_cap_map(project, artifacts)
+
                 project.workbook_data = workbook_payload
                 project.data_artifacts = artifacts
-                project.save(update_fields=["workbook_data", "data_artifacts"])
+                update_fields = ["workbook_data", "data_artifacts"]
+                if cap_changed:
+                    update_fields.append("cap")
+                project.save(update_fields=update_fields)
                 return JsonResponse(
                     {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
                 )
@@ -2699,10 +2763,14 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             artifacts_changed = True
 
         project.workbook_data = workbook_payload
+        cap_changed = False
         if artifacts_changed:
             project.data_artifacts = artifacts
+            cap_changed = self._sync_dns_cap_map(project, artifacts)
         project.save(
-            update_fields=["workbook_data"] + (["data_artifacts"] if artifacts_changed else [])
+            update_fields=["workbook_data"]
+            + (["data_artifacts"] if artifacts_changed else [])
+            + (["cap"] if cap_changed else [])
         )
         return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts})
 
