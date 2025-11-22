@@ -2154,13 +2154,14 @@
             if (data && data.data_artifacts) {
               Object.assign(dataArtifactsState, data.data_artifacts);
             }
+            if (typeof onSuccess === 'function') {
+              onSuccess();
+            }
             renderGeneralFields();
             renderScoringGroups();
             renderGradeFields();
             renderAreaCards();
-            if (typeof onSuccess === 'function') {
-              onSuccess();
-            }
+            cleanupModalBackdrops();
           }).catch(function(error) {
             console.error(error);
             alert('Unable to save workbook data.');
