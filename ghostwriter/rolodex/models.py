@@ -1422,6 +1422,84 @@ class Project(models.Model):
             existing_responses["dns"] = dns_section
             dns_section_created = True
 
+        def _merge_soa_fields_from_artifacts(section: Dict[str, Any]) -> None:
+            artifact_entries = artifacts.get("dns_issues")
+            if not isinstance(artifact_entries, list):
+                return
+
+            detected_fields: Dict[str, List[str]] = {}
+            target_issue = "One or more SOA fields are outside recommended ranges"
+
+            for artifact_entry in artifact_entries:
+                if not isinstance(artifact_entry, dict):
+                    continue
+
+                domain_value = artifact_entry.get("domain")
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if not domain_text:
+                    continue
+
+                combined_fields: List[str] = []
+                for field in artifact_entry.get("soa_fields", []) or []:
+                    if field and field not in combined_fields:
+                        combined_fields.append(field)
+
+                issues = artifact_entry.get("issues")
+                if isinstance(issues, list):
+                    for issue in issues:
+                        if not isinstance(issue, dict):
+                            continue
+                        if (issue.get("issue") or "") != target_issue:
+                            continue
+                        for field in issue.get("soa_fields", []) or []:
+                            if field and field not in combined_fields:
+                                combined_fields.append(field)
+
+                if combined_fields:
+                    detected_fields[domain_text] = combined_fields
+
+            if not detected_fields:
+                return
+
+            entries = section.get("entries")
+            if isinstance(entries, list):
+                normalized_entries = list(entries)
+            else:
+                normalized_entries = []
+
+            entry_lookup: Dict[str, Dict[str, Any]] = {}
+            for entry in normalized_entries:
+                if not isinstance(entry, dict):
+                    continue
+                domain_value = entry.get("domain") or entry.get("name")
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if domain_text:
+                    entry_lookup[domain_text.lower()] = entry
+
+            changed = False
+            for domain, fields in detected_fields.items():
+                normalized = domain.lower()
+                entry = entry_lookup.get(normalized)
+                if entry is None:
+                    entry = {"domain": domain}
+                    normalized_entries.append(entry)
+                    entry_lookup[normalized] = entry
+                    changed = True
+                elif not entry.get("domain"):
+                    entry["domain"] = domain
+                existing_fields = entry.setdefault("soa_fields", [])
+                for field in fields:
+                    if field not in existing_fields:
+                        existing_fields.append(field)
+                        changed = True
+
+            if changed or normalized_entries:
+                section["entries"] = [
+                    entry for entry in normalized_entries if isinstance(entry, dict)
+                ]
+
+        _merge_soa_fields_from_artifacts(dns_section)
+
         domain_soa_cap_map: Dict[str, Dict[str, str]] = {}
 
         if isinstance(dns_section, dict):

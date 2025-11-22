@@ -2952,6 +2952,8 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     )
 
     issues: List[Dict[str, str]] = []
+    target_issue = "One or more SOA fields are outside recommended ranges"
+
     for row in _decode_file(file_obj):
         status = (row.get("Status") or row.get("status") or "").strip().upper()
         if status != "FAIL":
@@ -2959,22 +2961,44 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
         info = (row.get("Info") or row.get("info") or "").strip()
         if not info:
             continue
-        issue_text = info.splitlines()[0].strip()
+
+        info_lines = [line.strip() for line in info.splitlines()]
+        while info_lines and not info_lines[0]:
+            info_lines.pop(0)
+
+        if not info_lines:
+            continue
+
+        issue_text = info_lines[0]
         if not issue_text:
             continue
+
+        soa_fields: List[str] = []
+        if issue_text == target_issue:
+            for line in info_lines[1:]:
+                if not line:
+                    continue
+                field_name = line.split(" |", 1)[0].strip()
+                if field_name and field_name not in soa_fields:
+                    soa_fields.append(field_name)
+
         finding = finding_map.get(issue_text, "")
         recommendation = recommendation_map.get(issue_text, "")
         cap = cap_map.get(issue_text, "")
         impact = DNS_IMPACT_MAP.get(issue_text, "")
-        issues.append(
-            {
-                "issue": issue_text,
-                "finding": finding,
-                "recommendation": recommendation,
-                "cap": cap,
-                "impact": impact,
-            }
-        )
+
+        issue_entry: Dict[str, str] = {
+            "issue": issue_text,
+            "finding": finding,
+            "recommendation": recommendation,
+            "cap": cap,
+            "impact": impact,
+        }
+
+        if soa_fields:
+            issue_entry["soa_fields"] = soa_fields
+
+        issues.append(issue_entry)
     return issues
 
 
@@ -5197,10 +5221,21 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     break
 
     if dns_results:
-        artifacts["dns_issues"] = [
-            {"domain": domain, "issues": issues}
-            for domain, issues in dns_results.items()
-        ]
+        artifacts["dns_issues"] = []
+        for domain, issues in dns_results.items():
+            entry: Dict[str, Any] = {"domain": domain, "issues": issues}
+            soa_fields: List[str] = []
+            for issue in issues:
+                if not isinstance(issue, dict):
+                    continue
+                if (issue.get("issue") or "") != "One or more SOA fields are outside recommended ranges":
+                    continue
+                for field in issue.get("soa_fields", []) or []:
+                    if field and field not in soa_fields:
+                        soa_fields.append(field)
+            if soa_fields:
+                entry["soa_fields"] = soa_fields
+            artifacts["dns_issues"].append(entry)
 
     web_summary = _build_web_summary_from_findings(
         parsed_web_findings, web_issue_matrix

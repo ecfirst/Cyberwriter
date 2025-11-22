@@ -2259,6 +2259,69 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(dns_cap, dict)
         self.assertEqual(dns_cap.get("soa_field_cap_map"), expected_override)
 
+    def test_dns_soa_fields_populated_from_artifacts(self):
+        info_value = (
+            "One or more SOA fields are outside recommended ranges\n\n"
+            "expire | 604800 | 'expire' should be a value between 1209600 to 2419200\n"
+            "refresh | 120 | 'refresh' should be a value between 1200 and 43200"
+        )
+
+        upload = SimpleUploadedFile(
+            "dns_report.csv",
+            f"Status,Info\nFAIL,\"{info_value}\"\n".encode("utf-8"),
+            content_type="text/csv",
+        )
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=upload,
+            requirement_label="dns_report.csv",
+            requirement_context="fields.example",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=data_file.pk).delete())
+
+        self.project.data_responses = {}
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["data_responses", "workbook_data"])
+
+        self.project.rebuild_data_artifacts()
+        self.project.refresh_from_db()
+
+        dns_artifacts = self.project.data_artifacts.get("dns_issues")
+        self.assertIsInstance(dns_artifacts, list)
+        self.assertEqual(len(dns_artifacts), 1)
+        self.assertEqual(
+            dns_artifacts[0].get("soa_fields"),
+            ["expire", "refresh"],
+        )
+
+        dns_responses = self.project.data_responses.get("dns")
+        self.assertIsInstance(dns_responses, dict)
+        entries = dns_responses.get("entries")
+        self.assertIsInstance(entries, list)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(
+            entries[0].get("soa_fields"),
+            ["expire", "refresh"],
+        )
+
+        dns_cap_map = dns_responses.get("dns_cap_map")
+        self.assertIsInstance(dns_cap_map, dict)
+        expected_cap = (
+            "expire - Update to a value between 1209600 to 2419200\n"
+            "refresh - Update to a value between 1200 and 43200 seconds"
+        )
+        self.assertEqual(
+            dns_cap_map,
+            {
+                "fields.example": {
+                    "One or more SOA fields are outside recommended ranges": {
+                        "score": 2,
+                        "recommendation": expected_cap,
+                    }
+                }
+            },
+        )
+
     def test_dns_cap_map_populated_from_artifacts(self):
         csv_lines = [
             "Status,Info",
@@ -3228,6 +3291,28 @@ class DNSDataParserTests(TestCase):
                 "cap": "custom cap language",
                 "impact": "",
             },
+        )
+
+    def test_parse_dns_report_extracts_soa_fields_from_info(self):
+        info_value = (
+            "One or more SOA fields are outside recommended ranges\n\n"
+            "expire | 604800 | 'expire' should be a value between 1209600 to 2419200\n"
+            "minimum | 100 | 'minimum' should be a value greater than 300"
+        )
+
+        upload = SimpleUploadedFile(
+            "dns_report.csv",
+            f"Status,Info\nFAIL,\"{info_value}\"\n".encode("utf-8"),
+            content_type="text/csv",
+        )
+
+        issues = parse_dns_report(upload)
+
+        self.assertEqual(len(issues), 1)
+        parsed_issue = issues[0]
+        self.assertEqual(
+            parsed_issue.get("soa_fields"),
+            ["expire", "minimum"],
         )
 
     def test_load_general_cap_map_prefers_database(self):
