@@ -99,6 +99,7 @@ from ghostwriter.rolodex.data_parsers import (
     normalize_nexpose_artifacts_map,
     load_dns_soa_cap_map,
     parse_dns_report,
+    build_workbook_dns_response,
     resolve_nexpose_requirement_artifact_key,
     summarize_nexpose_matrix_gaps,
     summarize_web_issue_matrix_gaps,
@@ -2240,7 +2241,29 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         return rows, metrics, None
 
     @staticmethod
+    def _extract_soa_field_details(info_text: str) -> list[dict[str, str]]:
+        details: list[dict[str, str]] = []
+        if not info_text:
+            return details
+
+        lines = [line.strip() for line in info_text.splitlines() if line and line.strip()]
+        if not lines:
+            return details
+
+        for line in lines[1:]:
+            segments = [segment.strip() for segment in line.split("|")]
+            if len(segments) < 2:
+                continue
+            field_name = segments[0]
+            field_value = segments[1] if len(segments) > 1 else ""
+            if field_name:
+                details.append({"field": field_name, "value": field_value})
+
+        return details
+
+    @classmethod
     def _parse_dns_csv(
+        cls,
         upload,
     ) -> tuple[
         Optional[list[dict[str, str]]],
@@ -2248,20 +2271,22 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         Optional[set[str]],
         Optional[str],
         Optional[bytes],
+        list[dict[str, str]],
     ]:
         try:
             raw_bytes = upload.read()
             content = raw_bytes.decode("utf-8-sig")
         except Exception:
-            return None, None, None, "Unable to read the uploaded DNS CSV file.", None
+            return None, None, None, "Unable to read the uploaded DNS CSV file.", None, []
 
         reader = csv.DictReader(io.StringIO(content))
         if not reader.fieldnames:
-            return None, None, None, "DNS CSV is missing headers.", raw_bytes
+            return None, None, None, "DNS CSV is missing headers.", raw_bytes, []
 
         rows: list[dict[str, str]] = []
         fail_count = 0
         unique_fail_tests: set[str] = set()
+        soa_details: list[dict[str, str]] = []
         headers = [header.strip() for header in reader.fieldnames]
         for row in reader:
             normalized_row: dict[str, str] = {}
@@ -2275,7 +2300,15 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 if test_value:
                     unique_fail_tests.add(test_value.strip())
 
-        return rows, fail_count, unique_fail_tests, None, raw_bytes
+                normalized_test = (test_value or "").strip().lower()
+                if normalized_test == "soa field check":
+                    detail_rows = cls._extract_soa_field_details(
+                        normalized_row.get("Info") or normalized_row.get("info") or ""
+                    )
+                    if detail_rows:
+                        soa_details.extend(detail_rows)
+
+        return rows, fail_count, unique_fail_tests, None, raw_bytes, soa_details
 
     @staticmethod
     def _parse_dns_xml(
@@ -2391,6 +2424,169 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             data_file.delete()
 
     @classmethod
+    def _collect_soa_field_map(
+        cls, workbook_data: Optional[Mapping[str, Any]], override_map: Optional[Mapping[str, Any]] = None
+    ) -> dict[str, dict[str, Any]]:
+        field_map: dict[str, dict[str, Any]] = {}
+        if isinstance(workbook_data, Mapping):
+            dns_section = workbook_data.get("dns")
+            if isinstance(dns_section, Mapping):
+                records = dns_section.get("records")
+                if isinstance(records, list):
+                    for record in records:
+                        if not isinstance(record, Mapping):
+                            continue
+                        domain_text = cls._normalize_domain(record.get("domain"))
+                        if not domain_text:
+                            continue
+                        fields = record.get("soa_fields")
+                        if isinstance(fields, list):
+                            field_map.setdefault(domain_text, {})["fields"] = list(fields)
+                        values = record.get("soa_field_values")
+                        if isinstance(values, Mapping):
+                            field_map.setdefault(domain_text, {})["values"] = dict(values)
+
+        if isinstance(override_map, Mapping):
+            for domain, details in override_map.items():
+                domain_text = cls._normalize_domain(domain)
+                if not domain_text or not isinstance(details, Mapping):
+                    continue
+                normalized_details: dict[str, Any] = {}
+                raw_fields = details.get("fields")
+                if isinstance(raw_fields, list):
+                    normalized_details["fields"] = list(raw_fields)
+                raw_values = details.get("values")
+                if isinstance(raw_values, Mapping):
+                    normalized_details["values"] = dict(raw_values)
+                field_map[domain_text] = normalized_details
+
+        return field_map
+
+    @classmethod
+    def _sync_dns_responses(
+        cls,
+        project: Project,
+        workbook_data: Optional[Mapping[str, Any]],
+        *,
+        soa_field_map: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
+        responses = (
+            ensure_data_responses_defaults(project.data_responses)
+            if isinstance(project.data_responses, Mapping)
+            else ensure_data_responses_defaults({})
+        )
+
+        dns_responses = responses.get("dns")
+        if isinstance(dns_responses, Mapping):
+            dns_responses = dict(dns_responses)
+        else:
+            dns_responses = {}
+
+        dns_section = workbook_data.get("dns") if isinstance(workbook_data, Mapping) else {}
+        dns_records = dns_section.get("records") if isinstance(dns_section, Mapping) else []
+        valid_domains = cls._collect_valid_dns_domains(dns_records if isinstance(dns_records, list) else [])
+
+        merged_field_map = cls._collect_soa_field_map(workbook_data, soa_field_map)
+
+        entries: list[dict[str, Any]] = []
+
+        for domain, details in merged_field_map.items():
+            domain_text = cls._normalize_domain(domain)
+            if not domain_text:
+                continue
+
+            if valid_domains and domain_text.lower() not in valid_domains:
+                continue
+
+            fields = details.get("fields") if isinstance(details, Mapping) else None
+            values = details.get("values") if isinstance(details, Mapping) else None
+            normalized_fields: list[str] = []
+            if isinstance(fields, list):
+                for field in fields:
+                    if field is None:
+                        continue
+                    field_text = str(field).strip()
+                    if not field_text or field_text in normalized_fields:
+                        continue
+                    normalized_fields.append(field_text)
+
+            normalized_values: dict[str, str] = {}
+            if isinstance(values, Mapping):
+                for field_name, field_value in values.items():
+                    if field_name is None:
+                        continue
+                    key_text = str(field_name).strip()
+                    if not key_text:
+                        continue
+                    value_text = "" if field_value is None else str(field_value).strip()
+                    if value_text:
+                        normalized_values[key_text] = value_text
+
+            if not normalized_fields and not normalized_values:
+                continue
+
+            entry: dict[str, Any] = {"domain": domain_text}
+            if normalized_fields:
+                entry["soa_fields"] = normalized_fields
+            else:
+                entry.pop("soa_fields", None)
+            if normalized_values:
+                entry["soa_field_values"] = normalized_values
+            else:
+                entry.pop("soa_field_values", None)
+
+        dns_responses["entries"] = entries
+
+        unique_fields: list[str] = []
+        domain_field_cap_map: dict[str, dict[str, str]] = {}
+        cap_map = load_dns_soa_cap_map()
+
+        for entry in entries:
+            domain_text = cls._normalize_domain(entry.get("domain"))
+            if not domain_text:
+                continue
+            fields = entry.get("soa_fields")
+            if not isinstance(fields, list):
+                continue
+            normalized_entry_fields: list[str] = []
+            for field in fields:
+                if field is None:
+                    continue
+                field_text = str(field).strip()
+                if not field_text or field_text in normalized_entry_fields:
+                    continue
+                normalized_entry_fields.append(field_text)
+                if field_text not in unique_fields:
+                    unique_fields.append(field_text)
+            if normalized_entry_fields:
+                domain_field_cap_map[domain_text] = {
+                    field: cap_map.get(field, "") for field in normalized_entry_fields
+                }
+
+        if unique_fields:
+            dns_responses["unique_soa_fields"] = unique_fields
+        else:
+            dns_responses.pop("unique_soa_fields", None)
+
+        if domain_field_cap_map:
+            dns_responses["soa_field_cap_map"] = domain_field_cap_map
+        else:
+            dns_responses.pop("soa_field_cap_map", None)
+
+        workbook_dns_response = build_workbook_dns_response(workbook_data)
+        if "zone_trans" in workbook_dns_response:
+            dns_responses["zone_trans"] = workbook_dns_response.get("zone_trans")
+        else:
+            dns_responses.pop("zone_trans", None)
+
+        responses["dns"] = dns_responses
+
+        if responses != project.data_responses:
+            project.data_responses = responses
+            return True
+        return False
+
+    @classmethod
     def _build_domain_soa_cap_map(
         cls, project: Project, workbook_data: Optional[Mapping[str, Any]]
     ) -> dict[str, dict[str, str]]:
@@ -2430,6 +2626,28 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                     if not field_text:
                         continue
                     domain_entry[field_text] = cap_map.get(field_text, "")
+
+        if isinstance(dns_section, Mapping):
+            records = dns_section.get("records")
+            if isinstance(records, list):
+                for record in records:
+                    if not isinstance(record, Mapping):
+                        continue
+                    domain_value = record.get("domain")
+                    domain_text = cls._normalize_domain(domain_value)
+                    if not domain_text:
+                        continue
+                    fields = record.get("soa_fields")
+                    if not isinstance(fields, list):
+                        continue
+                    domain_entry = domain_soa_cap_map.setdefault(domain_text, {})
+                    for field in fields:
+                        if field is None:
+                            continue
+                        field_text = str(field).strip()
+                        if not field_text:
+                            continue
+                        domain_entry[field_text] = cap_map.get(field_text, "")
 
         soa_cap_map_section = (
             dns_section.get("soa_field_cap_map") if isinstance(dns_section, Mapping) else None
@@ -2650,9 +2868,14 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                         status=400,
                     )
 
-                rows, fail_count, _unique_fail_tests, error_message, raw_bytes = (
-                    self._parse_dns_csv(dns_csv_upload)
-                )
+                (
+                    rows,
+                    fail_count,
+                    _unique_fail_tests,
+                    error_message,
+                    raw_bytes,
+                    soa_field_details,
+                ) = self._parse_dns_csv(dns_csv_upload)
                 if error_message:
                     return JsonResponse({"error": error_message}, status=400)
                 upload_name = getattr(dns_csv_upload, "name", "dns_report.csv")
@@ -2665,6 +2888,27 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 dns_entry = self._upsert_dns_artifact_entry(dns_records, domain)
                 dns_entry["domain"] = domain
                 dns_entry["total"] = fail_count
+                soa_field_names = []
+                soa_field_values: dict[str, str] = {}
+                for detail in soa_field_details:
+                    field_name = (detail.get("field") or "").strip()
+                    if not field_name:
+                        continue
+                    if field_name not in soa_field_names:
+                        soa_field_names.append(field_name)
+                    value_text = (detail.get("value") or "").strip()
+                    if value_text:
+                        soa_field_values[field_name] = value_text
+
+                if soa_field_names:
+                    dns_entry["soa_fields"] = soa_field_names
+                    if soa_field_values:
+                        dns_entry["soa_field_values"] = soa_field_values
+                    else:
+                        dns_entry.pop("soa_field_values", None)
+                else:
+                    dns_entry.pop("soa_fields", None)
+                    dns_entry.pop("soa_field_values", None)
                 dns_section["records"] = dns_records
 
                 artifacts = (
@@ -2710,6 +2954,17 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 artifacts = self._prune_dns_artifacts(artifacts, dns_records)
                 self._prune_dns_data_files(project, dns_records)
 
+                dns_response_changed = self._sync_dns_responses(
+                    project,
+                    workbook_payload,
+                    soa_field_map={
+                        domain: {
+                            "fields": soa_field_names,
+                            "values": soa_field_values,
+                        }
+                    },
+                )
+
                 cap_changed = self._sync_dns_cap_map(
                     project, artifacts, workbook_data=workbook_payload
                 )
@@ -2717,6 +2972,8 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.workbook_data = workbook_payload
                 project.data_artifacts = artifacts
                 update_fields = ["workbook_data", "data_artifacts"]
+                if dns_response_changed:
+                    update_fields.append("data_responses")
                 if cap_changed:
                     update_fields.append("cap")
                 project.save(update_fields=update_fields)
@@ -2786,6 +3043,10 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 artifacts = self._prune_dns_artifacts(artifacts, dns_records)
                 self._prune_dns_data_files(project, dns_records)
 
+                dns_response_changed = self._sync_dns_responses(
+                    project, workbook_payload
+                )
+
                 cap_changed = self._sync_dns_cap_map(
                     project, artifacts, workbook_data=workbook_payload
                 )
@@ -2793,6 +3054,8 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.workbook_data = workbook_payload
                 project.data_artifacts = artifacts
                 update_fields = ["workbook_data", "data_artifacts"]
+                if dns_response_changed:
+                    update_fields.append("data_responses")
                 if cap_changed:
                     update_fields.append("cap")
                 project.save(update_fields=update_fields)
@@ -2851,6 +3114,11 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             artifacts_changed = True
 
         project.workbook_data = workbook_payload
+        dns_response_changed = False
+        if artifacts_changed:
+            dns_response_changed = self._sync_dns_responses(
+                project, workbook_payload
+            )
         cap_changed = False
         if artifacts_changed:
             project.data_artifacts = artifacts
@@ -2860,6 +3128,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.save(
             update_fields=["workbook_data"]
             + (["data_artifacts"] if artifacts_changed else [])
+            + (["data_responses"] if dns_response_changed else [])
             + (["cap"] if cap_changed else [])
         )
         return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts})
