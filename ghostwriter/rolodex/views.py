@@ -2289,23 +2289,40 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         except ElementTree.ParseError:
             return None, None, "Invalid DNS XML provided."
 
-        records_element = root.find("records")
+        records_element = root.find("records") if root.tag != "records" else root
         if records_element is None:
             return None, None, "DNS XML is missing a <records> element."
 
         domain_element = records_element.find("domain")
         domain_name = ""
         if domain_element is not None:
-            domain_name = (domain_element.findtext("domain_name") or "").strip()
+            domain_name = (
+                domain_element.get("domain_name")
+                or domain_element.findtext("domain_name")
+                or ""
+            ).strip()
 
         record_elements = list(records_element.findall("record"))
         parsed_records: list[dict[str, str]] = []
         for record in record_elements:
             entry: dict[str, str] = {}
+
+            for attr, value in record.attrib.items():
+                if value:
+                    entry[attr] = value.strip()
+
             for child in list(record):
-                entry[child.tag] = (child.text or "").strip()
+                if child.text:
+                    entry[child.tag] = child.text.strip()
+                for attr, value in child.attrib.items():
+                    if value:
+                        entry[attr] = value.strip()
+
             if entry:
                 parsed_records.append(entry)
+
+        if not domain_name and parsed_records:
+            domain_name = parsed_records[0].get("domain", "").strip()
 
         return domain_name, parsed_records, None
 
