@@ -1346,9 +1346,17 @@
 
         const getAreaSubkeys = function(areaKey) {
           const scope = scopingState[areaKey] || {};
-          return Object.keys(scope).filter(function(optionKey) {
+          const selectedSubkeys = Object.keys(scope).filter(function(optionKey) {
             return optionKey !== 'selected' && optionIsSelected(areaKey, optionKey);
           });
+          if (areaKey === 'external') {
+            const dnsState = workbookState.dns || {};
+            const hasDnsData = Boolean((dnsState.records && dnsState.records.length) || dnsState.unique !== undefined);
+            if (hasDnsData && selectedSubkeys.indexOf('dns') === -1) {
+              selectedSubkeys.push('dns');
+            }
+          }
+          return selectedSubkeys;
         };
 
         const saveAreaData = function(areaKey, subkeys, modalId) {
