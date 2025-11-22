@@ -9,6 +9,7 @@ import datetime
 import io
 import json
 import logging
+import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Set
 
 # Django Imports
@@ -95,7 +96,10 @@ from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFAC
 from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_METRICS_KEY_MAP,
     NEXPOSE_METRICS_LABELS,
+    build_workbook_dns_response,
+    load_dns_soa_cap_map,
     normalize_nexpose_artifacts_map,
+    parse_dns_report,
     resolve_nexpose_requirement_artifact_key,
     summarize_nexpose_matrix_gaps,
     summarize_web_issue_matrix_gaps,
@@ -2235,6 +2239,274 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         }
         return rows, metrics, None
 
+    @staticmethod
+    def _parse_dns_csv(
+        upload,
+    ) -> tuple[Optional[list[dict[str, str]]], Optional[int], Optional[set[str]], Optional[str], Optional[str]]:
+        try:
+            content = upload.read().decode("utf-8-sig")
+        except Exception:
+            return None, None, None, None, "Unable to read the uploaded CSV file."
+
+        reader = csv.DictReader(io.StringIO(content))
+        if not reader.fieldnames:
+            return None, None, None, None, "The uploaded CSV is missing headers."
+
+        rows: list[dict[str, str]] = []
+        fail_tests: set[str] = set()
+        fail_count = 0
+        for row in reader:
+            normalized_row = {key: (value or "").strip() for key, value in row.items()}
+            rows.append(normalized_row)
+            status = (row.get("Status") or row.get("status") or "").strip().upper()
+            if status == "FAIL":
+                fail_count += 1
+                test_name = (row.get("Test") or row.get("test") or "").strip()
+                if test_name:
+                    fail_tests.add(test_name)
+
+        return rows, fail_count, fail_tests, content, None
+
+    @staticmethod
+    def _parse_dns_xml(upload) -> tuple[Optional[str], Optional[dict[str, Any]], Optional[str]]:
+        try:
+            content = upload.read().decode("utf-8-sig")
+        except Exception:
+            return None, None, "Unable to read the uploaded XML file."
+
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            return None, None, "The uploaded XML file is not valid XML."
+
+        domain_name: Optional[str] = None
+        for domain_node in root.findall("domain"):
+            candidate = (domain_node.attrib.get("domain_name") or "").strip()
+            if candidate:
+                domain_name = candidate
+                break
+
+        zone_transfer = "No"
+        for record in root.findall("record"):
+            zone_value = (record.attrib.get("zone_transfer") or "").strip().lower()
+            if zone_value and zone_value != "failed":
+                zone_transfer = "Yes"
+                break
+
+        record_entries: list[dict[str, str]] = []
+        for record in root.findall("record"):
+            record_entries.append({key: value for key, value in record.attrib.items()})
+
+        artifacts = {"records": record_entries, "zone_transfer": zone_transfer}
+        return domain_name, artifacts, None
+
+    @staticmethod
+    def _update_dns_sections(project: Project, workbook_payload: Dict[str, Any], artifacts: Dict[str, Any]) -> None:
+        existing_responses = dict(project.data_responses or {})
+        existing_cap = dict(project.cap or {})
+
+        workbook_dns_response = build_workbook_dns_response(workbook_payload)
+        if workbook_dns_response:
+            existing_dns_section = existing_responses.get("dns")
+            if isinstance(existing_dns_section, dict):
+                combined_dns_section = dict(existing_dns_section)
+            elif isinstance(existing_dns_section, list):
+                combined_dns_section = {"entries": list(existing_dns_section)}
+            else:
+                combined_dns_section = {}
+
+            combined_dns_section.update(workbook_dns_response)
+            existing_responses["dns"] = combined_dns_section
+
+        def _collect_domain_soa_fields(entries: Any) -> Dict[str, List[str]]:
+            domain_fields: Dict[str, List[str]] = {}
+            if not isinstance(entries, list):
+                return domain_fields
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                fields = entry.get("soa_fields")
+                if not isinstance(fields, list):
+                    continue
+                domain_value = (
+                    entry.get("domain")
+                    or entry.get("name")
+                    or entry.get("zone")
+                    or entry.get("fqdn")
+                )
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if not domain_text:
+                    continue
+
+                domain_entry = domain_fields.setdefault(domain_text, [])
+                seen_fields = set(domain_entry)
+                for field in fields:
+                    if field is None:
+                        continue
+                    text = str(field).strip()
+                    if not text or text in seen_fields:
+                        continue
+                    seen_fields.add(text)
+                    domain_entry.append(text)
+            return domain_fields
+
+        dns_section_created = False
+        dns_section = existing_responses.get("dns")
+        if isinstance(dns_section, dict):
+            pass
+        elif isinstance(dns_section, list):
+            dns_section = {"entries": list(dns_section)}
+            existing_responses["dns"] = dns_section
+        else:
+            dns_section = {}
+            existing_responses["dns"] = dns_section
+            dns_section_created = True
+
+        def _merge_soa_fields_from_artifacts(section: Dict[str, Any]) -> None:
+            artifact_entries = artifacts.get("dns_issues")
+            if not isinstance(artifact_entries, list):
+                return
+
+            detected_fields: Dict[str, List[str]] = {}
+            target_issue = "One or more SOA fields are outside recommended ranges"
+
+            for artifact_entry in artifact_entries:
+                if not isinstance(artifact_entry, dict):
+                    continue
+
+                domain_value = artifact_entry.get("domain")
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if not domain_text:
+                    continue
+
+                combined_fields: List[str] = []
+                for field in artifact_entry.get("soa_fields", []) or []:
+                    if field and field not in combined_fields:
+                        combined_fields.append(field)
+
+                for issue in artifact_entry.get("issues", []) or []:
+                    if not isinstance(issue, dict):
+                        continue
+                    if (issue.get("issue") or "") != target_issue:
+                        continue
+                    for field in issue.get("soa_fields", []) or []:
+                        if field and field not in combined_fields:
+                            combined_fields.append(field)
+
+                if combined_fields:
+                    detected_fields[domain_text] = combined_fields
+
+            artifact_fields = _collect_domain_soa_fields(section.get("entries"))
+            artifact_fields.update(detected_fields)
+
+            unique_fields: List[str] = []
+            for entry_fields in artifact_fields.values():
+                for field in entry_fields:
+                    if field not in unique_fields:
+                        unique_fields.append(field)
+
+            if artifact_fields:
+                if unique_fields:
+                    section["unique_soa_fields"] = unique_fields
+                else:
+                    section.pop("unique_soa_fields", None)
+
+        _merge_soa_fields_from_artifacts(dns_section)
+
+        if isinstance(dns_section, dict):
+            entries = dns_section.get("entries")
+            if isinstance(entries, list):
+                domain_fields = _collect_domain_soa_fields(entries)
+                if domain_fields:
+                    cap_map = load_dns_soa_cap_map()
+                    domain_soa_cap_map: Dict[str, Dict[str, str]] = {}
+                    for domain, fields in domain_fields.items():
+                        domain_caps: Dict[str, str] = {}
+                        for field in fields:
+                            cap_value = cap_map.get(field)
+                            if cap_value:
+                                domain_caps[field] = cap_value
+                        if domain_caps:
+                            domain_soa_cap_map[domain] = domain_caps
+                    if domain_soa_cap_map:
+                        dns_section["soa_field_cap_map"] = domain_soa_cap_map
+                    else:
+                        dns_section.pop("soa_field_cap_map", None)
+                else:
+                    dns_section.pop("unique_soa_fields", None)
+                    dns_section.pop("soa_field_cap_map", None)
+            else:
+                dns_section.pop("unique_soa_fields", None)
+                dns_section.pop("soa_field_cap_map", None)
+
+        dns_artifact_entries = artifacts.get("dns_issues")
+        dns_cap_map: Dict[str, Dict[str, str]] = {}
+        if isinstance(dns_artifact_entries, list):
+            for artifact_entry in dns_artifact_entries:
+                if not isinstance(artifact_entry, dict):
+                    continue
+                domain_value = artifact_entry.get("domain")
+                domain_text = str(domain_value).strip() if domain_value else ""
+                if not domain_text:
+                    continue
+                cap_entries = artifact_entry.get("issues")
+                if not isinstance(cap_entries, list):
+                    continue
+                domain_map = dns_cap_map.setdefault(domain_text, {})
+                for cap_entry in cap_entries:
+                    if not isinstance(cap_entry, dict):
+                        continue
+                    cap_value = cap_entry.get("cap")
+                    if cap_value in (None, ""):
+                        continue
+                    issue_value = cap_entry.get("issue")
+                    if issue_value in (None, ""):
+                        continue
+                    domain_map[str(issue_value)] = str(cap_value)
+
+        if dns_cap_map:
+            dns_section["dns_cap_map"] = dns_cap_map
+        else:
+            dns_section.pop("dns_cap_map", None)
+
+        dns_cap_section = existing_cap.get("dns")
+        if isinstance(dns_cap_section, dict):
+            dns_cap_section = dict(dns_cap_section)
+        else:
+            dns_cap_section = {}
+
+        soa_cap_map = dns_section.get("soa_field_cap_map")
+        if isinstance(soa_cap_map, dict) and soa_cap_map:
+            dns_cap_section["soa_field_cap_map"] = {
+                domain: mapping for domain, mapping in soa_cap_map.items() if mapping
+            }
+        else:
+            dns_cap_section.pop("soa_field_cap_map", None)
+
+        dns_cap_values = dns_section.get("dns_cap_map")
+        if isinstance(dns_cap_values, dict) and dns_cap_values:
+            dns_cap_section["dns_cap_map"] = {
+                domain: mapping for domain, mapping in dns_cap_values.items() if mapping
+            }
+        else:
+            dns_cap_section.pop("dns_cap_map", None)
+
+        if dns_cap_section:
+            existing_cap["dns"] = dns_cap_section
+        else:
+            existing_cap.pop("dns", None)
+
+        if not dns_section:
+            if dns_section_created:
+                existing_responses.pop("dns", None)
+            else:
+                dns_section.pop("unique_soa_fields", None)
+                dns_section.pop("soa_field_cap_map", None)
+                dns_section.pop("dns_cap_map", None)
+
+        project.data_responses = existing_responses
+        project.cap = existing_cap
+
     def test_func(self):
         return self.get_object().user_can_edit(self.request.user)
 
@@ -2245,29 +2517,232 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
     def post(self, request, *args, **kwargs):
         project = self.get_object()
         if request.FILES:
+            dns_csv = request.FILES.get("dns_csv")
+            dns_xml = request.FILES.get("dns_xml")
             upload = request.FILES.get("osint_csv")
-            if not upload:
-                return JsonResponse({"error": "No OSINT CSV provided."}, status=400)
 
-            rows, metrics, error_message = self._parse_osint_csv(upload)
-            if error_message:
-                return JsonResponse({"error": error_message}, status=400)
+            if dns_csv:
+                domain_index_raw = request.POST.get("dns_domain_index")
+                domain_name = (request.POST.get("dns_domain_name") or "").strip()
 
-            workbook_payload = build_workbook_entry_payload(
-                project=project,
-                areas={"osint": metrics or {}},
-            )
-            artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
-            artifacts = dict(artifacts)
-            if rows is not None:
-                artifacts["osint"] = rows
-                artifacts["osint_file_name"] = upload.name
-            project.workbook_data = workbook_payload
-            project.data_artifacts = artifacts
-            project.save(update_fields=["workbook_data", "data_artifacts"])
-            return JsonResponse(
-                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
-            )
+                dns_rows, fail_count, fail_tests, content, error_message = self._parse_dns_csv(
+                    dns_csv
+                )
+                if error_message:
+                    return JsonResponse({"error": error_message}, status=400)
+
+                artifacts = (
+                    project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+                )
+                artifacts = dict(artifacts)
+                dns_findings = artifacts.get("dns_findings")
+                if not isinstance(dns_findings, dict):
+                    dns_findings = {}
+
+                if domain_index_raw is not None:
+                    try:
+                        domain_index = int(domain_index_raw)
+                    except ValueError:
+                        domain_index = None
+                else:
+                    domain_index = None
+
+                workbook_payload = normalize_workbook_payload(project.workbook_data)
+                dns_payload = workbook_payload.get("dns") if isinstance(workbook_payload, dict) else {}
+                dns_records = []
+                if isinstance(dns_payload, dict):
+                    records = dns_payload.get("records")
+                    if isinstance(records, list):
+                        dns_records = [
+                            record
+                            for record in records
+                            if isinstance(record, dict)
+                        ]
+
+                target_record: Optional[dict[str, Any]] = None
+                if domain_index is not None and 0 <= domain_index < len(dns_records):
+                    target_record = dns_records[domain_index]
+                elif domain_name:
+                    for record in dns_records:
+                        if str(record.get("domain") or "").strip().lower() == domain_name.lower():
+                            target_record = record
+                            break
+
+                if target_record is None:
+                    target_record = {"domain": domain_name}
+                    dns_records.append(target_record)
+
+                if domain_name:
+                    target_record["domain"] = domain_name
+                target_record["total"] = fail_count
+
+                if dns_rows is not None:
+                    dns_findings[target_record.get("domain") or f"domain_{len(dns_findings)+1}"] = {
+                        "rows": dns_rows,
+                        "file_name": dns_csv.name,
+                        "failed_tests": sorted(fail_tests or []),
+                    }
+
+                parsed_issues = parse_dns_report(
+                    ContentFile(content.encode("utf-8"), name=dns_csv.name)
+                )
+                dns_issues: list[dict[str, Any]] = []
+                if isinstance(parsed_issues, list):
+                    dns_issues = parsed_issues
+
+                artifact_issues = artifacts.get("dns_issues")
+                if not isinstance(artifact_issues, list):
+                    artifact_issues = []
+                artifact_issues = [entry for entry in artifact_issues if isinstance(entry, dict)]
+                domain_label = target_record.get("domain") or domain_name or "Unknown Domain"
+                artifact_issues = [
+                    entry
+                    for entry in artifact_issues
+                    if str(entry.get("domain") or "").strip().lower()
+                    != domain_label.strip().lower()
+                ]
+                artifact_entry = {"domain": domain_label, "issues": dns_issues}
+                if dns_rows:
+                    soa_fields: list[str] = []
+                    for issue in dns_issues:
+                        if not isinstance(issue, dict):
+                            continue
+                        if (issue.get("issue") or "") != "One or more SOA fields are outside recommended ranges":
+                            continue
+                        for field in issue.get("soa_fields", []) or []:
+                            if field and field not in soa_fields:
+                                soa_fields.append(field)
+                    if soa_fields:
+                        artifact_entry["soa_fields"] = soa_fields
+                artifact_issues.append(artifact_entry)
+
+                artifacts["dns_findings"] = dns_findings
+                artifacts["dns_issues"] = artifact_issues
+
+                dns_payload = {"records": dns_records}
+                if dns_findings and len(dns_findings) == len(dns_records):
+                    unique_tests: set[str] = set()
+                    for entry in dns_findings.values():
+                        for test_name in entry.get("failed_tests", []) or []:
+                            if test_name:
+                                unique_tests.add(test_name)
+                    dns_payload["unique"] = len(unique_tests)
+
+                workbook_payload = build_workbook_entry_payload(
+                    project=project, dns=dns_payload
+                )
+                project.workbook_data = workbook_payload
+                project.data_artifacts = artifacts
+                self._update_dns_sections(project, workbook_payload, artifacts)
+                project.save(
+                    update_fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+                )
+                return JsonResponse(
+                    {
+                        "workbook_data": workbook_payload,
+                        "data_artifacts": project.data_artifacts,
+                    }
+                )
+
+            if dns_xml:
+                domain_name, artifacts_payload, error_message = self._parse_dns_xml(dns_xml)
+                if error_message:
+                    return JsonResponse({"error": error_message}, status=400)
+
+                artifacts = (
+                    project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+                )
+                artifacts = dict(artifacts)
+                dns_records_artifact = artifacts.get("dns_records")
+                if not isinstance(dns_records_artifact, list):
+                    dns_records_artifact = []
+
+                entry: dict[str, Any] = {"file_name": dns_xml.name}
+                if domain_name:
+                    entry["domain"] = domain_name
+                if artifacts_payload:
+                    entry.update(artifacts_payload)
+                dns_records_artifact.append(entry)
+                artifacts["dns_records"] = dns_records_artifact
+
+                workbook_payload = normalize_workbook_payload(project.workbook_data)
+                dns_payload = workbook_payload.get("dns") if isinstance(workbook_payload, dict) else {}
+                dns_records = []
+                if isinstance(dns_payload, dict):
+                    records = dns_payload.get("records")
+                    if isinstance(records, list):
+                        dns_records = [
+                            record
+                            for record in records
+                            if isinstance(record, dict)
+                        ]
+
+                target_record = None
+                if domain_name:
+                    for record in dns_records:
+                        if str(record.get("domain") or "").strip().lower() == domain_name.lower():
+                            target_record = record
+                            break
+                if target_record is None:
+                    target_record = {"domain": domain_name or ""}
+                    dns_records.append(target_record)
+
+                target_record["domain"] = domain_name or target_record.get("domain") or ""
+                if artifacts_payload and "records" in artifacts_payload:
+                    zone_transfer_value = artifacts_payload.get("zone_transfer")
+                    if not zone_transfer_value:
+                        zone_transfer_value = "Yes"
+                        for record in artifacts_payload.get("records", []):
+                            if (
+                                record.get("zone_transfer") or ""
+                            ).strip().lower() == "failed":
+                                continue
+                            zone_transfer_value = "Yes"
+                            break
+                        else:
+                            zone_transfer_value = "No"
+                    target_record["zone_transfer"] = zone_transfer_value
+
+                workbook_payload = build_workbook_entry_payload(
+                    project=project, dns={"records": dns_records}
+                )
+                project.workbook_data = workbook_payload
+                project.data_artifacts = artifacts
+                self._update_dns_sections(project, workbook_payload, artifacts)
+                project.save(
+                    update_fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+                )
+                return JsonResponse(
+                    {
+                        "workbook_data": workbook_payload,
+                        "data_artifacts": project.data_artifacts,
+                    }
+                )
+
+            if upload:
+                rows, metrics, error_message = self._parse_osint_csv(upload)
+                if error_message:
+                    return JsonResponse({"error": error_message}, status=400)
+
+                workbook_payload = build_workbook_entry_payload(
+                    project=project,
+                    areas={"osint": metrics or {}},
+                )
+                artifacts = (
+                    project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+                )
+                artifacts = dict(artifacts)
+                if rows is not None:
+                    artifacts["osint"] = rows
+                    artifacts["osint_file_name"] = upload.name
+                project.workbook_data = workbook_payload
+                project.data_artifacts = artifacts
+                project.save(update_fields=["workbook_data", "data_artifacts"])
+                return JsonResponse(
+                    {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                )
+
+            return JsonResponse({"error": "No workbook upload provided."}, status=400)
         try:
             payload = json.loads(request.body.decode("utf-8")) if request.body else {}
         except json.JSONDecodeError:
@@ -2287,16 +2762,90 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
             )
 
+        if "remove_dns_domain" in payload:
+            artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            artifacts = dict(artifacts)
+            workbook_payload = normalize_workbook_payload(project.workbook_data)
+            dns_data = workbook_payload.get("dns") if isinstance(workbook_payload, dict) else {}
+            records = []
+            if isinstance(dns_data, dict):
+                records = [
+                    record for record in dns_data.get("records", []) or [] if isinstance(record, dict)
+                ]
+
+            target = payload.get("remove_dns_domain")
+            removed_domain: Optional[str] = None
+            updated_records: list[dict[str, Any]] = []
+            for idx, record in enumerate(records):
+                domain_value = (record.get("domain") or "").strip()
+                matches = False
+                if isinstance(target, int):
+                    matches = idx == target
+                elif isinstance(target, str):
+                    matches = domain_value.lower() == target.strip().lower()
+                if matches:
+                    removed_domain = domain_value or removed_domain
+                    continue
+                updated_records.append(record)
+
+            dns_data["records"] = updated_records
+            if not updated_records:
+                dns_data["unique"] = None
+
+            def _remove_domain_from_artifacts(entry_list: Any) -> Any:
+                if isinstance(entry_list, list):
+                    return [
+                        entry
+                        for entry in entry_list
+                        if not isinstance(entry, dict)
+                        or (entry.get("domain") or "").strip().lower()
+                        != (removed_domain or "").strip().lower()
+                    ]
+                return entry_list
+
+            findings = artifacts.get("dns_findings")
+            if isinstance(findings, dict) and removed_domain:
+                key_to_remove = None
+                for key in findings.keys():
+                    if str(key).strip().lower() == removed_domain.strip().lower():
+                        key_to_remove = key
+                        break
+                if key_to_remove is not None:
+                    findings.pop(key_to_remove, None)
+            artifacts["dns_findings"] = findings if isinstance(findings, dict) else findings
+            artifacts["dns_issues"] = _remove_domain_from_artifacts(artifacts.get("dns_issues"))
+            artifacts["dns_records"] = _remove_domain_from_artifacts(artifacts.get("dns_records"))
+
+            workbook_payload["dns"] = dns_data
+            project.workbook_data = workbook_payload
+            project.data_artifacts = artifacts
+            self._update_dns_sections(project, workbook_payload, artifacts)
+            project.save(
+                update_fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
+            return JsonResponse(
+                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            )
+
         workbook_payload = build_workbook_entry_payload(
             project=project,
             general=payload.get("general"),
             scores=payload.get("scores"),
             grades=payload.get("grades"),
             areas=payload.get("areas"),
+            dns=payload.get("dns"),
         )
 
         project.workbook_data = workbook_payload
-        project.save(update_fields=["workbook_data"])
+        artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+        artifacts = dict(artifacts)
+        if payload.get("dns") is not None:
+            self._update_dns_sections(project, workbook_payload, artifacts)
+            project.save(
+                update_fields=["workbook_data", "data_responses", "cap"]
+            )
+        else:
+            project.save(update_fields=["workbook_data"])
         return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts})
 
 

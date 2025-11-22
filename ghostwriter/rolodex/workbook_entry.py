@@ -41,6 +41,7 @@ OSINT_FIELDS = {
 }
 
 AREA_FIELDS = {"osint": OSINT_FIELDS}
+DNS_BOOLEAN_VALUES = {"yes", "y", "true", "1"}
 
 
 def _as_decimal(value: Any) -> Optional[Decimal]:
@@ -115,6 +116,47 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
     return normalized
 
 
+def _normalize_dns_payload(payload: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    if not isinstance(payload, Mapping):
+        return normalized
+
+    def _normalize_record(entry: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        domain = str(entry.get("domain") or "").strip()
+        total_value = _as_int(entry.get("total"))
+        raw_zone = entry.get("zone_transfer")
+        if raw_zone in (None, ""):
+            zone_value: Optional[str] = None
+        else:
+            zone_value = "yes" if str(raw_zone).strip().lower() in DNS_BOOLEAN_VALUES else "no"
+
+        if not domain and total_value is None and zone_value is None:
+            return None
+        record: Dict[str, Any] = {"domain": domain}
+        if total_value is not None:
+            record["total"] = total_value
+        else:
+            record["total"] = None
+        record["zone_transfer"] = zone_value
+        return record
+
+    normalized_records: list[Dict[str, Any]] = []
+    for entry in payload.get("records", []) or []:
+        if not isinstance(entry, Mapping):
+            continue
+        record = _normalize_record(entry)
+        if record is not None:
+            normalized_records.append(record)
+
+    if normalized_records:
+        normalized["records"] = normalized_records
+
+    if "unique" in payload:
+        normalized["unique"] = _as_int(payload.get("unique"))
+
+    return normalized
+
+
 def _calculate_category_total(
     *, scores: Mapping[str, Optional[Decimal]], weights: Mapping[str, Decimal]
 ) -> Optional[Decimal]:
@@ -177,6 +219,7 @@ def build_workbook_entry_payload(
     scores: Optional[Mapping[str, Any]] = None,
     grades: Optional[Mapping[str, Any]] = None,
     areas: Optional[Mapping[str, Any]] = None,
+    dns: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return updated workbook data for inline workbook entry."""
 
@@ -193,6 +236,11 @@ def build_workbook_entry_payload(
             normalized_area = _normalize_area_payload(area_key, area_payload)
             if normalized_area:
                 normalized_workbook.setdefault(area_key, {}).update(normalized_area)
+
+    if dns is not None:
+        normalized_dns = _normalize_dns_payload(dns)
+        if normalized_dns:
+            normalized_workbook["dns"] = normalized_dns
 
     score_updates: MutableMapping[str, MutableMapping[str, Any]] = {}
     category_scores: Dict[str, Optional[Decimal]] = {}
