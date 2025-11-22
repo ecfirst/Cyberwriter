@@ -6,7 +6,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from decimal import Decimal
 import math
-from typing import Any, Dict, Mapping, MutableMapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
 
 from ghostwriter.reporting.models import RiskScoreRangeMapping
 from ghostwriter.rolodex.models import normalize_project_scoping
@@ -40,7 +40,66 @@ OSINT_FIELDS = {
     "total_leaks",
 }
 
-AREA_FIELDS = {"osint": OSINT_FIELDS}
+AREA_FIELDS = {"osint": OSINT_FIELDS, "dns": set()}
+
+
+def _normalize_zone_transfer(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    text = str(value).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in {"yes", "y", "true", "1", "success", "successful"}:
+        return "Yes"
+    if lowered in {"no", "n", "false", "0", "fail", "failed"}:
+        return "No"
+    return text
+
+
+def _normalize_dns_record(record: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(record, Mapping):
+        return None
+
+    normalized_record: Dict[str, Any] = {}
+    domain_value = str(record.get("domain") or "").strip()
+    if domain_value:
+        normalized_record["domain"] = domain_value
+
+    if "total" in record:
+        normalized_record["total"] = _as_int(record.get("total"))
+
+    if "zone_transfer" in record:
+        normalized_record["zone_transfer"] = _normalize_zone_transfer(
+            record.get("zone_transfer")
+        )
+
+    if not normalized_record:
+        return None
+
+    return normalized_record
+
+
+def _normalize_dns_payload(payload: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    if not isinstance(payload, Mapping):
+        return normalized
+
+    records: List[Dict[str, Any]] = []
+    for entry in payload.get("records") or []:
+        normalized_record = _normalize_dns_record(entry)
+        if normalized_record is not None:
+            records.append(normalized_record)
+
+    if records:
+        normalized["records"] = records
+
+    if "unique" in payload:
+        normalized["unique"] = _as_int(payload.get("unique"))
+
+    return normalized
 
 
 def _as_decimal(value: Any) -> Optional[Decimal]:
@@ -106,6 +165,8 @@ def _normalize_general_payload(payload: Optional[Mapping[str, Any]]) -> Dict[str
 
 def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     normalized: Dict[str, Any] = {}
+    if area == "dns":
+        return _normalize_dns_payload(payload)
     allowed_fields = AREA_FIELDS.get(area, set())
     if not allowed_fields or not isinstance(payload, Mapping):
         return normalized

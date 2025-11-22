@@ -95,7 +95,9 @@ from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFAC
 from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_METRICS_KEY_MAP,
     NEXPOSE_METRICS_LABELS,
+    ElementTree,
     normalize_nexpose_artifacts_map,
+    parse_dns_report,
     resolve_nexpose_requirement_artifact_key,
     summarize_nexpose_matrix_gaps,
     summarize_web_issue_matrix_gaps,
@@ -2235,6 +2237,178 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         }
         return rows, metrics, None
 
+    @staticmethod
+    def _parse_dns_csv(
+        upload,
+    ) -> tuple[
+        Optional[list[dict[str, str]]],
+        Optional[int],
+        Optional[set[str]],
+        Optional[str],
+        Optional[bytes],
+    ]:
+        try:
+            raw_bytes = upload.read()
+            content = raw_bytes.decode("utf-8-sig")
+        except Exception:
+            return None, None, None, "Unable to read the uploaded DNS CSV file.", None
+
+        reader = csv.DictReader(io.StringIO(content))
+        if not reader.fieldnames:
+            return None, None, None, "DNS CSV is missing headers.", raw_bytes
+
+        rows: list[dict[str, str]] = []
+        fail_count = 0
+        unique_fail_tests: set[str] = set()
+        headers = [header.strip() for header in reader.fieldnames]
+        for row in reader:
+            normalized_row: dict[str, str] = {}
+            for header in headers:
+                normalized_row[header] = (row.get(header) or "").strip()
+            rows.append(normalized_row)
+            status_value = normalized_row.get("Status") or normalized_row.get("status")
+            if (status_value or "").strip().upper() == "FAIL":
+                fail_count += 1
+                test_value = normalized_row.get("Test") or normalized_row.get("test")
+                if test_value:
+                    unique_fail_tests.add(test_value.strip())
+
+        return rows, fail_count, unique_fail_tests, None, raw_bytes
+
+    @staticmethod
+    def _parse_dns_xml(
+        upload,
+    ) -> tuple[Optional[str], Optional[list[dict[str, str]]], Optional[str]]:
+        try:
+            raw_bytes = upload.read()
+        except Exception:
+            return None, None, "Unable to read the uploaded DNS XML file."
+
+        try:
+            root = ElementTree.fromstring(raw_bytes)
+        except ElementTree.ParseError:
+            return None, None, "Invalid DNS XML provided."
+
+        records_element = root.find("records")
+        if records_element is None:
+            return None, None, "DNS XML is missing a <records> element."
+
+        domain_element = records_element.find("domain")
+        domain_name = ""
+        if domain_element is not None:
+            domain_name = (domain_element.findtext("domain_name") or "").strip()
+
+        record_elements = list(records_element.findall("record"))
+        parsed_records: list[dict[str, str]] = []
+        for record in record_elements:
+            entry: dict[str, str] = {}
+            for child in list(record):
+                entry[child.tag] = (child.text or "").strip()
+            if entry:
+                parsed_records.append(entry)
+
+        return domain_name, parsed_records, None
+
+    @staticmethod
+    def _normalize_domain(domain: Any) -> str:
+        if domain in (None, ""):
+            return ""
+        return str(domain).strip()
+
+    @classmethod
+    def _upsert_dns_artifact_entry(
+        cls, entries: list[dict[str, Any]], domain: str
+    ) -> dict[str, Any]:
+        normalized_domain = cls._normalize_domain(domain)
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if cls._normalize_domain(entry.get("domain")).lower() == normalized_domain.lower():
+                return entry
+        new_entry = {"domain": normalized_domain}
+        entries.append(new_entry)
+        return new_entry
+
+    @classmethod
+    def _prune_dns_artifacts(
+        cls, artifacts: dict[str, Any], dns_records: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        valid_domains = {
+            cls._normalize_domain(record.get("domain")).lower()
+            for record in dns_records
+            if isinstance(record, dict) and cls._normalize_domain(record.get("domain"))
+        }
+
+        for key in ("dns_findings", "dns_issues", "dns_records"):
+            existing_entries = artifacts.get(key)
+            if not isinstance(existing_entries, list):
+                artifacts.pop(key, None)
+                continue
+            filtered = [
+                entry
+                for entry in existing_entries
+                if cls._normalize_domain(entry.get("domain")).lower() in valid_domains
+            ]
+            if filtered:
+                artifacts[key] = filtered
+            else:
+                artifacts.pop(key, None)
+        return artifacts
+
+    @classmethod
+    def _calculate_dns_unique(
+        cls, dns_records: list[dict[str, Any]], findings_entries: Optional[list[Any]]
+    ) -> Optional[int]:
+        if not isinstance(findings_entries, list):
+            return None
+
+        domain_findings_map = {
+            cls._normalize_domain(entry.get("domain")).lower(): entry.get("rows") or []
+            for entry in findings_entries
+            if isinstance(entry, dict) and cls._normalize_domain(entry.get("domain"))
+        }
+
+        record_domains = [
+            cls._normalize_domain(record.get("domain")).lower()
+            for record in dns_records
+            if isinstance(record, dict) and cls._normalize_domain(record.get("domain"))
+        ]
+
+        if not record_domains:
+            return None
+
+        for domain in record_domains:
+            if domain not in domain_findings_map:
+                return None
+
+        unique_tests: set[str] = set()
+        for domain in record_domains:
+            for row in domain_findings_map.get(domain, []):
+                if not isinstance(row, dict):
+                    continue
+                status_value = (row.get("Status") or row.get("status") or "").strip()
+                if status_value.upper() != "FAIL":
+                    continue
+                test_value = (row.get("Test") or row.get("test") or "").strip()
+                if test_value:
+                    unique_tests.add(test_value)
+
+        return len(unique_tests) if unique_tests else 0
+
+    @classmethod
+    def _normalize_zone_transfer(cls, value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return "Yes" if value else "No"
+        text = str(value).strip()
+        lowered = text.lower()
+        if lowered in {"yes", "y", "true", "1", "success", "successful"}:
+            return "Yes"
+        if lowered in {"no", "n", "false", "0", "fail", "failed"}:
+            return "No"
+        return text
+
     def test_func(self):
         return self.get_object().user_can_edit(self.request.user)
 
@@ -2245,32 +2419,187 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
     def post(self, request, *args, **kwargs):
         project = self.get_object()
         if request.FILES:
-            upload = request.FILES.get("osint_csv")
-            if not upload:
-                return JsonResponse({"error": "No OSINT CSV provided."}, status=400)
+            osint_upload = request.FILES.get("osint_csv")
+            dns_csv_upload = request.FILES.get("dns_csv")
+            dns_xml_upload = request.FILES.get("dns_xml")
 
-            rows, metrics, error_message = self._parse_osint_csv(upload)
-            if error_message:
-                return JsonResponse({"error": error_message}, status=400)
+            if osint_upload:
+                rows, metrics, error_message = self._parse_osint_csv(osint_upload)
+                if error_message:
+                    return JsonResponse({"error": error_message}, status=400)
 
-            workbook_payload = build_workbook_entry_payload(
-                project=project,
-                areas={"osint": metrics or {}},
+                workbook_payload = build_workbook_entry_payload(
+                    project=project,
+                    areas={"osint": metrics or {}},
+                )
+                artifacts = (
+                    project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+                )
+                artifacts = dict(artifacts)
+                if rows is not None:
+                    artifacts["osint"] = rows
+                project.workbook_data = workbook_payload
+                project.data_artifacts = artifacts
+                project.save(update_fields=["workbook_data", "data_artifacts"])
+                return JsonResponse(
+                    {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                )
+
+            if dns_csv_upload:
+                domain = self._normalize_domain(request.POST.get("dns_domain"))
+                if not domain:
+                    return JsonResponse(
+                        {"error": "A domain is required for DNS CSV uploads."},
+                        status=400,
+                    )
+
+                rows, fail_count, _unique_fail_tests, error_message, raw_bytes = (
+                    self._parse_dns_csv(dns_csv_upload)
+                )
+                if error_message:
+                    return JsonResponse({"error": error_message}, status=400)
+
+                workbook_payload = normalize_workbook_payload(project.workbook_data)
+                dns_section = workbook_payload.setdefault("dns", {})
+                dns_records = dns_section.get("records")
+                if not isinstance(dns_records, list):
+                    dns_records = []
+                dns_entry = self._upsert_dns_artifact_entry(dns_records, domain)
+                dns_entry["domain"] = domain
+                dns_entry["total"] = fail_count
+                dns_section["records"] = dns_records
+
+                artifacts = (
+                    project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+                )
+                artifacts = dict(artifacts)
+                findings_entries = artifacts.get("dns_findings")
+                if not isinstance(findings_entries, list):
+                    findings_entries = []
+                findings_entry = self._upsert_dns_artifact_entry(findings_entries, domain)
+                findings_entry["rows"] = rows or []
+                artifacts["dns_findings"] = findings_entries
+
+                if raw_bytes is not None:
+                    dns_issue_entries = artifacts.get("dns_issues")
+                    if not isinstance(dns_issue_entries, list):
+                        dns_issue_entries = []
+                    dns_issues = parse_dns_report(
+                        ContentFile(
+                            raw_bytes,
+                            name=getattr(dns_csv_upload, "name", "dns_report.csv"),
+                        )
+                    )
+                    issues_entry = self._upsert_dns_artifact_entry(
+                        dns_issue_entries, domain
+                    )
+                    issues_entry["issues"] = dns_issues or []
+                    artifacts["dns_issues"] = dns_issue_entries
+
+                unique_total = self._calculate_dns_unique(
+                    dns_records, artifacts.get("dns_findings")
+                )
+                if unique_total is not None:
+                    dns_section["unique"] = unique_total
+
+                artifacts = self._prune_dns_artifacts(artifacts, dns_records)
+
+                project.workbook_data = workbook_payload
+                project.data_artifacts = artifacts
+                project.save(update_fields=["workbook_data", "data_artifacts"])
+                return JsonResponse(
+                    {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                )
+
+            if dns_xml_upload:
+                domain_override = self._normalize_domain(request.POST.get("dns_domain"))
+                domain_name, parsed_records, error_message = self._parse_dns_xml(
+                    dns_xml_upload
+                )
+                if error_message:
+                    return JsonResponse({"error": error_message}, status=400)
+
+                resolved_domain = domain_name or domain_override
+                if not resolved_domain:
+                    return JsonResponse(
+                        {"error": "A domain is required for DNS XML uploads."},
+                        status=400,
+                    )
+                workbook_payload = normalize_workbook_payload(project.workbook_data)
+                dns_section = workbook_payload.setdefault("dns", {})
+                dns_records = dns_section.get("records")
+                if not isinstance(dns_records, list):
+                    dns_records = []
+                dns_entry = self._upsert_dns_artifact_entry(
+                    dns_records, resolved_domain or domain_override
+                )
+                if resolved_domain:
+                    dns_entry["domain"] = resolved_domain
+                elif domain_override:
+                    dns_entry["domain"] = domain_override
+
+                zone_transfer_value = None
+                for record in parsed_records or []:
+                    zone_value = self._normalize_zone_transfer(record.get("zone_transfer"))
+                    if zone_value and zone_value.lower() != "no":
+                        zone_transfer_value = "Yes"
+                        break
+                if zone_transfer_value is None and parsed_records:
+                    zone_transfer_value = "No"
+                if zone_transfer_value is not None:
+                    dns_entry["zone_transfer"] = zone_transfer_value
+
+                dns_section["records"] = dns_records
+
+                artifacts = (
+                    project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+                )
+                artifacts = dict(artifacts)
+                xml_entries = artifacts.get("dns_records")
+                if not isinstance(xml_entries, list):
+                    xml_entries = []
+                xml_entry = self._upsert_dns_artifact_entry(
+                    xml_entries, dns_entry.get("domain", resolved_domain or domain_override)
+                )
+                xml_entry["records"] = parsed_records or []
+                artifacts["dns_records"] = xml_entries
+
+                unique_total = self._calculate_dns_unique(
+                    dns_records, artifacts.get("dns_findings")
+                )
+                if unique_total is not None:
+                    dns_section["unique"] = unique_total
+
+                artifacts = self._prune_dns_artifacts(artifacts, dns_records)
+
+                project.workbook_data = workbook_payload
+                project.data_artifacts = artifacts
+                project.save(update_fields=["workbook_data", "data_artifacts"])
+                return JsonResponse(
+                    {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                )
+
+            return JsonResponse(
+                {"error": "No supported workbook upload provided."}, status=400
             )
+        try:
+            payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+        except json.JSONDecodeError:
+            return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+        if payload.get("remove_osint"):
+            workbook_payload = normalize_workbook_payload(project.workbook_data)
+            default_values = normalize_workbook_payload({}).get("osint", {})
+            workbook_payload["osint"] = default_values
             artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
             artifacts = dict(artifacts)
-            if rows is not None:
-                artifacts["osint"] = rows
+            artifacts.pop("osint", None)
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
             project.save(update_fields=["workbook_data", "data_artifacts"])
             return JsonResponse(
                 {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
             )
-        try:
-            payload = json.loads(request.body.decode("utf-8")) if request.body else {}
-        except json.JSONDecodeError:
-            return JsonResponse({"error": "Invalid JSON payload."}, status=400)
 
         workbook_payload = build_workbook_entry_payload(
             project=project,
@@ -2280,8 +2609,31 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             areas=payload.get("areas"),
         )
 
+        artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+        artifacts_changed = False
+        areas_payload = payload.get("areas")
+        if isinstance(areas_payload, dict) and "dns" in areas_payload:
+            artifacts = dict(artifacts)
+            dns_section = workbook_payload.get("dns")
+            if not isinstance(dns_section, dict):
+                dns_section = {}
+            dns_records = dns_section.get("records") if isinstance(dns_section.get("records"), list) else []
+            dns_section["records"] = dns_records
+            artifacts = self._prune_dns_artifacts(artifacts, dns_records)
+            unique_total = self._calculate_dns_unique(
+                dns_records, artifacts.get("dns_findings")
+            )
+            if unique_total is not None:
+                dns_section["unique"] = unique_total
+            workbook_payload["dns"] = dns_section
+            artifacts_changed = True
+
         project.workbook_data = workbook_payload
-        project.save(update_fields=["workbook_data"])
+        if artifacts_changed:
+            project.data_artifacts = artifacts
+        project.save(
+            update_fields=["workbook_data"] + (["data_artifacts"] if artifacts_changed else [])
+        )
         return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts})
 
 
