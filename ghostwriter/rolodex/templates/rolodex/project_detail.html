@@ -1362,6 +1362,15 @@
           });
         };
 
+        const updateDataArtifactsState = function(artifacts) {
+          Object.keys(dataArtifactsState).forEach(function(key) {
+            delete dataArtifactsState[key];
+          });
+          if (artifacts && typeof artifacts === 'object') {
+            Object.assign(dataArtifactsState, artifacts);
+          }
+        };
+
         const uploadOsintCsv = function(file, areaKey, modalId) {
           if (!workbookUpdateUrl || !file) {
             return;
@@ -1387,7 +1396,7 @@
               Object.assign(workbookState, data.workbook_data);
             }
             if (data && data.data_artifacts) {
-              Object.assign(dataArtifactsState, data.data_artifacts);
+              updateDataArtifactsState(data.data_artifacts);
             }
             renderGeneralFields();
             renderScoringGroups();
@@ -1400,6 +1409,15 @@
           }).catch(function(error) {
             console.error(error);
             alert(error.message || 'Unable to save workbook data.');
+          });
+        };
+
+        const removeOsintData = function(areaKey, modalId) {
+          const payload = {remove_osint: true};
+          submitWorkbookUpdate(payload, function() {
+            if (modalId) {
+              $('#' + modalId).modal('show');
+            }
           });
         };
 
@@ -1529,8 +1547,24 @@
                 uploadButton.addEventListener('click', function() {
                   uploadInput.click();
                 });
+                const removeButton = document.createElement('button');
+                removeButton.type = 'button';
+                removeButton.className = 'btn btn-outline-danger ml-2';
+                removeButton.textContent = 'Remove OSINT Data';
+                removeButton.addEventListener('click', function() {
+                  removeOsintData(areaKey, modalId);
+                });
+                const fileNameDisplay = document.createElement('div');
+                fileNameDisplay.className = 'small text-muted mt-2';
+                const updateFileName = function() {
+                  const name = (dataArtifactsState.osint_file_name || '').toString().trim();
+                  fileNameDisplay.textContent = name ? 'Uploaded file: ' + name : 'No OSINT CSV uploaded.';
+                };
+                updateFileName();
                 uploadWrapper.appendChild(uploadInput);
                 uploadWrapper.appendChild(uploadButton);
+                uploadWrapper.appendChild(removeButton);
+                uploadWrapper.appendChild(fileNameDisplay);
                 subBody.appendChild(uploadWrapper);
               }
               subCard.appendChild(subHeader);
@@ -1805,7 +1839,7 @@
               Object.assign(workbookState, data.workbook_data);
             }
             if (data && data.data_artifacts) {
-              Object.assign(dataArtifactsState, data.data_artifacts);
+              updateDataArtifactsState(data.data_artifacts);
             }
             renderGeneralFields();
             renderScoringGroups();

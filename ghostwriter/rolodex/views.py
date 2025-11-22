@@ -112,7 +112,7 @@ from ghostwriter.rolodex.workbook_defaults import (
     ensure_data_responses_defaults,
     normalize_workbook_payload,
 )
-from ghostwriter.rolodex.workbook_entry import build_workbook_entry_payload
+from ghostwriter.rolodex.workbook_entry import OSINT_FIELDS, build_workbook_entry_payload
 from ghostwriter.shepherd.models import History, ServerHistory, TransientServer
 from ghostwriter.reporting.models import RiskScoreRangeMapping
 
@@ -2261,6 +2261,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             artifacts = dict(artifacts)
             if rows is not None:
                 artifacts["osint"] = rows
+                artifacts["osint_file_name"] = upload.name
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
             project.save(update_fields=["workbook_data", "data_artifacts"])
@@ -2271,6 +2272,20 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             payload = json.loads(request.body.decode("utf-8")) if request.body else {}
         except json.JSONDecodeError:
             return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+        if payload.get("remove_osint"):
+            artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            artifacts = dict(artifacts)
+            artifacts.pop("osint", None)
+            artifacts.pop("osint_file_name", None)
+            workbook_payload = normalize_workbook_payload(project.workbook_data)
+            workbook_payload["osint"] = {field: None for field in OSINT_FIELDS}
+            project.workbook_data = workbook_payload
+            project.data_artifacts = artifacts
+            project.save(update_fields=["workbook_data", "data_artifacts"])
+            return JsonResponse(
+                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            )
 
         workbook_payload = build_workbook_entry_payload(
             project=project,
