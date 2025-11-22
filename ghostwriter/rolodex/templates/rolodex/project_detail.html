@@ -1362,6 +1362,15 @@
           });
         };
 
+        const updateDataArtifactsState = function(artifacts) {
+          Object.keys(dataArtifactsState).forEach(function(key) {
+            delete dataArtifactsState[key];
+          });
+          if (artifacts && typeof artifacts === 'object') {
+            Object.assign(dataArtifactsState, artifacts);
+          }
+        };
+
         const uploadOsintCsv = function(file, areaKey, modalId) {
           if (!workbookUpdateUrl || !file) {
             return;
@@ -1383,23 +1392,22 @@
               return data;
             });
           }).then(function(data) {
-            if (data && data.workbook_data) {
-              Object.assign(workbookState, data.workbook_data);
-            }
-            if (data && data.data_artifacts) {
-              Object.assign(dataArtifactsState, data.data_artifacts);
-            }
-            renderGeneralFields();
-            renderScoringGroups();
-            renderGradeFields();
-            renderAreaCards();
-            updateWorkbookCardProgress(areaKey);
-            if (modalId) {
-              $('#' + modalId).modal('show');
-            }
+            handleWorkbookUpdateResponse(data, {
+              reopenModalId: modalId,
+              forceCloseModalId: modalId,
+              afterRender: function() { updateWorkbookCardProgress(areaKey); },
+            });
           }).catch(function(error) {
             console.error(error);
             alert(error.message || 'Unable to save workbook data.');
+          });
+        };
+
+        const removeOsintData = function(areaKey, modalId) {
+          const payload = {remove_osint: true};
+          submitWorkbookUpdate(payload, null, {
+            reopenModalId: modalId,
+            forceCloseModalId: modalId,
           });
         };
 
@@ -1529,8 +1537,24 @@
                 uploadButton.addEventListener('click', function() {
                   uploadInput.click();
                 });
+                const removeButton = document.createElement('button');
+                removeButton.type = 'button';
+                removeButton.className = 'btn btn-outline-danger ml-2';
+                removeButton.textContent = 'Remove OSINT Data';
+                removeButton.addEventListener('click', function() {
+                  removeOsintData(areaKey, modalId);
+                });
+                const fileNameDisplay = document.createElement('div');
+                fileNameDisplay.className = 'small text-muted mt-2';
+                const updateFileName = function() {
+                  const name = (dataArtifactsState.osint_file_name || '').toString().trim();
+                  fileNameDisplay.textContent = name ? 'Uploaded file: ' + name : 'No OSINT CSV uploaded.';
+                };
+                updateFileName();
                 uploadWrapper.appendChild(uploadInput);
                 uploadWrapper.appendChild(uploadButton);
+                uploadWrapper.appendChild(removeButton);
+                uploadWrapper.appendChild(fileNameDisplay);
                 subBody.appendChild(uploadWrapper);
               }
               subCard.appendChild(subHeader);
@@ -1772,6 +1796,47 @@
           updateWorkbookCardProgress('grades');
         };
 
+        const renderWorkbookUi = function() {
+          renderGeneralFields();
+          renderAreaCards();
+          renderScoringGroups();
+          renderGradeFields();
+        };
+
+        const refreshWorkbookUi = function(options) {
+          const opts = options || {};
+          const renderAll = function() {
+            renderWorkbookUi();
+            if (typeof opts.afterRender === 'function') {
+              opts.afterRender();
+            }
+            if (opts.reopenModalId) {
+              $('#' + opts.reopenModalId).modal('show');
+            }
+          };
+          const activeModal = document.querySelector('.modal.show');
+          if (activeModal) {
+            $(activeModal).one('hidden.bs.modal', function() {
+              renderAll();
+            });
+            if (opts.forceCloseModalId && activeModal.id === opts.forceCloseModalId) {
+              $(activeModal).modal('hide');
+            }
+            return;
+          }
+          renderAll();
+        };
+
+        const handleWorkbookUpdateResponse = function(data, renderOptions) {
+          if (data && data.workbook_data) {
+            Object.assign(workbookState, data.workbook_data);
+          }
+          if (data && data.data_artifacts) {
+            updateDataArtifactsState(data.data_artifacts);
+          }
+          refreshWorkbookUi(renderOptions);
+        };
+
         const getCsrfToken = function() {
           const cookieString = document.cookie || '';
           const cookies = cookieString.split(';');
@@ -1784,7 +1849,7 @@
           return null;
         };
 
-        const submitWorkbookUpdate = function(payload, onSuccess) {
+        const submitWorkbookUpdate = function(payload, onSuccess, renderOptions) {
           if (!workbookUpdateUrl) {
             return;
           }
@@ -1801,19 +1866,10 @@
             }
             return response.json();
           }).then(function(data) {
-            if (data && data.workbook_data) {
-              Object.assign(workbookState, data.workbook_data);
-            }
-            if (data && data.data_artifacts) {
-              Object.assign(dataArtifactsState, data.data_artifacts);
-            }
-            renderGeneralFields();
-            renderScoringGroups();
-            renderGradeFields();
-            renderAreaCards();
             if (typeof onSuccess === 'function') {
               onSuccess();
             }
+            handleWorkbookUpdateResponse(data, renderOptions);
           }).catch(function(error) {
             console.error(error);
             alert('Unable to save workbook data.');
@@ -1899,10 +1955,7 @@
           });
         }
 
-        renderGeneralFields();
-        renderAreaCards();
-        renderScoringGroups();
-        renderGradeFields();
+        renderWorkbookUi();
         buildRiskLegend();
       });
     })(jQuery);
