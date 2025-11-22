@@ -97,6 +97,7 @@ from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_METRICS_LABELS,
     ElementTree,
     normalize_nexpose_artifacts_map,
+    load_dns_soa_cap_map,
     parse_dns_report,
     resolve_nexpose_requirement_artifact_key,
     summarize_nexpose_matrix_gaps,
@@ -2390,7 +2391,70 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             data_file.delete()
 
     @classmethod
-    def _sync_dns_cap_map(cls, project: Project, artifacts: Mapping[str, Any]) -> bool:
+    def _build_domain_soa_cap_map(
+        cls, project: Project, workbook_data: Optional[Mapping[str, Any]]
+    ) -> dict[str, dict[str, str]]:
+        """Return per-domain SOA CAP mappings derived from workbook DNS entries."""
+
+        cap_map = load_dns_soa_cap_map()
+        domain_soa_cap_map: dict[str, dict[str, str]] = {}
+
+        normalized_workbook = normalize_workbook_payload(
+            project.workbook_data if workbook_data is None else workbook_data
+        )
+        dns_section = (
+            normalized_workbook.get("dns") if isinstance(normalized_workbook, Mapping) else None
+        )
+        entries = dns_section.get("entries") if isinstance(dns_section, Mapping) else None
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                domain_value = (
+                    entry.get("domain")
+                    or entry.get("name")
+                    or entry.get("zone")
+                    or entry.get("fqdn")
+                )
+                domain_text = cls._normalize_domain(domain_value)
+                if not domain_text:
+                    continue
+                fields = entry.get("soa_fields")
+                if not isinstance(fields, list):
+                    continue
+                domain_entry = domain_soa_cap_map.setdefault(domain_text, {})
+                for field in fields:
+                    if field is None:
+                        continue
+                    field_text = str(field).strip()
+                    if not field_text:
+                        continue
+                    domain_entry[field_text] = cap_map.get(field_text, "")
+
+        soa_cap_map_section = (
+            dns_section.get("soa_field_cap_map") if isinstance(dns_section, Mapping) else None
+        )
+        if isinstance(soa_cap_map_section, Mapping):
+            for domain, field_map in soa_cap_map_section.items():
+                domain_text = cls._normalize_domain(domain)
+                if not domain_text or not isinstance(field_map, Mapping):
+                    continue
+                domain_entry = domain_soa_cap_map.setdefault(domain_text, {})
+                for field_name, field_cap in field_map.items():
+                    field_text = str(field_name) if field_name is not None else ""
+                    if not field_text:
+                        continue
+                    domain_entry[field_text] = "" if field_cap is None else str(field_cap)
+
+        return domain_soa_cap_map
+
+    @classmethod
+    def _sync_dns_cap_map(
+        cls,
+        project: Project,
+        artifacts: Mapping[str, Any],
+        workbook_data: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
         cap_payload = project.cap if isinstance(project.cap, dict) else {}
         cap_payload = dict(cap_payload)
 
@@ -2399,6 +2463,8 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             dns_cap_section = dict(dns_cap_section)
         else:
             dns_cap_section = {}
+
+        domain_soa_cap_map = cls._build_domain_soa_cap_map(project, workbook_data)
 
         dns_cap_map: dict[str, dict[str, dict[str, Any]]] = {}
         dns_artifacts = artifacts.get("dns_issues") if isinstance(artifacts, Mapping) else None
@@ -2416,6 +2482,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                     continue
 
                 domain_map = dns_cap_map.setdefault(domain_text, {})
+                target_issue = "One or more SOA fields are outside recommended ranges"
                 for issue_entry in issues:
                     if isinstance(issue_entry, Mapping):
                         issue_text = (issue_entry.get("issue") or "").strip()
@@ -2426,6 +2493,16 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                     if not issue_text:
                         continue
                     recommendation_text = "" if cap_value is None else str(cap_value)
+                    if issue_text == target_issue:
+                        domain_field_map = domain_soa_cap_map.get(domain_text)
+                        if domain_field_map:
+                            cap_lines: list[str] = []
+                            for field_name, field_cap in domain_field_map.items():
+                                field_name_text = str(field_name)
+                                field_cap_text = "" if field_cap is None else str(field_cap)
+                                cap_lines.append(f"{field_name_text} - {field_cap_text}")
+                            if cap_lines:
+                                recommendation_text = "\n".join(cap_lines)
                     domain_map[issue_text] = {"score": 2, "recommendation": recommendation_text}
 
         if dns_cap_map:
@@ -2551,7 +2628,9 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 artifacts = dict(artifacts)
                 if rows is not None:
                     artifacts["osint"] = rows
-                cap_changed = self._sync_dns_cap_map(project, artifacts)
+                cap_changed = self._sync_dns_cap_map(
+                    project, artifacts, workbook_data=workbook_payload
+                )
 
                 project.workbook_data = workbook_payload
                 project.data_artifacts = artifacts
@@ -2631,7 +2710,9 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 artifacts = self._prune_dns_artifacts(artifacts, dns_records)
                 self._prune_dns_data_files(project, dns_records)
 
-                cap_changed = self._sync_dns_cap_map(project, artifacts)
+                cap_changed = self._sync_dns_cap_map(
+                    project, artifacts, workbook_data=workbook_payload
+                )
 
                 project.workbook_data = workbook_payload
                 project.data_artifacts = artifacts
@@ -2705,9 +2786,16 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 artifacts = self._prune_dns_artifacts(artifacts, dns_records)
                 self._prune_dns_data_files(project, dns_records)
 
+                cap_changed = self._sync_dns_cap_map(
+                    project, artifacts, workbook_data=workbook_payload
+                )
+
                 project.workbook_data = workbook_payload
                 project.data_artifacts = artifacts
-                project.save(update_fields=["workbook_data", "data_artifacts"])
+                update_fields = ["workbook_data", "data_artifacts"]
+                if cap_changed:
+                    update_fields.append("cap")
+                project.save(update_fields=update_fields)
                 return JsonResponse(
                     {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
                 )
@@ -2766,7 +2854,9 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         cap_changed = False
         if artifacts_changed:
             project.data_artifacts = artifacts
-            cap_changed = self._sync_dns_cap_map(project, artifacts)
+            cap_changed = self._sync_dns_cap_map(
+                project, artifacts, workbook_data=workbook_payload
+            )
         project.save(
             update_fields=["workbook_data"]
             + (["data_artifacts"] if artifacts_changed else [])
