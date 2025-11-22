@@ -1383,6 +1383,14 @@
           });
         };
 
+        const ensureModalBackdrop = function() {
+          if (!document.querySelector('.modal-backdrop')) {
+            const backdrop = document.createElement('div');
+            backdrop.className = 'modal-backdrop fade show';
+            document.body.appendChild(backdrop);
+          }
+        };
+
         const refreshWorkbookFromResponse = function(data, areaKey, modalId) {
           const modalSelector = modalId ? '#' + modalId : null;
           const modalElement = modalSelector ? document.querySelector(modalSelector) : null;
@@ -1407,6 +1415,7 @@
             $(modalSelector).modal('show');
             setTimeout(function() {
               document.body.classList.add('modal-open');
+              ensureModalBackdrop();
               const refreshedBody = document.querySelector(modalSelector + ' .modal-body');
               if (refreshedBody && modalScrollTop !== null) {
                 refreshedBody.scrollTop = modalScrollTop;
@@ -1417,8 +1426,9 @@
                 dialog.focus({preventScroll: true});
               }
             }, 0);
+          } else {
+            cleanupModalBackdrops();
           }
-          cleanupModalBackdrops();
         };
 
         const removeOsintData = function(areaKey, modalId) {
