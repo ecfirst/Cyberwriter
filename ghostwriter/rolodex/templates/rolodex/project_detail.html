@@ -1369,7 +1369,24 @@
           });
         };
 
+        const cleanupModalBackdrops = function() {
+          const activeModals = document.querySelectorAll('.modal.show');
+          if (activeModals.length) {
+            return;
+          }
+          document.body.classList.remove('modal-open');
+          document.body.style.paddingRight = '';
+          document.querySelectorAll('.modal-backdrop').forEach(function(backdrop) {
+            if (backdrop && backdrop.parentNode) {
+              backdrop.parentNode.removeChild(backdrop);
+            }
+          });
+        };
+
         const refreshWorkbookFromResponse = function(data, areaKey, modalId) {
+          const modalSelector = modalId ? '#' + modalId : null;
+          const modalWasOpen = modalSelector ? $(modalSelector).hasClass('show') : false;
+
           if (data && data.workbook_data) {
             Object.assign(workbookState, data.workbook_data);
           }
@@ -1381,9 +1398,10 @@
           renderGradeFields();
           renderAreaCards();
           updateWorkbookCardProgress(areaKey);
-          if (modalId) {
-            $('#' + modalId).modal('show');
+          if (modalSelector && modalWasOpen) {
+            $(modalSelector).modal('show');
           }
+          cleanupModalBackdrops();
         };
 
         const removeOsintData = function(areaKey, modalId) {
@@ -2233,6 +2251,10 @@
         renderScoringGroups();
         renderGradeFields();
         buildRiskLegend();
+
+        $(document).on('hidden.bs.modal', '.modal', function() {
+          cleanupModalBackdrops();
+        });
       });
     })(jQuery);
 
