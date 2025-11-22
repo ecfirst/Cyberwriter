@@ -109,6 +109,7 @@ from ghostwriter.rolodex.workbook import (
     build_workbook_sections,
     normalize_scope_selection,
     prepare_data_responses_initial,
+    _slugify_identifier,
 )
 from ghostwriter.rolodex.workbook_defaults import (
     ensure_data_responses_defaults,
@@ -2347,14 +2348,18 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         return new_entry
 
     @classmethod
-    def _prune_dns_artifacts(
-        cls, artifacts: dict[str, Any], dns_records: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        valid_domains = {
+    def _collect_valid_dns_domains(cls, dns_records: list[dict[str, Any]]) -> set[str]:
+        return {
             cls._normalize_domain(record.get("domain")).lower()
             for record in dns_records
             if isinstance(record, dict) and cls._normalize_domain(record.get("domain"))
         }
+
+    @classmethod
+    def _prune_dns_artifacts(
+        cls, artifacts: dict[str, Any], dns_records: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        valid_domains = cls._collect_valid_dns_domains(dns_records)
 
         for key in ("dns_findings", "dns_issues", "dns_records"):
             existing_entries = artifacts.get(key)
@@ -2371,6 +2376,43 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             else:
                 artifacts.pop(key, None)
         return artifacts
+
+    @classmethod
+    def _prune_dns_data_files(cls, project: Project, dns_records: list[dict[str, Any]]) -> None:
+        valid_domains = cls._collect_valid_dns_domains(dns_records)
+        qs = project.data_files.filter(requirement_label__iexact="dns_report.csv")
+        for data_file in qs:
+            domain_context = cls._normalize_domain(data_file.requirement_context).lower()
+            if domain_context and domain_context in valid_domains:
+                continue
+            if data_file.file:
+                data_file.file.delete(save=False)
+            data_file.delete()
+
+    def _save_dns_report_file(
+        self, project: Project, domain: str, raw_bytes: Optional[bytes], upload_name: str
+    ) -> None:
+        if raw_bytes is None:
+            return
+        requirement_slug = _slugify_identifier("required", "dns_report.csv", domain)
+        if not requirement_slug:
+            requirement_slug = f"required-dns-report-{self._normalize_domain(domain) or 'unknown'}"
+
+        existing_files = list(project.data_files.filter(requirement_slug=requirement_slug))
+        for existing in existing_files:
+            if existing.file:
+                existing.file.delete(save=False)
+            existing.delete()
+
+        data_file = ProjectDataFile(
+            project=project,
+            requirement_slug=requirement_slug,
+            requirement_label="dns_report.csv",
+            requirement_context=domain,
+            description="",
+        )
+        data_file.file.save(upload_name or "dns_report.csv", ContentFile(raw_bytes))
+        data_file.save()
 
     @classmethod
     def _calculate_dns_unique(
@@ -2475,6 +2517,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 )
                 if error_message:
                     return JsonResponse({"error": error_message}, status=400)
+                upload_name = getattr(dns_csv_upload, "name", "dns_report.csv")
 
                 workbook_payload = normalize_workbook_payload(project.workbook_data)
                 dns_section = workbook_payload.setdefault("dns", {})
@@ -2496,6 +2539,13 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 findings_entry = self._upsert_dns_artifact_entry(findings_entries, domain)
                 findings_entry["rows"] = rows or []
                 artifacts["dns_findings"] = findings_entries
+
+                self._save_dns_report_file(
+                    project=project,
+                    domain=domain,
+                    raw_bytes=raw_bytes,
+                    upload_name=upload_name,
+                )
 
                 if raw_bytes is not None:
                     dns_issue_entries = artifacts.get("dns_issues")
@@ -2520,6 +2570,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                     dns_section["unique"] = unique_total
 
                 artifacts = self._prune_dns_artifacts(artifacts, dns_records)
+                self._prune_dns_data_files(project, dns_records)
 
                 project.workbook_data = workbook_payload
                 project.data_artifacts = artifacts
@@ -2588,6 +2639,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                     dns_section["unique"] = unique_total
 
                 artifacts = self._prune_dns_artifacts(artifacts, dns_records)
+                self._prune_dns_data_files(project, dns_records)
 
                 project.workbook_data = workbook_payload
                 project.data_artifacts = artifacts
@@ -2637,6 +2689,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             dns_records = dns_section.get("records") if isinstance(dns_section.get("records"), list) else []
             dns_section["records"] = dns_records
             artifacts = self._prune_dns_artifacts(artifacts, dns_records)
+            self._prune_dns_data_files(project, dns_records)
             unique_total = self._calculate_dns_unique(
                 dns_records, artifacts.get("dns_findings")
             )

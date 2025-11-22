@@ -88,12 +88,11 @@ def _normalize_dns_payload(payload: Optional[Mapping[str, Any]]) -> Dict[str, An
         return normalized
 
     records: List[Dict[str, Any]] = []
-    for entry in payload.get("records") or []:
-        normalized_record = _normalize_dns_record(entry)
-        if normalized_record is not None:
-            records.append(normalized_record)
-
-    if records:
+    if "records" in payload:
+        for entry in payload.get("records") or []:
+            normalized_record = _normalize_dns_record(entry)
+            if normalized_record is not None:
+                records.append(normalized_record)
         normalized["records"] = records
 
     if "unique" in payload:
