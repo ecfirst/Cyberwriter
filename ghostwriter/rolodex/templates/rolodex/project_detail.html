@@ -1385,6 +1385,11 @@
 
         const refreshWorkbookFromResponse = function(data, areaKey, modalId) {
           const modalSelector = modalId ? '#' + modalId : null;
+          const modalElement = modalSelector ? document.querySelector(modalSelector) : null;
+          const modalBody = (modalElement && modalElement.classList.contains('show'))
+            ? modalElement.querySelector('.modal-body')
+            : null;
+          const modalScrollTop = modalBody ? modalBody.scrollTop : null;
           const modalWasOpen = modalSelector ? $(modalSelector).hasClass('show') : false;
 
           if (data && data.workbook_data) {
@@ -1400,6 +1405,18 @@
           updateWorkbookCardProgress(areaKey);
           if (modalSelector && modalWasOpen) {
             $(modalSelector).modal('show');
+            setTimeout(function() {
+              document.body.classList.add('modal-open');
+              const refreshedBody = document.querySelector(modalSelector + ' .modal-body');
+              if (refreshedBody && modalScrollTop !== null) {
+                refreshedBody.scrollTop = modalScrollTop;
+              }
+              const dialog = document.querySelector(modalSelector + ' .modal-dialog');
+              if (dialog) {
+                dialog.setAttribute('tabindex', '-1');
+                dialog.focus({preventScroll: true});
+              }
+            }, 0);
           }
           cleanupModalBackdrops();
         };
