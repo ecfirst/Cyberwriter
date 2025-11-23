@@ -134,13 +134,16 @@ def normalize_project_scoping(payload: Optional[Dict[str, Any]]) -> Dict[str, Di
         normalized_category = normalized[category_key]
         lower_category_payload = {str(key).lower(): value for key, value in category_payload.items()}
         selected_value = category_payload.get("selected", lower_category_payload.get("selected"))
-        normalized_category["selected"] = bool(selected_value)
+        selected = bool(selected_value)
+        has_selected_option = False
         for option_key in normalized_category.keys():
             if option_key == "selected":
                 continue
-            normalized_category[option_key] = bool(
-                category_payload.get(option_key, lower_category_payload.get(option_key))
-            )
+            option_value = category_payload.get(option_key, lower_category_payload.get(option_key))
+            normalized_category[option_key] = bool(option_value)
+            has_selected_option = has_selected_option or bool(option_value)
+
+        normalized_category["selected"] = selected or has_selected_option
 
         if (
             category_key == "cloud"

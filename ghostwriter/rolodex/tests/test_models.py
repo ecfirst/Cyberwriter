@@ -367,6 +367,17 @@ class ProjectScopingNormalizationTests(TestCase):
 
         self.assertTrue(normalized["external"]["dns"])
 
+    def test_selected_inferred_when_option_true(self):
+        payload = {
+            "external": {
+                "dns": True,
+            }
+        }
+
+        normalized = normalize_project_scoping(payload)
+
+        self.assertTrue(normalized["external"]["selected"])
+
 
 class ProjectScopingWeightTests(TestCase):
     """Validate helper utilities for project scoping weights."""
