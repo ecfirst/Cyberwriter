@@ -355,6 +355,18 @@ class ProjectScopingNormalizationTests(TestCase):
         normalized = normalize_project_scoping(payload)
         self.assertFalse(normalized["cloud"]["system_configuration"])
 
+    def test_external_dns_option_is_case_insensitive(self):
+        payload = {
+            "external": {
+                "selected": True,
+                "DNS": True,
+            }
+        }
+
+        normalized = normalize_project_scoping(payload)
+
+        self.assertTrue(normalized["external"]["dns"])
+
 
 class ProjectScopingWeightTests(TestCase):
     """Validate helper utilities for project scoping weights."""
