@@ -3002,6 +3002,21 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
     return issues
 
 
+def parse_dns_findings(file_obj: File) -> List[Dict[str, str]]:
+    """Parse all rows from a dns_report.csv file without filtering status."""
+
+    findings: List[Dict[str, str]] = []
+
+    for row in _decode_file(file_obj):
+        normalized_row: Dict[str, str] = {}
+        for key, value in row.items():
+            normalized_row[key] = "" if value is None else str(value)
+        if normalized_row:
+            findings.append(normalized_row)
+
+    return findings
+
+
 class _SeverityItemsAccessor:
     """Provide dual behaviour for severity ``items`` access."""
 
@@ -5054,6 +5069,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
+    dns_findings: Dict[str, List[Dict[str, str]]] = {}
     ip_results: Dict[str, List[str]] = {
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
@@ -5116,6 +5132,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         if label == "dns_report.csv":
             domain = (data_file.requirement_context or data_file.description or data_file.filename).strip()
             domain = domain or "Unknown Domain"
+            parsed_dns_rows = parse_dns_findings(data_file.file)
+            if parsed_dns_rows:
+                dns_findings.setdefault(domain, []).extend(parsed_dns_rows)
             parsed_dns = parse_dns_report(data_file.file)
             if parsed_dns:
                 dns_results.setdefault(domain, []).extend(parsed_dns)
@@ -5236,6 +5255,11 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             if soa_fields:
                 entry["soa_fields"] = soa_fields
             artifacts["dns_issues"].append(entry)
+
+    if dns_findings:
+        artifacts["dns_findings"] = [
+            {"domain": domain, "rows": rows} for domain, rows in dns_findings.items()
+        ]
 
     web_summary = _build_web_summary_from_findings(
         parsed_web_findings, web_issue_matrix

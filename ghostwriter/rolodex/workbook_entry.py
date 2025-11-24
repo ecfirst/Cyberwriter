@@ -40,7 +40,9 @@ OSINT_FIELDS = {
     "total_leaks",
 }
 
-AREA_FIELDS = {"osint": OSINT_FIELDS}
+DNS_FIELDS = {"records", "unique"}
+
+AREA_FIELDS = {"dns": DNS_FIELDS, "osint": OSINT_FIELDS}
 
 
 def _as_decimal(value: Any) -> Optional[Decimal]:
@@ -105,10 +107,56 @@ def _normalize_general_payload(payload: Optional[Mapping[str, Any]]) -> Dict[str
 
 
 def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    def _normalize_dns_record(entry: Mapping[str, Any]) -> Dict[str, Any]:
+        normalized_record: Dict[str, Any] = {}
+
+        domain_value = entry.get("domain") or entry.get("name")
+        if domain_value is not None:
+            domain_text = str(domain_value).strip()
+            if domain_text:
+                normalized_record["domain"] = domain_text
+            else:
+                normalized_record["domain"] = ""
+
+        if "total" in entry:
+            normalized_record["total"] = _as_int(entry.get("total"))
+
+        if "zone_transfer" in entry:
+            zone_value = entry.get("zone_transfer")
+            if zone_value is None:
+                normalized_record["zone_transfer"] = None
+            else:
+                text = str(zone_value).strip().lower()
+                if text in {"yes", "true", "1", "y", "success", "successful"}:
+                    normalized_record["zone_transfer"] = "yes"
+                elif text in {"no", "false", "0", "n", "failed", "fail"}:
+                    normalized_record["zone_transfer"] = "no"
+                else:
+                    normalized_record["zone_transfer"] = str(zone_value)
+
+        return normalized_record
+
     normalized: Dict[str, Any] = {}
     allowed_fields = AREA_FIELDS.get(area, set())
     if not allowed_fields or not isinstance(payload, Mapping):
         return normalized
+
+    if area == "dns":
+        records_provided = "records" in payload
+        if records_provided:
+            raw_records = payload.get("records")
+            normalized_records: list[Dict[str, Any]] = []
+            if isinstance(raw_records, list):
+                for entry in raw_records:
+                    if isinstance(entry, Mapping):
+                        normalized_records.append(_normalize_dns_record(entry))
+            normalized["records"] = normalized_records
+
+        if "unique" in payload:
+            normalized["unique"] = _as_int(payload.get("unique"))
+
+        return normalized
+
     for field in allowed_fields:
         if field in payload:
             normalized[field] = _as_int(payload.get(field))

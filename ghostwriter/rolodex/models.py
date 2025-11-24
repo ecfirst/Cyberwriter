@@ -777,6 +777,10 @@ class Project(models.Model):
             load_general_cap_map,
         )
 
+        preserved_dns_records = None
+        if isinstance(self.data_artifacts, dict):
+            preserved_dns_records = self.data_artifacts.get("dns_records")
+
         artifacts = build_project_artifacts(self)
 
         existing_responses = dict(self.data_responses or {})
@@ -2026,6 +2030,9 @@ class Project(models.Model):
         artifacts.pop("web_cap_entries", None)
         artifacts.pop("nexpose_cap_map", None)
         artifacts.pop("firewall_cap_findings", None)
+
+        if "dns_records" not in artifacts and preserved_dns_records is not None:
+            artifacts["dns_records"] = preserved_dns_records
 
         self.data_artifacts = artifacts
         self.data_responses = existing_responses

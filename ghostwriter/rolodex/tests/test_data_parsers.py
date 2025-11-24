@@ -3315,6 +3315,34 @@ class DNSDataParserTests(TestCase):
             ["expire", "minimum"],
         )
 
+    def test_dns_findings_added_to_artifacts(self):
+        client, project, _ = GenerateMockProject()
+        upload = SimpleUploadedFile(
+            "dns_report.csv",
+            b"Status,Test,Info\nFAIL,Test A,Issue text\nPASS,Test B,Another\n",
+            content_type="text/csv",
+        )
+        data_file = ProjectDataFile.objects.create(
+            project=project,
+            file=upload,
+            requirement_label="dns_report.csv",
+            requirement_context="example.com",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=data_file.pk).delete())
+
+        project.rebuild_data_artifacts()
+        project.refresh_from_db()
+
+        findings = project.data_artifacts.get("dns_findings")
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), 1)
+        first_entry = findings[0]
+        self.assertEqual(first_entry.get("domain"), "example.com")
+        rows = first_entry.get("rows")
+        self.assertIsInstance(rows, list)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].get("Test"), "Test A")
+
     def test_load_general_cap_map_prefers_database(self):
         mapping = load_general_cap_map()
         weak_passwords = mapping.get("Weak passwords in use")
