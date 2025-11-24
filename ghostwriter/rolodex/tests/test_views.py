@@ -2122,6 +2122,38 @@ class MatrixViewTests(TestCase):
             VulnerabilityMatrixEntry.objects.filter(vulnerability="No Marker").exists()
         )
 
+    def test_import_rejects_placeholder_values(self):
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        csv_content = (
+            "vulnerability,action_required,remediation_impact,vulnerability_threat,category\n"
+            "Update Needed,UPDATE ME,Low,Info leak <EC>,OOD\n"
+        )
+        upload = SimpleUploadedFile("matrix.csv", csv_content.encode("utf-8"), content_type="text/csv")
+        response = self.client.post(
+            reverse("rolodex:vulnerability_matrix_import"),
+            {"csv_file": upload},
+        )
+        self.assertRedirects(response, reverse("rolodex:vulnerability_matrix"))
+        self.assertFalse(
+            VulnerabilityMatrixEntry.objects.filter(vulnerability="Update Needed").exists()
+        )
+
+    def test_import_rejects_placeholder_values_in_extra_columns(self):
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        csv_content = (
+            "vulnerability,action_required,remediation_impact,vulnerability_threat,category,notes\n"
+            "Extra Placeholder,Apply patch,Low,Info leak <EC>,ISC,UPDATE ME soon\n"
+        )
+        upload = SimpleUploadedFile("matrix.csv", csv_content.encode("utf-8"), content_type="text/csv")
+        response = self.client.post(
+            reverse("rolodex:vulnerability_matrix_import"),
+            {"csv_file": upload},
+        )
+        self.assertRedirects(response, reverse("rolodex:vulnerability_matrix"))
+        self.assertFalse(
+            VulnerabilityMatrixEntry.objects.filter(vulnerability="Extra Placeholder").exists()
+        )
+
     def test_import_ignores_additional_columns(self):
         self.client.login(username=self.manager.username, password=PASSWORD)
         csv_content = (

@@ -267,7 +267,18 @@ class VulnerabilityMatrixImportView(MatrixImportView):
                     raise ValueError(
                         f"Row {row_index}: '{field}' is required and cannot be empty."
                     )
+                if "UPDATE ME" in value_str.upper():
+                    raise ValueError(
+                        f"Row {row_index}: '{field}' cannot contain placeholder text."
+                    )
                 values[field] = value_str
+
+            for extra_field, raw_value in row.items():
+                extra_value_str = str(raw_value).strip() if raw_value is not None else ""
+                if "UPDATE ME" in extra_value_str.upper():
+                    raise ValueError(
+                        f"Row {row_index}: '{extra_field}' cannot contain placeholder text."
+                    )
 
             category_value = values["category"].upper()
             if category_value not in allowed_categories:
