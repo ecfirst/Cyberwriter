@@ -1192,67 +1192,79 @@
 
           renderSites();
 
-          const combinedHeader = document.createElement('h6');
-          combinedHeader.className = 'font-weight-bold mt-3';
-          combinedHeader.textContent = 'Combined Metrics';
-          container.appendChild(combinedHeader);
+          const footerContainer = document.createElement('div');
+          container.appendChild(footerContainer);
 
-          [
-            {key: 'combined_unique', label: 'Unique Combined Total'},
-            {key: 'combined_unique_high', label: 'Unique Combined High'},
-            {key: 'combined_unique_med', label: 'Unique Combined Medium'},
-            {key: 'combined_unique_low', label: 'Unique Combined Low'},
-          ].forEach(function(field) {
-            const group = document.createElement('div');
-            group.className = 'form-group';
-            const label = document.createElement('label');
-            label.className = 'font-weight-bold';
-            label.textContent = field.label;
-            const input = document.createElement('input');
-            input.type = 'number';
-            input.className = 'form-control';
-            input.setAttribute('data-area-field', areaKey);
-            input.value = typeof webState[field.key] === 'number' ? webState[field.key] : '';
-            input.addEventListener('input', function() {
-              const value = input.value === '' ? null : Number(input.value);
-              webState[field.key] = Number.isNaN(value) ? null : value;
-              updateWorkbookCardProgress(areaKey);
-            });
-            group.appendChild(label);
-            group.appendChild(input);
-            container.appendChild(group);
-          });
-
-          const uploadWrapper = document.createElement('div');
-          uploadWrapper.className = 'mt-3';
-          const uploadInput = document.createElement('input');
-          uploadInput.type = 'file';
-          uploadInput.className = 'd-none';
-          uploadInput.accept = '.xml,application/xml,text/xml';
-          uploadInput.addEventListener('change', function(event) {
-            if (event.target.files && event.target.files[0]) {
-              uploadBurpXml(event.target.files[0], areaKey, modalId);
-              event.target.value = '';
+          const renderFooter = function() {
+            footerContainer.innerHTML = '';
+            if (!webState.sites.length) {
+              return;
             }
-          });
-          const uploadButton = document.createElement('button');
-          uploadButton.type = 'button';
-          uploadButton.className = 'btn btn-outline-primary';
-          uploadButton.textContent = 'Upload Burp XML';
-          uploadButton.addEventListener('click', function() { uploadInput.click(); });
 
-          const removeButton = document.createElement('button');
-          removeButton.type = 'button';
-          removeButton.className = 'btn btn-outline-danger ml-2';
-          removeButton.textContent = 'Remove Web Data';
-          removeButton.addEventListener('click', function() {
-            removeWebData(areaKey, modalId);
-          });
+            const combinedHeader = document.createElement('h6');
+            combinedHeader.className = 'font-weight-bold mt-3';
+            combinedHeader.textContent = 'Combined Metrics';
+            footerContainer.appendChild(combinedHeader);
 
-          uploadWrapper.appendChild(uploadButton);
-          uploadWrapper.appendChild(removeButton);
-          uploadWrapper.appendChild(uploadInput);
-          container.appendChild(uploadWrapper);
+            [
+              {key: 'combined_unique', label: 'Unique Combined Total'},
+              {key: 'combined_unique_high', label: 'Unique Combined High'},
+              {key: 'combined_unique_med', label: 'Unique Combined Medium'},
+              {key: 'combined_unique_low', label: 'Unique Combined Low'},
+            ].forEach(function(field) {
+              const group = document.createElement('div');
+              group.className = 'form-group';
+              const label = document.createElement('label');
+              label.className = 'font-weight-bold';
+              label.textContent = field.label;
+              const input = document.createElement('input');
+              input.type = 'number';
+              input.className = 'form-control';
+              input.setAttribute('data-area-field', areaKey);
+              input.value = typeof webState[field.key] === 'number' ? webState[field.key] : '';
+              input.addEventListener('input', function() {
+                const value = input.value === '' ? null : Number(input.value);
+                webState[field.key] = Number.isNaN(value) ? null : value;
+                updateWorkbookCardProgress(areaKey);
+              });
+              group.appendChild(label);
+              group.appendChild(input);
+              footerContainer.appendChild(group);
+            });
+
+            const uploadWrapper = document.createElement('div');
+            uploadWrapper.className = 'mt-3';
+            const uploadInput = document.createElement('input');
+            uploadInput.type = 'file';
+            uploadInput.className = 'd-none';
+            uploadInput.accept = '.xml,application/xml,text/xml';
+            uploadInput.addEventListener('change', function(event) {
+              if (event.target.files && event.target.files[0]) {
+                uploadBurpXml(event.target.files[0], areaKey, modalId);
+                event.target.value = '';
+              }
+            });
+            const uploadButton = document.createElement('button');
+            uploadButton.type = 'button';
+            uploadButton.className = 'btn btn-outline-primary';
+            uploadButton.textContent = 'Upload Burp XML';
+            uploadButton.addEventListener('click', function() { uploadInput.click(); });
+
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'btn btn-outline-danger ml-2';
+            removeButton.textContent = 'Remove Web Data';
+            removeButton.addEventListener('click', function() {
+              removeWebData(areaKey, modalId);
+            });
+
+            uploadWrapper.appendChild(uploadButton);
+            uploadWrapper.appendChild(removeButton);
+            uploadWrapper.appendChild(uploadInput);
+            footerContainer.appendChild(uploadWrapper);
+          };
+
+          renderFooter();
         }
 
         const areaSubsectionConfig = {
@@ -1276,19 +1288,6 @@
             workbookKey: 'web',
             renderer: 'web',
             serializer: serializeWebPayload,
-            uploaders: [
-              {
-                fieldName: 'burp_xml',
-                label: 'Upload Burp XML',
-                removeLabel: 'Remove Web Data',
-                uploadHandler: function(file, context) {
-                  uploadBurpXml(file, context.areaKey, context.modalId);
-                },
-                removeHandler: function(context) {
-                  removeWebData(context.areaKey, context.modalId);
-                },
-              },
-            ],
           },
           external_nexpose: {
             label: 'External Nexpose',
