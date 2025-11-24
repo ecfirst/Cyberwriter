@@ -1630,6 +1630,18 @@
           });
         };
 
+        const removeNexposeData = function(workbookKey, areaKey, modalId) {
+          if (!workbookKey) {
+            return;
+          }
+          const payload = {remove_nexpose: workbookKey};
+          submitWorkbookUpdate(payload, null, {
+            reopenModalId: modalId,
+            forceCloseModalId: modalId,
+            afterRender: function() { updateWorkbookCardProgress(areaKey); },
+          });
+        };
+
         const removeOsintData = function(areaKey, modalId) {
           const payload = {remove_osint: true};
           submitWorkbookUpdate(payload, null, {
@@ -2028,7 +2040,16 @@
                   uploadButton.addEventListener('click', function() {
                     uploadInput.click();
                   });
+                  const removeButton = document.createElement('button');
+                  removeButton.type = 'button';
+                  removeButton.className = 'btn btn-outline-danger ml-2';
+                  removeButton.textContent = 'Remove Nexpose Data';
+                  removeButton.addEventListener('click', function() {
+                    removeNexposeData(workbookKey, areaKey, modalId);
+                  });
+
                   uploadContainer.appendChild(uploadButton);
+                  uploadContainer.appendChild(removeButton);
                   uploadContainer.appendChild(uploadInput);
                 });
                 subBody.appendChild(uploadContainer);
