@@ -213,6 +213,8 @@ class OplogEntryConsumer(AsyncWebsocketConsumer):
             oplog_id = self.scope["url_route"]["kwargs"]["pk"]
             await self.channel_layer.group_add(str(oplog_id), self.channel_name)
             await self.accept()
+        else:
+            await self.close(code=4401)
 
     async def disconnect(self, close_code):
         logger.info("WebSocket disconnected with close code: %s", close_code)
