@@ -1054,6 +1054,219 @@
           return scope && scope.selected;
         };
 
+        function ensureWebState() {
+          const webState = (workbookState && typeof workbookState.web === 'object') ? workbookState.web : {};
+          if (!Array.isArray(webState.sites)) {
+            webState.sites = [];
+          }
+          ['combined_unique', 'combined_unique_high', 'combined_unique_med', 'combined_unique_low'].forEach(function(key) {
+            if (typeof webState[key] === 'undefined') {
+              webState[key] = null;
+            }
+          });
+          workbookState.web = webState;
+          return webState;
+        }
+
+        function serializeWebPayload() {
+          const webState = ensureWebState();
+          const normalizeNumber = function(value) {
+            if (typeof value === 'number' && !Number.isNaN(value)) {
+              return value;
+            }
+            return null;
+          };
+          const sites = (webState.sites || []).map(function(site) {
+            return {
+              url: (site.url || '').trim(),
+              unique_high: normalizeNumber(site.unique_high),
+              unique_med: normalizeNumber(site.unique_med),
+              unique_low: normalizeNumber(site.unique_low),
+            };
+          }).filter(function(entry) {
+            return entry.url || entry.unique_high !== null || entry.unique_med !== null || entry.unique_low !== null;
+          });
+          return {
+            sites: sites,
+            combined_unique: normalizeNumber(webState.combined_unique),
+            combined_unique_high: normalizeNumber(webState.combined_unique_high),
+            combined_unique_med: normalizeNumber(webState.combined_unique_med),
+            combined_unique_low: normalizeNumber(webState.combined_unique_low),
+          };
+        }
+
+        function renderWebSites(container, areaKey, modalId) {
+          const webState = ensureWebState();
+          container.innerHTML = '';
+
+          const addWrapper = document.createElement('div');
+          addWrapper.className = 'd-flex justify-content-between align-items-center mb-3';
+          const addButton = document.createElement('button');
+          addButton.type = 'button';
+          addButton.className = 'btn btn-outline-primary';
+          addButton.textContent = 'Add new Site/App';
+          addButton.addEventListener('click', function() {
+            webState.sites.push({url: '', unique_high: null, unique_med: null, unique_low: null});
+            renderWebSites(container, areaKey, modalId);
+            updateWorkbookCardProgress(areaKey);
+          });
+          addWrapper.appendChild(addButton);
+          container.appendChild(addWrapper);
+
+          const sitesContainer = document.createElement('div');
+          container.appendChild(sitesContainer);
+
+          const renderSites = function() {
+            sitesContainer.innerHTML = '';
+            if (!webState.sites.length) {
+              const empty = document.createElement('p');
+              empty.className = 'text-muted mb-3';
+              empty.textContent = 'No sites have been added yet.';
+              sitesContainer.appendChild(empty);
+            }
+            webState.sites.forEach(function(site, index) {
+              const wrapper = document.createElement('div');
+              wrapper.className = 'border rounded p-3 mb-3';
+              const heading = document.createElement('div');
+              heading.className = 'font-weight-bold mb-2';
+              heading.textContent = 'Site/App ' + (index + 1);
+              wrapper.appendChild(heading);
+
+              const urlGroup = document.createElement('div');
+              urlGroup.className = 'form-group';
+              const urlLabel = document.createElement('label');
+              urlLabel.className = 'font-weight-bold';
+              urlLabel.textContent = 'Website URL';
+              const urlInput = document.createElement('input');
+              urlInput.type = 'text';
+              urlInput.className = 'form-control';
+              urlInput.setAttribute('data-area-field', areaKey);
+              urlInput.value = site.url || '';
+              urlInput.addEventListener('input', function() {
+                site.url = urlInput.value;
+                updateWorkbookCardProgress(areaKey);
+              });
+              urlGroup.appendChild(urlLabel);
+              urlGroup.appendChild(urlInput);
+              wrapper.appendChild(urlGroup);
+
+              const makeNumberGroup = function(labelText, fieldKey) {
+                const group = document.createElement('div');
+                group.className = 'form-group';
+                const label = document.createElement('label');
+                label.className = 'font-weight-bold';
+                label.textContent = labelText;
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.className = 'form-control';
+                input.setAttribute('data-area-field', areaKey);
+                input.value = typeof site[fieldKey] === 'number' ? site[fieldKey] : '';
+                input.addEventListener('input', function() {
+                  const value = input.value === '' ? null : Number(input.value);
+                  site[fieldKey] = Number.isNaN(value) ? null : value;
+                  updateWorkbookCardProgress(areaKey);
+                });
+                group.appendChild(label);
+                group.appendChild(input);
+                return group;
+              };
+
+              wrapper.appendChild(makeNumberGroup('Unique Total High', 'unique_high'));
+              wrapper.appendChild(makeNumberGroup('Unique Total Medium', 'unique_med'));
+              wrapper.appendChild(makeNumberGroup('Unique Total Low', 'unique_low'));
+
+              const removeButton = document.createElement('button');
+              removeButton.type = 'button';
+              removeButton.className = 'btn btn-outline-danger';
+              removeButton.textContent = 'Remove Site/App';
+              removeButton.addEventListener('click', function() {
+                webState.sites.splice(index, 1);
+                renderWebSites(container, areaKey, modalId);
+                updateWorkbookCardProgress(areaKey);
+              });
+              wrapper.appendChild(removeButton);
+
+              sitesContainer.appendChild(wrapper);
+            });
+          };
+
+          renderSites();
+
+          const footerContainer = document.createElement('div');
+          container.appendChild(footerContainer);
+
+          const renderFooter = function() {
+            footerContainer.innerHTML = '';
+            if (!webState.sites.length) {
+              return;
+            }
+
+            const combinedHeader = document.createElement('h6');
+            combinedHeader.className = 'font-weight-bold mt-3';
+            combinedHeader.textContent = 'Combined Metrics';
+            footerContainer.appendChild(combinedHeader);
+
+            [
+              {key: 'combined_unique', label: 'Unique Combined Total'},
+              {key: 'combined_unique_high', label: 'Unique Combined High'},
+              {key: 'combined_unique_med', label: 'Unique Combined Medium'},
+              {key: 'combined_unique_low', label: 'Unique Combined Low'},
+            ].forEach(function(field) {
+              const group = document.createElement('div');
+              group.className = 'form-group';
+              const label = document.createElement('label');
+              label.className = 'font-weight-bold';
+              label.textContent = field.label;
+              const input = document.createElement('input');
+              input.type = 'number';
+              input.className = 'form-control';
+              input.setAttribute('data-area-field', areaKey);
+              input.value = typeof webState[field.key] === 'number' ? webState[field.key] : '';
+              input.addEventListener('input', function() {
+                const value = input.value === '' ? null : Number(input.value);
+                webState[field.key] = Number.isNaN(value) ? null : value;
+                updateWorkbookCardProgress(areaKey);
+              });
+              group.appendChild(label);
+              group.appendChild(input);
+              footerContainer.appendChild(group);
+            });
+
+            const uploadWrapper = document.createElement('div');
+            uploadWrapper.className = 'mt-3';
+            const uploadInput = document.createElement('input');
+            uploadInput.type = 'file';
+            uploadInput.className = 'd-none';
+            uploadInput.accept = '.xml,application/xml,text/xml';
+            uploadInput.addEventListener('change', function(event) {
+              if (event.target.files && event.target.files[0]) {
+                uploadBurpXml(event.target.files[0], areaKey, modalId);
+                event.target.value = '';
+              }
+            });
+            const uploadButton = document.createElement('button');
+            uploadButton.type = 'button';
+            uploadButton.className = 'btn btn-outline-primary';
+            uploadButton.textContent = 'Upload Burp XML';
+            uploadButton.addEventListener('click', function() { uploadInput.click(); });
+
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'btn btn-outline-danger ml-2';
+            removeButton.textContent = 'Remove Web Data';
+            removeButton.addEventListener('click', function() {
+              removeWebData(areaKey, modalId);
+            });
+
+            uploadWrapper.appendChild(uploadButton);
+            uploadWrapper.appendChild(removeButton);
+            uploadWrapper.appendChild(uploadInput);
+            footerContainer.appendChild(uploadWrapper);
+          };
+
+          renderFooter();
+        }
+
         const areaSubsectionConfig = {
           osint: {
             label: 'OSINT',
@@ -1069,6 +1282,12 @@
           },
           dns: {
             label: 'DNS',
+          },
+          external_web: {
+            label: 'Web',
+            workbookKey: 'web',
+            renderer: 'web',
+            serializer: serializeWebPayload,
           },
           external_nexpose: {
             label: 'External Nexpose',
@@ -1522,17 +1741,21 @@
           const payload = {areas: {}};
           subkeys.forEach(function(subkey) {
             const config = resolveAreaConfig(areaKey, subkey);
-            if (!config || !config.fields) {
-              if (subkey === 'dns') {
-                payload.dns = ensureDnsState();
-              }
-              return;
-            }
             if (subkey === 'dns') {
               payload.dns = ensureDnsState();
               return;
             }
-            const workbookKey = config.workbookKey || subkey;
+            const workbookKey = (config && config.workbookKey) || subkey;
+            if (config && typeof config.serializer === 'function') {
+              const serialized = config.serializer({areaKey: areaKey, subkey: subkey, workbookKey: workbookKey});
+              if (serialized && typeof serialized === 'object') {
+                payload.areas[workbookKey] = serialized;
+              }
+              return;
+            }
+            if (!config || !config.fields) {
+              return;
+            }
             const fieldPayload = {};
             config.fields.forEach(function(field) {
               const input = document.getElementById('area-' + subkey + '-' + field.key);
@@ -1630,11 +1853,52 @@
           });
         };
 
+        const uploadBurpXml = function(file, areaKey, modalId) {
+          if (!workbookUpdateUrl || !file) {
+            return;
+          }
+          const formData = new FormData();
+          formData.append('burp_xml', file);
+          fetch(workbookUpdateUrl, {
+            method: 'POST',
+            headers: {
+              'X-CSRFToken': getCsrfToken() || '',
+            },
+            body: formData,
+          }).then(function(response) {
+            return response.json().then(function(data) {
+              if (!response.ok) {
+                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
+                throw new Error(message);
+              }
+              return data;
+            });
+          }).then(function(data) {
+            handleWorkbookUpdateResponse(data, {
+              reopenModalId: modalId,
+              forceCloseModalId: modalId,
+              afterRender: function() { updateWorkbookCardProgress(areaKey); },
+            });
+          }).catch(function(error) {
+            console.error(error);
+            alert(error.message || 'Unable to save workbook data.');
+          });
+        };
+
         const removeNexposeData = function(workbookKey, areaKey, modalId) {
           if (!workbookKey) {
             return;
           }
           const payload = {remove_nexpose: workbookKey};
+          submitWorkbookUpdate(payload, null, {
+            reopenModalId: modalId,
+            forceCloseModalId: modalId,
+            afterRender: function() { updateWorkbookCardProgress(areaKey); },
+          });
+        };
+
+        const removeWebData = function(areaKey, modalId) {
+          const payload = {remove_web: true};
           submitWorkbookUpdate(payload, null, {
             reopenModalId: modalId,
             forceCloseModalId: modalId,
@@ -2005,7 +2269,10 @@
               const subBody = document.createElement('div');
               subBody.className = 'card-body';
               const config = resolvedConfig;
-              if (subkey === 'dns') {
+              const uploaderContext = {areaKey: areaKey, subkey: subkey, workbookKey: workbookKey, modalId: modalId};
+              if (config && config.renderer === 'web') {
+                renderWebSites(subBody, areaKey, modalId);
+              } else if (subkey === 'dns') {
                 renderDnsDomains(subBody, areaKey, modalId);
               } else if (config && Array.isArray(config.fields)) {
                 config.fields.forEach(function(field) {
@@ -2027,9 +2294,12 @@
                   uploadInput.className = 'd-none';
                   uploadInput.accept = uploader.accept || '.xml,application/xml,text/xml';
                   uploadInput.id = 'uploader-' + subkey + '-' + uploader.fieldName;
+                  const uploadHandler = (typeof uploader.uploadHandler === 'function')
+                    ? function(file) { uploader.uploadHandler(file, uploaderContext); }
+                    : function(file) { uploadNexposeXml(file, uploader.fieldName, areaKey, modalId); };
                   uploadInput.addEventListener('change', function(event) {
                     if (event.target.files && event.target.files[0]) {
-                      uploadNexposeXml(event.target.files[0], uploader.fieldName, areaKey, modalId);
+                      uploadHandler(event.target.files[0]);
                       event.target.value = '';
                     }
                   });
@@ -2040,13 +2310,14 @@
                   uploadButton.addEventListener('click', function() {
                     uploadInput.click();
                   });
+                  const removeHandler = (typeof uploader.removeHandler === 'function')
+                    ? function() { uploader.removeHandler(uploaderContext); }
+                    : function() { removeNexposeData(workbookKey, areaKey, modalId); };
                   const removeButton = document.createElement('button');
                   removeButton.type = 'button';
                   removeButton.className = 'btn btn-outline-danger ml-2';
-                  removeButton.textContent = 'Remove Nexpose Data';
-                  removeButton.addEventListener('click', function() {
-                    removeNexposeData(workbookKey, areaKey, modalId);
-                  });
+                  removeButton.textContent = uploader.removeLabel || 'Remove Nexpose Data';
+                  removeButton.addEventListener('click', function() { removeHandler(); });
 
                   uploadContainer.appendChild(uploadButton);
                   uploadContainer.appendChild(removeButton);
