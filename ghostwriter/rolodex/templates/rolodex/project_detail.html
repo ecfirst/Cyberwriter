@@ -1067,6 +1067,10 @@
               {key: 'total_leaks', label: 'Total Leaked Creds found', type: 'number'},
             ],
           },
+          dns: {
+            label: 'DNS',
+            fields: [],
+          },
         };
 
         const createAreaFieldGroup = function(areaKey, subkey, field) {
@@ -1102,6 +1106,340 @@
             formGroup.appendChild(input);
           }
           return formGroup;
+        };
+
+        let dnsRecordUidCounter = 0;
+
+        const normalizeDnsZoneTransfer = function(value) {
+          if (typeof value === 'boolean') {
+            return value ? 'Yes' : 'No';
+          }
+          const text = (value || '').toString().trim().toLowerCase();
+          if (!text) {
+            return '';
+          }
+          if (['yes', 'y', 'true', '1'].indexOf(text) !== -1) {
+            return 'Yes';
+          }
+          if (['no', 'n', 'false', '0'].indexOf(text) !== -1) {
+            return 'No';
+          }
+          return value;
+        };
+
+        const refreshDnsIndices = function(container) {
+          const groups = container.querySelectorAll('.dns-domain-group');
+          groups.forEach(function(group, index) {
+            group.setAttribute('data-record-index', index.toString());
+            const domainLabel = group.querySelector('.dns-domain-label');
+            if (domainLabel) {
+              domainLabel.textContent = 'Domain ' + (index + 1);
+            }
+            const inputs = group.querySelectorAll('[data-record-index]');
+            inputs.forEach(function(input) {
+              input.setAttribute('data-record-index', index.toString());
+            });
+          });
+        };
+
+        const collectDnsPayload = function(container) {
+          const payload = {records: []};
+          const groups = container.querySelectorAll('.dns-domain-group');
+          groups.forEach(function(group) {
+            const domainInput = group.querySelector('.dns-domain-input');
+            const totalInput = group.querySelector('.dns-total-input');
+            const zoneSelect = group.querySelector('.dns-zone-select');
+            const entry = {};
+            if (domainInput && domainInput.value.trim()) {
+              entry.domain = domainInput.value.trim();
+            }
+            if (totalInput) {
+              const parsed = parseInt(totalInput.value, 10);
+              entry.total = Number.isNaN(parsed) ? null : parsed;
+            }
+            if (zoneSelect && zoneSelect.value) {
+              entry.zone_transfer = zoneSelect.value;
+            }
+            payload.records.push(entry);
+          });
+          const uniqueInput = document.getElementById('dns-unique-total');
+          if (uniqueInput) {
+            const parsedUnique = parseInt(uniqueInput.value, 10);
+            payload.unique = Number.isNaN(parsedUnique) ? null : parsedUnique;
+          }
+          return payload;
+        };
+
+        const uploadDnsCsv = function(file, recordIndex, domainValue, areaKey, modalId) {
+          if (!workbookUpdateUrl || !file) {
+            return;
+          }
+          const formData = new FormData();
+          formData.append('dns_csv', file);
+          if (recordIndex !== null && typeof recordIndex !== 'undefined') {
+            formData.append('record_index', recordIndex);
+          }
+          if (domainValue) {
+            formData.append('domain', domainValue);
+          }
+          fetch(workbookUpdateUrl, {
+            method: 'POST',
+            headers: {'X-CSRFToken': getCsrfToken() || ''},
+            body: formData,
+          }).then(function(response) {
+            return response.json().then(function(data) {
+              if (!response.ok) {
+                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
+                throw new Error(message);
+              }
+              return data;
+            });
+          }).then(function(data) {
+            handleWorkbookUpdateResponse(data, {
+              reopenModalId: modalId,
+              forceCloseModalId: modalId,
+              afterRender: function() { updateWorkbookCardProgress(areaKey); },
+            });
+          }).catch(function(error) {
+            console.error(error);
+            alert(error.message || 'Unable to save workbook data.');
+          });
+        };
+
+        const uploadDnsXml = function(file, recordIndex, domainValue, areaKey, modalId) {
+          if (!workbookUpdateUrl || !file) {
+            return;
+          }
+          const formData = new FormData();
+          formData.append('dns_xml', file);
+          if (recordIndex !== null && typeof recordIndex !== 'undefined') {
+            formData.append('record_index', recordIndex);
+          }
+          if (domainValue) {
+            formData.append('domain', domainValue);
+          }
+          fetch(workbookUpdateUrl, {
+            method: 'POST',
+            headers: {'X-CSRFToken': getCsrfToken() || ''},
+            body: formData,
+          }).then(function(response) {
+            return response.json().then(function(data) {
+              if (!response.ok) {
+                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
+                throw new Error(message);
+              }
+              return data;
+            });
+          }).then(function(data) {
+            handleWorkbookUpdateResponse(data, {
+              reopenModalId: modalId,
+              forceCloseModalId: modalId,
+              afterRender: function() { updateWorkbookCardProgress(areaKey); },
+            });
+          }).catch(function(error) {
+            console.error(error);
+            alert(error.message || 'Unable to save workbook data.');
+          });
+        };
+
+        const addDnsRecord = function(container, record, areaKey, modalId) {
+          dnsRecordUidCounter += 1;
+          const uid = dnsRecordUidCounter;
+          const recordIndex = container.querySelectorAll('.dns-domain-group').length;
+
+          const card = document.createElement('div');
+          card.className = 'card mb-3 dns-domain-group';
+          card.setAttribute('data-record-index', recordIndex.toString());
+
+          const body = document.createElement('div');
+          body.className = 'card-body';
+
+          const domainGroup = document.createElement('div');
+          domainGroup.className = 'form-group';
+          const domainLabel = document.createElement('label');
+          domainLabel.className = 'font-weight-bold dns-domain-label';
+          domainLabel.setAttribute('for', 'dns-domain-' + uid);
+          domainLabel.textContent = 'Domain ' + (recordIndex + 1);
+          const domainInput = document.createElement('input');
+          domainInput.type = 'text';
+          domainInput.className = 'form-control dns-domain-input';
+          domainInput.id = 'dns-domain-' + uid;
+          domainInput.setAttribute('data-area-field', areaKey);
+          domainInput.setAttribute('data-record-index', recordIndex.toString());
+          domainInput.value = (record && record.domain) ? record.domain : '';
+          domainInput.addEventListener('input', function() { updateWorkbookCardProgress(areaKey); });
+          domainGroup.appendChild(domainLabel);
+          domainGroup.appendChild(domainInput);
+
+          const totalGroup = document.createElement('div');
+          totalGroup.className = 'form-group';
+          const totalLabel = document.createElement('label');
+          totalLabel.className = 'font-weight-bold';
+          totalLabel.setAttribute('for', 'dns-total-' + uid);
+          totalLabel.textContent = 'Total number of DNS findings';
+          const totalInput = document.createElement('input');
+          totalInput.type = 'number';
+          totalInput.min = '0';
+          totalInput.className = 'form-control dns-total-input';
+          totalInput.id = 'dns-total-' + uid;
+          totalInput.setAttribute('data-area-field', areaKey);
+          totalInput.setAttribute('data-record-index', recordIndex.toString());
+          const totalValue = record && typeof record.total === 'number' ? record.total : '';
+          totalInput.value = totalValue === '' ? '' : totalValue;
+          totalInput.addEventListener('input', function() { updateWorkbookCardProgress(areaKey); });
+          totalGroup.appendChild(totalLabel);
+          totalGroup.appendChild(totalInput);
+
+          const zoneGroup = document.createElement('div');
+          zoneGroup.className = 'form-group';
+          const zoneLabel = document.createElement('label');
+          zoneLabel.className = 'font-weight-bold';
+          zoneLabel.setAttribute('for', 'dns-zone-' + uid);
+          zoneLabel.textContent = 'Was a zone transfer successful?';
+          const zoneSelect = document.createElement('select');
+          zoneSelect.className = 'form-control dns-zone-select';
+          zoneSelect.id = 'dns-zone-' + uid;
+          zoneSelect.setAttribute('data-area-field', areaKey);
+          zoneSelect.setAttribute('data-record-index', recordIndex.toString());
+          const zoneValue = normalizeDnsZoneTransfer(record ? record.zone_transfer : '');
+          const placeholder = document.createElement('option');
+          placeholder.value = '';
+          placeholder.textContent = 'Select an option';
+          zoneSelect.appendChild(placeholder);
+          ['Yes', 'No'].forEach(function(optionValue) {
+            const option = document.createElement('option');
+            option.value = optionValue;
+            option.textContent = optionValue.toLowerCase();
+            if (optionValue === zoneValue) {
+              option.selected = true;
+            }
+            zoneSelect.appendChild(option);
+          });
+          zoneSelect.addEventListener('change', function() { updateWorkbookCardProgress(areaKey); });
+          zoneGroup.appendChild(zoneLabel);
+          zoneGroup.appendChild(zoneSelect);
+
+          const actionRow = document.createElement('div');
+          actionRow.className = 'd-flex flex-wrap align-items-center';
+
+          const uploadCsvInput = document.createElement('input');
+          uploadCsvInput.type = 'file';
+          uploadCsvInput.accept = '.csv,text/csv';
+          uploadCsvInput.className = 'd-none';
+          uploadCsvInput.setAttribute('data-record-index', recordIndex.toString());
+          uploadCsvInput.addEventListener('change', function(event) {
+            if (event.target.files && event.target.files[0]) {
+              uploadDnsCsv(event.target.files[0], group.getAttribute('data-record-index'), domainInput.value, areaKey, modalId);
+              event.target.value = '';
+            }
+          });
+
+          const uploadCsvButton = document.createElement('button');
+          uploadCsvButton.type = 'button';
+          uploadCsvButton.className = 'btn btn-outline-primary mb-2 mb-sm-0';
+          uploadCsvButton.textContent = 'Upload DNS CSV';
+          uploadCsvButton.addEventListener('click', function() { uploadCsvInput.click(); });
+
+          const uploadXmlInput = document.createElement('input');
+          uploadXmlInput.type = 'file';
+          uploadXmlInput.accept = '.xml,text/xml,application/xml';
+          uploadXmlInput.className = 'd-none';
+          uploadXmlInput.setAttribute('data-record-index', recordIndex.toString());
+          uploadXmlInput.addEventListener('change', function(event) {
+            if (event.target.files && event.target.files[0]) {
+              uploadDnsXml(event.target.files[0], group.getAttribute('data-record-index'), domainInput.value, areaKey, modalId);
+              event.target.value = '';
+            }
+          });
+
+          const uploadXmlButton = document.createElement('button');
+          uploadXmlButton.type = 'button';
+          uploadXmlButton.className = 'btn btn-outline-secondary mb-2 mb-sm-0 ml-sm-2';
+          uploadXmlButton.textContent = 'Upload DNS XML';
+          uploadXmlButton.addEventListener('click', function() { uploadXmlInput.click(); });
+
+          const removeButton = document.createElement('button');
+          removeButton.type = 'button';
+          removeButton.className = 'btn btn-outline-danger ml-sm-auto';
+          removeButton.textContent = 'Remove Domain';
+          removeButton.addEventListener('click', function() {
+            group.remove();
+            refreshDnsIndices(container);
+            const payload = {areas: {dns: collectDnsPayload(container)}};
+            submitWorkbookUpdate(payload, null, {reopenModalId: modalId, forceCloseModalId: modalId});
+          });
+
+          actionRow.appendChild(uploadCsvInput);
+          actionRow.appendChild(uploadCsvButton);
+          actionRow.appendChild(uploadXmlInput);
+          actionRow.appendChild(uploadXmlButton);
+          actionRow.appendChild(removeButton);
+
+          body.appendChild(domainGroup);
+          body.appendChild(totalGroup);
+          body.appendChild(zoneGroup);
+          body.appendChild(actionRow);
+
+          card.appendChild(body);
+          container.appendChild(card);
+
+          refreshDnsIndices(container);
+          updateWorkbookCardProgress(areaKey);
+        };
+
+        const renderDnsSection = function(subBody, areaKey, modalId) {
+          const headerRow = document.createElement('div');
+          headerRow.className = 'd-flex justify-content-between align-items-center mb-3 flex-wrap';
+          const heading = document.createElement('h6');
+          heading.className = 'mb-2 mb-sm-0';
+          heading.textContent = 'DNS Domains';
+          const addButton = document.createElement('button');
+          addButton.type = 'button';
+          addButton.className = 'btn btn-outline-primary';
+          addButton.textContent = 'Add new Domain';
+          headerRow.appendChild(heading);
+          headerRow.appendChild(addButton);
+
+          const recordsContainer = document.createElement('div');
+          recordsContainer.id = 'dns-records-container';
+          recordsContainer.setAttribute('data-area-field', areaKey);
+
+          const existingRecords = (workbookState.dns && Array.isArray(workbookState.dns.records))
+            ? workbookState.dns.records
+            : [];
+          existingRecords.forEach(function(record) {
+            addDnsRecord(recordsContainer, record, areaKey, modalId);
+          });
+          if (!existingRecords.length) {
+            addDnsRecord(recordsContainer, {}, areaKey, modalId);
+          }
+
+          addButton.addEventListener('click', function() {
+            addDnsRecord(recordsContainer, {}, areaKey, modalId);
+          });
+
+          const uniqueGroup = document.createElement('div');
+          uniqueGroup.className = 'form-group mt-3';
+          const uniqueLabel = document.createElement('label');
+          uniqueLabel.className = 'font-weight-bold';
+          uniqueLabel.setAttribute('for', 'dns-unique-total');
+          uniqueLabel.textContent = 'Unique total';
+          const uniqueInput = document.createElement('input');
+          uniqueInput.type = 'number';
+          uniqueInput.className = 'form-control';
+          uniqueInput.id = 'dns-unique-total';
+          uniqueInput.readOnly = true;
+          const uniqueValue = workbookState.dns && typeof workbookState.dns.unique === 'number'
+            ? workbookState.dns.unique
+            : '';
+          uniqueInput.value = uniqueValue === '' ? '' : uniqueValue;
+
+          uniqueGroup.appendChild(uniqueLabel);
+          uniqueGroup.appendChild(uniqueInput);
+
+          subBody.appendChild(headerRow);
+          subBody.appendChild(recordsContainer);
+          subBody.appendChild(uniqueGroup);
         };
 
         const scoreToRisk = function(score) {
@@ -1336,6 +1674,13 @@
           }
           const payload = {areas: {}};
           subkeys.forEach(function(subkey) {
+            if (subkey === 'dns') {
+              const dnsContainer = document.getElementById('dns-records-container');
+              if (dnsContainer) {
+                payload.areas[subkey] = collectDnsPayload(dnsContainer);
+              }
+              return;
+            }
             const config = areaSubsectionConfig[subkey];
             if (!config || !config.fields) {
               return;
@@ -1505,7 +1850,9 @@
               const subBody = document.createElement('div');
               subBody.className = 'card-body';
               const config = areaSubsectionConfig[subkey];
-              if (config && Array.isArray(config.fields)) {
+              if (subkey === 'dns') {
+                renderDnsSection(subBody, areaKey, modalId);
+              } else if (config && Array.isArray(config.fields)) {
                 config.fields.forEach(function(field) {
                   const formGroup = createAreaFieldGroup(areaKey, subkey, field);
                   subBody.appendChild(formGroup);
