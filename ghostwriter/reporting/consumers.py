@@ -24,6 +24,7 @@ class ReportConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_add(self.report_group_name, self.channel_name)
             await self.accept()
         else:
+            await self.accept()
             await self.close()
 
     async def disconnect(self, close_code):
@@ -65,6 +66,7 @@ class ReportFindingConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_add(self.finding_group_name, self.channel_name)
             await self.accept()
         else:
+            await self.accept()
             await self.close()
 
     async def disconnect(self, close_code):

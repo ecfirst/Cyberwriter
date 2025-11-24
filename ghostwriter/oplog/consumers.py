@@ -214,6 +214,7 @@ class OplogEntryConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_add(str(oplog_id), self.channel_name)
             await self.accept()
         else:
+            await self.accept()
             await self.close()
 
     async def disconnect(self, close_code):
