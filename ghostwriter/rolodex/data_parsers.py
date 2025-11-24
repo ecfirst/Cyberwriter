@@ -1065,16 +1065,27 @@ def build_ad_risk_contrib(
 def _decode_file(file_obj: File) -> Iterable[Dict[str, str]]:
     """Return a DictReader for the provided file object."""
 
-    try:
-        file_obj.open("rb")
-    except FileNotFoundError:
-        logger.warning("Uploaded data file is missing from storage", exc_info=True)
-        raw_bytes = b""
-    else:
+    raw_bytes: bytes
+
+    if hasattr(file_obj, "open"):
         try:
-            raw_bytes = file_obj.read() or b""
-        finally:
-            file_obj.close()
+            file_obj.open("rb")
+        except FileNotFoundError:
+            logger.warning("Uploaded data file is missing from storage", exc_info=True)
+            raw_bytes = b""
+        else:
+            try:
+                raw_bytes = file_obj.read() or b""
+            finally:
+                file_obj.close()
+    elif hasattr(file_obj, "read"):
+        data = file_obj.read()
+        if isinstance(data, str):
+            raw_bytes = data.encode("utf-8")
+        else:
+            raw_bytes = data or b""
+    else:
+        raw_bytes = b""
 
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
         try:
