@@ -5054,6 +5054,7 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
 
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
+    dns_findings: Dict[str, List[Dict[str, str]]] = {}
     ip_results: Dict[str, List[str]] = {
         definition.artifact_key: [] for definition in IP_ARTIFACT_DEFINITIONS.values()
     }
@@ -5116,9 +5117,37 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         if label == "dns_report.csv":
             domain = (data_file.requirement_context or data_file.description or data_file.filename).strip()
             domain = domain or "Unknown Domain"
-            parsed_dns = parse_dns_report(data_file.file)
+            try:
+                content = data_file.file.read().decode("utf-8-sig")
+            except Exception:
+                content = ""
+
+            if content:
+                parsed_dns = parse_dns_report(io.StringIO(content))
+            else:
+                parsed_dns = parse_dns_report(data_file.file)
+
             if parsed_dns:
                 dns_results.setdefault(domain, []).extend(parsed_dns)
+
+            if content:
+                reader = csv.DictReader(io.StringIO(content))
+                normalized_rows: List[Dict[str, str]] = []
+                for row in reader:
+                    normalized_rows.append(
+                        {
+                            header.strip(): (row.get(header) or "").strip()
+                            for header in (reader.fieldnames or [])
+                        }
+                    )
+                if normalized_rows:
+                    dns_findings[domain] = normalized_rows
+
+            if hasattr(data_file.file, "seek"):
+                try:
+                    data_file.file.seek(0)
+                except Exception:
+                    pass
         elif label == "burp_xml.xml":
             burp_payload = parse_burp_xml_report(data_file.file, web_issue_matrix)
             findings = burp_payload.get("findings") if isinstance(burp_payload, dict) else burp_payload
@@ -5236,6 +5265,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             if soa_fields:
                 entry["soa_fields"] = soa_fields
             artifacts["dns_issues"].append(entry)
+
+    if dns_findings:
+        artifacts["dns_findings"] = dns_findings
 
     web_summary = _build_web_summary_from_findings(
         parsed_web_findings, web_issue_matrix

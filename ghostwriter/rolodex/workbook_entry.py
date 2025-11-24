@@ -115,6 +115,43 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
     return normalized
 
 
+def _normalize_dns_payload(payload: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    if not isinstance(payload, Mapping):
+        return normalized
+
+    def _normalize_zone_transfer(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        return "yes" if text in {"yes", "y", "true", "1"} else "no"
+
+    records_value = payload.get("records")
+    if isinstance(records_value, list):
+        normalized_records: list[dict[str, Any]] = []
+        for record in records_value:
+            if not isinstance(record, Mapping):
+                continue
+            domain_value = record.get("domain")
+            domain = str(domain_value).strip() if domain_value not in (None, "") else None
+            normalized_record: dict[str, Any] = {
+                "domain": domain,
+                "total": _as_int(record.get("total")),
+                "zone_transfer": _normalize_zone_transfer(record.get("zone_transfer")),
+            }
+            normalized_records.append(normalized_record)
+        normalized["records"] = normalized_records
+
+    if "unique" in payload:
+        normalized["unique"] = _as_int(payload.get("unique"))
+
+    return normalized
+
+
 def _calculate_category_total(
     *, scores: Mapping[str, Optional[Decimal]], weights: Mapping[str, Decimal]
 ) -> Optional[Decimal]:
@@ -177,6 +214,7 @@ def build_workbook_entry_payload(
     scores: Optional[Mapping[str, Any]] = None,
     grades: Optional[Mapping[str, Any]] = None,
     areas: Optional[Mapping[str, Any]] = None,
+    dns: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return updated workbook data for inline workbook entry."""
 
@@ -187,6 +225,15 @@ def build_workbook_entry_payload(
     if general:
         normalized_general = _normalize_general_payload(general)
         normalized_workbook.setdefault("general", {}).update(normalized_general)
+
+    if dns:
+        normalized_dns = _normalize_dns_payload(dns)
+        if normalized_dns:
+            existing_dns = normalized_workbook.get("dns")
+            if not isinstance(existing_dns, dict):
+                existing_dns = {}
+            existing_dns.update(normalized_dns)
+            normalized_workbook["dns"] = existing_dns
 
     if isinstance(areas, Mapping):
         for area_key, area_payload in areas.items():
