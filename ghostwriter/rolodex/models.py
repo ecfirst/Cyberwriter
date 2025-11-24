@@ -890,6 +890,49 @@ class Project(models.Model):
 
             workbook_payload[workbook_key] = area_payload
 
+        def _apply_web_metrics() -> None:
+            metrics_payload = artifacts.get("web_metrics")
+            if not isinstance(metrics_payload, dict):
+                return
+
+            summary = metrics_payload.get("summary")
+            if not isinstance(summary, dict):
+                return
+
+            web_payload = workbook_payload.get("web")
+            if not isinstance(web_payload, dict):
+                web_payload = {}
+
+            web_payload.update(
+                {
+                    "combined_unique": _safe_int(summary.get("unique")),
+                    "combined_unique_high": _safe_int(summary.get("unique_high")),
+                    "combined_unique_med": _safe_int(summary.get("unique_med")),
+                    "combined_unique_low": _safe_int(summary.get("unique_low")),
+                }
+            )
+
+            host_counts = summary.get("host_risk_counts")
+            sites: list[dict[str, Any]] = []
+            if isinstance(host_counts, list):
+                for entry in host_counts:
+                    if not isinstance(entry, dict):
+                        continue
+                    url_value = (entry.get("host") or "").strip()
+                    if not url_value:
+                        continue
+                    sites.append(
+                        {
+                            "url": url_value,
+                            "unique_high": _safe_int(entry.get("high")),
+                            "unique_med": _safe_int(entry.get("medium")),
+                            "unique_low": _safe_int(entry.get("low")),
+                        }
+                    )
+
+            web_payload["sites"] = sites
+            workbook_payload["web"] = web_payload
+
         def _build_nexpose_cap_entries_from_metrics() -> List[Dict[str, Any]]:
             issue_map: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
             findings_lookup: Dict[str, List[Dict[str, Any]]] = {}
@@ -969,6 +1012,7 @@ class Project(models.Model):
         _apply_nexpose_metrics("external_nexpose_metrics", "external_nexpose")
         _apply_nexpose_metrics("internal_nexpose_metrics", "internal_nexpose")
         _apply_nexpose_metrics("iot_iomt_nexpose_metrics", "iot_iomt_nexpose")
+        _apply_web_metrics()
 
         def _is_explicit_no(value: Any) -> bool:
             if isinstance(value, bool):

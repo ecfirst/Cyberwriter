@@ -106,6 +106,33 @@ def _normalize_general_payload(payload: Optional[Mapping[str, Any]]) -> Dict[str
 
 def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     normalized: Dict[str, Any] = {}
+    if area == "web":
+        if isinstance(payload, Mapping):
+            sites: list[dict[str, Any]] = []
+            raw_sites = payload.get("sites")
+            if isinstance(raw_sites, list):
+                for site_payload in raw_sites:
+                    if not isinstance(site_payload, Mapping):
+                        continue
+                    site_entry: dict[str, Any] = {}
+                    url_value = str(site_payload.get("url") or "").strip()
+                    if url_value:
+                        site_entry["url"] = url_value
+                    for field in ("unique_high", "unique_med", "unique_low"):
+                        if field in site_payload:
+                            site_entry[field] = _as_int(site_payload.get(field))
+                    if site_entry:
+                        sites.append(site_entry)
+            normalized["sites"] = sites
+            for field in (
+                "combined_unique",
+                "combined_unique_high",
+                "combined_unique_med",
+                "combined_unique_low",
+            ):
+                if field in payload:
+                    normalized[field] = _as_int(payload.get(field))
+        return normalized
     allowed_fields = AREA_FIELDS.get(area, set())
     if not allowed_fields or not isinstance(payload, Mapping):
         return normalized

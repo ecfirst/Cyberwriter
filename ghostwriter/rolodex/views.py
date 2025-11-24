@@ -2553,6 +2553,31 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                         }
                     )
 
+            if "burp_xml" in request.FILES:
+                upload = request.FILES.get("burp_xml")
+                if not upload:
+                    return JsonResponse({"error": "No Burp XML provided."}, status=400)
+
+                data_file = ProjectDataFile(
+                    project=project,
+                    requirement_slug=_slugify_identifier("required", "burp_xml.xml"),
+                    requirement_label="burp_xml.xml",
+                    requirement_context="burp xml",
+                    description="",
+                )
+                data_file.file.save(upload.name, upload)
+                data_file.save()
+
+                project.rebuild_data_artifacts()
+                project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
+
+                return JsonResponse(
+                    {
+                        "workbook_data": project.workbook_data,
+                        "data_artifacts": project.data_artifacts,
+                    }
+                )
+
             upload = request.FILES.get("osint_csv")
             if not upload:
                 return JsonResponse({"error": "No OSINT CSV provided."}, status=400)
@@ -2624,6 +2649,46 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             project.save(update_fields=["workbook_data", "data_artifacts"])
             return JsonResponse(
                 {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            )
+
+        if payload.get("remove_web"):
+            requirement_slug = _slugify_identifier("required", "burp_xml.xml")
+            for data_file in project.data_files.filter(requirement_slug=requirement_slug):
+                if data_file.file:
+                    data_file.file.delete(save=False)
+                data_file.delete()
+
+            artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            artifacts = dict(artifacts)
+            for key in (
+                "web_findings",
+                "web_metrics",
+                "web_cap_map",
+                "web_cap_entries",
+                "web_issue_matrix_gaps",
+                "web_issues",
+            ):
+                artifacts.pop(key, None)
+
+            workbook_payload = normalize_workbook_payload(project.workbook_data)
+            default_values = copy.deepcopy(WORKBOOK_DEFAULTS.get("web"))
+            if default_values is not None:
+                workbook_payload["web"] = default_values
+            else:
+                workbook_payload.pop("web", None)
+
+            project.workbook_data = workbook_payload
+            project.data_artifacts = artifacts
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
+
+            return JsonResponse(
+                {
+                    "workbook_data": project.workbook_data,
+                    "data_artifacts": project.data_artifacts,
+                }
             )
 
         nexpose_removal_key = payload.get("remove_nexpose")
