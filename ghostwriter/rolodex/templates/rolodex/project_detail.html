@@ -1070,9 +1070,61 @@
           dns: {
             label: 'DNS',
           },
+          external_nexpose: {
+            label: 'External Nexpose',
+            workbookKey: 'external_nexpose',
+            fields: [
+              {key: 'total', label: 'Total Count', type: 'number'},
+              {key: 'total_high', label: 'Total High', type: 'number'},
+              {key: 'total_med', label: 'Total Medium', type: 'number'},
+              {key: 'total_low', label: 'Total Low', type: 'number'},
+              {key: 'unique', label: 'Unique Count', type: 'number'},
+              {key: 'unique_high_med', label: 'Unique High/Medium', type: 'number'},
+              {
+                key: 'majority_type',
+                label: 'Majority Vulnerability Type',
+                type: 'select',
+                options: [
+                  {value: 'OOD Software or Missing Patches', label: 'OOD Software or Missing Patches'},
+                  {value: 'Insecure System Configurations', label: 'Insecure System Configurations'},
+                  {value: 'Insecure Web Configurations', label: 'Insecure Web Configurations'},
+                ],
+              },
+              {key: 'unique_majority', label: 'Unique Majority Vulnerability Count', type: 'number'},
+              {key: 'unique_majority_sub', label: 'Unique Majority Vulnerability Sub-Count', type: 'number'},
+              {
+                key: 'unique_majority_sub_info',
+                label: 'Unique Majority Vulnerability Sub-Count Info',
+                type: 'textarea',
+              },
+              {
+                key: 'minority_type',
+                label: 'Second-majority Vulnerability Type',
+                type: 'select',
+                options: [
+                  {value: 'OOD Software or Missing Patches', label: 'OOD Software or Missing Patches'},
+                  {value: 'Insecure System Configurations', label: 'Insecure System Configurations'},
+                  {value: 'Insecure Web Configurations', label: 'Insecure Web Configurations'},
+                ],
+              },
+              {key: 'unique_minority', label: 'Second-majority Vulnerability Count', type: 'number'},
+            ],
+            uploaders: [
+              {
+                fieldName: 'external_nexpose_xml',
+                label: 'Upload Nexpose XML',
+                accept: '.xml,application/xml,text/xml',
+              },
+            ],
+          },
         };
 
-        const createAreaFieldGroup = function(areaKey, subkey, field) {
+        const resolveAreaConfig = function(areaKey, subkey) {
+          const compositeKey = areaKey + '_' + subkey;
+          return areaSubsectionConfig[compositeKey] || areaSubsectionConfig[subkey];
+        };
+
+        const createAreaFieldGroup = function(areaKey, subkey, workbookKey, field) {
           const inlineLayout = field.layout !== 'stacked' && field.type !== 'text';
           const formGroup = document.createElement('div');
           formGroup.className = inlineLayout
@@ -1084,16 +1136,52 @@
             : 'font-weight-bold';
           label.setAttribute('for', 'area-' + subkey + '-' + field.key);
           label.textContent = field.label;
-          const input = document.createElement('input');
-          input.type = field.type || 'text';
-          input.className = 'form-control';
-          input.id = 'area-' + subkey + '-' + field.key;
-          input.setAttribute('data-area-field', areaKey);
-          const existing = workbookState[subkey] && workbookState[subkey][field.key];
-          input.value = typeof existing === 'number' ? existing : (existing || '');
-          input.addEventListener('input', function() {
-            updateWorkbookCardProgress(areaKey);
-          });
+          const fieldId = 'area-' + subkey + '-' + field.key;
+          const existingArea = workbookState[workbookKey] || workbookState[subkey] || {};
+          const existing = existingArea[field.key];
+
+          let input;
+          if (field.type === 'select') {
+            input = document.createElement('select');
+            input.className = 'form-control';
+            input.id = fieldId;
+            input.setAttribute('data-area-field', areaKey);
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Select';
+            input.appendChild(placeholder);
+            (field.options || []).forEach(function(optionDef) {
+              const option = document.createElement('option');
+              option.value = optionDef.value;
+              option.textContent = optionDef.label || optionDef.value;
+              if ((existing || '').toString() === optionDef.value) {
+                option.selected = true;
+              }
+              input.appendChild(option);
+            });
+            input.addEventListener('change', function() {
+              updateWorkbookCardProgress(areaKey);
+            });
+          } else if (field.type === 'textarea') {
+            input = document.createElement('textarea');
+            input.className = 'form-control';
+            input.id = fieldId;
+            input.setAttribute('data-area-field', areaKey);
+            input.value = typeof existing === 'number' ? existing : (existing || '');
+            input.addEventListener('input', function() {
+              updateWorkbookCardProgress(areaKey);
+            });
+          } else {
+            input = document.createElement('input');
+            input.type = field.type || 'text';
+            input.className = 'form-control';
+            input.id = fieldId;
+            input.setAttribute('data-area-field', areaKey);
+            input.value = typeof existing === 'number' ? existing : (existing || '');
+            input.addEventListener('input', function() {
+              updateWorkbookCardProgress(areaKey);
+            });
+          }
           if (inlineLayout) {
             const inputWrapper = document.createElement('div');
             inputWrapper.className = 'col-12 col-sm-6 col-md-7 col-lg-6';
@@ -1339,7 +1427,7 @@
           }
           const payload = {areas: {}};
           subkeys.forEach(function(subkey) {
-            const config = areaSubsectionConfig[subkey];
+            const config = resolveAreaConfig(areaKey, subkey);
             if (!config || !config.fields) {
               if (subkey === 'dns') {
                 payload.dns = ensureDnsState();
@@ -1350,6 +1438,7 @@
               payload.dns = ensureDnsState();
               return;
             }
+            const workbookKey = config.workbookKey || subkey;
             const fieldPayload = {};
             config.fields.forEach(function(field) {
               const input = document.getElementById('area-' + subkey + '-' + field.key);
@@ -1359,11 +1448,13 @@
               const rawValue = (input.value || '').trim();
               if (field.type === 'number') {
                 fieldPayload[field.key] = rawValue === '' ? null : Number(rawValue);
+              } else if (field.type === 'select') {
+                fieldPayload[field.key] = rawValue || null;
               } else {
                 fieldPayload[field.key] = rawValue || null;
               }
             });
-            payload.areas[subkey] = fieldPayload;
+            payload.areas[workbookKey] = fieldPayload;
           });
           submitWorkbookUpdate(payload, function() {
             if (modalId) {
@@ -1391,6 +1482,38 @@
             method: 'POST',
             headers: {
               'X-CSRFToken': getCsrfToken() || ''
+            },
+            body: formData,
+          }).then(function(response) {
+            return response.json().then(function(data) {
+              if (!response.ok) {
+                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
+                throw new Error(message);
+              }
+              return data;
+            });
+          }).then(function(data) {
+            handleWorkbookUpdateResponse(data, {
+              reopenModalId: modalId,
+              forceCloseModalId: modalId,
+              afterRender: function() { updateWorkbookCardProgress(areaKey); },
+            });
+          }).catch(function(error) {
+            console.error(error);
+            alert(error.message || 'Unable to save workbook data.');
+          });
+        };
+
+        const uploadNexposeXml = function(file, areaKey, modalId) {
+          if (!workbookUpdateUrl || !file) {
+            return;
+          }
+          const formData = new FormData();
+          formData.append('external_nexpose_xml', file);
+          fetch(workbookUpdateUrl, {
+            method: 'POST',
+            headers: {
+              'X-CSRFToken': getCsrfToken() || '',
             },
             body: formData,
           }).then(function(response) {
@@ -1767,18 +1890,20 @@
               subCard.className = 'card mb-3 flex-fill';
               const subHeader = document.createElement('div');
               subHeader.className = 'card-header font-weight-bold';
-              const subkeyLabel = (areaSubsectionConfig[subkey] && areaSubsectionConfig[subkey].label)
-                ? areaSubsectionConfig[subkey].label
+              const resolvedConfig = resolveAreaConfig(areaKey, subkey);
+              const workbookKey = (resolvedConfig && resolvedConfig.workbookKey) || subkey;
+              const subkeyLabel = (resolvedConfig && resolvedConfig.label)
+                ? resolvedConfig.label
                 : subkey.toUpperCase();
               subHeader.textContent = subkeyLabel;
               const subBody = document.createElement('div');
               subBody.className = 'card-body';
-              const config = areaSubsectionConfig[subkey];
+              const config = resolvedConfig;
               if (subkey === 'dns') {
                 renderDnsDomains(subBody, areaKey, modalId);
               } else if (config && Array.isArray(config.fields)) {
                 config.fields.forEach(function(field) {
-                  const formGroup = createAreaFieldGroup(areaKey, subkey, field);
+                  const formGroup = createAreaFieldGroup(areaKey, subkey, workbookKey, field);
                   subBody.appendChild(formGroup);
                 });
               } else {
@@ -1786,6 +1911,33 @@
                 empty.className = 'mb-0';
                 empty.textContent = 'No workbook fields are available for this area yet.';
                 subBody.appendChild(empty);
+              }
+              if (config && Array.isArray(config.uploaders)) {
+                const uploadContainer = document.createElement('div');
+                uploadContainer.className = 'mt-3';
+                config.uploaders.forEach(function(uploader) {
+                  const uploadInput = document.createElement('input');
+                  uploadInput.type = 'file';
+                  uploadInput.className = 'd-none';
+                  uploadInput.accept = uploader.accept || '.xml,application/xml,text/xml';
+                  uploadInput.id = 'uploader-' + subkey + '-' + uploader.fieldName;
+                  uploadInput.addEventListener('change', function(event) {
+                    if (event.target.files && event.target.files[0]) {
+                      uploadNexposeXml(event.target.files[0], areaKey, modalId);
+                      event.target.value = '';
+                    }
+                  });
+                  const uploadButton = document.createElement('button');
+                  uploadButton.type = 'button';
+                  uploadButton.className = 'btn btn-outline-primary';
+                  uploadButton.textContent = uploader.label || 'Upload';
+                  uploadButton.addEventListener('click', function() {
+                    uploadInput.click();
+                  });
+                  uploadContainer.appendChild(uploadButton);
+                  uploadContainer.appendChild(uploadInput);
+                });
+                subBody.appendChild(uploadContainer);
               }
               if (subkey === 'osint') {
                 const uploadWrapper = document.createElement('div');

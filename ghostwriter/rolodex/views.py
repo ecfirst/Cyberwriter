@@ -2517,6 +2517,33 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             if "dns_xml" in request.FILES:
                 return self._handle_dns_xml_upload(request, project)
 
+            if "external_nexpose_xml" in request.FILES:
+                upload = request.FILES.get("external_nexpose_xml")
+                if not upload:
+                    return JsonResponse({"error": "No Nexpose XML provided."}, status=400)
+
+                data_file = ProjectDataFile(
+                    project=project,
+                    requirement_slug=_slugify_identifier(
+                        "required", "external_nexpose_xml.xml"
+                    ),
+                    requirement_label="external_nexpose_xml.xml",
+                    requirement_context="external nexpose_xml",
+                    description="",
+                )
+                data_file.file.save(upload.name, upload)
+                data_file.save()
+
+                project.rebuild_data_artifacts()
+                project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
+
+                return JsonResponse(
+                    {
+                        "workbook_data": project.workbook_data,
+                        "data_artifacts": project.data_artifacts,
+                    }
+                )
+
             upload = request.FILES.get("osint_csv")
             if not upload:
                 return JsonResponse({"error": "No OSINT CSV provided."}, status=400)

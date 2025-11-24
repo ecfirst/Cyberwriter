@@ -22,6 +22,7 @@ from timezone_field import TimeZoneField
 # Ghostwriter Libraries
 from ghostwriter.reporting.models import ReportFindingLink, ScopingWeightCategory
 from ghostwriter.rolodex.validators import validate_ip_range
+from ghostwriter.rolodex.workbook_defaults import normalize_workbook_payload
 
 User = get_user_model()
 
@@ -784,7 +785,9 @@ class Project(models.Model):
         for key in NEXPOSE_ARTIFACT_KEYS:
             existing_responses.pop(key, None)
 
-        workbook_payload = getattr(self, "workbook_data", None)
+        workbook_payload = normalize_workbook_payload(
+            getattr(self, "workbook_data", None)
+        )
 
         def _safe_int(value: Any) -> int:
             if value in (None, ""):
@@ -842,6 +845,50 @@ class Project(models.Model):
             if status_code == "VP":
                 label = f"{label} (P)"
             return label
+
+        def _apply_nexpose_metrics(metrics_key: str, workbook_key: str) -> None:
+            metrics_payload = artifacts.get(metrics_key)
+            if not isinstance(metrics_payload, dict):
+                return
+
+            summary = metrics_payload.get("summary")
+            summary = summary if isinstance(summary, dict) else {}
+
+            majority_type_raw = (metrics_payload.get("majority_type") or "").strip().upper()
+            majority_label_map = {
+                "OOD": "OOD Software or Missing Patches",
+                "ISC": "Insecure System Configurations",
+                "IWC": "Insecure Web Configurations",
+            }
+            majority_label = majority_label_map.get(majority_type_raw)
+            majority_summary_map = {
+                "OOD": "total_ood",
+                "ISC": "total_isc",
+                "IWC": "total_iwc",
+            }
+
+            area_payload = workbook_payload.get(workbook_key)
+            if not isinstance(area_payload, dict):
+                area_payload = {}
+
+            area_payload.update(
+                {
+                    "total": _safe_int(summary.get("total")),
+                    "total_high": _safe_int(summary.get("total_high")),
+                    "total_med": _safe_int(summary.get("total_med")),
+                    "total_low": _safe_int(summary.get("total_low")),
+                    "unique": _safe_int(summary.get("unique")),
+                    "unique_high_med": _safe_int(summary.get("unique_high_med")),
+                }
+            )
+
+            if majority_label:
+                area_payload["majority_type"] = majority_label
+                summary_key = majority_summary_map.get(majority_type_raw)
+                if summary_key:
+                    area_payload["unique_majority"] = _safe_int(summary.get(summary_key))
+
+            workbook_payload[workbook_key] = area_payload
 
         def _build_nexpose_cap_entries_from_metrics() -> List[Dict[str, Any]]:
             issue_map: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
@@ -918,6 +965,8 @@ class Project(models.Model):
             return cap_entries
 
         nexpose_cap_entries = _build_nexpose_cap_entries_from_metrics()
+
+        _apply_nexpose_metrics("external_nexpose_metrics", "external_nexpose")
 
         def _is_explicit_no(value: Any) -> bool:
             if isinstance(value, bool):
@@ -2030,8 +2079,9 @@ class Project(models.Model):
         self.data_artifacts = artifacts
         self.data_responses = existing_responses
         self.cap = existing_cap
+        self.workbook_data = workbook_payload
 
-        self.save(update_fields=["data_artifacts", "data_responses", "cap"])
+        self.save(update_fields=["data_artifacts", "data_responses", "cap", "workbook_data"])
 
 
 class ProjectDataFile(models.Model):
