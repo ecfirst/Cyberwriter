@@ -2064,7 +2064,7 @@ class MatrixViewTests(TestCase):
         self.client.login(username=self.manager.username, password=PASSWORD)
         csv_content = (
             "vulnerability,action_required,remediation_impact,vulnerability_threat,category\n"
-            "Old Vuln,Apply patch,Low,Info leak,General\n"
+            "Old Vuln,Apply patch,Low,Info leak <EC>,OOD\n"
         )
         upload = SimpleUploadedFile("matrix.csv", csv_content.encode("utf-8"), content_type="text/csv")
         response = self.client.post(
@@ -2073,6 +2073,70 @@ class MatrixViewTests(TestCase):
         )
         self.assertRedirects(response, reverse("rolodex:vulnerability_matrix"))
         self.assertTrue(VulnerabilityMatrixEntry.objects.filter(vulnerability="Old Vuln").exists())
+
+    def test_import_rejects_missing_required_fields(self):
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        csv_content = (
+            "vulnerability,action_required,remediation_impact,vulnerability_threat,category\n"
+            "Missing Data,,Low,Info leak <EC>,OOD\n"
+        )
+        upload = SimpleUploadedFile("matrix.csv", csv_content.encode("utf-8"), content_type="text/csv")
+        response = self.client.post(
+            reverse("rolodex:vulnerability_matrix_import"),
+            {"csv_file": upload},
+        )
+        self.assertRedirects(response, reverse("rolodex:vulnerability_matrix"))
+        self.assertFalse(
+            VulnerabilityMatrixEntry.objects.filter(vulnerability="Missing Data").exists()
+        )
+
+    def test_import_rejects_invalid_category(self):
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        csv_content = (
+            "vulnerability,action_required,remediation_impact,vulnerability_threat,category\n"
+            "Bad Category,Apply patch,Low,Info leak <EC>,Other\n"
+        )
+        upload = SimpleUploadedFile("matrix.csv", csv_content.encode("utf-8"), content_type="text/csv")
+        response = self.client.post(
+            reverse("rolodex:vulnerability_matrix_import"),
+            {"csv_file": upload},
+        )
+        self.assertRedirects(response, reverse("rolodex:vulnerability_matrix"))
+        self.assertFalse(
+            VulnerabilityMatrixEntry.objects.filter(vulnerability="Bad Category").exists()
+        )
+
+    def test_import_rejects_missing_ec_marker(self):
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        csv_content = (
+            "vulnerability,action_required,remediation_impact,vulnerability_threat,category\n"
+            "No Marker,Apply patch,Low,Info leak,OOD\n"
+        )
+        upload = SimpleUploadedFile("matrix.csv", csv_content.encode("utf-8"), content_type="text/csv")
+        response = self.client.post(
+            reverse("rolodex:vulnerability_matrix_import"),
+            {"csv_file": upload},
+        )
+        self.assertRedirects(response, reverse("rolodex:vulnerability_matrix"))
+        self.assertFalse(
+            VulnerabilityMatrixEntry.objects.filter(vulnerability="No Marker").exists()
+        )
+
+    def test_import_ignores_additional_columns(self):
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        csv_content = (
+            "vulnerability,action_required,remediation_impact,vulnerability_threat,category,extra\n"
+            "Extra Column,Apply patch,Low,Info leak <EC>,ISC,Ignore me\n"
+        )
+        upload = SimpleUploadedFile("matrix.csv", csv_content.encode("utf-8"), content_type="text/csv")
+        response = self.client.post(
+            reverse("rolodex:vulnerability_matrix_import"),
+            {"csv_file": upload},
+        )
+        self.assertRedirects(response, reverse("rolodex:vulnerability_matrix"))
+        self.assertTrue(
+            VulnerabilityMatrixEntry.objects.filter(vulnerability="Extra Column").exists()
+        )
 
     def test_manager_can_export_web_issue_matrix(self):
         WebIssueMatrixEntry.objects.create(title="Missing CSP", impact="Medium", fix="Add policy")

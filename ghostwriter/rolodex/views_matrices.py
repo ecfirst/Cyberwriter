@@ -119,6 +119,11 @@ class BaseMatrixEntryFormView(MatrixContextMixin, SuccessMessageMixin):
 class MatrixImportView(MatrixContextMixin, View):
     form_class = MatrixUploadForm
 
+    def validate_dataset(self, dataset: Dataset, resource):
+        """Validate and optionally modify the dataset prior to import."""
+
+        return dataset
+
     def post(self, request, *args, **kwargs):
         form = self.form_class(request.POST, request.FILES)
         if not form.is_valid():
@@ -153,6 +158,11 @@ class MatrixImportView(MatrixContextMixin, View):
             return redirect(self.get_success_url())
 
         resource = self.get_resource()
+        try:
+            dataset = self.validate_dataset(dataset, resource)
+        except ValueError as exc:
+            messages.error(self.request, str(exc))
+            return redirect(self.get_success_url())
         try:
             resource.import_data(dataset, dry_run=True, raise_errors=True)
             resource.import_data(dataset, dry_run=False, raise_errors=True)
@@ -228,6 +238,53 @@ class VulnerabilityMatrixImportView(MatrixImportView):
     matrix_title = "Vulnerability matrix"
     list_url_name = "rolodex:vulnerability_matrix"
     resource_class = VulnerabilityMatrixEntryResource
+
+    def validate_dataset(self, dataset: Dataset, resource):
+        """Ensure uploaded CSV rows meet vulnerability matrix requirements."""
+
+        required_fields = [
+            "vulnerability",
+            "action_required",
+            "remediation_impact",
+            "vulnerability_threat",
+            "category",
+        ]
+        headers = dataset.headers or []
+        missing_headers = [field for field in required_fields if field not in headers]
+        if missing_headers:
+            missing_list = ", ".join(missing_headers)
+            raise ValueError(f"Missing required columns: {missing_list}.")
+
+        allowed_categories = {"OOD", "ISC", "IWC"}
+        cleaned_dataset = Dataset(headers=required_fields)
+
+        for row_index, row in enumerate(dataset.dict, start=2):
+            values = {}
+            for field in required_fields:
+                value = row.get(field, "")
+                value_str = str(value).strip() if value is not None else ""
+                if not value_str:
+                    raise ValueError(
+                        f"Row {row_index}: '{field}' is required and cannot be empty."
+                    )
+                values[field] = value_str
+
+            category_value = values["category"].upper()
+            if category_value not in allowed_categories:
+                allowed_list = ", ".join(sorted(allowed_categories))
+                raise ValueError(
+                    f"Row {row_index}: category must be one of {allowed_list}."
+                )
+
+            if "<EC>" not in values["vulnerability_threat"]:
+                raise ValueError(
+                    f"Row {row_index}: vulnerability_threat must include '<EC>'."
+                )
+
+            values["category"] = category_value
+            cleaned_dataset.append([values[field] for field in required_fields])
+
+        return cleaned_dataset
 
 
 class VulnerabilityMatrixExportView(MatrixExportView):
