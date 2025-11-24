@@ -110,6 +110,7 @@ from ghostwriter.rolodex.workbook import (
     prepare_data_responses_initial,
 )
 from ghostwriter.rolodex.workbook_defaults import (
+    WORKBOOK_DEFAULTS,
     ensure_data_responses_defaults,
     normalize_workbook_payload,
 )
@@ -2517,6 +2518,41 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             if "dns_xml" in request.FILES:
                 return self._handle_dns_xml_upload(request, project)
 
+            nexpose_upload_fields = {
+                "external_nexpose_xml": "external_nexpose_xml.xml",
+                "internal_nexpose_xml": "internal_nexpose_xml.xml",
+                "iot_nexpose_xml": "iot_nexpose_xml.xml",
+            }
+            for upload_field, requirement_label in nexpose_upload_fields.items():
+                if upload_field in request.FILES:
+                    upload = request.FILES.get(upload_field)
+                    if not upload:
+                        return JsonResponse(
+                            {"error": "No Nexpose XML provided."}, status=400
+                        )
+
+                    data_file = ProjectDataFile(
+                        project=project,
+                        requirement_slug=_slugify_identifier(
+                            "required", requirement_label
+                        ),
+                        requirement_label=requirement_label,
+                        requirement_context=f"{upload_field.replace('_', ' ')}",
+                        description="",
+                    )
+                    data_file.file.save(upload.name, upload)
+                    data_file.save()
+
+                    project.rebuild_data_artifacts()
+                    project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
+
+                    return JsonResponse(
+                        {
+                            "workbook_data": project.workbook_data,
+                            "data_artifacts": project.data_artifacts,
+                        }
+                    )
+
             upload = request.FILES.get("osint_csv")
             if not upload:
                 return JsonResponse({"error": "No OSINT CSV provided."}, status=400)
@@ -2588,6 +2624,77 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             project.save(update_fields=["workbook_data", "data_artifacts"])
             return JsonResponse(
                 {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            )
+
+        nexpose_removal_key = payload.get("remove_nexpose")
+        if isinstance(nexpose_removal_key, str) and nexpose_removal_key:
+            nexpose_removal_key = nexpose_removal_key.strip()
+
+        nexpose_removal_map = {
+            "external_nexpose": {
+                "requirement_label": "external_nexpose_xml.xml",
+                "artifact_keys": [
+                    "external_nexpose_findings",
+                    "external_nexpose_vulnerabilities",
+                    "external_nexpose_metrics",
+                ],
+            },
+            "internal_nexpose": {
+                "requirement_label": "internal_nexpose_xml.xml",
+                "artifact_keys": [
+                    "internal_nexpose_findings",
+                    "internal_nexpose_vulnerabilities",
+                    "internal_nexpose_metrics",
+                ],
+            },
+            "iot_iomt_nexpose": {
+                "requirement_label": "iot_nexpose_xml.xml",
+                "artifact_keys": [
+                    "iot_iomt_nexpose_findings",
+                    "iot_iomt_nexpose_vulnerabilities",
+                    "iot_iomt_nexpose_metrics",
+                    "iot_nexpose_vulnerabilities",
+                ],
+            },
+        }
+
+        if nexpose_removal_key and nexpose_removal_key in nexpose_removal_map:
+            removal_meta = nexpose_removal_map[nexpose_removal_key]
+            requirement_label = removal_meta["requirement_label"]
+            requirement_slug = _slugify_identifier("required", requirement_label)
+
+            for data_file in project.data_files.filter(
+                requirement_slug=requirement_slug
+            ):
+                if data_file.file:
+                    data_file.file.delete(save=False)
+                data_file.delete()
+
+            artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            artifacts = dict(artifacts)
+            for key in removal_meta.get("artifact_keys", []):
+                artifacts.pop(key, None)
+
+            project.data_artifacts = artifacts
+
+            workbook_payload = normalize_workbook_payload(project.workbook_data)
+            default_values = copy.deepcopy(WORKBOOK_DEFAULTS.get(nexpose_removal_key))
+            if default_values is not None:
+                workbook_payload[nexpose_removal_key] = default_values
+            else:
+                workbook_payload.pop(nexpose_removal_key, None)
+
+            project.workbook_data = workbook_payload
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
+
+            return JsonResponse(
+                {
+                    "workbook_data": project.workbook_data,
+                    "data_artifacts": project.data_artifacts,
+                }
             )
 
         workbook_payload = build_workbook_entry_payload(
