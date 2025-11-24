@@ -2553,6 +2553,28 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                         }
                     )
 
+            if "firewall_xml" in request.FILES:
+                upload = request.FILES.get("firewall_xml")
+                if not upload:
+                    return JsonResponse({"error": "No Firewall XML provided."}, status=400)
+
+                data_file = ProjectDataFile(
+                    project=project,
+                    requirement_slug=_slugify_identifier("required", "firewall_xml.xml"),
+                    requirement_label="firewall_xml.xml",
+                    requirement_context="firewall xml",
+                    description="",
+                )
+                data_file.file.save(upload.name, upload)
+                data_file.save()
+
+                project.rebuild_data_artifacts()
+                project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
+
+                return JsonResponse(
+                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                )
+
             if "burp_xml" in request.FILES:
                 upload = request.FILES.get("burp_xml")
                 if not upload:
