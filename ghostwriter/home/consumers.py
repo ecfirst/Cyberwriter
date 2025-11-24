@@ -25,6 +25,9 @@ class UserConsumer(AsyncWebsocketConsumer):
             self.user_group_name = "notify_%s" % self.username
             await self.channel_layer.group_add(self.user_group_name, self.channel_name)
             await self.accept()
+        else:
+            await self.accept()
+            await self.close()
 
     async def disconnect(self, close_code):
         if self.user.is_active:
