@@ -1117,6 +1117,100 @@
               },
             ],
           },
+          internal_nexpose: {
+            label: 'Internal Nexpose',
+            workbookKey: 'internal_nexpose',
+            fields: [
+              {key: 'total', label: 'Total Count', type: 'number'},
+              {key: 'total_high', label: 'Total High', type: 'number'},
+              {key: 'total_med', label: 'Total Medium', type: 'number'},
+              {key: 'total_low', label: 'Total Low', type: 'number'},
+              {key: 'unique', label: 'Unique Count', type: 'number'},
+              {key: 'unique_high_med', label: 'Unique High/Medium', type: 'number'},
+              {
+                key: 'majority_type',
+                label: 'Majority Vulnerability Type',
+                type: 'select',
+                options: [
+                  {value: 'OOD Software or Missing Patches', label: 'OOD Software or Missing Patches'},
+                  {value: 'Insecure System Configurations', label: 'Insecure System Configurations'},
+                  {value: 'Insecure Web Configurations', label: 'Insecure Web Configurations'},
+                ],
+              },
+              {key: 'unique_majority', label: 'Unique Majority Vulnerability Count', type: 'number'},
+              {key: 'unique_majority_sub', label: 'Unique Majority Vulnerability Sub-Count', type: 'number'},
+              {
+                key: 'unique_majority_sub_info',
+                label: 'Unique Majority Vulnerability Sub-Count Info',
+                type: 'textarea',
+              },
+              {
+                key: 'minority_type',
+                label: 'Second-majority Vulnerability Type',
+                type: 'select',
+                options: [
+                  {value: 'OOD Software or Missing Patches', label: 'OOD Software or Missing Patches'},
+                  {value: 'Insecure System Configurations', label: 'Insecure System Configurations'},
+                  {value: 'Insecure Web Configurations', label: 'Insecure Web Configurations'},
+                ],
+              },
+              {key: 'unique_minority', label: 'Second-majority Vulnerability Count', type: 'number'},
+            ],
+            uploaders: [
+              {
+                fieldName: 'internal_nexpose_xml',
+                label: 'Upload Nexpose XML',
+                accept: '.xml,application/xml,text/xml',
+              },
+            ],
+          },
+          internal_iot_iomt: {
+            label: 'IoT/IoMT Nexpose',
+            workbookKey: 'iot_iomt_nexpose',
+            fields: [
+              {key: 'total', label: 'Total Count', type: 'number'},
+              {key: 'total_high', label: 'Total High', type: 'number'},
+              {key: 'total_med', label: 'Total Medium', type: 'number'},
+              {key: 'total_low', label: 'Total Low', type: 'number'},
+              {key: 'unique', label: 'Unique Count', type: 'number'},
+              {key: 'unique_high_med', label: 'Unique High/Medium', type: 'number'},
+              {
+                key: 'majority_type',
+                label: 'Majority Vulnerability Type',
+                type: 'select',
+                options: [
+                  {value: 'OOD Software or Missing Patches', label: 'OOD Software or Missing Patches'},
+                  {value: 'Insecure System Configurations', label: 'Insecure System Configurations'},
+                  {value: 'Insecure Web Configurations', label: 'Insecure Web Configurations'},
+                ],
+              },
+              {key: 'unique_majority', label: 'Unique Majority Vulnerability Count', type: 'number'},
+              {key: 'unique_majority_sub', label: 'Unique Majority Vulnerability Sub-Count', type: 'number'},
+              {
+                key: 'unique_majority_sub_info',
+                label: 'Unique Majority Vulnerability Sub-Count Info',
+                type: 'textarea',
+              },
+              {
+                key: 'minority_type',
+                label: 'Second-majority Vulnerability Type',
+                type: 'select',
+                options: [
+                  {value: 'OOD Software or Missing Patches', label: 'OOD Software or Missing Patches'},
+                  {value: 'Insecure System Configurations', label: 'Insecure System Configurations'},
+                  {value: 'Insecure Web Configurations', label: 'Insecure Web Configurations'},
+                ],
+              },
+              {key: 'unique_minority', label: 'Second-majority Vulnerability Count', type: 'number'},
+            ],
+            uploaders: [
+              {
+                fieldName: 'iot_nexpose_xml',
+                label: 'Upload Nexpose XML',
+                accept: '.xml,application/xml,text/xml',
+              },
+            ],
+          },
         };
 
         const resolveAreaConfig = function(areaKey, subkey) {
@@ -1504,12 +1598,12 @@
           });
         };
 
-        const uploadNexposeXml = function(file, areaKey, modalId) {
+        const uploadNexposeXml = function(file, uploadFieldName, areaKey, modalId) {
           if (!workbookUpdateUrl || !file) {
             return;
           }
           const formData = new FormData();
-          formData.append('external_nexpose_xml', file);
+          formData.append(uploadFieldName || 'external_nexpose_xml', file);
           fetch(workbookUpdateUrl, {
             method: 'POST',
             headers: {
@@ -1923,7 +2017,7 @@
                   uploadInput.id = 'uploader-' + subkey + '-' + uploader.fieldName;
                   uploadInput.addEventListener('change', function(event) {
                     if (event.target.files && event.target.files[0]) {
-                      uploadNexposeXml(event.target.files[0], areaKey, modalId);
+                      uploadNexposeXml(event.target.files[0], uploader.fieldName, areaKey, modalId);
                       event.target.value = '';
                     }
                   });

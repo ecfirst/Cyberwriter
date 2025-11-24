@@ -967,6 +967,8 @@ class Project(models.Model):
         nexpose_cap_entries = _build_nexpose_cap_entries_from_metrics()
 
         _apply_nexpose_metrics("external_nexpose_metrics", "external_nexpose")
+        _apply_nexpose_metrics("internal_nexpose_metrics", "internal_nexpose")
+        _apply_nexpose_metrics("iot_iomt_nexpose_metrics", "iot_iomt_nexpose")
 
         def _is_explicit_no(value: Any) -> bool:
             if isinstance(value, bool):
