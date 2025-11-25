@@ -865,9 +865,32 @@ def test_prune_invalid_relationship_parts_removes_nested_rels():
 
     valid_rel_part = FakeRelPart("/word/_rels/document.xml.rels", "<rels/>", {})
     nested_rel_part = FakeRelPart("/word/_rels/charts/chart1.xml.rels", "<rels/>", {})
-    chart_part = FakeRelPart("/word/charts/chart1.xml", "<c:chart xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"/>", {})
+    header_rel_no_suffix = FakeRelPart("/word/_rels/header3.xml", "<rels/>", {})
+    footer_rel_missing_source = FakeRelPart(
+        "/word/_rels/footer1.xml.rels",
+        "<rels/>",
+        {},
+    )
+    document_part = FakeXmlPart(
+        "/word/document.xml",
+        "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>",
+    )
+    chart_part = FakeRelPart(
+        "/word/charts/chart1.xml",
+        "<c:chart xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"/>",
+        {},
+    )
 
-    package = FakePackage([valid_rel_part, nested_rel_part, chart_part])
+    package = FakePackage(
+        [
+            valid_rel_part,
+            nested_rel_part,
+            header_rel_no_suffix,
+            footer_rel_missing_source,
+            document_part,
+            chart_part,
+        ]
+    )
     for part in package.iter_parts():
         part.package = package
 
@@ -876,6 +899,8 @@ def test_prune_invalid_relationship_parts_removes_nested_rels():
     template._prune_invalid_relationship_parts()
 
     assert nested_rel_part.partname not in package._parts
+    assert header_rel_no_suffix.partname not in package._parts
+    assert footer_rel_missing_source.partname not in package._parts
     assert valid_rel_part.partname in package._parts
     assert chart_part.partname in package._parts
 

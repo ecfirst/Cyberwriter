@@ -1374,6 +1374,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if package is None:
             return
 
+        existing_parts = {self._normalise_partname(part) for part in parts}
+
         for part in list(parts):
             try:
                 normalised = str(part.partname).lstrip("/")
@@ -1384,10 +1386,17 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
 
             rel_path = normalised[len("word/_rels/") :]
-            if "/" not in rel_path:
+            if "/" in rel_path:
+                self._drop_part(package, part)
                 continue
 
-            self._drop_part(package, part)
+            if not rel_path.endswith(".rels"):
+                self._drop_part(package, part)
+                continue
+
+            source_part = f"word/{rel_path[:-5]}"
+            if source_part not in existing_parts:
+                self._drop_part(package, part)
 
     def _cleanup_word_markup(self, part, xml):
         """Normalise WordprocessingML after templating removes content."""
