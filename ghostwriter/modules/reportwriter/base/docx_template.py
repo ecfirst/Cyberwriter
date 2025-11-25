@@ -1920,7 +1920,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
         shared_prefix = f"{{{shared_ns}}}" if shared_ns else ""
 
         templated_entries: dict[int, etree._Element] = {}
-        changed_shared = False
         for idx, si in enumerate(shared_tree.findall(f"{shared_prefix}si")):
             text = "".join(si.itertext())
             if not any(marker in text for marker in ("{{", "{%", "{#")):
@@ -1932,17 +1931,11 @@ class GhostwriterDocxTemplate(DocxTemplate):
             empty = etree.SubElement(si, f"{shared_prefix}t")
             empty.text = ""
             empty.attrib.pop("{http://www.w3.org/XML/1998/namespace}space", None)
-            changed_shared = True
 
         if not templated_entries:
             return files
 
-        if changed_shared:
-            si_values = ["".join(si.itertext()) for si in shared_tree.findall(f"{shared_prefix}si")]
-            if si_values:
-                shared_tree.set("count", str(len(si_values)))
-                shared_tree.set("uniqueCount", str(len(set(si_values))))
-            files[shared_key] = etree.tostring(shared_tree, encoding="utf-8")
+        shared_count = 0
 
         for name, blob in list(files.items()):
             if not name.startswith("xl/worksheets/") or not name.endswith(".xml"):
@@ -1969,6 +1962,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
                 shared_value = templated_entries.get(shared_index)
                 if shared_value is None:
+                    shared_count += 1
                     continue
 
                 for child in list(cell):
@@ -1983,6 +1977,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             if updated:
                 files[name] = etree.tostring(sheet_tree, encoding="utf-8")
+
+        shared_tree.set("count", str(shared_count))
+        shared_tree.set("uniqueCount", str(len(shared_tree.findall(f"{shared_prefix}si"))))
+        files[shared_key] = etree.tostring(shared_tree, encoding="utf-8")
 
         return files
 

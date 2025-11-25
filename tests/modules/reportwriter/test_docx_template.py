@@ -1843,8 +1843,8 @@ def test_inline_templated_shared_strings_updates_counts():
     patched = template._inline_templated_shared_strings(files)
 
     shared_tree = etree.fromstring(patched["xl/sharedStrings.xml"])
-    assert shared_tree.get("count") == "3"
-    assert shared_tree.get("uniqueCount") == "1"
+    assert shared_tree.get("count") == "0"
+    assert shared_tree.get("uniqueCount") == "3"
 
     sheet_tree = etree.fromstring(patched["xl/worksheets/sheet1.xml"])
     ns = sheet_tree.nsmap.get(None)
