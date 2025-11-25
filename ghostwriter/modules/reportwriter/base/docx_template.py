@@ -653,12 +653,13 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if self._is_chart_part(partname):
                 rendered = self._sync_chart_cache(rendered, part, excel_values)
 
+            self._cleanup_part_relationships(part, rendered)
+
             rendered_bytes = rendered.encode("utf-8")
             if hasattr(part, "_element"):
                 part._element = parse_xml(rendered_bytes)
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
-            self._cleanup_part_relationships(part, rendered)
 
     def _renumber_media_parts(self) -> None:
         """Ensure chart and embedding parts are sequentially numbered."""

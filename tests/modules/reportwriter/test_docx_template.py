@@ -1375,6 +1375,26 @@ def test_render_additional_parts_removes_unused_chart_relationship(monkeypatch):
     assert chart_part.rels == {}
 
 
+def test_render_additional_parts_cleans_relationships(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    xml = (
+        '<dgm:data xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<dgm:t>value</dgm:t>"
+        "</dgm:data>"
+    )
+    target = FakeXmlPart("/word/media/image1.png", "<png/>")
+    part = FakeRelPart("/word/diagrams/data1.xml", xml, {"rId1": FakeRelationship(target)})
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([part]))
+
+    template._render_additional_parts({}, None)
+
+    assert part.rels == {}
+
+
 def test_iter_additional_parts_includes_excel_parts(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
