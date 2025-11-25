@@ -160,6 +160,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
         self._cleanup_comments_part()
 
         self._remove_relationships_with_missing_targets()
+        self._cleanup_relationship_parts()
 
         self._renumber_media_parts()
 
@@ -918,6 +919,35 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
                 self._remove_relationship_entry(rels, rel_id)
 
+    def _cleanup_relationship_parts(self) -> None:
+        """Remove relationship parts that no longer have a source part."""
+
+        parts = list(self._iter_package_parts())
+        if not parts:
+            return
+
+        partnames: dict[object, str] = {}
+        for part in parts:
+            try:
+                partnames[part] = self._normalise_partname(part)
+            except Exception:
+                continue
+
+        if not partnames:
+            return
+
+        known_names = set(partnames.values())
+
+        for part, name in list(partnames.items()):
+            if "/_rels/" not in name or not name.endswith(".rels"):
+                continue
+
+            source_name = self._relationship_source_partname(name)
+            if not source_name or source_name in known_names:
+                continue
+
+            self._drop_part(part, name)
+
     def _resolve_relationship_target(self, source_part, rel) -> str | None:
         """Return absolute target path for ``rel`` if it is an internal reference."""
 
@@ -936,6 +966,22 @@ class GhostwriterDocxTemplate(DocxTemplate):
         source_dir = posixpath.dirname(source_name) or "."
         resolved = posixpath.normpath(posixpath.join(source_dir, target)).lstrip("/")
         return resolved
+
+    def _relationship_source_partname(self, rel_partname: str) -> str | None:
+        """Infer the source partname a relationship part belongs to."""
+
+        if "/_rels/" not in rel_partname or not rel_partname.endswith(".rels"):
+            return None
+
+        if rel_partname in {"_rels/.rels", "/_rels/.rels"}:
+            return None
+
+        base, rel_name = rel_partname.split("/_rels/", 1)
+        if not rel_name:
+            return None
+
+        source_name = posixpath.join(base, rel_name[:-5])
+        return source_name.lstrip("/")
 
     def _rename_part(self, part, old_name: str, new_name: str) -> None:
         """Rename ``part`` within the OPC package to ``new_name``."""
@@ -1011,6 +1057,45 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 for key in list(overrides.keys()):
                     if str(key).lstrip("/") == old_name:
                         overrides[new_pack_uri] = overrides.pop(key)
+                        break
+
+    def _drop_part(self, part, partname: str | None = None) -> None:
+        """Remove ``part`` from its package mappings and content types."""
+
+        package = getattr(part, "package", None) or self._resolve_package()
+        if package is None:
+            return
+
+        pack_uri = getattr(part, "partname", None)
+        name_value = partname or (str(pack_uri).lstrip("/") if pack_uri else None)
+
+        mappings = [getattr(package, "_parts", None), getattr(package, "_partnames", None)]
+
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                continue
+            if pack_uri in mapping:
+                mapping.pop(pack_uri, None)
+                continue
+            if name_value is None:
+                continue
+            for key in list(mapping.keys()):
+                if str(key).lstrip("/") == name_value:
+                    mapping.pop(key, None)
+                    break
+
+        content_types = getattr(package, "_content_types", None)
+        if content_types is None:
+            content_types = getattr(package, "content_types", None)
+
+        overrides = getattr(content_types, "_overrides", None) if content_types else None
+        if isinstance(overrides, dict):
+            if pack_uri in overrides:
+                overrides.pop(pack_uri, None)
+            elif name_value is not None:
+                for key in list(overrides.keys()):
+                    if str(key).lstrip("/") == name_value:
+                        overrides.pop(key, None)
                         break
 
     def _update_relationship_targets(

@@ -608,6 +608,35 @@ class FakeXmlPart:
         return self._blob
 
 
+class FakePackage:
+    """Lightweight package that mimics python-docx package mappings."""
+
+    def __init__(self):
+        self._parts: dict[PackURI, object] = {}
+        self._partnames: dict[PackURI, object] = {}
+        self._content_types = SimpleNamespace(_overrides={})
+
+
+class FakePackagedPart(FakeXmlPart):
+    """XML part registered within a fake package."""
+
+    def __init__(
+        self,
+        partname: str,
+        xml: str,
+        package: FakePackage,
+        *,
+        content_type: str = "application/vnd.openxmlformats-officedocument.custom-xml",  # pragma: allowlist secret
+    ):
+        super().__init__(partname, xml)
+        self.package = package
+        package._parts[self.partname] = self
+        package._partnames[self.partname] = self
+        overrides = getattr(package._content_types, "_overrides", None)
+        if isinstance(overrides, dict):
+            overrides[self.partname] = content_type
+
+
 class FakeXlsxPart:
     """Embedded Excel part for exercising templating."""
 
@@ -1429,6 +1458,55 @@ def test_remove_relationships_keeps_existing_targets(monkeypatch):
     template._remove_relationships_with_missing_targets()
 
     assert source.rels == {"rId1": source.rels["rId1"]}
+
+
+def test_cleanup_relationship_parts_removes_orphans(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    package = FakePackage()
+    source = FakePackagedPart(
+        "/word/document.xml",
+        DIAGRAM_XML.format("value"),
+        package,
+    )
+    orphan = FakePackagedPart(
+        "/word/_rels/missing.xml.rels",
+        "<rels/>",
+        package,
+        content_type="application/vnd.openxmlformats-package.relationships+xml",
+    )
+
+    monkeypatch.setattr(template, "_iter_package_parts", lambda: [source, orphan])
+
+    template._cleanup_relationship_parts()
+
+    assert orphan.partname not in package._parts
+    assert source.partname in package._parts
+
+
+def test_cleanup_relationship_parts_preserves_existing_sources(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    package = FakePackage()
+    source = FakePackagedPart(
+        "/word/document.xml",
+        DIAGRAM_XML.format("value"),
+        package,
+    )
+    rel_part = FakePackagedPart(
+        "/word/_rels/document.xml.rels",
+        "<rels/>",
+        package,
+        content_type="application/vnd.openxmlformats-package.relationships+xml",
+    )
+
+    monkeypatch.setattr(template, "_iter_package_parts", lambda: [source, rel_part])
+
+    template._cleanup_relationship_parts()
+
+    assert rel_part.partname in package._parts
 
 
 def test_iter_additional_parts_includes_excel_parts(monkeypatch):
