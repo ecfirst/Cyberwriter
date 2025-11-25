@@ -184,6 +184,19 @@ WORKSHEET_TC_LOOP_TEMPLATE_XML = (
     '</worksheet>'
 )
 
+WORKSHEET_TC_INLINE_CELL_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    '<sheetData>'
+    '<row r="1">'
+    '<c r="A1" t="inlineStr"><is><t>{%tc for domain in domains %}</t></is></c>'
+    '<c r="B1" t="inlineStr"><is><t>{{ domain.name }}</t></is></c>'
+    '<c r="C1" t="inlineStr"><is><t>{%tc endfor %}</t></is></c>'
+    '</row>'
+    '</sheetData>'
+    '</worksheet>'
+)
+
 WORKSHEET_TC_RENDERED_COLUMNS_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -1609,6 +1622,19 @@ def test_patch_xml_handles_split_excel_tc_tags():
     assert "tc site.unique_high" not in cleaned
     assert "{{ site.url }}" in cleaned
     assert "{{ site.unique_high }}" in cleaned
+
+
+def test_patch_xml_unwraps_tc_cells_with_inline_strings():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    cleaned = template.patch_xml(WORKSHEET_TC_INLINE_CELL_XML)
+
+    assert "{%tc" not in cleaned
+    assert "{% for domain in domains %}" in cleaned
+    assert "{% endfor %}" in cleaned
+    assert '<c r="A1"' not in cleaned
+    assert '<c r="C1"' not in cleaned
+    assert '<c r="B1"' in cleaned
 
 
 def test_patch_xml_preserves_chart_paragraph_markup():

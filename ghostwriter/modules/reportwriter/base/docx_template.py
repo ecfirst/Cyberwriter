@@ -245,6 +245,23 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         if has_spreadsheet_ns:
 
+            def _unwrap_cell(value: str) -> str:
+                cell_pattern = re.compile(
+                    r"<c[^>]*>"  # Opening cell
+                    r"(?:\s|<[^>]+>)*"  # Optional whitespace or nested tags
+                    r"(?P<stmt>\{[\{%#]-?\s*tc\b[^\}]*?[\}%]})"  # Jinja tc statement
+                    r"(?:\s|</[^>]+>)*"  # Optional whitespace or closing nested tags
+                    r"</c>",
+                    re.DOTALL,
+                )
+
+                def _replacement(match: re.Match[str]) -> str:
+                    return match.group("stmt")
+
+                return cell_pattern.sub(_replacement, value)
+
+            xml = _unwrap_cell(xml)
+
             def _strip_container(value: str, container: str, tag: str) -> str:
                 open_regex = "<(?:[A-Za-z_][\\w.-]*:)?%s[^>]*>\\s*%s\\s*%s"
                 close_regex = "%s.*?%s\\s*</(?:[A-Za-z_][\\w.-]*:)?%s>"
