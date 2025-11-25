@@ -1938,6 +1938,10 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return files
 
         if changed_shared:
+            si_values = ["".join(si.itertext()) for si in shared_tree.findall(f"{shared_prefix}si")]
+            if si_values:
+                shared_tree.set("count", str(len(si_values)))
+                shared_tree.set("uniqueCount", str(len(set(si_values))))
             files[shared_key] = etree.tostring(shared_tree, encoding="utf-8")
 
         for name, blob in list(files.items()):

@@ -55,6 +55,16 @@ SHARED_STRINGS_XML = (
     "</sst>"
 )
 
+SHARED_STRINGS_TC_LOOP_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    "count=\"3\" uniqueCount=\"3\">"
+    "<si><t>{%tc for policy in project.workbook_data.password.policies %}</t></si>"
+    "<si><t>{{ policy.strong_passwords }}</t></si>"
+    "<si><t>{%tc endfor %}</t></si>"
+    "</sst>"
+)
+
 WORKSHEET_CHART_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
@@ -66,6 +76,19 @@ WORKSHEET_CHART_XML = (
     "<row r=\"2\">"
     "<c r=\"A2\" t=\"s\"><v>0</v></c>"
     "<c r=\"B2\" t=\"s\"><v>1</v></c>"
+    "</row>"
+    "</sheetData>"
+    "</worksheet>"
+)
+
+WORKSHEET_SHARED_STRINGS_TC_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    "<sheetData>"
+    "<row r=\"1\">"
+    "<c r=\"A1\" t=\"s\"><v>0</v></c>"
+    "<c r=\"B1\" t=\"s\"><v>1</v></c>"
+    "<c r=\"C1\" t=\"s\"><v>2</v></c>"
     "</row>"
     "</sheetData>"
     "</worksheet>"
@@ -1807,6 +1830,35 @@ def test_render_additional_parts_renders_tc_column_loops(monkeypatch):
         "Old Passwords",
         "corp.example.com",
         "lab.example.com",
+    ]
+
+
+def test_inline_templated_shared_strings_updates_counts():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    files = {
+        "xl/sharedStrings.xml": SHARED_STRINGS_TC_LOOP_XML.encode("utf-8"),
+        "xl/worksheets/sheet1.xml": WORKSHEET_SHARED_STRINGS_TC_XML.encode("utf-8"),
+    }
+
+    patched = template._inline_templated_shared_strings(files)
+
+    shared_tree = etree.fromstring(patched["xl/sharedStrings.xml"])
+    assert shared_tree.get("count") == "3"
+    assert shared_tree.get("uniqueCount") == "1"
+
+    sheet_tree = etree.fromstring(patched["xl/worksheets/sheet1.xml"])
+    ns = sheet_tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    cells = sheet_tree.findall(f".//{prefix}c")
+    assert all(cell.get("t") == "inlineStr" for cell in cells)
+    assert [
+        "".join(t.text or "" for t in cell.findall(f".//{prefix}t"))
+        for cell in cells
+    ] == [
+        "{%tc for policy in project.workbook_data.password.policies %}",
+        "{{ policy.strong_passwords }}",
+        "{%tc endfor %}",
     ]
 
 
