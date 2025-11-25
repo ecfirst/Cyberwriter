@@ -248,6 +248,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
             def _strip_container(value: str, container: str, tag: str) -> str:
                 open_regex = "<(?:[A-Za-z_][\\w.-]*:)?%s[^>]*>\\s*%s\\s*%s"
                 close_regex = "%s.*?%s\\s*</(?:[A-Za-z_][\\w.-]*:)?%s>"
+
+                def _should_preserve_cell(fragment: str) -> bool:
+                    return container == "c" and (
+                        "t=\"inlineStr\"" in fragment or "<is" in fragment
+                    )
+
                 for start, end, start_regex in (
                     ("{{", "}}", "\\{\\{"),
                     ("{%", "%}", "\\{%"),
@@ -257,7 +263,12 @@ class GhostwriterDocxTemplate(DocxTemplate):
                         open_regex % (container, start_regex, tag),
                         re.DOTALL,
                     )
-                    value = open_pattern.sub(start, value)
+                    value = open_pattern.sub(
+                        lambda m: m.group(0)
+                        if _should_preserve_cell(m.group(0))
+                        else start,
+                        value,
+                    )
                     close_pattern = re.compile(
                         close_regex % (start_regex, end, container),
                         re.DOTALL,
@@ -265,6 +276,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
                     def close_replacement(match: re.Match[str]) -> str:
                         matched = match.group(0)
+                        if _should_preserve_cell(matched):
+                            return matched
                         end_index = matched.rfind(end)
                         return matched[: end_index + len(end)] if end_index != -1 else matched
 

@@ -1635,6 +1635,8 @@ def test_patch_xml_unwraps_tc_cells_with_inline_strings():
     assert '<c r="A1"' in cleaned
     assert '<c r="B1"' in cleaned
     assert '<c r="C1"' in cleaned
+    assert '<c r="A1" t="inlineStr"><is><t>{% for domain in domains %}</t></is></c>' in cleaned
+    assert '<c r="C1" t="inlineStr"><is><t>{% endfor %}</t></is></c>' in cleaned
 
 
 def test_patch_xml_preserves_chart_paragraph_markup():
