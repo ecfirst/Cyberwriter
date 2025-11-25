@@ -5800,7 +5800,7 @@ def build_workbook_firewall_response(workbook_data: Optional[Dict[str, Any]]) ->
     if not isinstance(firewall_data, dict):
         return {}
 
-    response: Dict[str, Any] = {}
+    response: Dict[str, Any] = {"ood_count": 0, "ood_name_list": ""}
 
     periodic_reviews = firewall_data.get("firewall_periodic_reviews")
     if periodic_reviews not in (None, ""):
