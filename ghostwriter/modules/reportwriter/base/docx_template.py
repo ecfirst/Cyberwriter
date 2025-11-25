@@ -159,6 +159,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
         self._render_additional_parts(context, jinja_env)
         self._cleanup_comments_part()
 
+        self._remove_relationships_with_missing_targets()
+
         self._renumber_media_parts()
 
         self._normalise_package_content_types()
@@ -861,6 +863,79 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         if self._is_document_part(part):
             self._ensure_modern_comments_relationship(rels)
+
+    def _remove_relationships_with_missing_targets(self) -> None:
+        """Drop relationships that point at parts no longer present."""
+
+        parts = list(self._iter_package_parts())
+        if not parts:
+            return
+
+        part_set = set(parts)
+        partnames: dict[object, str] = {}
+
+        for part in parts:
+            try:
+                partnames[part] = self._normalise_partname(part)
+            except Exception:
+                continue
+
+        partname_values = set(partnames.values())
+
+        for source_part in parts:
+            rels = getattr(source_part, "rels", None)
+            if not rels:
+                continue
+
+            for rel_id, rel in list(rels.items()):
+                if getattr(rel, "is_external", False):
+                    continue
+
+                target_part = None
+                try:
+                    target_part = getattr(rel, "target_part", None)
+                except ValueError:
+                    target_part = None
+
+                if target_part is not None and target_part in part_set:
+                    continue
+
+                target_name = None
+                if target_part is not None:
+                    try:
+                        target_name = self._normalise_partname(target_part)
+                    except Exception:
+                        target_name = None
+
+                if not target_name:
+                    target_name = self._resolve_relationship_target(source_part, rel)
+
+                if target_name and target_name in partname_values:
+                    continue
+
+                if self._try_drop_relationship(source_part, rel_id):
+                    continue
+
+                self._remove_relationship_entry(rels, rel_id)
+
+    def _resolve_relationship_target(self, source_part, rel) -> str | None:
+        """Return absolute target path for ``rel`` if it is an internal reference."""
+
+        target = self._get_relationship_target(rel)
+        if not target or getattr(rel, "is_external", False):
+            return None
+
+        if target.startswith("/"):
+            return target.lstrip("/")
+
+        try:
+            source_name = self._normalise_partname(source_part)
+        except Exception:
+            return posixpath.normpath(target)
+
+        source_dir = posixpath.dirname(source_name) or "."
+        resolved = posixpath.normpath(posixpath.join(source_dir, target)).lstrip("/")
+        return resolved
 
     def _rename_part(self, part, old_name: str, new_name: str) -> None:
         """Rename ``part`` within the OPC package to ``new_name``."""

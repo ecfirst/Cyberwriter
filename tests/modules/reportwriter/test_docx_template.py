@@ -1395,6 +1395,42 @@ def test_render_additional_parts_cleans_relationships(monkeypatch):
     assert part.rels == {}
 
 
+def test_remove_relationships_with_missing_targets(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    missing_target = FakeXmlPart("/word/charts/chart1.xml", DIAGRAM_XML.format("value"))
+    source = FakeRelPart(
+        "/word/document.xml",
+        DIAGRAM_XML.format("value"),
+        {"rId1": FakeRelationship(missing_target)},
+    )
+
+    monkeypatch.setattr(template, "_iter_package_parts", lambda: [source])
+
+    template._remove_relationships_with_missing_targets()
+
+    assert source.rels == {}
+
+
+def test_remove_relationships_keeps_existing_targets(monkeypatch):
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    target = FakeXmlPart("/word/charts/chart1.xml", DIAGRAM_XML.format("value"))
+    source = FakeRelPart(
+        "/word/document.xml",
+        DIAGRAM_XML.format("value"),
+        {"rId1": FakeRelationship(target)},
+    )
+
+    monkeypatch.setattr(template, "_iter_package_parts", lambda: [source, target])
+
+    template._remove_relationships_with_missing_targets()
+
+    assert source.rels == {"rId1": source.rels["rId1"]}
+
+
 def test_iter_additional_parts_includes_excel_parts(monkeypatch):
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     template.init_docx()
