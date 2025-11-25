@@ -250,9 +250,33 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 close_regex = "%s.*?%s\\s*</(?:[A-Za-z_][\\w.-]*:)?%s>"
 
                 def _should_preserve_cell(fragment: str) -> bool:
-                    return container == "c" and (
-                        "t=\"inlineStr\"" in fragment or "<is" in fragment
-                    )
+                    if container != "c":
+                        return False
+
+                    has_inline = "t=\"inlineStr\"" in fragment or "<is" in fragment
+                    if not has_inline:
+                        return False
+
+                    # Inline string cells that only wrap a templating statement (for example
+                    # ``{%tc for ... %}`` markers split across runs) should be unwrapped so the
+                    # control tag can sit alongside adjacent data cells. Leaving the empty
+                    # control cell in place can result in malformed workbook structures that
+                    # Word refuses to open even though templating succeeds. Preserve the
+                    # container only when the inline string contains actual content beyond the
+                    # templating markers.
+                    text_chunks = re.findall(r"<t[^>]*>(.*?)</t>", fragment, flags=re.DOTALL)
+                    if not text_chunks:
+                        return True
+
+                    combined = "".join(html.unescape(chunk) for chunk in text_chunks).strip()
+                    if not combined:
+                        return False
+
+                    stripped = re.sub(r"\s+", " ", combined)
+                    if re.fullmatch(r"\{[%#].*[%#]\}", stripped):
+                        return False
+
+                    return True
 
                 for start, end, start_regex in (
                     ("{{", "}}", "\\{\\{"),
