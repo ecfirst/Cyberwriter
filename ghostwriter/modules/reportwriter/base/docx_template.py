@@ -158,6 +158,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
         self._render_additional_parts(context, jinja_env)
         self._cleanup_comments_part()
 
+        self._prune_invalid_relationship_parts()
+
         self._renumber_media_parts()
 
         self._normalise_package_content_types()
@@ -1336,6 +1338,23 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if targets is not None:
             targets.pop(rel_id, None)
 
+    def _drop_part(self, package, part) -> None:
+        if package is None or part is None:
+            return
+
+        drop_part = getattr(package, "drop_part", None)
+        if callable(drop_part):
+            try:
+                drop_part(part)
+                return
+            except Exception:
+                pass
+
+        parts = getattr(package, "_parts", None)
+        partname = getattr(part, "partname", None)
+        if isinstance(parts, dict) and partname in parts:
+            parts.pop(partname, None)
+
     def _get_required_relationship_types(self, part) -> set[str]:
         partname = getattr(part, "partname", None)
         if not partname:
@@ -1345,6 +1364,30 @@ class GhostwriterDocxTemplate(DocxTemplate):
         if normalised == _DOCUMENT_PARTNAME:
             return set(self._DOCUMENT_REQUIRED_RELATIONSHIP_TYPES)
         return set()
+
+    def _prune_invalid_relationship_parts(self) -> None:
+        parts = self._iter_package_parts()
+        if not parts:
+            return
+
+        package = getattr(parts[0], "package", None)
+        if package is None:
+            return
+
+        for part in list(parts):
+            try:
+                normalised = str(part.partname).lstrip("/")
+            except Exception:
+                continue
+
+            if not normalised.startswith("word/_rels/"):
+                continue
+
+            rel_path = normalised[len("word/_rels/") :]
+            if "/" not in rel_path:
+                continue
+
+            self._drop_part(package, part)
 
     def _cleanup_word_markup(self, part, xml):
         """Normalise WordprocessingML after templating removes content."""

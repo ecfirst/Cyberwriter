@@ -759,6 +759,19 @@ class FakeStubbornRelPart(FakeRelPart):
         return None
 
 
+class FakePackage:
+    def __init__(self, parts):
+        self._parts = {part.partname: part for part in parts}
+        self.dropped = []
+
+    def iter_parts(self):
+        return list(self._parts.values())
+
+    def drop_part(self, part):
+        self.dropped.append(part)
+        self._parts.pop(part.partname, None)
+
+
 def test_cleanup_part_relationships_removes_unused_ids():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
@@ -845,6 +858,26 @@ def test_cleanup_part_relationships_preserves_core_document_parts():
     template._cleanup_part_relationships(part, xml)
 
     assert set(part.rels) == {"rIdStyles", "rIdNumbering", "rIdComments"}
+
+
+def test_prune_invalid_relationship_parts_removes_nested_rels():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+
+    valid_rel_part = FakeRelPart("/word/_rels/document.xml.rels", "<rels/>", {})
+    nested_rel_part = FakeRelPart("/word/_rels/charts/chart1.xml.rels", "<rels/>", {})
+    chart_part = FakeRelPart("/word/charts/chart1.xml", "<c:chart xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"/>", {})
+
+    package = FakePackage([valid_rel_part, nested_rel_part, chart_part])
+    for part in package.iter_parts():
+        part.package = package
+
+    template._iter_package_parts = package.iter_parts
+
+    template._prune_invalid_relationship_parts()
+
+    assert nested_rel_part.partname not in package._parts
+    assert valid_rel_part.partname in package._parts
+    assert chart_part.partname in package._parts
 
 
 def test_cleanup_word_markup_balances_bookmarks_and_hyperlinks():
