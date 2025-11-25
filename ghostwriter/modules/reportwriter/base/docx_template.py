@@ -819,6 +819,17 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return
 
         for rel_id, rel in list(rels.items()):
+            is_external = getattr(rel, "is_external", False)
+            if not is_external:
+                try:
+                    target_part = getattr(rel, "target_part", None)
+                except Exception:
+                    target_part = None
+
+                if target_part is None:
+                    self._remove_relationship_entry(rels, rel_id)
+                    continue
+
             if rel_id in referenced:
                 continue
             reltype = getattr(rel, "reltype", "")

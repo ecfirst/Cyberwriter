@@ -805,6 +805,22 @@ def test_cleanup_part_relationships_keeps_used_ids():
     assert "rId1" in part.rels
 
 
+def test_cleanup_part_relationships_drops_missing_targets():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body><w:p><w:hyperlink r:id=\"rIdMissing\"><w:r><w:t>Link</w:t></w:r></w:hyperlink></w:p></w:body>"
+        "</w:document>"
+    )
+
+    part = FakeRelPart("/word/document.xml", xml, {"rIdMissing": FakeRelationship(None)})
+
+    template._cleanup_part_relationships(part, xml)
+
+    assert part.rels == {}
+
+
 def test_cleanup_part_relationships_preserves_core_document_parts():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
