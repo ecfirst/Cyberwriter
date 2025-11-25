@@ -1085,6 +1085,69 @@ def test_renumber_media_parts_renames_charts_and_embeddings():
     assert all("Worksheet4" not in str(key) for key in overrides_keys)
 
 
+def test_relocate_misplaced_embedded_workbooks():
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+
+    workbook = FakeXmlPart(
+        "/word/charts/embeddings/Microsoft_Excel_Worksheet3.xlsx", "<root/>"
+    )
+
+    chart_xml = (
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '  # noqa: E501
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<c:externalData r:id=\"rId1\"/>"
+        "</c:chartSpace>"
+    )
+    chart_rel = FakeRelationship(workbook)
+    chart_rel.target_ref = "../charts/embeddings/Microsoft_Excel_Worksheet3.xlsx"
+    chart_rel._target = PackURI(
+        "/word/charts/embeddings/Microsoft_Excel_Worksheet3.xlsx"
+    )
+    chart = FakeRelPart(
+        "/word/charts/chart1.xml",
+        chart_xml,
+        {"rId1": chart_rel},
+    )
+
+    doc_xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '  # noqa: E501
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<w:body/>"
+        "</w:document>"
+    )
+    rel_chart = FakeRelationship(chart)
+    rel_chart.target_ref = "charts/chart1.xml"
+    rel_chart._target = PackURI("/word/charts/chart1.xml")
+
+    document_part = FakeRelPart(
+        "/word/document.xml",
+        doc_xml,
+        {"rId1": rel_chart},
+    )
+
+    parts = [document_part, chart, workbook]
+    package = SimpleNamespace(
+        parts=parts,
+        _parts={part.partname: part for part in parts},
+        _partnames={part.partname: part for part in parts},
+        _content_types=SimpleNamespace(_overrides={part.partname: "application/test" for part in parts}),
+    )
+
+    for part in parts:
+        part.package = package
+
+    template.docx = SimpleNamespace(_part=document_part)
+
+    template._relocate_misplaced_embedded_workbooks()
+
+    assert workbook.partname == PackURI("/word/embeddings/Microsoft_Excel_Worksheet3.xlsx")
+    assert chart.rels["rId1"].target_ref == "../embeddings/Microsoft_Excel_Worksheet3.xlsx"
+    assert chart.rels["rId1"]._target == PackURI(
+        "/word/embeddings/Microsoft_Excel_Worksheet3.xlsx"
+    )
+    assert PackURI("/word/embeddings/Microsoft_Excel_Worksheet3.xlsx") in package._parts
+
+
 def test_renumber_media_parts_is_noop_when_sequential():
     template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
 

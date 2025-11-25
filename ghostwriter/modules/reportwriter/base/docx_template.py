@@ -155,6 +155,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 self._cleanup_part_relationships(footer_part, cleaned_xml)
 
         self._cleanup_settings_part()
+        self._relocate_misplaced_embedded_workbooks()
         self._render_additional_parts(context, jinja_env)
         self._cleanup_comments_part()
 
@@ -701,6 +702,35 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 if current_name == new_name:
                     continue
                 renames.append((part, current_name, new_name))
+
+        if not renames:
+            return
+
+        for part, old_name, new_name in renames:
+            self._rename_part(part, old_name, new_name)
+
+        self._update_relationship_targets(renames)
+
+    def _relocate_misplaced_embedded_workbooks(self) -> None:
+        """Move embedded workbooks out of invalid chart subdirectories."""
+
+        parts = self._iter_package_parts()
+        if not parts:
+            return
+
+        renames: list[tuple[object, str, str]] = []
+
+        for part in parts:
+            try:
+                partname = self._normalise_partname(part)
+            except Exception:
+                continue
+
+            if not partname.startswith("word/charts/embeddings/"):
+                continue
+
+            new_name = partname.replace("word/charts/embeddings/", "word/embeddings/", 1)
+            renames.append((part, partname, new_name))
 
         if not renames:
             return
