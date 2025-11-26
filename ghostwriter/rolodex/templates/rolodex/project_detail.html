@@ -2267,6 +2267,15 @@
           });
         };
 
+        const removeFirewallData = function(areaKey, modalId) {
+          const payload = {remove_firewall: true};
+          submitWorkbookUpdate(payload, null, {
+            reopenModalId: modalId,
+            forceCloseModalId: modalId,
+            afterRender: function() { updateWorkbookCardProgress(areaKey); },
+          });
+        };
+
         const removeOsintData = function(areaKey, modalId) {
           const payload = {remove_osint: true};
           submitWorkbookUpdate(payload, null, {
@@ -2756,8 +2765,16 @@
             uploadButton.className = 'btn btn-outline-primary';
             uploadButton.textContent = 'Upload Nipper XML';
             uploadButton.addEventListener('click', function() { uploadInput.click(); });
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'btn btn-outline-danger ml-2';
+            removeButton.textContent = 'Remove Nipper Data';
+            removeButton.addEventListener('click', function() {
+              removeFirewallData(areaKey, modalId);
+            });
             uploadWrapper.appendChild(uploadInput);
             uploadWrapper.appendChild(uploadButton);
+            uploadWrapper.appendChild(removeButton);
             modalBody.appendChild(uploadWrapper);
           }
           const modalFooter = document.createElement('div');

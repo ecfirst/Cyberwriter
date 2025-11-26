@@ -54,6 +54,7 @@ from ghostwriter.rolodex.models import (
     VulnerabilityMatrixEntry,
     WebIssueMatrixEntry,
 )
+from ghostwriter.rolodex.workbook_defaults import WORKBOOK_DEFAULTS
 from ghostwriter.rolodex.templatetags import determine_primary
 
 logging.disable(logging.CRITICAL)
@@ -1819,6 +1820,85 @@ class ProjectDataResponsesUpdateTests(TestCase):
         )
         self.assertEqual(vulnerabilities["med"], {"total_unique": 0, "items": []})
         self.assertEqual(vulnerabilities["low"], {"total_unique": 0, "items": []})
+
+    def test_remove_firewall_data_clears_artifacts_and_workbook(self):
+        self.project.workbook_data = {"firewall": {"unique": 1}}
+        self.project.save(update_fields=["workbook_data"])
+
+        upload_url = reverse("rolodex:project_data_file_upload", kwargs={"pk": self.project.pk})
+        xml_content = b"""
+<root>
+  <document>
+    <information>
+      <devices><device><name>FW-1</name></device></devices>
+    </information>
+  </document>
+  <section ref=\"SECURITYAUDIT\">
+    <section ref=\"FILTER.TEST\" title=\"Blocked traffic review\">
+      <issuedetails>
+        <devices><device><name>FW-1</name></device></devices>
+        <ratings><rating>High</rating><cvssv2-temporal score=\"8.5\" /></ratings>
+      </issuedetails>
+      <section ref=\"IMPACT\"><text>Service disruption</text></section>
+      <section ref=\"RECOMMENDATION\"><text>Adjust rule set</text></section>
+      <section ref=\"FINDING\"><text>Traffic dropped</text></section>
+    </section>
+  </section>
+</root>
+"""
+        upload = SimpleUploadedFile(
+            "firewall_xml.xml",
+            xml_content,
+            content_type="application/xml",
+        )
+
+        response = self.client_auth.post(
+            upload_url,
+            {
+                "file": upload,
+                "requirement_slug": "required_firewall-xml-xml",
+                "requirement_label": "firewall_xml.xml",
+                "requirement_context": "",
+                "description": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+
+        self.assertIn("firewall_metrics", self.project.data_artifacts)
+
+        update_url = reverse(
+            "rolodex:project_workbook_data_update", kwargs={"pk": self.project.pk}
+        )
+        response = self.client_auth.post(
+            update_url,
+            data=json.dumps({"remove_firewall": True}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        self.assertFalse(
+            self.project.data_files.filter(requirement_label="firewall_xml.xml").exists()
+        )
+
+        artifacts = self.project.data_artifacts or {}
+        self.assertNotIn("firewall_findings", artifacts)
+        self.assertNotIn("firewall_metrics", artifacts)
+        self.assertNotIn("firewall_vulnerabilities", artifacts)
+
+        self.assertEqual(
+            self.project.workbook_data.get("firewall"),
+            WORKBOOK_DEFAULTS.get("firewall"),
+        )
 
     def test_nexpose_distilled_toggle_updates_cap(self):
         toggle_url = reverse(
