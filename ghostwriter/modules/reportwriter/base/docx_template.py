@@ -612,6 +612,95 @@ class GhostwriterDocxTemplate(DocxTemplate):
     def _normalise_partname(self, part) -> str:
         return str(part.partname).lstrip("/")
 
+    def _describe_indexed_part(self, part) -> tuple[str | None, str | None, str | None]:
+        try:
+            partname = self._normalise_partname(part)
+        except Exception:
+            return None, None, None
+
+        match = _INDEXED_PART_RE.match(partname)
+        if not match:
+            return None, partname, None
+
+        folder = match.group("folder")
+        index = match.group("index")
+        label_prefix = "Chart" if folder == "word/charts" else "Embedding"
+        label = f"{label_prefix} #{index}"
+
+        return label, partname, folder
+
+    def _log_indexed_part_start(self, label: str | None, partname: str | None) -> None:
+        if not label and not partname:
+            return
+        logger.info('Templating "%s"', label or partname)
+
+    def _log_indexed_part_error(
+        self,
+        label: str | None,
+        partname: str | None,
+        exc: Exception,
+        *,
+        xml: str | None = None,
+        subpart: str | None = None,
+    ) -> None:
+        error_line = self._extract_template_error_line(exc)
+        context_line, error_context = self._extract_template_debug_context(exc)
+        if error_line is None and context_line is not None:
+            error_line = context_line
+
+        statements: list[dict[str, str | int]] = []
+        total_statements = 0
+        if xml is not None:
+            statements, total_statements = self._collect_template_statements(
+                xml, focus_line=error_line
+            )
+        preview_summary = (
+            self._format_statement_preview(statements, total_statements)
+            if xml is not None
+            else None
+        )
+        context_summary = (
+            self._format_template_context(error_context, error_line)
+            if error_context
+            else None
+        )
+
+        message_parts: list[str] = []
+        if subpart:
+            message_parts.append(subpart)
+        if error_line is not None:
+            message_parts.append(f"near template line {error_line}")
+        if context_summary:
+            message_parts.append(context_summary)
+        if preview_summary:
+            message_parts.append(preview_summary)
+        message_parts.append(str(exc))
+        detail = "; ".join(part for part in message_parts if part)
+
+        logger.exception(
+            'Error templating "%s"%s: %s',
+            label or partname or "<unknown part>",
+            f" ({partname})" if partname and label != partname else "",
+            detail,
+            extra={
+                "docx_template_part": partname,
+                "docx_template_label": label,
+                "docx_template_error_line": error_line,
+                **(
+                    {
+                        "docx_template_error_context": [
+                            {"line": line, "text": text}
+                            for line, text in (error_context or [])
+                        ],
+                        "docx_template_statements_preview": statements,
+                        "docx_template_statement_count": total_statements,
+                    }
+                    if error_context or xml is not None
+                    else {}
+                ),
+            },
+        )
+
     def _is_excel_part(self, partname: str) -> bool:
         return partname.endswith(".xlsx")
 
@@ -631,7 +720,16 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if not self._is_excel_part(partname):
                 continue
 
-            rendered = self._render_excel_part(part, context, jinja_env)
+            label, _described_partname, folder = self._describe_indexed_part(part)
+            if folder == "word/embeddings":
+                self._log_indexed_part_start(label, partname)
+
+            try:
+                rendered = self._render_excel_part(part, context, jinja_env)
+            except Exception as exc:
+                if folder == "word/embeddings":
+                    self._log_indexed_part_error(label, partname, exc)
+                raise
             if rendered is None:
                 continue
 
@@ -646,9 +744,21 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if self._is_excel_part(partname):
                 continue
 
+            label, _described_partname, folder = self._describe_indexed_part(part)
+            chart_label = label if folder == "word/charts" else None
+
+            if chart_label:
+                self._log_indexed_part_start(chart_label, partname)
+
             xml = self.get_part_xml(part)
             patched = self.patch_xml(xml)
-            rendered = self.render_xml_part(patched, part, context, jinja_env)
+            try:
+                rendered = self.render_xml_part(patched, part, context, jinja_env)
+            except Exception as exc:
+                if chart_label:
+                    self._log_indexed_part_error(chart_label, partname, exc, xml=patched)
+                raise
+
             if self._is_chart_part(partname):
                 rendered = self._sync_chart_cache(rendered, part, excel_values)
 
@@ -1856,12 +1966,22 @@ class GhostwriterDocxTemplate(DocxTemplate):
         files = self._inline_templated_shared_strings(files)
 
         rendered_xml: dict[str, str] = {}
+        label, part_label, folder = self._describe_indexed_part(part)
         for name, data in files.items():
             if not name.endswith(".xml"):
                 continue
             xml = data.decode("utf-8")
             patched = self.patch_xml(xml)
-            rendered_xml[name] = self.render_xml_part(patched, part, context, jinja_env)
+            try:
+                rendered_xml[name] = self.render_xml_part(
+                    patched, part, context, jinja_env
+                )
+            except Exception as exc:
+                if folder == "word/embeddings":
+                    self._log_indexed_part_error(
+                        label, part_label, exc, xml=patched, subpart=name
+                    )
+                raise
 
         sheet_map = self._build_sheet_map(rendered_xml, files)
         rendered_xml, workbook_values = self._coerce_excel_types(rendered_xml, sheet_map)
