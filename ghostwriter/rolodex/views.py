@@ -2553,6 +2553,28 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                         }
                     )
 
+            if "firewall_xml" in request.FILES:
+                upload = request.FILES.get("firewall_xml")
+                if not upload:
+                    return JsonResponse({"error": "No Firewall XML provided."}, status=400)
+
+                data_file = ProjectDataFile(
+                    project=project,
+                    requirement_slug=_slugify_identifier("required", "firewall_xml.xml"),
+                    requirement_label="firewall_xml.xml",
+                    requirement_context="firewall xml",
+                    description="",
+                )
+                data_file.file.save(upload.name, upload)
+                data_file.save()
+
+                project.rebuild_data_artifacts()
+                project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
+
+                return JsonResponse(
+                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                )
+
             if "burp_xml" in request.FILES:
                 upload = request.FILES.get("burp_xml")
                 if not upload:
@@ -2676,6 +2698,43 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 workbook_payload["web"] = default_values
             else:
                 workbook_payload.pop("web", None)
+
+            project.workbook_data = workbook_payload
+            project.data_artifacts = artifacts
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
+
+            return JsonResponse(
+                {
+                    "workbook_data": project.workbook_data,
+                    "data_artifacts": project.data_artifacts,
+                }
+            )
+
+        if payload.get("remove_firewall"):
+            requirement_slug = _slugify_identifier("required", "firewall_xml.xml")
+            for data_file in project.data_files.filter(requirement_slug=requirement_slug):
+                if data_file.file:
+                    data_file.file.delete(save=False)
+                data_file.delete()
+
+            artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            artifacts = dict(artifacts)
+            for key in (
+                "firewall_findings",
+                "firewall_metrics",
+                "firewall_vulnerabilities",
+            ):
+                artifacts.pop(key, None)
+
+            workbook_payload = normalize_workbook_payload(project.workbook_data)
+            default_values = copy.deepcopy(WORKBOOK_DEFAULTS.get("firewall"))
+            if default_values is not None:
+                workbook_payload["firewall"] = default_values
+            else:
+                workbook_payload.pop("firewall", None)
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts

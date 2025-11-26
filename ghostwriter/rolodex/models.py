@@ -933,6 +933,67 @@ class Project(models.Model):
             web_payload["sites"] = sites
             workbook_payload["web"] = web_payload
 
+        def _apply_firewall_metrics() -> None:
+            metrics_payload = artifacts.get("firewall_metrics")
+            if not isinstance(metrics_payload, dict):
+                return
+
+            summary = metrics_payload.get("summary")
+            devices = metrics_payload.get("devices")
+
+            firewall_payload = workbook_payload.get("firewall")
+            if not isinstance(firewall_payload, dict):
+                firewall_payload = {}
+
+            if isinstance(summary, dict):
+                def _normalize_type(value: Any) -> Optional[str]:
+                    if value in (None, ""):
+                        return None
+                    text = str(value).strip()
+                    normalized = text.lower()
+                    if normalized == "config":
+                        return "Configuration"
+                    if normalized == "rules":
+                        return "Rules"
+                    if normalized == "even":
+                        return "Even"
+                    return text
+
+                firewall_payload.update(
+                    {
+                        "unique": _safe_int(summary.get("unique")),
+                        "unique_high": _safe_int(summary.get("unique_high")),
+                        "unique_med": _safe_int(summary.get("unique_med")),
+                        "unique_low": _safe_int(summary.get("unique_low")),
+                        "majority_type": _normalize_type(summary.get("majority_type")),
+                        "majority_count": _safe_int(summary.get("majority_count")),
+                        "minority_type": _normalize_type(summary.get("minority_type")),
+                        "minority_count": _safe_int(summary.get("minority_count")),
+                        "complexity_count": _safe_int(summary.get("complexity_count")),
+                    }
+                )
+
+            if isinstance(devices, list):
+                normalized_devices: list[Dict[str, Any]] = []
+                for device in devices:
+                    if not isinstance(device, dict):
+                        continue
+                    entry: Dict[str, Any] = {}
+                    name_value = (device.get("device") or device.get("name") or "").strip()
+                    if name_value:
+                        entry["device"] = name_value
+                    for field in ("total_high", "total_med", "total_low"):
+                        if field in device:
+                            entry[field] = _safe_int(device.get(field))
+                    if "ood" in device:
+                        ood_value = str(device.get("ood") or "").strip().lower()
+                        entry["ood"] = "yes" if ood_value in {"yes", "true", "1", "y"} else "no"
+                    if entry:
+                        normalized_devices.append(entry)
+                firewall_payload["devices"] = normalized_devices
+
+            workbook_payload["firewall"] = firewall_payload
+
         def _build_nexpose_cap_entries_from_metrics() -> List[Dict[str, Any]]:
             issue_map: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
             findings_lookup: Dict[str, List[Dict[str, Any]]] = {}
@@ -1013,6 +1074,7 @@ class Project(models.Model):
         _apply_nexpose_metrics("internal_nexpose_metrics", "internal_nexpose")
         _apply_nexpose_metrics("iot_iomt_nexpose_metrics", "iot_iomt_nexpose")
         _apply_web_metrics()
+        _apply_firewall_metrics()
 
         def _is_explicit_no(value: Any) -> bool:
             if isinstance(value, bool):

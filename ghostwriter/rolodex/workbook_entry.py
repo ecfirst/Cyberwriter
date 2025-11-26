@@ -40,7 +40,19 @@ OSINT_FIELDS = {
     "total_leaks",
 }
 
-AREA_FIELDS = {"osint": OSINT_FIELDS}
+FIREWALL_SUMMARY_FIELDS = {
+    "unique",
+    "unique_high",
+    "unique_med",
+    "unique_low",
+    "majority_type",
+    "majority_count",
+    "minority_type",
+    "minority_count",
+    "complexity_count",
+}
+
+AREA_FIELDS = {"osint": OSINT_FIELDS, "firewall": FIREWALL_SUMMARY_FIELDS}
 
 
 def _as_decimal(value: Any) -> Optional[Decimal]:
@@ -131,6 +143,51 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                 "combined_unique_low",
             ):
                 if field in payload:
+                    normalized[field] = _as_int(payload.get(field))
+        return normalized
+    if area == "firewall" and isinstance(payload, Mapping):
+        normalized_devices: list[dict[str, Any]] = []
+        raw_devices = payload.get("devices")
+        if isinstance(raw_devices, list):
+            for device_payload in raw_devices:
+                if not isinstance(device_payload, Mapping):
+                    continue
+                device_entry: dict[str, Any] = {}
+                name_value = (
+                    device_payload.get("device")
+                    or device_payload.get("name")
+                    or device_payload.get("hostname")
+                    or ""
+                )
+                name_text = str(name_value).strip()
+                if name_text:
+                    device_entry["device"] = name_text
+                for field in ("total_high", "total_med", "total_low"):
+                    if field in device_payload:
+                        device_entry[field] = _as_int(device_payload.get(field))
+                if "ood" in device_payload:
+                    ood_value = device_payload.get("ood")
+                    if isinstance(ood_value, bool):
+                        device_entry["ood"] = "yes" if ood_value else "no"
+                    else:
+                        ood_text = str(ood_value).strip().lower()
+                        if ood_text in {"yes", "true", "1", "y"}:
+                            device_entry["ood"] = "yes"
+                        elif ood_text in {"no", "false", "0", "n", ""}:
+                            device_entry["ood"] = "no"
+                if device_entry:
+                    normalized_devices.append(device_entry)
+        if normalized_devices:
+            normalized["devices"] = normalized_devices
+        for field in FIREWALL_SUMMARY_FIELDS:
+            if field in payload:
+                if field.endswith("_type"):
+                    normalized[field] = (
+                        str(payload.get(field)).strip()
+                        if payload.get(field) not in (None, "")
+                        else None
+                    )
+                else:
                     normalized[field] = _as_int(payload.get(field))
         return normalized
     allowed_fields = AREA_FIELDS.get(area, set())

@@ -290,6 +290,8 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertIn("hashes_obtained", defaults["password"])
         self.assertIsNone(defaults["password"]["hashes_obtained"])
         self.assertEqual(defaults["password"]["entries"], [])
+        self.assertEqual(defaults["firewall"].get("ood_count"), 0)
+        self.assertEqual(defaults["firewall"].get("ood_name_list"), "")
         self.assertIn("wireless", defaults)
         self.assertIn("overall_risk", defaults)
 

@@ -844,99 +844,135 @@
         });
         $('.tablesorter').trigger('update');
 
-        const workbookForm = document.getElementById('project-workbook-form');
-        const workbookInput = document.getElementById('id_workbook_file');
-        if (workbookForm && workbookInput) {
-          const uploadButton = workbookForm.querySelector('button[type="submit"]');
+        const setupWorkbookUploadForm = function(context) {
+          const scope = context && context.querySelector ? context : document;
+          const workbookForm = scope.querySelector ? scope.querySelector('#project-workbook-form') : document.getElementById('project-workbook-form');
+          const workbookInput = scope.querySelector ? scope.querySelector('#id_workbook_file') : document.getElementById('id_workbook_file');
+          if (workbookForm && workbookInput) {
+            const uploadButton = workbookForm.querySelector('button[type="submit"]');
 
-          const setUploadingState = function() {
-            if (!workbookForm || workbookForm.dataset.submitting === '1') {
-              return;
-            }
-            workbookForm.dataset.submitting = '1';
-            workbookForm.classList.add('is-uploading');
-            if (uploadButton) {
-              const defaultText = uploadButton.getAttribute('data-default-text') || uploadButton.textContent.trim();
-              uploadButton.setAttribute('data-default-text', defaultText);
-              uploadButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Uploading...';
-              uploadButton.disabled = true;
-            }
-          };
-
-          workbookForm.addEventListener('submit', function() {
-            setUploadingState();
-          });
-
-          workbookInput.addEventListener('change', function() {
-            if (workbookInput.files && workbookInput.files.length) {
-              setUploadingState();
-              if (typeof workbookForm.requestSubmit === 'function') {
-                workbookForm.requestSubmit();
-              } else {
-                workbookForm.submit();
+            const setUploadingState = function() {
+              if (!workbookForm || workbookForm.dataset.submitting === '1') {
+                return;
               }
-            }
-          });
-        }
+              workbookForm.dataset.submitting = '1';
+              workbookForm.classList.add('is-uploading');
+              if (uploadButton) {
+                const defaultText = uploadButton.getAttribute('data-default-text') || uploadButton.textContent.trim();
+                uploadButton.setAttribute('data-default-text', defaultText);
+                uploadButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Uploading...';
+                uploadButton.disabled = true;
+              }
+            };
 
-        const dataForms = document.querySelectorAll('.project-required-data-form');
-        dataForms.forEach(function(form) {
-          const fileInput = form.querySelector('.project-required-data-input');
-          const submitButton = form.querySelector('button[type="submit"]');
-          if (!fileInput) {
-            return;
+            workbookForm.addEventListener('submit', function() {
+              setUploadingState();
+            });
+
+            workbookInput.addEventListener('change', function() {
+              if (workbookInput.files && workbookInput.files.length) {
+                setUploadingState();
+                if (typeof workbookForm.requestSubmit === 'function') {
+                  workbookForm.requestSubmit();
+                } else {
+                  workbookForm.submit();
+                }
+              }
+            });
           }
+        };
 
-          const setUploadingState = function() {
-            if (form.dataset.submitting === '1') {
+        const setupRequiredDataForms = function(context) {
+          const scope = context && context.querySelectorAll ? context : document;
+          const dataForms = scope.querySelectorAll('.project-required-data-form');
+          dataForms.forEach(function(form) {
+            const fileInput = form.querySelector('.project-required-data-input');
+            const submitButton = form.querySelector('button[type="submit"]');
+            if (!fileInput) {
               return;
             }
-            form.dataset.submitting = '1';
-            if (submitButton) {
-              const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
-              submitButton.setAttribute('data-default-text', defaultText);
-              submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Uploading...';
-              submitButton.disabled = true;
-            }
-          };
 
-          form.addEventListener('submit', function() {
-            storeProjectScrollPosition();
-            setUploadingState();
-          });
+            const setUploadingState = function() {
+              if (form.dataset.submitting === '1') {
+                return;
+              }
+              form.dataset.submitting = '1';
+              if (submitButton) {
+                const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
+                submitButton.setAttribute('data-default-text', defaultText);
+                submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Uploading...';
+                submitButton.disabled = true;
+              }
+            };
 
-          fileInput.addEventListener('change', function() {
-            if (fileInput.files && fileInput.files.length) {
+            form.addEventListener('submit', function() {
               storeProjectScrollPosition();
               setUploadingState();
-              if (typeof form.requestSubmit === 'function') {
-                form.requestSubmit();
-              } else {
-                form.submit();
+            });
+
+            fileInput.addEventListener('change', function() {
+              if (fileInput.files && fileInput.files.length) {
+                storeProjectScrollPosition();
+                setUploadingState();
+                if (typeof form.requestSubmit === 'function') {
+                  form.requestSubmit();
+                } else {
+                  form.submit();
+                }
               }
-            }
+            });
           });
-        });
+        };
 
-        const ipForms = document.querySelectorAll('.project-ip-artifact-form');
-        ipForms.forEach(function(form) {
-          const submitButton = form.querySelector('button[type="submit"]');
-          if (!submitButton) {
-            return;
-          }
-
-          form.addEventListener('submit', function() {
-            if (form.dataset.submitting === '1') {
+        const setupIpArtifactForms = function(context) {
+          const scope = context && context.querySelectorAll ? context : document;
+          const ipForms = scope.querySelectorAll('.project-ip-artifact-form');
+          ipForms.forEach(function(form) {
+            const submitButton = form.querySelector('button[type="submit"]');
+            if (!submitButton) {
               return;
             }
-            storeProjectScrollPosition();
-            form.dataset.submitting = '1';
-            const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
-            submitButton.setAttribute('data-default-text', defaultText);
-            submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Saving...';
-            submitButton.disabled = true;
+
+            form.addEventListener('submit', function() {
+              if (form.dataset.submitting === '1') {
+                return;
+              }
+              storeProjectScrollPosition();
+              form.dataset.submitting = '1';
+              const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
+              submitButton.setAttribute('data-default-text', defaultText);
+              submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Saving...';
+              submitButton.disabled = true;
+            });
           });
-        });
+        };
+
+        const refreshProjectDataTabs = function() {
+          const baseUrl = window.location.pathname + window.location.search;
+          const reloadSection = function(id, onComplete) {
+            const $section = $('#' + id);
+            if (!$section.length) {
+              return;
+            }
+            $section.load(baseUrl + ' #' + id + ' > *', function() {
+              if (typeof onComplete === 'function') {
+                onComplete($section[0]);
+              }
+            });
+          };
+
+          reloadSection('supplementals', function(section) {
+            setupRequiredDataForms(section);
+            setupIpArtifactForms(section);
+          });
+          reloadSection('data');
+          reloadSection('processed-data');
+          update_badges();
+        };
+
+        setupWorkbookUploadForm(document);
+        setupRequiredDataForms(document);
+        setupIpArtifactForms(document);
 
         const questionnaireForms = document.querySelectorAll('.project-data-responses-form');
         questionnaireForms.forEach(function(form) {
@@ -1093,6 +1129,287 @@
             combined_unique_med: normalizeNumber(webState.combined_unique_med),
             combined_unique_low: normalizeNumber(webState.combined_unique_low),
           };
+        }
+
+        let firewallRenderCallbacks = [];
+
+        function ensureFirewallState() {
+          const firewallState = (workbookState && typeof workbookState.firewall === 'object') ? workbookState.firewall : {};
+          if (!Array.isArray(firewallState.devices)) {
+            firewallState.devices = [];
+          }
+          ['unique', 'unique_high', 'unique_med', 'unique_low', 'majority_count', 'minority_count', 'complexity_count'].forEach(function(key) {
+            if (typeof firewallState[key] === 'undefined') {
+              firewallState[key] = null;
+            }
+          });
+          ['majority_type', 'minority_type'].forEach(function(key) {
+            if (typeof firewallState[key] === 'undefined' || firewallState[key] === '') {
+              firewallState[key] = null;
+            }
+          });
+          firewallState.devices = (firewallState.devices || []).map(function(device) {
+            return Object.assign(
+              {device: '', total_high: null, total_med: null, total_low: null, ood: null},
+              device || {},
+            );
+          });
+          workbookState.firewall = firewallState;
+          return firewallState;
+        }
+
+        function serializeFirewallPayload() {
+          const firewallState = ensureFirewallState();
+          const normalizeNumber = function(value) {
+            if (typeof value === 'number' && !Number.isNaN(value)) {
+              return value;
+            }
+            if (value === null || typeof value === 'undefined') {
+              return null;
+            }
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          const devices = (firewallState.devices || []).map(function(device) {
+            const oodValue = (device.ood === null || typeof device.ood === 'undefined') ? null : device.ood;
+            let normalizedOod = null;
+            if (oodValue !== null) {
+              const text = oodValue.toString().trim().toLowerCase();
+              if (text) {
+                normalizedOod = text === 'yes' ? 'yes' : (text === 'no' ? 'no' : text);
+              }
+            }
+            return {
+              device: (device.device || '').toString(),
+              total_high: normalizeNumber(device.total_high),
+              total_med: normalizeNumber(device.total_med),
+              total_low: normalizeNumber(device.total_low),
+              ood: normalizedOod,
+            };
+          }).filter(function(entry) {
+            return entry.device || entry.total_high !== null || entry.total_med !== null || entry.total_low !== null || entry.ood !== null;
+          });
+
+          return {
+            devices: devices,
+            unique: normalizeNumber(firewallState.unique),
+            unique_high: normalizeNumber(firewallState.unique_high),
+            unique_med: normalizeNumber(firewallState.unique_med),
+            unique_low: normalizeNumber(firewallState.unique_low),
+            majority_type: firewallState.majority_type || null,
+            majority_count: normalizeNumber(firewallState.majority_count),
+            minority_type: firewallState.minority_type || null,
+            minority_count: normalizeNumber(firewallState.minority_count),
+            complexity_count: normalizeNumber(firewallState.complexity_count),
+          };
+        }
+
+        function renderFirewallSection(container, areaKey, modalId, mode) {
+          const triggerRerender = function() {
+            firewallRenderCallbacks.forEach(function(cb) { cb(); });
+          };
+
+          const renderContent = function() {
+            const firewallState = ensureFirewallState();
+            container.innerHTML = '';
+
+            const addWrapper = document.createElement('div');
+            addWrapper.className = 'd-flex justify-content-between align-items-center mb-3';
+            const addButton = document.createElement('button');
+            addButton.type = 'button';
+            addButton.className = 'btn btn-outline-primary';
+            addButton.textContent = 'Add Firewall';
+            addButton.addEventListener('click', function() {
+              firewallState.devices.push({device: '', total_high: null, total_med: null, total_low: null, ood: null});
+              triggerRerender();
+              updateWorkbookCardProgress(areaKey);
+            });
+            addWrapper.appendChild(addButton);
+            container.appendChild(addWrapper);
+
+            const devicesContainer = document.createElement('div');
+            container.appendChild(devicesContainer);
+
+            const makeNumberGroup = function(labelText, value, onChange) {
+              const group = document.createElement('div');
+              group.className = 'form-group';
+              const label = document.createElement('label');
+              label.className = 'font-weight-bold';
+              label.textContent = labelText;
+              const input = document.createElement('input');
+              input.type = 'number';
+              input.className = 'form-control';
+              input.setAttribute('data-area-field', areaKey);
+              input.value = typeof value === 'number' ? value : '';
+              input.addEventListener('input', function() {
+                const parsed = input.value === '' ? null : Number(input.value);
+                onChange(Number.isNaN(parsed) ? null : parsed);
+                updateWorkbookCardProgress(areaKey);
+              });
+              group.appendChild(label);
+              group.appendChild(input);
+              return group;
+            };
+
+            if (!firewallState.devices.length) {
+              const empty = document.createElement('p');
+              empty.className = 'text-muted mb-3';
+              empty.textContent = 'No firewalls have been added yet.';
+              devicesContainer.appendChild(empty);
+            }
+
+            firewallState.devices.forEach(function(device, index) {
+              const wrapper = document.createElement('div');
+              wrapper.className = 'border rounded p-3 mb-3';
+
+              const heading = document.createElement('div');
+              heading.className = 'font-weight-bold mb-2';
+              heading.textContent = 'Firewall ' + (index + 1);
+              wrapper.appendChild(heading);
+
+              const nameGroup = document.createElement('div');
+              nameGroup.className = 'form-group';
+              const nameLabel = document.createElement('label');
+              nameLabel.className = 'font-weight-bold';
+              nameLabel.textContent = 'Firewall Name';
+              const nameInput = document.createElement('input');
+              nameInput.type = 'text';
+              nameInput.className = 'form-control';
+              nameInput.setAttribute('data-area-field', areaKey);
+              nameInput.value = device.device || '';
+              nameInput.addEventListener('input', function() {
+                device.device = nameInput.value;
+                updateWorkbookCardProgress(areaKey);
+              });
+              nameGroup.appendChild(nameLabel);
+              nameGroup.appendChild(nameInput);
+              wrapper.appendChild(nameGroup);
+
+              if (mode === 'os') {
+                const oodGroup = document.createElement('div');
+                oodGroup.className = 'form-group';
+                const oodLabel = document.createElement('label');
+                oodLabel.className = 'font-weight-bold';
+                oodLabel.textContent = 'Was the OS out of date?';
+                const oodSelect = document.createElement('select');
+                oodSelect.className = 'form-control';
+                oodSelect.setAttribute('data-area-field', areaKey);
+                const placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = 'Select';
+                oodSelect.appendChild(placeholder);
+                [{value: 'yes', label: 'Yes'}, {value: 'no', label: 'No'}].forEach(function(optionDef) {
+                  const opt = document.createElement('option');
+                  opt.value = optionDef.value;
+                  opt.textContent = optionDef.label;
+                  if ((device.ood || '').toString().toLowerCase() === optionDef.value) {
+                    opt.selected = true;
+                  }
+                  oodSelect.appendChild(opt);
+                });
+                oodSelect.addEventListener('change', function() {
+                  const value = (oodSelect.value || '').toLowerCase();
+                  device.ood = value || null;
+                  updateWorkbookCardProgress(areaKey);
+                });
+                oodGroup.appendChild(oodLabel);
+                oodGroup.appendChild(oodSelect);
+                wrapper.appendChild(oodGroup);
+              } else {
+                wrapper.appendChild(makeNumberGroup('Total High', device.total_high, function(val) { device.total_high = val; }));
+                wrapper.appendChild(makeNumberGroup('Total Medium', device.total_med, function(val) { device.total_med = val; }));
+                wrapper.appendChild(makeNumberGroup('Total Low', device.total_low, function(val) { device.total_low = val; }));
+              }
+
+              const removeButton = document.createElement('button');
+              removeButton.type = 'button';
+              removeButton.className = 'btn btn-outline-danger';
+              removeButton.textContent = 'Remove Firewall';
+              removeButton.addEventListener('click', function() {
+                firewallState.devices.splice(index, 1);
+                triggerRerender();
+                updateWorkbookCardProgress(areaKey);
+              });
+              wrapper.appendChild(removeButton);
+
+              devicesContainer.appendChild(wrapper);
+            });
+
+            if (mode === 'configuration') {
+              const summaryFields = [
+                {key: 'unique', label: 'Unique Total'},
+                {key: 'unique_high', label: 'Unique High'},
+                {key: 'unique_med', label: 'Unique Medium'},
+                {key: 'unique_low', label: 'Unique Low'},
+              ];
+              summaryFields.forEach(function(field) {
+                const group = makeNumberGroup(field.label, firewallState[field.key], function(val) {
+                  firewallState[field.key] = val;
+                });
+                devicesContainer.appendChild(group);
+              });
+
+              const typeOptions = [
+                {value: 'Rules', label: 'Rules'},
+                {value: 'Configuration', label: 'Configuration'},
+                {value: 'Even', label: 'Even'},
+              ];
+
+              const makeSelectGroup = function(labelText, value, onChange) {
+                const group = document.createElement('div');
+                group.className = 'form-group';
+                const label = document.createElement('label');
+                label.className = 'font-weight-bold';
+                label.textContent = labelText;
+                const select = document.createElement('select');
+                select.className = 'form-control';
+                select.setAttribute('data-area-field', areaKey);
+                const placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = 'Select';
+                select.appendChild(placeholder);
+                typeOptions.forEach(function(option) {
+                  const opt = document.createElement('option');
+                  opt.value = option.value;
+                  opt.textContent = option.label;
+                  if ((value || '').toString() === option.value) {
+                    opt.selected = true;
+                  }
+                  select.appendChild(opt);
+                });
+                select.addEventListener('change', function() {
+                  onChange(select.value || null);
+                  updateWorkbookCardProgress(areaKey);
+                });
+                group.appendChild(label);
+                group.appendChild(select);
+                return group;
+              };
+
+              devicesContainer.appendChild(makeSelectGroup('Majority Vulnerability Type (non-OS) - All devices', firewallState.majority_type, function(val) {
+                firewallState.majority_type = val;
+              }));
+              devicesContainer.appendChild(makeNumberGroup('Majority Vulnerability Count - All devices', firewallState.majority_count, function(val) {
+                firewallState.majority_count = val;
+              }));
+              devicesContainer.appendChild(makeSelectGroup('Second-majority Vulnerability Type (non-OS) - All devices', firewallState.minority_type, function(val) {
+                firewallState.minority_type = val;
+              }));
+              devicesContainer.appendChild(makeNumberGroup('Second-majority Vulnerability Count - All devices', firewallState.minority_count, function(val) {
+                firewallState.minority_count = val;
+              }));
+              devicesContainer.appendChild(makeNumberGroup('Complexity Count', firewallState.complexity_count, function(val) {
+                firewallState.complexity_count = val;
+              }));
+            }
+          };
+
+          const renderCallback = function() {
+            renderContent();
+          };
+          firewallRenderCallbacks.push(renderCallback);
+          renderCallback();
         }
 
         function renderWebSites(container, areaKey, modalId) {
@@ -1429,6 +1746,18 @@
                 accept: '.xml,application/xml,text/xml',
               },
             ],
+          },
+          firewall_os: {
+            label: 'OS',
+            workbookKey: 'firewall',
+            renderer: 'firewall_os',
+            serializer: serializeFirewallPayload,
+          },
+          firewall_configuration: {
+            label: 'Configuration',
+            workbookKey: 'firewall',
+            renderer: 'firewall_configuration',
+            serializer: serializeFirewallPayload,
           },
         };
 
@@ -1853,6 +2182,38 @@
           });
         };
 
+        const uploadFirewallXml = function(file, areaKey, modalId) {
+          if (!workbookUpdateUrl || !file) {
+            return;
+          }
+          const formData = new FormData();
+          formData.append('firewall_xml', file);
+          fetch(workbookUpdateUrl, {
+            method: 'POST',
+            headers: {
+              'X-CSRFToken': getCsrfToken() || '',
+            },
+            body: formData,
+          }).then(function(response) {
+            return response.json().then(function(data) {
+              if (!response.ok) {
+                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
+                throw new Error(message);
+              }
+              return data;
+            });
+          }).then(function(data) {
+            handleWorkbookUpdateResponse(data, {
+              reopenModalId: modalId,
+              forceCloseModalId: modalId,
+              afterRender: function() { updateWorkbookCardProgress(areaKey); },
+            });
+          }).catch(function(error) {
+            console.error(error);
+            alert(error.message || 'Unable to save workbook data.');
+          });
+        };
+
         const uploadBurpXml = function(file, areaKey, modalId) {
           if (!workbookUpdateUrl || !file) {
             return;
@@ -1899,6 +2260,15 @@
 
         const removeWebData = function(areaKey, modalId) {
           const payload = {remove_web: true};
+          submitWorkbookUpdate(payload, null, {
+            reopenModalId: modalId,
+            forceCloseModalId: modalId,
+            afterRender: function() { updateWorkbookCardProgress(areaKey); },
+          });
+        };
+
+        const removeFirewallData = function(areaKey, modalId) {
+          const payload = {remove_firewall: true};
           submitWorkbookUpdate(payload, null, {
             reopenModalId: modalId,
             forceCloseModalId: modalId,
@@ -2181,6 +2551,7 @@
           }
           cardContainer.innerHTML = '';
           modalContainer.innerHTML = '';
+          firewallRenderCallbacks = [];
           const deck = document.createElement('div');
           deck.className = 'row workbook-area-grid';
           const modalFragment = document.createDocumentFragment();
@@ -2272,6 +2643,10 @@
               const uploaderContext = {areaKey: areaKey, subkey: subkey, workbookKey: workbookKey, modalId: modalId};
               if (config && config.renderer === 'web') {
                 renderWebSites(subBody, areaKey, modalId);
+              } else if (config && config.renderer === 'firewall_os') {
+                renderFirewallSection(subBody, areaKey, modalId, 'os');
+              } else if (config && config.renderer === 'firewall_configuration') {
+                renderFirewallSection(subBody, areaKey, modalId, 'configuration');
               } else if (subkey === 'dns') {
                 renderDnsDomains(subBody, areaKey, modalId);
               } else if (config && Array.isArray(config.fields)) {
@@ -2367,14 +2742,44 @@
                 subBody.appendChild(uploadWrapper);
               }
               subCard.appendChild(subHeader);
-              subCard.appendChild(subBody);
-              col.appendChild(subCard);
-              modalRow.appendChild(col);
+            subCard.appendChild(subBody);
+            col.appendChild(subCard);
+            modalRow.appendChild(col);
+          });
+          modalBody.appendChild(modalRow);
+          if (areaKey === 'firewall') {
+            const uploadWrapper = document.createElement('div');
+            uploadWrapper.className = 'mt-3';
+            const uploadInput = document.createElement('input');
+            uploadInput.type = 'file';
+            uploadInput.className = 'd-none';
+            uploadInput.accept = '.xml,application/xml,text/xml';
+            uploadInput.addEventListener('change', function(event) {
+              if (event.target.files && event.target.files[0]) {
+                uploadFirewallXml(event.target.files[0], areaKey, modalId);
+                event.target.value = '';
+              }
             });
-            modalBody.appendChild(modalRow);
-            const modalFooter = document.createElement('div');
-            modalFooter.className = 'modal-footer';
-            const closeButton = document.createElement('button');
+            const uploadButton = document.createElement('button');
+            uploadButton.type = 'button';
+            uploadButton.className = 'btn btn-outline-primary';
+            uploadButton.textContent = 'Upload Nipper XML';
+            uploadButton.addEventListener('click', function() { uploadInput.click(); });
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'btn btn-outline-danger ml-2';
+            removeButton.textContent = 'Remove Nipper Data';
+            removeButton.addEventListener('click', function() {
+              removeFirewallData(areaKey, modalId);
+            });
+            uploadWrapper.appendChild(uploadInput);
+            uploadWrapper.appendChild(uploadButton);
+            uploadWrapper.appendChild(removeButton);
+            modalBody.appendChild(uploadWrapper);
+          }
+          const modalFooter = document.createElement('div');
+          modalFooter.className = 'modal-footer';
+          const closeButton = document.createElement('button');
             closeButton.type = 'button';
             closeButton.className = 'btn btn-secondary';
             closeButton.setAttribute('data-dismiss', 'modal');
@@ -2644,6 +3049,7 @@
             updateDataArtifactsState(data.data_artifacts);
           }
           refreshWorkbookUi(renderOptions);
+          refreshProjectDataTabs();
         };
 
         const getCsrfToken = function() {
