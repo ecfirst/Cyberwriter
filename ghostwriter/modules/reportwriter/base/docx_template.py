@@ -634,6 +634,100 @@ class GhostwriterDocxTemplate(DocxTemplate):
             return
         logger.info('Templating "%s"', label or partname)
 
+    def _log_template_statements(
+        self,
+        label: str | None,
+        partname: str | None,
+        xml: str,
+        *,
+        subpart: str | None = None,
+    ) -> None:
+        statements, total = self._collect_template_statements(xml, limit=20)
+        if not statements:
+            return
+
+        scope = label or partname or "<unknown part>"
+        prefix = f'"{scope}"'
+        if subpart:
+            prefix = f'{prefix} ({subpart})'
+
+        logger.info(
+            "Found %s templating statement%s in %s",
+            total,
+            "s" if total != 1 else "",
+            prefix,
+            extra={
+                "docx_template_part": partname,
+                "docx_template_label": label,
+                "docx_template_statement_count": total,
+                "docx_template_statements_preview": statements,
+            },
+        )
+
+        for entry in statements:
+            statement = entry.get("statement", "")
+            line = entry.get("line")
+            context_before = entry.get("before")
+            context_after = entry.get("after")
+            context_detail = []
+            if context_before:
+                context_detail.append(f"before: {context_before}")
+            if context_after:
+                context_detail.append(f"after: {context_after}")
+            context_suffix = f" ({'; '.join(context_detail)})" if context_detail else ""
+
+            logger.info(
+                "Processing pattern %r in %s%s",
+                statement,
+                prefix,
+                f" on line {line}{context_suffix}" if line else context_suffix,
+                extra={
+                    "docx_template_part": partname,
+                    "docx_template_label": label,
+                    "docx_template_statement": statement,
+                    "docx_template_statement_line": line,
+                    "docx_template_statement_context_before": context_before,
+                    "docx_template_statement_context_after": context_after,
+                    **({"docx_template_subpart": subpart} if subpart else {}),
+                },
+            )
+
+    def _record_templated_part(self, bucket: str, label: str) -> None:
+        if not hasattr(self, "_templated_part_labels"):
+            self._templated_part_labels = defaultdict(list)
+        self._templated_part_labels[bucket].append(label)
+
+    def _summarise_templated_parts(self) -> None:
+        labels: dict[str, list[str]] = getattr(self, "_templated_part_labels", {})
+        if not labels:
+            return
+
+        embeddings = labels.get("embeddings", [])
+        charts = labels.get("charts", [])
+        if embeddings or charts:
+            logger.info(
+                "Templated %s embedding(s) and %s chart(s)",
+                len(embeddings),
+                len(charts),
+                extra={
+                    "docx_template_embeddings": embeddings,
+                    "docx_template_charts": charts,
+                },
+            )
+
+        if embeddings and charts and len(embeddings) != len(charts):
+            logger.warning(
+                "Templated embedding/chart counts differ; charts may reference shared or additional workbooks",
+                extra={
+                    "docx_template_embeddings": embeddings,
+                    "docx_template_charts": charts,
+                    "docx_template_count_delta": len(charts) - len(embeddings),
+                },
+            )
+
+        if hasattr(self, "_templated_part_labels"):
+            self._templated_part_labels.clear()
+
     def _log_indexed_part_error(
         self,
         label: str | None,
@@ -714,6 +808,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
     def _render_additional_parts(self, context, jinja_env) -> None:
         parts = list(self._iter_additional_parts())
         excel_values: dict[str, dict[str, dict[str, str]]] = {}
+        self._templated_part_labels = defaultdict(list)
 
         for part in parts:
             partname = self._normalise_partname(part)
@@ -738,6 +833,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 part._blob = rendered_blob
             if workbook_values:
                 excel_values[partname] = workbook_values
+            if folder == "word/embeddings" and label:
+                self._record_templated_part("embeddings", label)
 
         for part in parts:
             partname = self._normalise_partname(part)
@@ -752,15 +849,19 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
             xml = self.get_part_xml(part)
             patched = self.patch_xml(xml)
+            if chart_label:
+                self._log_template_statements(chart_label, partname, patched)
             try:
                 rendered = self.render_xml_part(patched, part, context, jinja_env)
             except Exception as exc:
                 if chart_label:
                     self._log_indexed_part_error(chart_label, partname, exc, xml=patched)
                 raise
+            if chart_label:
+                self._record_templated_part("charts", chart_label)
 
-            if self._is_chart_part(partname):
-                rendered = self._sync_chart_cache(rendered, part, excel_values)
+        if self._is_chart_part(partname):
+            rendered = self._sync_chart_cache(rendered, part, excel_values)
 
             rendered_bytes = rendered.encode("utf-8")
             if hasattr(part, "_element"):
@@ -768,6 +869,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
             if hasattr(part, "_blob"):
                 part._blob = rendered_bytes
             self._cleanup_part_relationships(part, rendered)
+
+        self._summarise_templated_parts()
 
     def _renumber_media_parts(self) -> None:
         """Ensure chart and embedding parts are sequentially numbered."""
@@ -1972,6 +2075,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
                 continue
             xml = data.decode("utf-8")
             patched = self.patch_xml(xml)
+            if folder == "word/embeddings":
+                self._log_template_statements(label, part_label, patched, subpart=name)
             try:
                 rendered_xml[name] = self.render_xml_part(
                     patched, part, context, jinja_env
