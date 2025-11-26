@@ -2287,6 +2287,20 @@
           });
         };
 
+        const removeAdCsv = function(domain, metric, areaKey, modalId) {
+          const domainValue = (domain || '').trim();
+          if (!domainValue) {
+            alert('Please enter a domain name before removing a CSV.');
+            return;
+          }
+          const payload = {remove_ad_metric: {domain: domainValue, metric: metric}};
+          submitWorkbookUpdate(payload, null, {
+            reopenModalId: modalId,
+            forceCloseModalId: modalId,
+            afterRender: function() { updateWorkbookCardProgress(areaKey); },
+          });
+        };
+
         const uploadOsintCsv = function(file, areaKey, modalId) {
           if (!workbookUpdateUrl || !file) {
             return;
@@ -2508,8 +2522,11 @@
               heading.appendChild(title);
               wrapper.appendChild(heading);
 
+              const layoutRow = document.createElement('div');
+              layoutRow.className = 'form-row';
+
               const domainGroup = document.createElement('div');
-              domainGroup.className = 'form-group';
+              domainGroup.className = 'form-group col-md-6';
               const domainLabel = document.createElement('label');
               domainLabel.className = 'font-weight-bold';
               domainLabel.textContent = 'Domain Name';
@@ -2518,16 +2535,21 @@
               domainInput.className = 'form-control';
               domainInput.setAttribute('data-area-field', areaKey);
               domainInput.value = domain.domain || '';
+              const metricFileUpdateCallbacks = [];
+              const refreshMetricFileDisplays = function() {
+                metricFileUpdateCallbacks.forEach(function(cb) { cb(); });
+              };
               domainInput.addEventListener('input', function() {
                 domain.domain = domainInput.value;
                 updateWorkbookCardProgress(areaKey);
+                refreshMetricFileDisplays();
               });
               domainGroup.appendChild(domainLabel);
               domainGroup.appendChild(domainInput);
-              wrapper.appendChild(domainGroup);
+              layoutRow.appendChild(domainGroup);
 
               const levelGroup = document.createElement('div');
-              levelGroup.className = 'form-group';
+              levelGroup.className = 'form-group col-md-6';
               const levelLabel = document.createElement('label');
               levelLabel.className = 'font-weight-bold';
               levelLabel.textContent = 'Domain Functionality Level';
@@ -2542,17 +2564,57 @@
               });
               levelGroup.appendChild(levelLabel);
               levelGroup.appendChild(levelInput);
-              wrapper.appendChild(levelGroup);
+              layoutRow.appendChild(levelGroup);
+              wrapper.appendChild(layoutRow);
+
+              const metricsRow = document.createElement('div');
+              metricsRow.className = 'form-row';
+
+              const resolveDomainKey = function() {
+                return (domainInput.value || domain.domain || '').toString().trim().toLowerCase();
+              };
+
+              const getMetricFileName = function(metricKey) {
+                const adArtifacts = dataArtifactsState.ad;
+                const domainKey = resolveDomainKey();
+                if (!domainKey || !adArtifacts || typeof adArtifacts !== 'object') {
+                  return '';
+                }
+                const entry = adArtifacts[domainKey];
+                if (!entry || typeof entry !== 'object') {
+                  return '';
+                }
+                const fileName = entry[metricKey + '_file_name'];
+                return (fileName || '').toString();
+              };
 
               const makeMetricGroup = function(labelText, fieldKey, uploadMetric) {
                 const group = document.createElement('div');
-                group.className = 'form-group';
+                group.className = 'form-group col-md-6';
                 const labelRow = document.createElement('div');
-                labelRow.className = 'd-flex justify-content-between align-items-center';
+                labelRow.className = 'd-flex justify-content-between align-items-center flex-wrap';
                 const label = document.createElement('label');
                 label.className = 'font-weight-bold mb-0';
                 label.textContent = labelText;
                 labelRow.appendChild(label);
+
+                let removeButton = null;
+                const fileInfo = document.createElement('div');
+                fileInfo.className = 'small text-muted mt-1';
+                const updateFileInfo = function() {
+                  const fileName = getMetricFileName(uploadMetric || fieldKey);
+                  if (fileName) {
+                    fileInfo.textContent = 'Uploaded: ' + fileName;
+                    if (removeButton) {
+                      removeButton.disabled = false;
+                    }
+                  } else {
+                    fileInfo.textContent = '';
+                    if (removeButton) {
+                      removeButton.disabled = true;
+                    }
+                  }
+                };
 
                 if (uploadMetric) {
                   const uploadInput = document.createElement('input');
@@ -2570,8 +2632,17 @@
                   uploadButton.className = 'btn btn-outline-primary btn-sm';
                   uploadButton.textContent = 'Upload CSV';
                   uploadButton.addEventListener('click', function() { uploadInput.click(); });
+                  removeButton = document.createElement('button');
+                  removeButton.type = 'button';
+                  removeButton.className = 'btn btn-outline-danger btn-sm ml-2';
+                  removeButton.textContent = 'Remove CSV';
+                  removeButton.addEventListener('click', function() {
+                    removeAdCsv(domainInput.value || domain.domain || '', uploadMetric, areaKey, modalId);
+                  });
                   const buttonWrap = document.createElement('div');
+                  buttonWrap.className = 'd-flex flex-wrap';
                   buttonWrap.appendChild(uploadButton);
+                  buttonWrap.appendChild(removeButton);
                   buttonWrap.appendChild(uploadInput);
                   labelRow.appendChild(buttonWrap);
                 }
@@ -2588,19 +2659,25 @@
                   updateWorkbookCardProgress(areaKey);
                 });
                 group.appendChild(input);
+                if (uploadMetric) {
+                  group.appendChild(fileInfo);
+                  updateFileInfo();
+                  metricFileUpdateCallbacks.push(updateFileInfo);
+                }
                 return group;
               };
 
-              wrapper.appendChild(makeMetricGroup('Domain Admins', 'domain_admins', 'domain_admins'));
-              wrapper.appendChild(makeMetricGroup('Enterprise Admins', 'ent_admins', 'ent_admins'));
-              wrapper.appendChild(makeMetricGroup('Expired Passwords', 'exp_passwords', 'exp_passwords'));
-              wrapper.appendChild(makeMetricGroup('Passwords set to Never Expire', 'passwords_never_exp', 'passwords_never_exp'));
-              wrapper.appendChild(makeMetricGroup('Inactive Accounts', 'inactive_accounts', 'inactive_accounts'));
-              wrapper.appendChild(makeMetricGroup('Generic Accounts', 'generic_accounts', 'generic_accounts'));
-              wrapper.appendChild(makeMetricGroup('Old Passwords', 'old_passwords', 'old_passwords'));
-              wrapper.appendChild(makeMetricGroup('Generic Logins', 'generic_logins', 'generic_logins'));
-              wrapper.appendChild(makeMetricGroup('Enabled Accounts', 'enabled_accounts', null));
-              wrapper.appendChild(makeMetricGroup('Total Accounts', 'total_accounts', null));
+              metricsRow.appendChild(makeMetricGroup('Domain Admins', 'domain_admins', 'domain_admins'));
+              metricsRow.appendChild(makeMetricGroup('Enterprise Admins', 'ent_admins', 'ent_admins'));
+              metricsRow.appendChild(makeMetricGroup('Expired Passwords', 'exp_passwords', 'exp_passwords'));
+              metricsRow.appendChild(makeMetricGroup('Passwords set to Never Expire', 'passwords_never_exp', 'passwords_never_exp'));
+              metricsRow.appendChild(makeMetricGroup('Inactive Accounts', 'inactive_accounts', 'inactive_accounts'));
+              metricsRow.appendChild(makeMetricGroup('Generic Accounts', 'generic_accounts', 'generic_accounts'));
+              metricsRow.appendChild(makeMetricGroup('Old Passwords', 'old_passwords', 'old_passwords'));
+              metricsRow.appendChild(makeMetricGroup('Generic Logins', 'generic_logins', 'generic_logins'));
+              metricsRow.appendChild(makeMetricGroup('Enabled Accounts', 'enabled_accounts', null));
+              metricsRow.appendChild(makeMetricGroup('Total Accounts', 'total_accounts', null));
+              wrapper.appendChild(metricsRow);
 
               const oldCountsSection = document.createElement('div');
               oldCountsSection.className = 'mt-3';
@@ -2611,7 +2688,7 @@
               const oldCounts = domain.old_password_counts || {};
               const makeCountInput = function(labelText, key, target) {
                 const group = document.createElement('div');
-                group.className = 'form-group mb-2';
+                group.className = 'form-group mb-2 col-md-6';
                 const label = document.createElement('label');
                 label.className = 'font-weight-bold mb-1';
                 label.textContent = labelText;
@@ -2629,14 +2706,17 @@
                 group.appendChild(input);
                 return group;
               };
-              oldCountsSection.appendChild(makeCountInput('Compliant Accounts', 'compliant', oldCounts));
-              oldCountsSection.appendChild(makeCountInput('30+ days', '30_days', oldCounts));
-              oldCountsSection.appendChild(makeCountInput('90+ days', '90_days', oldCounts));
-              oldCountsSection.appendChild(makeCountInput('180+ days', '180_days', oldCounts));
-              oldCountsSection.appendChild(makeCountInput('1+ year', '1_year', oldCounts));
-              oldCountsSection.appendChild(makeCountInput('2+ years', '2_year', oldCounts));
-              oldCountsSection.appendChild(makeCountInput('3+ years', '3_year', oldCounts));
-              oldCountsSection.appendChild(makeCountInput('Never', 'never', oldCounts));
+              const oldCountsGrid = document.createElement('div');
+              oldCountsGrid.className = 'form-row';
+              oldCountsGrid.appendChild(makeCountInput('Compliant Accounts', 'compliant', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('30+ days', '30_days', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('90+ days', '90_days', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('180+ days', '180_days', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('1+ year', '1_year', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('2+ years', '2_year', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('3+ years', '3_year', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('Never', 'never', oldCounts));
+              oldCountsSection.appendChild(oldCountsGrid);
               wrapper.appendChild(oldCountsSection);
 
               const inactiveCountsSection = document.createElement('div');
@@ -2646,14 +2726,17 @@
               inactiveHeading.textContent = 'Inactive Account Counts';
               inactiveCountsSection.appendChild(inactiveHeading);
               const inactiveCounts = domain.inactive_account_counts || {};
-              inactiveCountsSection.appendChild(makeCountInput('Active Accounts', 'active', inactiveCounts));
-              inactiveCountsSection.appendChild(makeCountInput('30+ days', '30_days', inactiveCounts));
-              inactiveCountsSection.appendChild(makeCountInput('90+ days', '90_days', inactiveCounts));
-              inactiveCountsSection.appendChild(makeCountInput('180+ days', '180_days', inactiveCounts));
-              inactiveCountsSection.appendChild(makeCountInput('1+ year', '1_year', inactiveCounts));
-              inactiveCountsSection.appendChild(makeCountInput('2+ years', '2_year', inactiveCounts));
-              inactiveCountsSection.appendChild(makeCountInput('3+ years', '3_year', inactiveCounts));
-              inactiveCountsSection.appendChild(makeCountInput('Never', 'never', inactiveCounts));
+              const inactiveCountsGrid = document.createElement('div');
+              inactiveCountsGrid.className = 'form-row';
+              inactiveCountsGrid.appendChild(makeCountInput('Active Accounts', 'active', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('30+ days', '30_days', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('90+ days', '90_days', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('180+ days', '180_days', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('1+ year', '1_year', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('2+ years', '2_year', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('3+ years', '3_year', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('Never', 'never', inactiveCounts));
+              inactiveCountsSection.appendChild(inactiveCountsGrid);
               wrapper.appendChild(inactiveCountsSection);
 
               const removeButton = document.createElement('button');
