@@ -2364,6 +2364,50 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
         return len(unique_tests)
 
+    @staticmethod
+    def _parse_ad_csv(upload, required_headers: dict[str, str]) -> tuple[
+        Optional[list[dict[str, str]]], Optional[str]
+    ]:
+        try:
+            content = upload.read().decode("utf-8-sig")
+        except Exception:
+            return None, "Unable to read the uploaded CSV file."
+
+        reader = csv.DictReader(io.StringIO(content))
+        header_lookup = {header.lower(): header for header in (reader.fieldnames or [])}
+        missing_headers = [
+            label for key, label in required_headers.items() if key not in header_lookup
+        ]
+        if missing_headers:
+            return None, f"Missing required headers: {', '.join(missing_headers)}"
+
+        rows: list[dict[str, str]] = []
+        for row in reader:
+            normalized_row: dict[str, str] = {}
+            for key, label in required_headers.items():
+                source_header = header_lookup.get(key) or label
+                normalized_row[label] = (row.get(source_header) or "").strip()
+            rows.append(normalized_row)
+
+        return rows, None
+
+    @staticmethod
+    def _extract_ad_domains(payload: Optional[dict[str, Any]]) -> set[str]:
+        domains: set[str] = set()
+        if not isinstance(payload, dict):
+            return domains
+        records = payload.get("domains") if isinstance(payload.get("domains"), list) else []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            domain_value = (
+                record.get("domain") or record.get("name") or ""
+            )
+            domain = str(domain_value).strip()
+            if domain:
+                domains.add(domain.lower())
+        return domains
+
     def _handle_dns_csv_upload(self, request, project):
         upload = request.FILES.get("dns_csv")
         if not upload:
@@ -2502,6 +2546,95 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
         )
 
+    def _handle_ad_csv_upload(self, request, project):
+        upload = request.FILES.get("ad_csv")
+        if not upload:
+            return JsonResponse({"error": "No AD CSV provided."}, status=400)
+
+        domain = (request.POST.get("domain") or "").strip()
+        if not domain:
+            return JsonResponse(
+                {"error": "A domain name is required for this upload."}, status=400
+            )
+
+        metric = (request.POST.get("ad_metric") or "").strip()
+        header_map: dict[str, dict[str, str]] = {
+            "domain_admins": {"account": "Account", "password last set": "Password Last Set"},
+            "ent_admins": {"account": "Account", "password last set": "Password Last Set"},
+            "exp_passwords": {"account": "Account", "password last set": "Password Last Set"},
+            "passwords_never_exp": {"account": "Account", "password last set": "Password Last Set"},
+            "inactive_accounts": {
+                "account": "Account",
+                "last login": "Last Login",
+                "creation date": "Creation Date",
+                "days past": "Days Past",
+            },
+            "generic_accounts": {
+                "account": "Account",
+                "creation date": "Creation Date",
+            },
+            "old_passwords": {
+                "account": "Account",
+                "password last set date": "Password Last Set Date",
+                "days past due": "Days Past Due",
+            },
+            "generic_logins": {"computer": "Computer", "username": "Username"},
+        }
+
+        if metric not in header_map:
+            return JsonResponse({"error": "Invalid AD metric provided."}, status=400)
+
+        rows, error_message = self._parse_ad_csv(upload, header_map[metric])
+        if error_message:
+            return JsonResponse({"error": error_message}, status=400)
+
+        artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+        artifacts = dict(artifacts)
+        ad_artifacts = artifacts.get("ad") if isinstance(artifacts.get("ad"), dict) else {}
+        if not isinstance(ad_artifacts, dict):
+            ad_artifacts = {}
+        domain_key = domain.lower()
+        domain_entry = ad_artifacts.get(domain_key, {}) if isinstance(ad_artifacts, dict) else {}
+        if not isinstance(domain_entry, dict):
+            domain_entry = {}
+        domain_entry[metric] = rows or []
+        ad_artifacts[domain_key] = domain_entry
+        artifacts["ad"] = ad_artifacts
+
+        normalized_workbook = normalize_workbook_payload(project.workbook_data)
+        ad_state = normalized_workbook.get("ad") if isinstance(normalized_workbook.get("ad"), dict) else {}
+        if not isinstance(ad_state, dict):
+            ad_state = {}
+        domain_records = ad_state.get("domains") if isinstance(ad_state.get("domains"), list) else []
+        if not isinstance(domain_records, list):
+            domain_records = []
+
+        match = None
+        for record in domain_records:
+            if not isinstance(record, dict):
+                continue
+            domain_value = (record.get("domain") or record.get("name") or "").strip()
+            if domain_value.lower() == domain_key:
+                match = record
+                break
+
+        if match is None:
+            match = {"domain": domain}
+            domain_records.append(match)
+
+        match["domain"] = domain
+        match[metric] = len(rows or [])
+
+        ad_state["domains"] = domain_records
+
+        workbook_payload = build_workbook_entry_payload(project=project, areas={"ad": ad_state})
+        project.workbook_data = workbook_payload
+        project.data_artifacts = artifacts
+        project.save(update_fields=["workbook_data", "data_artifacts"])
+        return JsonResponse(
+            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+        )
+
     def test_func(self):
         return self.get_object().user_can_edit(self.request.user)
 
@@ -2600,6 +2733,9 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                     }
                 )
 
+            if "ad_csv" in request.FILES:
+                return self._handle_ad_csv_upload(request, project)
+
             upload = request.FILES.get("osint_csv")
             if not upload:
                 return JsonResponse({"error": "No OSINT CSV provided."}, status=400)
@@ -2630,6 +2766,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
         dns_payload = payload.get("dns") if isinstance(payload, dict) else None
         artifacts_updated = False
+        areas_payload = payload.get("areas") if isinstance(payload.get("areas"), dict) else {}
 
         if isinstance(dns_payload, dict):
             artifacts = (
@@ -2658,6 +2795,30 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             payload["dns"] = dns_payload
             if artifacts_updated:
                 project.data_artifacts = artifacts
+
+        ad_payload = areas_payload.get("ad") if isinstance(areas_payload.get("ad"), dict) else None
+        if ad_payload is not None:
+            artifacts = (
+                project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            )
+            artifacts = dict(artifacts)
+            ad_artifacts = artifacts.get("ad") if isinstance(artifacts.get("ad"), dict) else {}
+            if not isinstance(ad_artifacts, dict):
+                ad_artifacts = {}
+            existing_domains = self._extract_ad_domains(
+                normalize_workbook_payload(project.workbook_data).get("ad")
+            )
+            submitted_domains = self._extract_ad_domains(ad_payload)
+            removed_domains = existing_domains - submitted_domains
+            if removed_domains:
+                for domain in removed_domains:
+                    ad_artifacts.pop(domain, None)
+                if ad_artifacts:
+                    artifacts["ad"] = ad_artifacts
+                else:
+                    artifacts.pop("ad", None)
+                project.data_artifacts = artifacts
+                artifacts_updated = True
 
         if payload.get("remove_osint"):
             artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
@@ -2826,8 +2987,8 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             general=payload.get("general"),
             scores=payload.get("scores"),
             grades=payload.get("grades"),
-            areas=payload.get("areas"),
-            dns=payload.get("dns"),
+            areas=areas_payload,
+            dns=dns_payload,
         )
 
         project.workbook_data = workbook_payload
