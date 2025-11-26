@@ -844,99 +844,135 @@
         });
         $('.tablesorter').trigger('update');
 
-        const workbookForm = document.getElementById('project-workbook-form');
-        const workbookInput = document.getElementById('id_workbook_file');
-        if (workbookForm && workbookInput) {
-          const uploadButton = workbookForm.querySelector('button[type="submit"]');
+        const setupWorkbookUploadForm = function(context) {
+          const scope = context && context.querySelector ? context : document;
+          const workbookForm = scope.querySelector ? scope.querySelector('#project-workbook-form') : document.getElementById('project-workbook-form');
+          const workbookInput = scope.querySelector ? scope.querySelector('#id_workbook_file') : document.getElementById('id_workbook_file');
+          if (workbookForm && workbookInput) {
+            const uploadButton = workbookForm.querySelector('button[type="submit"]');
 
-          const setUploadingState = function() {
-            if (!workbookForm || workbookForm.dataset.submitting === '1') {
-              return;
-            }
-            workbookForm.dataset.submitting = '1';
-            workbookForm.classList.add('is-uploading');
-            if (uploadButton) {
-              const defaultText = uploadButton.getAttribute('data-default-text') || uploadButton.textContent.trim();
-              uploadButton.setAttribute('data-default-text', defaultText);
-              uploadButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Uploading...';
-              uploadButton.disabled = true;
-            }
-          };
-
-          workbookForm.addEventListener('submit', function() {
-            setUploadingState();
-          });
-
-          workbookInput.addEventListener('change', function() {
-            if (workbookInput.files && workbookInput.files.length) {
-              setUploadingState();
-              if (typeof workbookForm.requestSubmit === 'function') {
-                workbookForm.requestSubmit();
-              } else {
-                workbookForm.submit();
+            const setUploadingState = function() {
+              if (!workbookForm || workbookForm.dataset.submitting === '1') {
+                return;
               }
-            }
-          });
-        }
+              workbookForm.dataset.submitting = '1';
+              workbookForm.classList.add('is-uploading');
+              if (uploadButton) {
+                const defaultText = uploadButton.getAttribute('data-default-text') || uploadButton.textContent.trim();
+                uploadButton.setAttribute('data-default-text', defaultText);
+                uploadButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Uploading...';
+                uploadButton.disabled = true;
+              }
+            };
 
-        const dataForms = document.querySelectorAll('.project-required-data-form');
-        dataForms.forEach(function(form) {
-          const fileInput = form.querySelector('.project-required-data-input');
-          const submitButton = form.querySelector('button[type="submit"]');
-          if (!fileInput) {
-            return;
+            workbookForm.addEventListener('submit', function() {
+              setUploadingState();
+            });
+
+            workbookInput.addEventListener('change', function() {
+              if (workbookInput.files && workbookInput.files.length) {
+                setUploadingState();
+                if (typeof workbookForm.requestSubmit === 'function') {
+                  workbookForm.requestSubmit();
+                } else {
+                  workbookForm.submit();
+                }
+              }
+            });
           }
+        };
 
-          const setUploadingState = function() {
-            if (form.dataset.submitting === '1') {
+        const setupRequiredDataForms = function(context) {
+          const scope = context && context.querySelectorAll ? context : document;
+          const dataForms = scope.querySelectorAll('.project-required-data-form');
+          dataForms.forEach(function(form) {
+            const fileInput = form.querySelector('.project-required-data-input');
+            const submitButton = form.querySelector('button[type="submit"]');
+            if (!fileInput) {
               return;
             }
-            form.dataset.submitting = '1';
-            if (submitButton) {
-              const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
-              submitButton.setAttribute('data-default-text', defaultText);
-              submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Uploading...';
-              submitButton.disabled = true;
-            }
-          };
 
-          form.addEventListener('submit', function() {
-            storeProjectScrollPosition();
-            setUploadingState();
-          });
+            const setUploadingState = function() {
+              if (form.dataset.submitting === '1') {
+                return;
+              }
+              form.dataset.submitting = '1';
+              if (submitButton) {
+                const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
+                submitButton.setAttribute('data-default-text', defaultText);
+                submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Uploading...';
+                submitButton.disabled = true;
+              }
+            };
 
-          fileInput.addEventListener('change', function() {
-            if (fileInput.files && fileInput.files.length) {
+            form.addEventListener('submit', function() {
               storeProjectScrollPosition();
               setUploadingState();
-              if (typeof form.requestSubmit === 'function') {
-                form.requestSubmit();
-              } else {
-                form.submit();
+            });
+
+            fileInput.addEventListener('change', function() {
+              if (fileInput.files && fileInput.files.length) {
+                storeProjectScrollPosition();
+                setUploadingState();
+                if (typeof form.requestSubmit === 'function') {
+                  form.requestSubmit();
+                } else {
+                  form.submit();
+                }
               }
-            }
+            });
           });
-        });
+        };
 
-        const ipForms = document.querySelectorAll('.project-ip-artifact-form');
-        ipForms.forEach(function(form) {
-          const submitButton = form.querySelector('button[type="submit"]');
-          if (!submitButton) {
-            return;
-          }
-
-          form.addEventListener('submit', function() {
-            if (form.dataset.submitting === '1') {
+        const setupIpArtifactForms = function(context) {
+          const scope = context && context.querySelectorAll ? context : document;
+          const ipForms = scope.querySelectorAll('.project-ip-artifact-form');
+          ipForms.forEach(function(form) {
+            const submitButton = form.querySelector('button[type="submit"]');
+            if (!submitButton) {
               return;
             }
-            storeProjectScrollPosition();
-            form.dataset.submitting = '1';
-            const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
-            submitButton.setAttribute('data-default-text', defaultText);
-            submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Saving...';
-            submitButton.disabled = true;
+
+            form.addEventListener('submit', function() {
+              if (form.dataset.submitting === '1') {
+                return;
+              }
+              storeProjectScrollPosition();
+              form.dataset.submitting = '1';
+              const defaultText = submitButton.getAttribute('data-default-text') || submitButton.textContent.trim();
+              submitButton.setAttribute('data-default-text', defaultText);
+              submitButton.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Saving...';
+              submitButton.disabled = true;
+            });
           });
-        });
+        };
+
+        const refreshProjectDataTabs = function() {
+          const baseUrl = window.location.pathname + window.location.search;
+          const reloadSection = function(id, onComplete) {
+            const $section = $('#' + id);
+            if (!$section.length) {
+              return;
+            }
+            $section.load(baseUrl + ' #' + id + ' > *', function() {
+              if (typeof onComplete === 'function') {
+                onComplete($section[0]);
+              }
+            });
+          };
+
+          reloadSection('supplementals', function(section) {
+            setupRequiredDataForms(section);
+            setupIpArtifactForms(section);
+          });
+          reloadSection('data');
+          reloadSection('processed-data');
+          update_badges();
+        };
+
+        setupWorkbookUploadForm(document);
+        setupRequiredDataForms(document);
+        setupIpArtifactForms(document);
 
         const questionnaireForms = document.querySelectorAll('.project-data-responses-form');
         questionnaireForms.forEach(function(form) {
@@ -2996,6 +3032,7 @@
             updateDataArtifactsState(data.data_artifacts);
           }
           refreshWorkbookUi(renderOptions);
+          refreshProjectDataTabs();
         };
 
         const getCsrfToken = function() {
