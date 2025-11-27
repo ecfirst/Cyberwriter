@@ -1419,6 +1419,15 @@
             return;
           }
 
+          const coerceMinutes = function(value) {
+            const minutes = parseTimespanToMinutes(value);
+            if (minutes === null) {
+              const numeric = Number(value);
+              return Number.isNaN(numeric) ? null : numeric;
+            }
+            return minutes;
+          };
+
           const assignIfPresent = function(key, value) {
             if (value !== null && typeof value !== 'undefined' && value !== '') {
               policy[key] = value;
@@ -1431,8 +1440,8 @@
           assignIfPresent('min_length', importedValues.min_length);
           assignIfPresent('history', importedValues.history);
           assignIfPresent('lockout_threshold', importedValues.lockout_threshold);
-          assignIfPresent('lockout_reset', importedValues.lockout_reset);
-          assignIfPresent('lockout_duration', importedValues.lockout_duration);
+          assignIfPresent('lockout_reset', coerceMinutes(importedValues.lockout_reset));
+          assignIfPresent('lockout_duration', coerceMinutes(importedValues.lockout_duration));
           assignIfPresent('complexity_enabled', importedValues.complexity_enabled);
         };
 
