@@ -54,6 +54,41 @@ FIREWALL_SUMMARY_FIELDS = {
 
 AREA_FIELDS = {"osint": OSINT_FIELDS, "firewall": FIREWALL_SUMMARY_FIELDS}
 
+AD_DOMAIN_COUNT_FIELDS = {
+    "domain_admins",
+    "ent_admins",
+    "exp_passwords",
+    "passwords_never_exp",
+    "inactive_accounts",
+    "generic_accounts",
+    "old_passwords",
+    "generic_logins",
+    "enabled_accounts",
+    "total_accounts",
+}
+
+AD_OLD_PASSWORD_COUNT_FIELDS = {
+    "compliant",
+    "30_days",
+    "90_days",
+    "180_days",
+    "1_year",
+    "2_year",
+    "3_year",
+    "never",
+}
+
+AD_INACTIVE_ACCOUNT_COUNT_FIELDS = {
+    "active",
+    "30_days",
+    "90_days",
+    "180_days",
+    "1_year",
+    "2_year",
+    "3_year",
+    "never",
+}
+
 
 def _as_decimal(value: Any) -> Optional[Decimal]:
     if value in (None, ""):
@@ -189,6 +224,51 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                     )
                 else:
                     normalized[field] = _as_int(payload.get(field))
+        return normalized
+    if area == "ad" and isinstance(payload, Mapping):
+        raw_domains = payload.get("domains")
+        normalized_domains: list[dict[str, Any]] = []
+        if isinstance(raw_domains, list):
+            for domain_payload in raw_domains:
+                if not isinstance(domain_payload, Mapping):
+                    continue
+                domain_entry: dict[str, Any] = {}
+                domain_value = (
+                    domain_payload.get("domain")
+                    or domain_payload.get("name")
+                    or ""
+                )
+                domain_text = str(domain_value).strip()
+                if domain_text:
+                    domain_entry["domain"] = domain_text
+                if "functionality_level" in domain_payload:
+                    level_value = str(domain_payload.get("functionality_level") or "").strip()
+                    domain_entry["functionality_level"] = level_value or None
+                for field in AD_DOMAIN_COUNT_FIELDS:
+                    if field in domain_payload:
+                        domain_entry[field] = _as_int(domain_payload.get(field))
+
+                raw_old_counts = domain_payload.get("old_password_counts")
+                if isinstance(raw_old_counts, Mapping):
+                    old_counts: dict[str, Any] = {}
+                    for field in AD_OLD_PASSWORD_COUNT_FIELDS:
+                        if field in raw_old_counts:
+                            old_counts[field] = _as_int(raw_old_counts.get(field))
+                    domain_entry["old_password_counts"] = old_counts
+
+                raw_inactive_counts = domain_payload.get("inactive_account_counts")
+                if isinstance(raw_inactive_counts, Mapping):
+                    inactive_counts: dict[str, Any] = {}
+                    for field in AD_INACTIVE_ACCOUNT_COUNT_FIELDS:
+                        if field in raw_inactive_counts:
+                            inactive_counts[field] = _as_int(
+                                raw_inactive_counts.get(field)
+                            )
+                    domain_entry["inactive_account_counts"] = inactive_counts
+
+                if domain_entry:
+                    normalized_domains.append(domain_entry)
+            normalized["domains"] = normalized_domains
         return normalized
     allowed_fields = AREA_FIELDS.get(area, set())
     if not allowed_fields or not isinstance(payload, Mapping):

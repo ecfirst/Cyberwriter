@@ -1205,6 +1205,130 @@
           };
         }
 
+        const defaultOldPasswordCounts = {
+          compliant: null,
+          '30_days': null,
+          '90_days': null,
+          '180_days': null,
+          '1_year': null,
+          '2_year': null,
+          '3_year': null,
+          never: null,
+        };
+
+        const defaultInactiveAccountCounts = {
+          active: null,
+          '30_days': null,
+          '90_days': null,
+          '180_days': null,
+          '1_year': null,
+          '2_year': null,
+          '3_year': null,
+          never: null,
+        };
+
+        function ensureAdState() {
+          const adState = (workbookState && typeof workbookState.ad === 'object') ? workbookState.ad : {};
+          if (!Array.isArray(adState.domains)) {
+            adState.domains = [];
+          }
+
+          adState.domains = (adState.domains || []).map(function(domain) {
+            const oldCounts = Object.assign({}, defaultOldPasswordCounts, (domain && domain.old_password_counts) || {});
+            const inactiveCounts = Object.assign({}, defaultInactiveAccountCounts, (domain && domain.inactive_account_counts) || {});
+            return Object.assign({
+              domain: '',
+              functionality_level: null,
+              domain_admins: null,
+              ent_admins: null,
+              exp_passwords: null,
+              passwords_never_exp: null,
+              inactive_accounts: null,
+              generic_accounts: null,
+              old_passwords: null,
+              generic_logins: null,
+              enabled_accounts: null,
+              total_accounts: null,
+              old_password_counts: oldCounts,
+              inactive_account_counts: inactiveCounts,
+            }, domain || {}, {
+              old_password_counts: oldCounts,
+              inactive_account_counts: inactiveCounts,
+            });
+          });
+
+          workbookState.ad = adState;
+          return adState;
+        }
+
+        function serializeAdPayload() {
+          const adState = ensureAdState();
+          const normalizeNumber = function(value) {
+            if (typeof value === 'number' && !Number.isNaN(value)) {
+              return value;
+            }
+            if (value === null || typeof value === 'undefined') {
+              return null;
+            }
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          const normalizeCounts = function(source, defaults) {
+            const normalized = {};
+            Object.keys(defaults).forEach(function(key) {
+              const value = source && Object.prototype.hasOwnProperty.call(source, key)
+                ? source[key]
+                : defaults[key];
+              normalized[key] = normalizeNumber(value);
+            });
+            return normalized;
+          };
+
+          const domains = (adState.domains || []).map(function(domain) {
+            const domainName = (domain.domain || '').toString().trim();
+            const levelText = (domain.functionality_level || '').toString().trim();
+            const normalizedDomain = {
+              domain: domainName,
+              functionality_level: levelText || null,
+              domain_admins: normalizeNumber(domain.domain_admins),
+              ent_admins: normalizeNumber(domain.ent_admins),
+              exp_passwords: normalizeNumber(domain.exp_passwords),
+              passwords_never_exp: normalizeNumber(domain.passwords_never_exp),
+              inactive_accounts: normalizeNumber(domain.inactive_accounts),
+              generic_accounts: normalizeNumber(domain.generic_accounts),
+              old_passwords: normalizeNumber(domain.old_passwords),
+              generic_logins: normalizeNumber(domain.generic_logins),
+              enabled_accounts: normalizeNumber(domain.enabled_accounts),
+              total_accounts: normalizeNumber(domain.total_accounts),
+              old_password_counts: normalizeCounts(domain.old_password_counts, defaultOldPasswordCounts),
+              inactive_account_counts: normalizeCounts(domain.inactive_account_counts, defaultInactiveAccountCounts),
+            };
+
+            const hasCounts = Object.values(normalizedDomain.old_password_counts || {}).some(function(value) { return value !== null; })
+              || Object.values(normalizedDomain.inactive_account_counts || {}).some(function(value) { return value !== null; });
+            const hasMetrics = [
+              normalizedDomain.domain_admins,
+              normalizedDomain.ent_admins,
+              normalizedDomain.exp_passwords,
+              normalizedDomain.passwords_never_exp,
+              normalizedDomain.inactive_accounts,
+              normalizedDomain.generic_accounts,
+              normalizedDomain.old_passwords,
+              normalizedDomain.generic_logins,
+              normalizedDomain.enabled_accounts,
+              normalizedDomain.total_accounts,
+            ].some(function(value) { return value !== null; });
+
+            if (domainName || normalizedDomain.functionality_level || hasMetrics || hasCounts) {
+              return normalizedDomain;
+            }
+            return null;
+          }).filter(function(entry) { return entry !== null; });
+
+          return {domains: domains};
+        }
+
         function renderFirewallSection(container, areaKey, modalId, mode) {
           const triggerRerender = function() {
             firewallRenderCallbacks.forEach(function(cb) { cb(); });
@@ -1599,6 +1723,12 @@
           },
           dns: {
             label: 'DNS',
+          },
+          iam_ad: {
+            label: 'AD',
+            workbookKey: 'ad',
+            renderer: 'ad',
+            serializer: serializeAdPayload,
           },
           external_web: {
             label: 'Web',
@@ -2118,6 +2248,99 @@
           }
         };
 
+        const uploadAdCsv = function(file, domain, metric, areaKey, modalId) {
+          if (!workbookUpdateUrl || !file) {
+            return;
+          }
+          const domainValue = (domain || '').trim();
+          if (!domainValue) {
+            alert('Please enter a domain name before uploading a CSV.');
+            return;
+          }
+          const formData = new FormData();
+          formData.append('ad_csv', file);
+          formData.append('ad_metric', metric);
+          formData.append('domain', domainValue);
+          fetch(workbookUpdateUrl, {
+            method: 'POST',
+            headers: {
+              'X-CSRFToken': getCsrfToken() || ''
+            },
+            body: formData,
+          }).then(function(response) {
+            return response.json().then(function(data) {
+              if (!response.ok) {
+                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
+                throw new Error(message);
+              }
+              return data;
+            });
+          }).then(function(data) {
+            handleWorkbookUpdateResponse(data, {
+              reopenModalId: modalId,
+              forceCloseModalId: modalId,
+              afterRender: function() { updateWorkbookCardProgress(areaKey); },
+            });
+          }).catch(function(error) {
+            console.error(error);
+            alert(error.message || 'Unable to upload the AD CSV.');
+          });
+        };
+
+        const uploadAdLog = function(file, domain, areaKey, modalId) {
+          if (!workbookUpdateUrl || !file) {
+            return;
+          }
+          const domainValue = (domain || '').trim();
+          if (!domainValue) {
+            alert('Please enter a domain name before uploading an AD log.');
+            return;
+          }
+
+          const formData = new FormData();
+          formData.append('ad_log', file);
+          formData.append('domain', domainValue);
+
+          fetch(workbookUpdateUrl, {
+            method: 'POST',
+            headers: {
+              'X-CSRFToken': getCsrfToken() || ''
+            },
+            body: formData,
+          }).then(function(response) {
+            return response.json().then(function(data) {
+              if (!response.ok) {
+                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
+                throw new Error(message);
+              }
+              return data;
+            });
+          }).then(function(data) {
+            handleWorkbookUpdateResponse(data, {
+              reopenModalId: modalId,
+              forceCloseModalId: modalId,
+              afterRender: function() { updateWorkbookCardProgress(areaKey); },
+            });
+          }).catch(function(error) {
+            console.error(error);
+            alert(error.message || 'Unable to upload the AD log.');
+          });
+        };
+
+        const removeAdCsv = function(domain, metric, areaKey, modalId) {
+          const domainValue = (domain || '').trim();
+          if (!domainValue) {
+            alert('Please enter a domain name before removing a CSV.');
+            return;
+          }
+          const payload = {remove_ad_metric: {domain: domainValue, metric: metric}};
+          submitWorkbookUpdate(payload, null, {
+            reopenModalId: modalId,
+            forceCloseModalId: modalId,
+            afterRender: function() { updateWorkbookCardProgress(areaKey); },
+          });
+        };
+
         const uploadOsintCsv = function(file, areaKey, modalId) {
           if (!workbookUpdateUrl || !file) {
             return;
@@ -2283,6 +2506,338 @@
             forceCloseModalId: modalId,
           });
         };
+
+        function renderAdDomains(target, areaKey, modalId) {
+          const adState = ensureAdState();
+          const domains = adState.domains;
+          target.innerHTML = '';
+
+          const addButton = document.createElement('button');
+          addButton.type = 'button';
+          addButton.className = 'btn btn-outline-primary mb-3';
+          addButton.textContent = 'Add new Domain';
+          addButton.addEventListener('click', function() {
+            domains.push({
+              domain: '',
+              functionality_level: null,
+              domain_admins: null,
+              ent_admins: null,
+              exp_passwords: null,
+              passwords_never_exp: null,
+              inactive_accounts: null,
+              generic_accounts: null,
+              old_passwords: null,
+              generic_logins: null,
+              enabled_accounts: null,
+              total_accounts: null,
+              old_password_counts: Object.assign({}, defaultOldPasswordCounts),
+              inactive_account_counts: Object.assign({}, defaultInactiveAccountCounts),
+            });
+            renderAdDomains(target, areaKey, modalId);
+            updateWorkbookCardProgress(areaKey);
+          });
+          target.appendChild(addButton);
+
+          const domainsContainer = document.createElement('div');
+          target.appendChild(domainsContainer);
+
+          const renderDomains = function() {
+            domainsContainer.innerHTML = '';
+            if (!domains.length) {
+              const empty = document.createElement('p');
+              empty.className = 'text-muted mb-3';
+              empty.textContent = 'No domains have been added yet.';
+              domainsContainer.appendChild(empty);
+            }
+
+            domains.forEach(function(domain, index) {
+              const wrapper = document.createElement('div');
+              wrapper.className = 'border rounded p-3 mb-3';
+
+              const metricFileUpdateCallbacks = [];
+
+              const domainInput = document.createElement('input');
+              domainInput.type = 'text';
+              domainInput.className = 'form-control';
+              domainInput.setAttribute('data-area-field', areaKey);
+              domainInput.value = domain.domain || '';
+
+              const refreshMetricFileDisplays = function() {
+                metricFileUpdateCallbacks.forEach(function(cb) { cb(); });
+              };
+
+              const resolveDomainKey = function() {
+                return (domainInput.value || domain.domain || '').toString().trim().toLowerCase();
+              };
+
+              const heading = document.createElement('div');
+              heading.className = 'd-flex flex-column flex-md-row justify-content-between align-items-md-center mb-3';
+              const titleWrap = document.createElement('div');
+              titleWrap.className = 'd-flex align-items-center flex-wrap';
+              const title = document.createElement('h6');
+              title.className = 'mb-0 mr-2';
+              title.textContent = 'Domain ' + (index + 1);
+              titleWrap.appendChild(title);
+              const logFileInfo = document.createElement('div');
+              logFileInfo.className = 'small text-muted mt-1 mt-md-0';
+              const headingActions = document.createElement('div');
+              headingActions.className = 'd-flex align-items-center flex-wrap mt-2 mt-md-0';
+              const logUploadInput = document.createElement('input');
+              logUploadInput.type = 'file';
+              logUploadInput.accept = '.txt,.log,text/plain';
+              logUploadInput.className = 'd-none';
+              logUploadInput.addEventListener('change', function(event) {
+                if (event.target.files && event.target.files[0]) {
+                  uploadAdLog(event.target.files[0], domainInput.value || domain.domain || '', areaKey, modalId);
+                  event.target.value = '';
+                }
+              });
+              const logUploadButton = document.createElement('button');
+              logUploadButton.type = 'button';
+              logUploadButton.className = 'btn btn-outline-primary btn-sm';
+              logUploadButton.textContent = 'Upload AD Log';
+              logUploadButton.addEventListener('click', function() { logUploadInput.click(); });
+              headingActions.appendChild(logUploadButton);
+              headingActions.appendChild(logUploadInput);
+
+              const getMetricFileName = function(metricKey) {
+                const adArtifacts = dataArtifactsState.ad;
+                const domainKey = resolveDomainKey();
+                if (!domainKey || !adArtifacts || typeof adArtifacts !== 'object') {
+                  return '';
+                }
+                const entry = adArtifacts[domainKey];
+                if (!entry || typeof entry !== 'object') {
+                  return '';
+                }
+                const fileName = entry[metricKey + '_file_name'];
+                return (fileName || '').toString();
+              };
+
+              const updateLogFileInfo = function() {
+                const fileName = getMetricFileName('ad_log');
+                logFileInfo.textContent = fileName ? 'AD Log: ' + fileName : '';
+              };
+
+              metricFileUpdateCallbacks.push(updateLogFileInfo);
+              updateLogFileInfo();
+
+              titleWrap.appendChild(logFileInfo);
+              heading.appendChild(titleWrap);
+              heading.appendChild(headingActions);
+              wrapper.appendChild(heading);
+
+              const layoutRow = document.createElement('div');
+              layoutRow.className = 'form-row';
+
+              const domainGroup = document.createElement('div');
+              domainGroup.className = 'form-group col-md-6';
+              const domainLabel = document.createElement('label');
+              domainLabel.className = 'font-weight-bold';
+              domainLabel.textContent = 'Domain Name';
+              domainInput.addEventListener('input', function() {
+                domain.domain = domainInput.value;
+                updateWorkbookCardProgress(areaKey);
+                refreshMetricFileDisplays();
+              });
+              domainGroup.appendChild(domainLabel);
+              domainGroup.appendChild(domainInput);
+              layoutRow.appendChild(domainGroup);
+
+              const levelGroup = document.createElement('div');
+              levelGroup.className = 'form-group col-md-6';
+              const levelLabel = document.createElement('label');
+              levelLabel.className = 'font-weight-bold';
+              levelLabel.textContent = 'Domain Functionality Level';
+              const levelInput = document.createElement('input');
+              levelInput.type = 'text';
+              levelInput.className = 'form-control';
+              levelInput.setAttribute('data-area-field', areaKey);
+              levelInput.value = domain.functionality_level || '';
+              levelInput.addEventListener('input', function() {
+                domain.functionality_level = levelInput.value || null;
+                updateWorkbookCardProgress(areaKey);
+              });
+              levelGroup.appendChild(levelLabel);
+              levelGroup.appendChild(levelInput);
+              layoutRow.appendChild(levelGroup);
+              wrapper.appendChild(layoutRow);
+
+              const metricsRow = document.createElement('div');
+              metricsRow.className = 'form-row';
+
+              const makeMetricGroup = function(labelText, fieldKey, uploadMetric) {
+                const group = document.createElement('div');
+                group.className = 'form-group col-md-6';
+                const labelRow = document.createElement('div');
+                labelRow.className = 'd-flex justify-content-between align-items-center flex-wrap';
+                const label = document.createElement('label');
+                label.className = 'font-weight-bold mb-0';
+                label.textContent = labelText;
+                labelRow.appendChild(label);
+
+                let removeButton = null;
+                const fileInfo = document.createElement('div');
+                fileInfo.className = 'small text-muted mt-1';
+                const updateFileInfo = function() {
+                  const fileName = getMetricFileName(uploadMetric || fieldKey);
+                  if (fileName) {
+                    fileInfo.textContent = 'Uploaded: ' + fileName;
+                    if (removeButton) {
+                      removeButton.disabled = false;
+                    }
+                  } else {
+                    fileInfo.textContent = '';
+                    if (removeButton) {
+                      removeButton.disabled = true;
+                    }
+                  }
+                };
+
+                if (uploadMetric) {
+                  const uploadInput = document.createElement('input');
+                  uploadInput.type = 'file';
+                  uploadInput.accept = '.csv,text/csv';
+                  uploadInput.className = 'd-none';
+                  uploadInput.addEventListener('change', function(event) {
+                    if (event.target.files && event.target.files[0]) {
+                      uploadAdCsv(event.target.files[0], domainInput.value || domain.domain || '', uploadMetric, areaKey, modalId);
+                      event.target.value = '';
+                    }
+                  });
+                  const uploadButton = document.createElement('button');
+                  uploadButton.type = 'button';
+                  uploadButton.className = 'btn btn-outline-primary btn-sm';
+                  uploadButton.textContent = 'Upload CSV';
+                  uploadButton.addEventListener('click', function() { uploadInput.click(); });
+                  removeButton = document.createElement('button');
+                  removeButton.type = 'button';
+                  removeButton.className = 'btn btn-outline-danger btn-sm ml-2';
+                  removeButton.textContent = 'Remove CSV';
+                  removeButton.addEventListener('click', function() {
+                    removeAdCsv(domainInput.value || domain.domain || '', uploadMetric, areaKey, modalId);
+                  });
+                  const buttonWrap = document.createElement('div');
+                  buttonWrap.className = 'd-flex flex-wrap';
+                  buttonWrap.appendChild(uploadButton);
+                  buttonWrap.appendChild(removeButton);
+                  buttonWrap.appendChild(uploadInput);
+                  labelRow.appendChild(buttonWrap);
+                }
+
+                group.appendChild(labelRow);
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.className = 'form-control';
+                input.setAttribute('data-area-field', areaKey);
+                input.value = typeof domain[fieldKey] === 'number' ? domain[fieldKey] : '';
+                input.addEventListener('input', function() {
+                  const value = input.value === '' ? null : Number(input.value);
+                  domain[fieldKey] = Number.isNaN(value) ? null : value;
+                  updateWorkbookCardProgress(areaKey);
+                });
+                group.appendChild(input);
+                if (uploadMetric) {
+                  group.appendChild(fileInfo);
+                  updateFileInfo();
+                  metricFileUpdateCallbacks.push(updateFileInfo);
+                }
+                return group;
+              };
+
+              metricsRow.appendChild(makeMetricGroup('Domain Admins', 'domain_admins', 'domain_admins'));
+              metricsRow.appendChild(makeMetricGroup('Enterprise Admins', 'ent_admins', 'ent_admins'));
+              metricsRow.appendChild(makeMetricGroup('Expired Passwords', 'exp_passwords', 'exp_passwords'));
+              metricsRow.appendChild(makeMetricGroup('Passwords set to Never Expire', 'passwords_never_exp', 'passwords_never_exp'));
+              metricsRow.appendChild(makeMetricGroup('Inactive Accounts', 'inactive_accounts', 'inactive_accounts'));
+              metricsRow.appendChild(makeMetricGroup('Generic Accounts', 'generic_accounts', 'generic_accounts'));
+              metricsRow.appendChild(makeMetricGroup('Old Passwords', 'old_passwords', 'old_passwords'));
+              metricsRow.appendChild(makeMetricGroup('Generic Logins', 'generic_logins', 'generic_logins'));
+              metricsRow.appendChild(makeMetricGroup('Enabled Accounts', 'enabled_accounts', null));
+              metricsRow.appendChild(makeMetricGroup('Total Accounts', 'total_accounts', null));
+              wrapper.appendChild(metricsRow);
+
+              const oldCountsSection = document.createElement('div');
+              oldCountsSection.className = 'mt-3';
+              const oldHeading = document.createElement('div');
+              oldHeading.className = 'font-weight-bold mb-2';
+              oldHeading.textContent = 'Old Password Counts';
+              oldCountsSection.appendChild(oldHeading);
+              const oldCounts = domain.old_password_counts || {};
+              const makeCountInput = function(labelText, key, target) {
+                const group = document.createElement('div');
+                group.className = 'form-group mb-2 col-md-6';
+                const label = document.createElement('label');
+                label.className = 'font-weight-bold mb-1';
+                label.textContent = labelText;
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.className = 'form-control';
+                input.setAttribute('data-area-field', areaKey);
+                input.value = typeof target[key] === 'number' ? target[key] : '';
+                input.addEventListener('input', function() {
+                  const value = input.value === '' ? null : Number(input.value);
+                  target[key] = Number.isNaN(value) ? null : value;
+                  updateWorkbookCardProgress(areaKey);
+                });
+                group.appendChild(label);
+                group.appendChild(input);
+                return group;
+              };
+              const oldCountsGrid = document.createElement('div');
+              oldCountsGrid.className = 'form-row';
+              oldCountsGrid.appendChild(makeCountInput('Compliant Accounts', 'compliant', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('30+ days', '30_days', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('90+ days', '90_days', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('180+ days', '180_days', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('1+ year', '1_year', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('2+ years', '2_year', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('3+ years', '3_year', oldCounts));
+              oldCountsGrid.appendChild(makeCountInput('Never', 'never', oldCounts));
+              oldCountsSection.appendChild(oldCountsGrid);
+              wrapper.appendChild(oldCountsSection);
+
+              const inactiveCountsSection = document.createElement('div');
+              inactiveCountsSection.className = 'mt-3';
+              const inactiveHeading = document.createElement('div');
+              inactiveHeading.className = 'font-weight-bold mb-2';
+              inactiveHeading.textContent = 'Inactive Account Counts';
+              inactiveCountsSection.appendChild(inactiveHeading);
+              const inactiveCounts = domain.inactive_account_counts || {};
+              const inactiveCountsGrid = document.createElement('div');
+              inactiveCountsGrid.className = 'form-row';
+              inactiveCountsGrid.appendChild(makeCountInput('Active Accounts', 'active', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('30+ days', '30_days', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('90+ days', '90_days', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('180+ days', '180_days', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('1+ year', '1_year', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('2+ years', '2_year', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('3+ years', '3_year', inactiveCounts));
+              inactiveCountsGrid.appendChild(makeCountInput('Never', 'never', inactiveCounts));
+              inactiveCountsSection.appendChild(inactiveCountsGrid);
+              wrapper.appendChild(inactiveCountsSection);
+
+              const removeButton = document.createElement('button');
+              removeButton.type = 'button';
+              removeButton.className = 'btn btn-outline-danger';
+              removeButton.textContent = 'Remove Domain';
+              removeButton.addEventListener('click', function() {
+                domains.splice(index, 1);
+                const payload = {areas: {ad: serializeAdPayload()}};
+                submitWorkbookUpdate(payload, null, {
+                  reopenModalId: modalId,
+                  forceCloseModalId: modalId,
+                  afterRender: function() { updateWorkbookCardProgress(areaKey); },
+                });
+              });
+              wrapper.appendChild(removeButton);
+
+              domainsContainer.appendChild(wrapper);
+            });
+          };
+
+          renderDomains();
+        }
 
         const ensureDnsState = function() {
           const dnsState = (workbookState && typeof workbookState.dns === 'object') ? workbookState.dns : {};
@@ -2624,9 +3179,16 @@
             modalBody.className = 'modal-body';
             const modalRow = document.createElement('div');
             modalRow.className = 'row workbook-area-modal-grid';
+            const getSubcardColumnClass = function(currentAreaKey) {
+              if (currentAreaKey === 'iam' || currentAreaKey === 'firewall') {
+                return 'col-12 col-lg-6 d-flex workbook-area-modal-col';
+              }
+              return 'col-12 col-lg-6 col-xl-4 d-flex workbook-area-modal-col';
+            };
+
             subkeys.forEach(function(subkey) {
               const col = document.createElement('div');
-              col.className = 'col-12 col-lg-6 col-xl-4 d-flex workbook-area-modal-col';
+              col.className = getSubcardColumnClass(areaKey);
               const subCard = document.createElement('div');
               subCard.className = 'card mb-3 flex-fill';
               const subHeader = document.createElement('div');
@@ -2647,6 +3209,8 @@
                 renderFirewallSection(subBody, areaKey, modalId, 'os');
               } else if (config && config.renderer === 'firewall_configuration') {
                 renderFirewallSection(subBody, areaKey, modalId, 'configuration');
+              } else if (config && config.renderer === 'ad') {
+                renderAdDomains(subBody, areaKey, modalId);
               } else if (subkey === 'dns') {
                 renderDnsDomains(subBody, areaKey, modalId);
               } else if (config && Array.isArray(config.fields)) {

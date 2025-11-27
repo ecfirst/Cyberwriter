@@ -9,6 +9,7 @@ import datetime
 import io
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, Set
 from xml.etree import ElementTree
 
@@ -121,6 +122,29 @@ from ghostwriter.reporting.models import RiskScoreRangeMapping
 
 # Using __name__ resolves to ghostwriter.rolodex.views
 logger = logging.getLogger(__name__)
+
+AD_CSV_HEADER_MAP: dict[str, dict[str, str]] = {
+    "domain_admins": {"account": "Account", "password last set": "Password Last Set"},
+    "ent_admins": {"account": "Account", "password last set": "Password Last Set"},
+    "exp_passwords": {"account": "Account", "password last set": "Password Last Set"},
+    "passwords_never_exp": {"account": "Account", "password last set": "Password Last Set"},
+    "inactive_accounts": {
+        "account": "Account",
+        "last login": "Last Login",
+        "creation date": "Creation Date",
+        "days past": "Days Past",
+    },
+    "generic_accounts": {
+        "account": "Account",
+        "creation date": "Creation Date",
+    },
+    "old_passwords": {
+        "account": "Account",
+        "password last set date": "Password Last Set Date",
+        "days past due": "Days Past Due",
+    },
+    "generic_logins": {"computer": "Computer", "username": "Username"},
+}
 
 
 def _is_empty_response(value: Any) -> bool:
@@ -2364,6 +2388,209 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
         return len(unique_tests)
 
+    @staticmethod
+    def _parse_ad_csv(upload, required_headers: dict[str, str]) -> tuple[
+        Optional[list[dict[str, str]]], Optional[str]
+    ]:
+        raw_bytes = upload.read()
+        content = None
+        for encoding in ("utf-8-sig", "utf-16", "utf-16le", "utf-16be"):
+            try:
+                content = raw_bytes.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if content is None:
+            try:
+                content = raw_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                return None, "Unable to read the uploaded CSV file."
+
+        sample = content[:2048]
+        candidate_delimiters = ["\t", ",", ";", "|"]
+        delimiter = ","
+        best_match_count = -1
+
+        for candidate in candidate_delimiters:
+            reader = csv.DictReader(io.StringIO(content), delimiter=candidate)
+            header_lookup = {
+                (header or "").lower().strip(): header for header in (reader.fieldnames or [])
+            }
+            match_count = sum(1 for key in required_headers if key in header_lookup)
+            if match_count == len(required_headers):
+                delimiter = candidate
+                best_match_count = match_count
+                break
+            if match_count > best_match_count:
+                best_match_count = match_count
+                delimiter = candidate
+
+        try:
+            sniffed = csv.Sniffer().sniff(sample, delimiters="".join(candidate_delimiters))
+            sniff_match_count = 0
+            reader = csv.DictReader(io.StringIO(content), delimiter=sniffed.delimiter)
+            sniff_header_lookup = {
+                (header or "").lower().strip(): header
+                for header in (reader.fieldnames or [])
+            }
+            sniff_match_count = sum(1 for key in required_headers if key in sniff_header_lookup)
+            if sniff_match_count > best_match_count:
+                delimiter = sniffed.delimiter
+        except csv.Error:
+            pass
+
+        reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
+        header_lookup = {
+            (header or "").lower().strip(): header for header in (reader.fieldnames or [])
+        }
+        missing_headers = [
+            label for key, label in required_headers.items() if key not in header_lookup
+        ]
+        if missing_headers:
+            return None, f"Missing required headers: {', '.join(missing_headers)}"
+
+        rows: list[dict[str, str]] = []
+        for row in reader:
+            normalized_row: dict[str, str] = {}
+            for key, label in required_headers.items():
+                source_header = header_lookup.get(key) or label
+                normalized_row[label] = (row.get(source_header) or "").strip()
+            rows.append(normalized_row)
+
+        return rows, None
+
+    @staticmethod
+    def _parse_ad_log(upload) -> tuple[Optional[dict[str, Any]], Optional[str], Optional[str]]:
+        raw_bytes = upload.read()
+        content = None
+
+        for encoding in ("utf-8-sig", "utf-16", "utf-16le", "utf-16be"):
+            try:
+                content = raw_bytes.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if content is None:
+            try:
+                content = raw_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                return None, None, "Unable to read the uploaded AD log file."
+
+        lines = content.splitlines()
+
+        def _parse_first_int(value: str) -> Optional[int]:
+            match = re.search(r"(-?[0-9,]+)", value)
+            if not match:
+                return None
+            try:
+                return int(match.group(1).replace(",", ""))
+            except ValueError:
+                return None
+
+        enabled_accounts = None
+        total_accounts = None
+        for line in lines:
+            lowered = line.lower()
+            if enabled_accounts is None and "enabled users" in lowered:
+                enabled_accounts = _parse_first_int(line)
+            if total_accounts is None and "total users" in lowered:
+                total_accounts = _parse_first_int(line)
+            if enabled_accounts is not None and total_accounts is not None:
+                break
+
+        functionality_level = None
+        if len(lines) >= 8:
+            functionality_level = lines[7].strip() or None
+
+        def _parse_section(
+            label: str, mapping: dict[str, str], *, stop_at_blank: bool
+        ) -> dict[str, Optional[int]]:
+            results: dict[str, Optional[int]] = {}
+            start_idx = None
+            for idx, line in enumerate(lines):
+                if line.strip().lower().startswith(label.lower()):
+                    start_idx = idx
+                    break
+
+            if start_idx is None:
+                return results
+
+            for line in lines[start_idx + 1 :]:
+                if stop_at_blank and not line.strip():
+                    break
+                if not line.strip():
+                    continue
+                if ":" not in line:
+                    continue
+                key_text, value_text = line.split(":", 1)
+                mapped_key = mapping.get(key_text.strip().lower())
+                if not mapped_key:
+                    continue
+                results[mapped_key] = _parse_first_int(value_text)
+
+            return results
+
+        old_password_counts = _parse_section(
+            "Old Password Counts:",
+            {
+                "compliant accounts": "compliant",
+                "30+ days": "30_days",
+                "90+ days": "90_days",
+                "180+ days": "180_days",
+                "1+ year": "1_year",
+                "2+ years": "2_year",
+                "3+ years": "3_year",
+                "never": "never",
+            },
+            stop_at_blank=True,
+        )
+
+        inactive_account_counts = _parse_section(
+            "Inactive Account Counts:",
+            {
+                "active accounts": "active",
+                "30+ days": "30_days",
+                "90+ days": "90_days",
+                "180+ days": "180_days",
+                "1+ year": "1_year",
+                "2+ years": "2_year",
+                "3+ years": "3_year",
+                "never": "never",
+            },
+            stop_at_blank=False,
+        )
+
+        return (
+            {
+                "enabled_accounts": enabled_accounts,
+                "total_accounts": total_accounts,
+                "functionality_level": functionality_level,
+                "old_password_counts": old_password_counts,
+                "inactive_account_counts": inactive_account_counts,
+            },
+            content,
+            None,
+        )
+
+    @staticmethod
+    def _extract_ad_domains(payload: Optional[dict[str, Any]]) -> set[str]:
+        domains: set[str] = set()
+        if not isinstance(payload, dict):
+            return domains
+        records = payload.get("domains") if isinstance(payload.get("domains"), list) else []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            domain_value = (
+                record.get("domain") or record.get("name") or ""
+            )
+            domain = str(domain_value).strip()
+            if domain:
+                domains.add(domain.lower())
+        return domains
+
     def _handle_dns_csv_upload(self, request, project):
         upload = request.FILES.get("dns_csv")
         if not upload:
@@ -2502,6 +2729,172 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
         )
 
+    def _handle_ad_csv_upload(self, request, project):
+        upload = request.FILES.get("ad_csv")
+        if not upload:
+            return JsonResponse({"error": "No AD CSV provided."}, status=400)
+
+        domain = (request.POST.get("domain") or "").strip()
+        if not domain:
+            return JsonResponse(
+                {"error": "A domain name is required for this upload."}, status=400
+            )
+
+        metric = (request.POST.get("ad_metric") or "").strip()
+
+        if metric not in AD_CSV_HEADER_MAP:
+            return JsonResponse({"error": "Invalid AD metric provided."}, status=400)
+
+        rows, error_message = self._parse_ad_csv(upload, AD_CSV_HEADER_MAP[metric])
+        if error_message:
+            return JsonResponse({"error": error_message}, status=400)
+
+        artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+        artifacts = dict(artifacts)
+        ad_artifacts = artifacts.get("ad") if isinstance(artifacts.get("ad"), dict) else {}
+        if not isinstance(ad_artifacts, dict):
+            ad_artifacts = {}
+        domain_key = domain.lower()
+        domain_entry = ad_artifacts.get(domain_key, {}) if isinstance(ad_artifacts, dict) else {}
+        if not isinstance(domain_entry, dict):
+            domain_entry = {}
+        domain_entry[metric] = rows or []
+        domain_entry[f"{metric}_file_name"] = upload.name
+        ad_artifacts[domain_key] = domain_entry
+        artifacts["ad"] = ad_artifacts
+
+        normalized_workbook = normalize_workbook_payload(project.workbook_data)
+        ad_state = normalized_workbook.get("ad") if isinstance(normalized_workbook.get("ad"), dict) else {}
+        if not isinstance(ad_state, dict):
+            ad_state = {}
+        domain_records = ad_state.get("domains") if isinstance(ad_state.get("domains"), list) else []
+        if not isinstance(domain_records, list):
+            domain_records = []
+
+        match = None
+        for record in domain_records:
+            if not isinstance(record, dict):
+                continue
+            domain_value = (record.get("domain") or record.get("name") or "").strip()
+            if domain_value.lower() == domain_key:
+                match = record
+                break
+
+        if match is None:
+            match = {"domain": domain}
+            domain_records.append(match)
+
+        match["domain"] = domain
+        match[metric] = len(rows or [])
+
+        ad_state["domains"] = domain_records
+
+        workbook_payload = build_workbook_entry_payload(project=project, areas={"ad": ad_state})
+        project.workbook_data = workbook_payload
+        project.data_artifacts = artifacts
+        project.save(update_fields=["workbook_data", "data_artifacts"])
+        return JsonResponse(
+            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+        )
+
+    def _handle_ad_log_upload(self, request, project):
+        upload = request.FILES.get("ad_log")
+        if not upload:
+            return JsonResponse({"error": "No AD log provided."}, status=400)
+
+        domain = (request.POST.get("domain") or "").strip()
+        if not domain:
+            return JsonResponse(
+                {"error": "A domain name is required for this upload."}, status=400
+            )
+
+        parsed, content, error_message = self._parse_ad_log(upload)
+        if error_message:
+            return JsonResponse({"error": error_message}, status=400)
+
+        artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+        artifacts = dict(artifacts)
+        ad_artifacts = artifacts.get("ad") if isinstance(artifacts.get("ad"), dict) else {}
+        if not isinstance(ad_artifacts, dict):
+            ad_artifacts = {}
+
+        domain_key = domain.lower()
+        domain_entry = ad_artifacts.get(domain_key, {}) if isinstance(ad_artifacts, dict) else {}
+        if not isinstance(domain_entry, dict):
+            domain_entry = {}
+
+        domain_entry["ad_log_file_name"] = upload.name
+        if content is not None:
+            domain_entry["ad_log"] = content
+        ad_artifacts[domain_key] = domain_entry
+        artifacts["ad"] = ad_artifacts
+
+        normalized_workbook = normalize_workbook_payload(project.workbook_data)
+        ad_state = normalized_workbook.get("ad") if isinstance(normalized_workbook.get("ad"), dict) else {}
+        if not isinstance(ad_state, dict):
+            ad_state = {}
+        domain_records = ad_state.get("domains") if isinstance(ad_state.get("domains"), list) else []
+        if not isinstance(domain_records, list):
+            domain_records = []
+
+        match = None
+        for record in domain_records:
+            if not isinstance(record, dict):
+                continue
+            domain_value = (record.get("domain") or record.get("name") or "").strip()
+            if domain_value.lower() == domain_key:
+                match = record
+                break
+
+        if match is None:
+            match = {"domain": domain}
+            domain_records.append(match)
+
+        match["domain"] = domain
+
+        if parsed:
+            if parsed.get("enabled_accounts") is not None:
+                match["enabled_accounts"] = parsed.get("enabled_accounts")
+            if parsed.get("total_accounts") is not None:
+                match["total_accounts"] = parsed.get("total_accounts")
+            if parsed.get("functionality_level") is not None:
+                match["functionality_level"] = parsed.get("functionality_level")
+
+            old_counts = parsed.get("old_password_counts") if isinstance(parsed.get("old_password_counts"), dict) else {}
+            if old_counts:
+                existing_old = match.get("old_password_counts") if isinstance(match.get("old_password_counts"), dict) else {}
+                if not isinstance(existing_old, dict):
+                    existing_old = {}
+                existing_old = dict(existing_old)
+                existing_old.update({k: v for k, v in old_counts.items() if v is not None})
+                match["old_password_counts"] = existing_old
+
+            inactive_counts = parsed.get("inactive_account_counts") if isinstance(parsed.get("inactive_account_counts"), dict) else {}
+            if inactive_counts:
+                existing_inactive = (
+                    match.get("inactive_account_counts")
+                    if isinstance(match.get("inactive_account_counts"), dict)
+                    else {}
+                )
+                if not isinstance(existing_inactive, dict):
+                    existing_inactive = {}
+                existing_inactive = dict(existing_inactive)
+                existing_inactive.update(
+                    {k: v for k, v in inactive_counts.items() if v is not None}
+                )
+                match["inactive_account_counts"] = existing_inactive
+
+        ad_state["domains"] = domain_records
+
+        workbook_payload = build_workbook_entry_payload(project=project, areas={"ad": ad_state})
+        project.workbook_data = workbook_payload
+        project.data_artifacts = artifacts
+        project.save(update_fields=["workbook_data", "data_artifacts"])
+
+        return JsonResponse(
+            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+        )
+
     def test_func(self):
         return self.get_object().user_can_edit(self.request.user)
 
@@ -2600,6 +2993,12 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                     }
                 )
 
+            if "ad_csv" in request.FILES:
+                return self._handle_ad_csv_upload(request, project)
+
+            if "ad_log" in request.FILES:
+                return self._handle_ad_log_upload(request, project)
+
             upload = request.FILES.get("osint_csv")
             if not upload:
                 return JsonResponse({"error": "No OSINT CSV provided."}, status=400)
@@ -2630,6 +3029,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
         dns_payload = payload.get("dns") if isinstance(payload, dict) else None
         artifacts_updated = False
+        areas_payload = payload.get("areas") if isinstance(payload.get("areas"), dict) else {}
 
         if isinstance(dns_payload, dict):
             artifacts = (
@@ -2658,6 +3058,107 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             payload["dns"] = dns_payload
             if artifacts_updated:
                 project.data_artifacts = artifacts
+
+        ad_payload = areas_payload.get("ad") if isinstance(areas_payload.get("ad"), dict) else None
+        if ad_payload is not None:
+            artifacts = (
+                project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            )
+            artifacts = dict(artifacts)
+            ad_artifacts = artifacts.get("ad") if isinstance(artifacts.get("ad"), dict) else {}
+            if not isinstance(ad_artifacts, dict):
+                ad_artifacts = {}
+            existing_domains = self._extract_ad_domains(
+                normalize_workbook_payload(project.workbook_data).get("ad")
+            )
+            submitted_domains = self._extract_ad_domains(ad_payload)
+            removed_domains = existing_domains - submitted_domains
+            if removed_domains:
+                for domain in removed_domains:
+                    ad_artifacts.pop(domain, None)
+                if ad_artifacts:
+                    artifacts["ad"] = ad_artifacts
+                else:
+                    artifacts.pop("ad", None)
+                project.data_artifacts = artifacts
+                artifacts_updated = True
+
+        ad_removal = payload.get("remove_ad_metric")
+        if isinstance(ad_removal, dict):
+            domain = (ad_removal.get("domain") or "").strip()
+            metric = (ad_removal.get("metric") or "").strip()
+
+            if not domain or metric not in AD_CSV_HEADER_MAP:
+                return JsonResponse({"error": "Invalid AD removal request."}, status=400)
+
+            artifacts = (
+                project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            )
+            artifacts = dict(artifacts)
+            ad_artifacts = artifacts.get("ad") if isinstance(artifacts.get("ad"), dict) else {}
+            if not isinstance(ad_artifacts, dict):
+                ad_artifacts = {}
+
+            domain_key = domain.lower()
+            domain_artifact = (
+                ad_artifacts.get(domain_key) if isinstance(ad_artifacts, dict) else {}
+            )
+            if not isinstance(domain_artifact, dict):
+                domain_artifact = {}
+            domain_artifact.pop(metric, None)
+            domain_artifact.pop(f"{metric}_file_name", None)
+
+            if domain_artifact:
+                ad_artifacts[domain_key] = domain_artifact
+            else:
+                ad_artifacts.pop(domain_key, None)
+
+            if ad_artifacts:
+                artifacts["ad"] = ad_artifacts
+            else:
+                artifacts.pop("ad", None)
+
+            normalized_workbook = normalize_workbook_payload(project.workbook_data)
+            ad_state = (
+                normalized_workbook.get("ad")
+                if isinstance(normalized_workbook.get("ad"), dict)
+                else {}
+            )
+            if not isinstance(ad_state, dict):
+                ad_state = {}
+            domain_records = (
+                ad_state.get("domains") if isinstance(ad_state.get("domains"), list) else []
+            )
+            if not isinstance(domain_records, list):
+                domain_records = []
+
+            match = None
+            for record in domain_records:
+                if not isinstance(record, dict):
+                    continue
+                domain_value = (record.get("domain") or record.get("name") or "").strip()
+                if domain_value.lower() == domain_key:
+                    match = record
+                    break
+
+            if match is None and domain:
+                match = {"domain": domain}
+                domain_records.append(match)
+
+            if match is not None:
+                match[metric] = None
+
+            ad_state["domains"] = domain_records
+
+            workbook_payload = build_workbook_entry_payload(
+                project=project, areas={"ad": ad_state}
+            )
+            project.workbook_data = workbook_payload
+            project.data_artifacts = artifacts
+            project.save(update_fields=["workbook_data", "data_artifacts"])
+            return JsonResponse(
+                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            )
 
         if payload.get("remove_osint"):
             artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
@@ -2826,8 +3327,8 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             general=payload.get("general"),
             scores=payload.get("scores"),
             grades=payload.get("grades"),
-            areas=payload.get("areas"),
-            dns=payload.get("dns"),
+            areas=areas_payload,
+            dns=dns_payload,
         )
 
         project.workbook_data = workbook_payload
