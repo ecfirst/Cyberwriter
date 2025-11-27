@@ -2584,7 +2584,7 @@
               headingActions.className = 'd-flex align-items-center flex-wrap mt-2 mt-md-0';
               const logUploadInput = document.createElement('input');
               logUploadInput.type = 'file';
-              logUploadInput.accept = '.txt,text/plain';
+              logUploadInput.accept = '.txt,.log,text/plain';
               logUploadInput.className = 'd-none';
               logUploadInput.addEventListener('change', function(event) {
                 if (event.target.files && event.target.files[0]) {
