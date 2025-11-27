@@ -2391,10 +2391,20 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
     def _parse_ad_csv(upload, required_headers: dict[str, str]) -> tuple[
         Optional[list[dict[str, str]]], Optional[str]
     ]:
-        try:
-            content = upload.read().decode("utf-8-sig")
-        except Exception:
-            return None, "Unable to read the uploaded CSV file."
+        raw_bytes = upload.read()
+        content = None
+        for encoding in ("utf-8-sig", "utf-16", "utf-16le", "utf-16be"):
+            try:
+                content = raw_bytes.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if content is None:
+            try:
+                content = raw_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                return None, "Unable to read the uploaded CSV file."
 
         sample = content[:2048]
         candidate_delimiters = ["\t", ",", ";", "|"]
