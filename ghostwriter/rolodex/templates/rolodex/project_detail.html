@@ -1297,6 +1297,145 @@
           };
         };
 
+        const parseTimespanToMinutes = function(value) {
+          const text = (value || '').toString().trim();
+          if (!text) {
+            return null;
+          }
+
+          const dayMatch = text.match(/^(-?\d+)\.(\d{1,2}):(\d{2}):(\d{2})$/);
+          const hourMatch = text.match(/^(-?\d{1,3}):(\d{2}):(\d{2})$/);
+          const parseParts = function(days, hours, minutes, seconds) {
+            const parsedDays = Number(days);
+            const parsedHours = Number(hours);
+            const parsedMinutes = Number(minutes);
+            const parsedSeconds = Number(seconds);
+            if ([parsedDays, parsedHours, parsedMinutes, parsedSeconds].some(function(part) { return Number.isNaN(part); })) {
+              return null;
+            }
+            return (parsedDays * 24 * 60) + (parsedHours * 60) + parsedMinutes + (parsedSeconds / 60);
+          };
+
+          if (dayMatch) {
+            return parseParts(dayMatch[1], dayMatch[2], dayMatch[3], dayMatch[4]);
+          }
+          if (hourMatch) {
+            return parseParts(0, hourMatch[1], hourMatch[2], hourMatch[3]);
+          }
+
+          const numeric = Number(text);
+          return Number.isNaN(numeric) ? null : numeric;
+        };
+
+        const parseTimespanToDays = function(value) {
+          const minutes = parseTimespanToMinutes(value);
+          if (minutes === null) {
+            return null;
+          }
+          const days = minutes / (24 * 60);
+          return Number.isNaN(days) ? null : Math.round(days * 100) / 100;
+        };
+
+        const parseDistinguishedNameDomain = function(value) {
+          const matches = (value || '').toString().match(/DC=([^,]+)/gi);
+          if (!matches) {
+            return '';
+          }
+          const parts = matches.map(function(segment) {
+            const pair = segment.split('=');
+            return pair.length > 1 ? pair[1] : '';
+          }).filter(function(part) { return part; });
+          return parts.join('.');
+        };
+
+        const parsePasswordPolicyText = function(text) {
+          const result = {};
+          if (!text) {
+            return result;
+          }
+
+          const normalizeBoolString = function(value) {
+            const normalized = (value || '').toString().trim().toUpperCase();
+            if (normalized === 'TRUE') {
+              return 'TRUE';
+            }
+            if (normalized === 'FALSE') {
+              return 'FALSE';
+            }
+            return null;
+          };
+
+          const normalizeNumber = function(value) {
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          text.split(/\r?\n/).forEach(function(line) {
+            if (!line || line.indexOf(':') === -1) {
+              return;
+            }
+            const parts = line.split(':');
+            const key = (parts.shift() || '').trim();
+            const value = parts.join(':').trim();
+
+            switch (key) {
+              case 'ComplexityEnabled':
+                result.complexity_enabled = normalizeBoolString(value);
+                break;
+              case 'LockoutThreshold':
+                result.lockout_threshold = normalizeNumber(value);
+                break;
+              case 'LockoutObservationWindow':
+                result.lockout_reset = parseTimespanToMinutes(value);
+                break;
+              case 'LockoutDuration':
+                result.lockout_duration = parseTimespanToMinutes(value);
+                break;
+              case 'MaxPasswordAge':
+                result.max_age = parseTimespanToDays(value);
+                break;
+              case 'MinPasswordAge':
+                result.min_age = parseTimespanToDays(value);
+                break;
+              case 'MinPasswordLength':
+                result.min_length = normalizeNumber(value);
+                break;
+              case 'PasswordHistoryCount':
+                result.history = normalizeNumber(value);
+                break;
+              case 'DistinguishedName':
+                result.domain_name = parseDistinguishedNameDomain(value);
+                break;
+              default:
+                break;
+            }
+          });
+
+          return result;
+        };
+
+        const applyPasswordPolicyImport = function(policy, importedValues) {
+          if (!policy || !importedValues) {
+            return;
+          }
+
+          const assignIfPresent = function(key, value) {
+            if (value !== null && typeof value !== 'undefined' && value !== '') {
+              policy[key] = value;
+            }
+          };
+
+          assignIfPresent('domain_name', importedValues.domain_name);
+          assignIfPresent('max_age', importedValues.max_age);
+          assignIfPresent('min_age', importedValues.min_age);
+          assignIfPresent('min_length', importedValues.min_length);
+          assignIfPresent('history', importedValues.history);
+          assignIfPresent('lockout_threshold', importedValues.lockout_threshold);
+          assignIfPresent('lockout_reset', importedValues.lockout_reset);
+          assignIfPresent('lockout_duration', importedValues.lockout_duration);
+          assignIfPresent('complexity_enabled', importedValues.complexity_enabled);
+        };
+
         function ensurePasswordState() {
           const passwordState = (workbookState && typeof workbookState.password === 'object') ? workbookState.password : {};
           if (!Array.isArray(passwordState.policies)) {
@@ -2971,6 +3110,46 @@
               title.textContent = 'Domain ' + (index + 1);
               heading.appendChild(title);
 
+              const headingActions = document.createElement('div');
+              headingActions.className = 'd-flex align-items-center flex-wrap';
+
+              const policyUploadInput = document.createElement('input');
+              policyUploadInput.type = 'file';
+              policyUploadInput.accept = '.txt,.log,text/plain';
+              policyUploadInput.className = 'd-none';
+              policyUploadInput.addEventListener('change', function(event) {
+                const file = event.target.files && event.target.files[0];
+                if (!file) {
+                  return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = function(loadEvent) {
+                  try {
+                    const parsed = parsePasswordPolicyText(loadEvent.target && loadEvent.target.result);
+                    applyPasswordPolicyImport(policy, parsed);
+                    renderPolicies();
+                    updateWorkbookCardProgress(areaKey);
+                  } catch (error) {
+                    console.error(error);
+                    alert('Unable to parse the password policy file.');
+                  }
+                };
+                reader.onerror = function() {
+                  alert('Unable to read the password policy file.');
+                };
+                reader.readAsText(file);
+                event.target.value = '';
+              });
+
+              const policyUploadButton = document.createElement('button');
+              policyUploadButton.type = 'button';
+              policyUploadButton.className = 'btn btn-outline-primary btn-sm mr-2';
+              policyUploadButton.textContent = 'Upload Password Policy';
+              policyUploadButton.addEventListener('click', function() { policyUploadInput.click(); });
+              headingActions.appendChild(policyUploadButton);
+              headingActions.appendChild(policyUploadInput);
+
               const removeDomainButton = document.createElement('button');
               removeDomainButton.type = 'button';
               removeDomainButton.className = 'btn btn-outline-danger btn-sm';
@@ -2980,7 +3159,9 @@
                 renderPasswordPolicies(target, areaKey, modalId);
                 updateWorkbookCardProgress(areaKey);
               });
-              heading.appendChild(removeDomainButton);
+              headingActions.appendChild(removeDomainButton);
+
+              heading.appendChild(headingActions);
               wrapper.appendChild(heading);
 
               const domainGroup = document.createElement('div');
