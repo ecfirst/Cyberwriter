@@ -2396,19 +2396,43 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         except Exception:
             return None, "Unable to read the uploaded CSV file."
 
-        sample = content[:1024]
+        sample = content[:2048]
+        candidate_delimiters = ["\t", ",", ";", "|"]
         delimiter = ","
+        best_match_count = -1
+
+        for candidate in candidate_delimiters:
+            reader = csv.DictReader(io.StringIO(content), delimiter=candidate)
+            header_lookup = {
+                (header or "").lower().strip(): header for header in (reader.fieldnames or [])
+            }
+            match_count = sum(1 for key in required_headers if key in header_lookup)
+            if match_count == len(required_headers):
+                delimiter = candidate
+                best_match_count = match_count
+                break
+            if match_count > best_match_count:
+                best_match_count = match_count
+                delimiter = candidate
+
         try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
-            delimiter = dialect.delimiter
+            sniffed = csv.Sniffer().sniff(sample, delimiters="".join(candidate_delimiters))
+            sniff_match_count = 0
+            reader = csv.DictReader(io.StringIO(content), delimiter=sniffed.delimiter)
+            sniff_header_lookup = {
+                (header or "").lower().strip(): header
+                for header in (reader.fieldnames or [])
+            }
+            sniff_match_count = sum(1 for key in required_headers if key in sniff_header_lookup)
+            if sniff_match_count > best_match_count:
+                delimiter = sniffed.delimiter
         except csv.Error:
-            for candidate in ("\t", ";", ","):
-                if candidate in sample:
-                    delimiter = candidate
-                    break
+            pass
 
         reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
-        header_lookup = {header.lower(): header for header in (reader.fieldnames or [])}
+        header_lookup = {
+            (header or "").lower().strip(): header for header in (reader.fieldnames or [])
+        }
         missing_headers = [
             label for key, label in required_headers.items() if key not in header_lookup
         ]
