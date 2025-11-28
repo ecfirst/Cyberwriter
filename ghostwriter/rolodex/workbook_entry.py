@@ -397,10 +397,8 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                         normalized_policy["password_pattern"] = pattern_entry
 
                 fgpp_entries = _normalize_fgpp_entries(policy.get("fgpp"))
-                if fgpp_entries:
+                if normalized_policy or fgpp_entries:
                     normalized_policy["fgpp"] = fgpp_entries
-
-                if normalized_policy:
                     normalized_policies.append(normalized_policy)
 
         if normalized_policies:
