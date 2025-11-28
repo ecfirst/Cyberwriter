@@ -3739,8 +3739,12 @@
               removeButton.className = 'btn btn-outline-danger';
               removeButton.textContent = 'Remove Domain';
               removeButton.addEventListener('click', function() {
+                const domainName = (domainInput.value || domain.domain || '').trim();
                 domains.splice(index, 1);
                 const payload = {areas: {ad: serializeAdPayload()}};
+                if (domainName) {
+                  payload.remove_ad_domain = domainName;
+                }
                 submitWorkbookUpdate(payload, null, {
                   reopenModalId: modalId,
                   forceCloseModalId: modalId,

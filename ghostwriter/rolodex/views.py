@@ -3160,6 +3160,63 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
             )
 
+        ad_domain_removal = payload.get("remove_ad_domain")
+        if isinstance(ad_domain_removal, str):
+            domain = ad_domain_removal.strip()
+            if not domain:
+                return JsonResponse({"error": "A domain name is required."}, status=400)
+
+            artifacts = (
+                project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            )
+            artifacts = dict(artifacts)
+            ad_artifacts = (
+                artifacts.get("ad") if isinstance(artifacts.get("ad"), dict) else {}
+            )
+            if not isinstance(ad_artifacts, dict):
+                ad_artifacts = {}
+
+            ad_artifacts.pop(domain.lower(), None)
+            if ad_artifacts:
+                artifacts["ad"] = ad_artifacts
+            else:
+                artifacts.pop("ad", None)
+
+            normalized_workbook = normalize_workbook_payload(project.workbook_data)
+            ad_state = (
+                normalized_workbook.get("ad")
+                if isinstance(normalized_workbook.get("ad"), dict)
+                else {}
+            )
+            if not isinstance(ad_state, dict):
+                ad_state = {}
+            domain_records = (
+                ad_state.get("domains") if isinstance(ad_state.get("domains"), list) else []
+            )
+            if not isinstance(domain_records, list):
+                domain_records = []
+
+            domain_lower = domain.lower()
+            domain_records = [
+                record
+                for record in domain_records
+                if not isinstance(record, dict)
+                or (record.get("domain") or record.get("name") or "").strip().lower()
+                != domain_lower
+            ]
+
+            ad_state["domains"] = domain_records
+
+            workbook_payload = build_workbook_entry_payload(
+                project=project, areas={"ad": ad_state}
+            )
+            project.workbook_data = workbook_payload
+            project.data_artifacts = artifacts
+            project.save(update_fields=["workbook_data", "data_artifacts"])
+            return JsonResponse(
+                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            )
+
         if payload.get("remove_osint"):
             artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
             artifacts = dict(artifacts)
