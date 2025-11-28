@@ -3165,8 +3165,12 @@
               removeDomainButton.textContent = 'Remove Domain';
               removeDomainButton.addEventListener('click', function() {
                 passwordState.policies.splice(index, 1);
-                renderPasswordPolicies(target, areaKey, modalId);
-                updateWorkbookCardProgress(areaKey);
+                const payload = {areas: {password: serializePasswordPayload()}};
+                submitWorkbookUpdate(payload, null, {
+                  reopenModalId: modalId,
+                  forceCloseModalId: modalId,
+                  afterRender: function() { updateWorkbookCardProgress(areaKey); },
+                });
               });
               headingActions.appendChild(removeDomainButton);
 
