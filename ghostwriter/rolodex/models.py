@@ -1309,6 +1309,7 @@ class Project(models.Model):
             }
 
             password_entries = combined_password_section.get("entries")
+            current_password_domains: Set[str] = set()
             if isinstance(password_entries, list):
                 for entry in password_entries:
                     if not isinstance(entry, dict):
@@ -1317,6 +1318,7 @@ class Project(models.Model):
                     domain = str(domain_value).strip() if domain_value else ""
                     if not domain:
                         continue
+                    current_password_domains.add(domain)
                     policy_values = entry.get("policy_cap_values")
                     if not isinstance(policy_values, dict) or not policy_values:
                         # fall back to workbook derived values when missing from entry
@@ -1334,6 +1336,11 @@ class Project(models.Model):
                         stored_entry = {"domain": domain}
                         entry_index[domain] = stored_entry
                     stored_entry["policy_cap_values"] = dict(policy_values)
+
+            if entry_index:
+                stale_domains = set(entry_index.keys()) - current_password_domains
+                for domain in stale_domains:
+                    entry_index.pop(domain, None)
 
             if entry_index:
                 password_cap_section["entries"] = [entry_index[key] for key in sorted(entry_index.keys())]

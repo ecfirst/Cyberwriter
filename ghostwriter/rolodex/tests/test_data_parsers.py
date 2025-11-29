@@ -2033,6 +2033,63 @@ class NexposeDataParserTests(TestCase):
         self.assertIn("Additional password controls not implemented", global_entries)
         self.assertIn("MFA not enforced for all accounts", global_entries)
 
+    def test_password_cap_entries_removed_when_domains_missing(self):
+        general_cap_map = {
+            issue: {"recommendation": recommendation, "score": score}
+            for issue, (recommendation, score) in DEFAULT_GENERAL_CAP_MAP.items()
+        }
+
+        password_response = {
+            "entries": [
+                {"domain": "corp.example.com", "policy_cap_values": {"min_length": 12}}
+            ]
+        }
+        workbook_domain_values = {
+            "corp.example.com": {"policy_cap_values": {"min_length": 12}}
+        }
+
+        _, project, _ = GenerateMockProject()
+        project.cap = {
+            "password": {
+                "entries": [
+                    {"domain": "corp.example.com", "policy_cap_values": {"min_length": 8}},
+                    {"domain": "old.example.com", "policy_cap_values": {"min_length": 6}},
+                ]
+            }
+        }
+        project.workbook_data = {}
+        project.data_responses = {}
+        project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch("ghostwriter.rolodex.models.build_workbook_ad_response", return_value={}):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_dns_response", return_value={}
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                        return_value={},
+                    ):
+                        with mock.patch(
+                            "ghostwriter.rolodex.models.build_workbook_password_response",
+                            return_value=(password_response, workbook_domain_values, []),
+                        ):
+                            with mock.patch(
+                                "ghostwriter.rolodex.models.load_general_cap_map",
+                                return_value=general_cap_map,
+                            ):
+                                project.rebuild_data_artifacts()
+
+        project.refresh_from_db()
+
+        password_cap = project.cap.get("password")
+        self.assertIsInstance(password_cap, dict)
+        cap_entries = password_cap.get("entries")
+        self.assertIsInstance(cap_entries, list)
+        self.assertListEqual(
+            [entry.get("domain") for entry in cap_entries], ["corp.example.com"]
+        )
+
     def test_rebuild_populates_ad_cap_map(self):
         workbook_payload = {
             "ad": {
