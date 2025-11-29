@@ -270,6 +270,140 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                     normalized_domains.append(domain_entry)
             normalized["domains"] = normalized_domains
         return normalized
+    if area == "password" and isinstance(payload, Mapping):
+        raw_policies = payload.get("policies")
+
+        def _normalize_bool_string(value: Any) -> Optional[str]:
+            if isinstance(value, bool):
+                return "TRUE" if value else "FALSE"
+            text = str(value).strip().upper()
+            if text in {"TRUE", "FALSE"}:
+                return text
+            return None
+
+        def _normalize_yes_no(value: Any) -> Optional[str]:
+            if isinstance(value, bool):
+                return "Yes" if value else "No"
+            text = str(value).strip().lower()
+            if not text:
+                return None
+            return "Yes" if text in {"yes", "y", "true", "1"} else "No"
+
+        def _normalize_password_pattern(pattern_payload: Mapping[str, Any]) -> dict[str, Any]:
+            normalized_pattern: dict[str, Any] = {}
+            confirm_value = _normalize_yes_no(pattern_payload.get("confirm"))
+            if confirm_value:
+                normalized_pattern["confirm"] = confirm_value
+            passwords_value = pattern_payload.get("passwords")
+            if confirm_value == "Yes" and isinstance(passwords_value, list):
+                passwords: list[dict[str, Any]] = []
+                for entry in passwords_value:
+                    if not isinstance(entry, Mapping):
+                        continue
+                    password_value = (entry.get("password") or "").strip()
+                    count_value = _as_int(entry.get("count")) if "count" in entry else None
+                    if password_value or count_value is not None:
+                        passwords.append({"password": password_value, "count": count_value})
+                normalized_pattern["passwords"] = passwords
+            return normalized_pattern
+
+        def _normalize_fgpp_entries(entries: Any) -> list[dict[str, Any]]:
+            normalized_fgpp: list[dict[str, Any]] = []
+            if not isinstance(entries, list):
+                return normalized_fgpp
+            for entry in entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                fgpp_entry: dict[str, Any] = {}
+                name_value = (entry.get("fgpp_name") or "").strip()
+                if name_value:
+                    fgpp_entry["fgpp_name"] = name_value
+                for field in (
+                    "max_age",
+                    "min_age",
+                    "min_length",
+                    "history",
+                    "lockout_threshold",
+                    "lockout_reset",
+                    "lockout_duration",
+                ):
+                    if field in entry:
+                        fgpp_entry[field] = _as_int(entry.get(field))
+                if "complexity_enabled" in entry:
+                    fgpp_entry["complexity_enabled"] = _normalize_bool_string(
+                        entry.get("complexity_enabled")
+                    )
+                if fgpp_entry:
+                    normalized_fgpp.append(fgpp_entry)
+            return normalized_fgpp
+
+        normalized_policies: list[dict[str, Any]] = []
+        if isinstance(raw_policies, list):
+            for policy in raw_policies:
+                if not isinstance(policy, Mapping):
+                    continue
+                normalized_policy: dict[str, Any] = {}
+                domain_value = (policy.get("domain_name") or "").strip()
+                if domain_value:
+                    normalized_policy["domain_name"] = domain_value
+
+                for field in (
+                    "max_age",
+                    "min_age",
+                    "min_length",
+                    "history",
+                    "lockout_threshold",
+                    "lockout_reset",
+                    "lockout_duration",
+                    "passwords_cracked",
+                    "strong_passwords",
+                    "enabled_accounts",
+                ):
+                    if field in policy:
+                        normalized_policy[field] = _as_int(policy.get(field))
+
+                if "complexity_enabled" in policy:
+                    normalized_policy["complexity_enabled"] = _normalize_bool_string(
+                        policy.get("complexity_enabled")
+                    )
+                if "mfa_required" in policy:
+                    normalized_policy["mfa_required"] = _normalize_bool_string(
+                        policy.get("mfa_required")
+                    )
+
+                if "lanman_stored" in policy:
+                    normalized_policy["lanman_stored"] = _normalize_yes_no(
+                        policy.get("lanman_stored")
+                    )
+
+                admin_payload = policy.get("admin_cracked")
+                if isinstance(admin_payload, Mapping):
+                    admin_confirm = _normalize_yes_no(admin_payload.get("confirm"))
+                    admin_entry: dict[str, Any] = {}
+                    if admin_confirm:
+                        admin_entry["confirm"] = admin_confirm
+                        admin_entry["count"] = (
+                            _as_int(admin_payload.get("count"))
+                            if admin_confirm == "Yes"
+                            else 0
+                        )
+                    if admin_entry:
+                        normalized_policy["admin_cracked"] = admin_entry
+
+                pattern_payload = policy.get("password_pattern")
+                if isinstance(pattern_payload, Mapping):
+                    pattern_entry = _normalize_password_pattern(pattern_payload)
+                    if pattern_entry:
+                        normalized_policy["password_pattern"] = pattern_entry
+
+                fgpp_entries = _normalize_fgpp_entries(policy.get("fgpp"))
+                if normalized_policy or fgpp_entries:
+                    normalized_policy["fgpp"] = fgpp_entries
+                    normalized_policies.append(normalized_policy)
+
+        if isinstance(raw_policies, list):
+            normalized["policies"] = normalized_policies
+        return normalized
     allowed_fields = AREA_FIELDS.get(area, set())
     if not allowed_fields or not isinstance(payload, Mapping):
         return normalized

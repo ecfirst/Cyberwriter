@@ -1261,6 +1261,364 @@
           return adState;
         }
 
+        const createEmptyPasswordPolicy = function(domainName) {
+          return {
+            domain_name: domainName || '',
+            max_age: null,
+            min_age: null,
+            min_length: null,
+            history: null,
+            lockout_threshold: null,
+            lockout_reset: null,
+            lockout_duration: null,
+            complexity_enabled: null,
+            mfa_required: null,
+            passwords_cracked: null,
+            admin_cracked: {confirm: null, count: null},
+            strong_passwords: null,
+            lanman_stored: null,
+            enabled_accounts: null,
+            password_pattern: {confirm: null, passwords: []},
+            fgpp: [],
+          };
+        };
+
+        const createEmptyFgpp = function() {
+          return {
+            fgpp_name: '',
+            max_age: null,
+            min_age: null,
+            min_length: null,
+            history: null,
+            lockout_threshold: null,
+            lockout_reset: null,
+            lockout_duration: null,
+            complexity_enabled: null,
+          };
+        };
+
+        const parseTimespanToMinutes = function(value) {
+          const text = (value || '').toString().trim();
+          if (!text) {
+            return null;
+          }
+
+          const dayMatch = text.match(/^(-?\d+)\.(\d{1,2}):(\d{2}):(\d{2})$/);
+          const hourMatch = text.match(/^(-?\d{1,3}):(\d{2}):(\d{2})$/);
+          const parseParts = function(days, hours, minutes, seconds) {
+            const parsedDays = Number(days);
+            const parsedHours = Number(hours);
+            const parsedMinutes = Number(minutes);
+            const parsedSeconds = Number(seconds);
+            if ([parsedDays, parsedHours, parsedMinutes, parsedSeconds].some(function(part) { return Number.isNaN(part); })) {
+              return null;
+            }
+            return (parsedDays * 24 * 60) + (parsedHours * 60) + parsedMinutes + (parsedSeconds / 60);
+          };
+
+          if (dayMatch) {
+            return parseParts(dayMatch[1], dayMatch[2], dayMatch[3], dayMatch[4]);
+          }
+          if (hourMatch) {
+            return parseParts(0, hourMatch[1], hourMatch[2], hourMatch[3]);
+          }
+
+          const numeric = Number(text);
+          return Number.isNaN(numeric) ? null : numeric;
+        };
+
+        const parseTimespanToDays = function(value) {
+          const minutes = parseTimespanToMinutes(value);
+          if (minutes === null) {
+            return null;
+          }
+          const days = minutes / (24 * 60);
+          return Number.isNaN(days) ? null : Math.round(days * 100) / 100;
+        };
+
+        const parseDistinguishedNameDomain = function(value) {
+          const matches = (value || '').toString().match(/DC=([^,]+)/gi);
+          if (!matches) {
+            return '';
+          }
+          const parts = matches.map(function(segment) {
+            const pair = segment.split('=');
+            return pair.length > 1 ? pair[1] : '';
+          }).filter(function(part) { return part; });
+          return parts.join('.');
+        };
+
+        const parsePasswordPolicyText = function(text) {
+          const result = {};
+          if (!text) {
+            return result;
+          }
+
+          const normalizeBoolString = function(value) {
+            const normalized = (value || '').toString().trim().toUpperCase();
+            if (normalized === 'TRUE') {
+              return 'TRUE';
+            }
+            if (normalized === 'FALSE') {
+              return 'FALSE';
+            }
+            return null;
+          };
+
+          const normalizeNumber = function(value) {
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          text.split(/\r?\n/).forEach(function(line) {
+            if (!line || line.indexOf(':') === -1) {
+              return;
+            }
+            const parts = line.split(':');
+            const key = (parts.shift() || '').trim();
+            const value = parts.join(':').trim();
+
+            switch (key) {
+              case 'ComplexityEnabled':
+                result.complexity_enabled = normalizeBoolString(value);
+                break;
+              case 'LockoutThreshold':
+                result.lockout_threshold = normalizeNumber(value);
+                break;
+              case 'LockoutObservationWindow':
+                result.lockout_reset = parseTimespanToMinutes(value);
+                break;
+              case 'LockoutDuration':
+                result.lockout_duration = parseTimespanToMinutes(value);
+                break;
+              case 'MaxPasswordAge':
+                result.max_age = parseTimespanToDays(value);
+                break;
+              case 'MinPasswordAge':
+                result.min_age = parseTimespanToDays(value);
+                break;
+              case 'MinPasswordLength':
+                result.min_length = normalizeNumber(value);
+                break;
+              case 'PasswordHistoryCount':
+                result.history = normalizeNumber(value);
+                break;
+              case 'DistinguishedName':
+                result.domain_name = parseDistinguishedNameDomain(value);
+                break;
+              default:
+                break;
+            }
+          });
+
+          return result;
+        };
+
+        const parseFgppText = function(text) {
+          const entries = [];
+          if (!text) {
+            return entries;
+          }
+
+          const normalizeBoolString = function(value) {
+            const normalized = (value || '').toString().trim().toUpperCase();
+            if (normalized === 'TRUE') {
+              return 'TRUE';
+            }
+            if (normalized === 'FALSE') {
+              return 'FALSE';
+            }
+            return null;
+          };
+
+          const normalizeNumber = function(value) {
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          const blocks = text.split(/\r?\n\s*\r?\n/).map(function(block) { return block.trim(); }).filter(Boolean);
+          blocks.forEach(function(block) {
+            const values = {};
+            block.split(/\r?\n/).forEach(function(line) {
+              if (!line || line.indexOf(':') === -1) {
+                return;
+              }
+              const parts = line.split(':');
+              const key = (parts.shift() || '').trim();
+              const value = parts.join(':').trim();
+              values[key] = value;
+            });
+
+            const appliesTo = (values.AppliesTo || '').replace(/[{}]/g, '').trim();
+            if (!appliesTo) {
+              return;
+            }
+
+            const fgppEntry = {};
+            const assignIfPresent = function(key, value) {
+              if (value !== null && typeof value !== 'undefined' && value !== '') {
+                fgppEntry[key] = value;
+              }
+            };
+
+            assignIfPresent('fgpp_name', (values.Name || '').trim());
+            assignIfPresent('max_age', parseTimespanToDays(values.MaxPasswordAge));
+            assignIfPresent('min_age', parseTimespanToDays(values.MinPasswordAge));
+            assignIfPresent('min_length', normalizeNumber(values.MinPasswordLength));
+            assignIfPresent('history', normalizeNumber(values.PasswordHistoryCount));
+            assignIfPresent('lockout_threshold', normalizeNumber(values.LockoutThreshold));
+            assignIfPresent('lockout_reset', parseTimespanToMinutes(values.LockoutObservationWindow));
+            assignIfPresent('lockout_duration', parseTimespanToMinutes(values.LockoutDuration));
+            assignIfPresent('complexity_enabled', normalizeBoolString(values.ComplexityEnabled));
+
+            if (Object.keys(fgppEntry).length) {
+              entries.push(fgppEntry);
+            }
+          });
+
+          return entries;
+        };
+
+        const applyPasswordPolicyImport = function(policy, importedValues) {
+          if (!policy || !importedValues) {
+            return;
+          }
+
+          const coerceMinutes = function(value) {
+            const minutes = parseTimespanToMinutes(value);
+            if (minutes === null) {
+              const numeric = Number(value);
+              return Number.isNaN(numeric) ? null : numeric;
+            }
+            return minutes;
+          };
+
+          const assignIfPresent = function(key, value) {
+            if (value !== null && typeof value !== 'undefined' && value !== '') {
+              policy[key] = value;
+            }
+          };
+
+          assignIfPresent('domain_name', importedValues.domain_name);
+          assignIfPresent('max_age', importedValues.max_age);
+          assignIfPresent('min_age', importedValues.min_age);
+          assignIfPresent('min_length', importedValues.min_length);
+          assignIfPresent('history', importedValues.history);
+          assignIfPresent('lockout_threshold', importedValues.lockout_threshold);
+          assignIfPresent('lockout_reset', coerceMinutes(importedValues.lockout_reset));
+          assignIfPresent('lockout_duration', coerceMinutes(importedValues.lockout_duration));
+          assignIfPresent('complexity_enabled', importedValues.complexity_enabled);
+        };
+
+        function ensurePasswordState() {
+          const passwordState = (workbookState && typeof workbookState.password === 'object') ? workbookState.password : {};
+          if (!Array.isArray(passwordState.policies)) {
+            passwordState.policies = [];
+          }
+
+          const normalizeNumber = function(value) {
+            if (typeof value === 'number' && !Number.isNaN(value)) {
+              return value;
+            }
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          const normalizeBoolString = function(value) {
+            const text = (value || '').toString().trim().toUpperCase();
+            if (text === 'TRUE') {
+              return 'TRUE';
+            }
+            if (text === 'FALSE') {
+              return 'FALSE';
+            }
+            return null;
+          };
+
+          const normalizeYesNo = function(value) {
+            const text = (value || '').toString().trim().toLowerCase();
+            if (text === 'yes') {
+              return 'Yes';
+            }
+            if (text === 'no') {
+              return 'No';
+            }
+            return null;
+          };
+
+          passwordState.policies = (passwordState.policies || []).map(function(policy) {
+            const passwordPattern = policy && policy.password_pattern ? policy.password_pattern : {};
+            const adminCracked = policy && policy.admin_cracked ? policy.admin_cracked : {};
+            const fgppEntries = Array.isArray(policy && policy.fgpp) ? policy.fgpp : [];
+            const confirmValue = normalizeYesNo(adminCracked.confirm);
+
+            const normalizedFgpp = fgppEntries.map(function(entry) {
+              return Object.assign(createEmptyFgpp(), entry || {}, {
+                fgpp_name: (entry && entry.fgpp_name) || '',
+                max_age: normalizeNumber(entry && entry.max_age),
+                min_age: normalizeNumber(entry && entry.min_age),
+                min_length: normalizeNumber(entry && entry.min_length),
+                history: normalizeNumber(entry && entry.history),
+                lockout_threshold: normalizeNumber(entry && entry.lockout_threshold),
+                lockout_reset: normalizeNumber(entry && entry.lockout_reset),
+                lockout_duration: normalizeNumber(entry && entry.lockout_duration),
+                complexity_enabled: normalizeBoolString(entry && entry.complexity_enabled),
+              });
+            });
+
+            return Object.assign(createEmptyPasswordPolicy(), policy || {}, {
+              domain_name: (policy && policy.domain_name) || '',
+              max_age: normalizeNumber(policy && policy.max_age),
+              min_age: normalizeNumber(policy && policy.min_age),
+              min_length: normalizeNumber(policy && policy.min_length),
+              history: normalizeNumber(policy && policy.history),
+              lockout_threshold: normalizeNumber(policy && policy.lockout_threshold),
+              lockout_reset: normalizeNumber(policy && policy.lockout_reset),
+              lockout_duration: normalizeNumber(policy && policy.lockout_duration),
+              complexity_enabled: normalizeBoolString(policy && policy.complexity_enabled),
+              mfa_required: normalizeBoolString(policy && policy.mfa_required),
+              passwords_cracked: normalizeNumber(policy && policy.passwords_cracked),
+              admin_cracked: {
+                confirm: confirmValue,
+                count: confirmValue === 'Yes' ? normalizeNumber(adminCracked.count) : 0,
+              },
+              strong_passwords: normalizeNumber(policy && policy.strong_passwords),
+              lanman_stored: normalizeYesNo(policy && policy.lanman_stored),
+              enabled_accounts: normalizeNumber(policy && policy.enabled_accounts),
+              password_pattern: {
+                confirm: normalizeYesNo(passwordPattern.confirm),
+                passwords: Array.isArray(passwordPattern.passwords)
+                  ? passwordPattern.passwords.map(function(entry) {
+                    return {
+                      password: (entry && entry.password) || '',
+                      count: normalizeNumber(entry && entry.count),
+                    };
+                  })
+                  : [],
+              },
+              fgpp: normalizedFgpp,
+            });
+          });
+
+          const adState = ensureAdState();
+          const adDomains = Array.isArray(adState.domains) ? adState.domains : [];
+          const adDomainNames = adDomains
+            .map(function(domain) { return (domain.domain || domain.name || '').toString().trim(); })
+            .filter(function(name) { return name; });
+          const existingDomains = new Set(passwordState.policies.map(function(policy) {
+            return (policy.domain_name || '').toString().trim().toLowerCase();
+          }));
+          adDomainNames.forEach(function(name) {
+            const lower = name.toLowerCase();
+            if (!existingDomains.has(lower)) {
+              passwordState.policies.push(createEmptyPasswordPolicy(name));
+            }
+          });
+
+          workbookState.password = passwordState;
+          return passwordState;
+        }
+
         function serializeAdPayload() {
           const adState = ensureAdState();
           const normalizeNumber = function(value) {
@@ -1327,6 +1685,108 @@
           }).filter(function(entry) { return entry !== null; });
 
           return {domains: domains};
+        }
+
+        function serializePasswordPayload() {
+          const passwordState = ensurePasswordState();
+
+          const normalizeNumber = function(value) {
+            if (typeof value === 'number' && !Number.isNaN(value)) {
+              return value;
+            }
+            if (value === null || typeof value === 'undefined') {
+              return null;
+            }
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          const normalizeBoolString = function(value) {
+            const text = (value || '').toString().trim().toUpperCase();
+            if (text === 'TRUE') {
+              return 'TRUE';
+            }
+            if (text === 'FALSE') {
+              return 'FALSE';
+            }
+            return null;
+          };
+
+          const normalizeYesNo = function(value) {
+            const text = (value || '').toString().trim().toLowerCase();
+            if (text === 'yes') {
+              return 'Yes';
+            }
+            if (text === 'no') {
+              return 'No';
+            }
+            return null;
+          };
+
+          const fgppEntries = (policyFgpp) => {
+            if (!Array.isArray(policyFgpp)) {
+              return [];
+            }
+            return policyFgpp.map(function(entry) {
+              return {
+                fgpp_name: (entry && entry.fgpp_name) ? entry.fgpp_name.toString() : '',
+                max_age: normalizeNumber(entry && entry.max_age),
+                min_age: normalizeNumber(entry && entry.min_age),
+                min_length: normalizeNumber(entry && entry.min_length),
+                history: normalizeNumber(entry && entry.history),
+                lockout_threshold: normalizeNumber(entry && entry.lockout_threshold),
+                lockout_reset: normalizeNumber(entry && entry.lockout_reset),
+                lockout_duration: normalizeNumber(entry && entry.lockout_duration),
+                complexity_enabled: normalizeBoolString(entry && entry.complexity_enabled),
+              };
+            });
+          };
+
+          const policies = (passwordState.policies || []).map(function(policy) {
+            const pattern = policy && policy.password_pattern ? policy.password_pattern : {};
+            const patternConfirm = normalizeYesNo(pattern.confirm);
+            const adminConfirm = normalizeYesNo(policy.admin_cracked && policy.admin_cracked.confirm);
+            const adminCount = adminConfirm === 'Yes'
+              ? normalizeNumber(policy.admin_cracked && policy.admin_cracked.count)
+              : 0;
+
+            const patternPasswords = Array.isArray(pattern.passwords)
+              ? pattern.passwords.map(function(entry) {
+                return {
+                  password: (entry && entry.password) || '',
+                  count: normalizeNumber(entry && entry.count),
+                };
+              }).filter(function(entry) { return entry.password || entry.count !== null; })
+              : [];
+
+            return {
+              domain_name: (policy.domain_name || '').toString(),
+              max_age: normalizeNumber(policy.max_age),
+              min_age: normalizeNumber(policy.min_age),
+              min_length: normalizeNumber(policy.min_length),
+              history: normalizeNumber(policy.history),
+              lockout_threshold: normalizeNumber(policy.lockout_threshold),
+              lockout_reset: normalizeNumber(policy.lockout_reset),
+              lockout_duration: normalizeNumber(policy.lockout_duration),
+              complexity_enabled: normalizeBoolString(policy.complexity_enabled),
+              mfa_required: normalizeBoolString(policy.mfa_required),
+              passwords_cracked: normalizeNumber(policy.passwords_cracked),
+              admin_cracked: {
+                confirm: adminConfirm,
+                count: adminCount,
+              },
+              strong_passwords: normalizeNumber(policy.strong_passwords),
+              lanman_stored: normalizeYesNo(policy.lanman_stored),
+              enabled_accounts: normalizeNumber(policy.enabled_accounts),
+              password_pattern: {
+                confirm: patternConfirm,
+                passwords: patternConfirm === 'Yes' ? patternPasswords : [],
+              },
+              fgpp: fgppEntries(policy.fgpp),
+            };
+          });
+
+          return {policies: policies};
         }
 
         function renderFirewallSection(container, areaKey, modalId, mode) {
@@ -1729,6 +2189,12 @@
             workbookKey: 'ad',
             renderer: 'ad',
             serializer: serializeAdPayload,
+          },
+          iam_password: {
+            label: 'Password',
+            workbookKey: 'password',
+            renderer: 'password',
+            serializer: serializePasswordPayload,
           },
           external_web: {
             label: 'Web',
@@ -2197,6 +2663,33 @@
           if (!Array.isArray(subkeys) || !subkeys.length) {
             return;
           }
+
+          const preprocessingMap = {
+            iam: {
+              iam_ad: ensureAdState,
+              iam_password: ensurePasswordState,
+              ad: ensureAdState,
+              password: ensurePasswordState,
+            },
+            firewall: {
+              firewall_os: ensureFirewallState,
+              firewall_configuration: ensureFirewallState,
+            },
+          };
+
+          const preprocessors = preprocessingMap[areaKey];
+          if (preprocessors) {
+            subkeys.forEach(function(subkey) {
+              const resolvedConfig = resolveAreaConfig(areaKey, subkey) || {};
+              const preprocessor = preprocessors[subkey]
+                || preprocessors[resolvedConfig.workbookKey]
+                || preprocessors[resolvedConfig.renderer];
+              if (typeof preprocessor === 'function') {
+                preprocessor();
+              }
+            });
+          }
+
           const payload = {areas: {}};
           subkeys.forEach(function(subkey) {
             const config = resolveAreaConfig(areaKey, subkey);
@@ -2506,6 +2999,572 @@
             forceCloseModalId: modalId,
           });
         };
+
+        function renderPasswordPolicies(target, areaKey, modalId) {
+          const passwordState = ensurePasswordState();
+          const adState = ensureAdState();
+          const adDomains = Array.isArray(adState.domains) ? adState.domains : [];
+          const adDomainMap = {};
+          adDomains.forEach(function(entry) {
+            const name = (entry && (entry.domain || entry.name)) ? (entry.domain || entry.name).toString().trim() : '';
+            if (name) {
+              adDomainMap[name.toLowerCase()] = entry;
+            }
+          });
+
+          const parseNumber = function(value) {
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          const makeNumberGroup = function(labelText, value, onChange, options) {
+            const group = document.createElement('div');
+            group.className = 'form-group';
+            const label = document.createElement('label');
+            label.className = 'font-weight-bold';
+            label.textContent = labelText;
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.className = 'form-control';
+            input.setAttribute('data-area-field', areaKey);
+            input.value = typeof value === 'number' ? value : '';
+            if (options && options.readOnly) {
+              input.readOnly = true;
+            }
+            input.addEventListener('input', function() {
+              const parsed = input.value === '' ? null : parseNumber(input.value);
+              onChange(Number.isNaN(parsed) ? null : parsed);
+              updateWorkbookCardProgress(areaKey);
+            });
+            group.appendChild(label);
+            group.appendChild(input);
+            return {group: group, input: input};
+          };
+
+          const makeBoolSelect = function(labelText, value, onChange) {
+            const group = document.createElement('div');
+            group.className = 'form-group';
+            const label = document.createElement('label');
+            label.className = 'font-weight-bold';
+            label.textContent = labelText;
+            const select = document.createElement('select');
+            select.className = 'form-control';
+            select.setAttribute('data-area-field', areaKey);
+            ['', 'TRUE', 'FALSE'].forEach(function(optionValue) {
+              const option = document.createElement('option');
+              option.value = optionValue;
+              option.textContent = optionValue ? optionValue : 'Select';
+              if ((value || '').toString().toUpperCase() === optionValue) {
+                option.selected = true;
+              }
+              select.appendChild(option);
+            });
+            select.addEventListener('change', function() {
+              const selected = select.value || null;
+              onChange(selected);
+              updateWorkbookCardProgress(areaKey);
+            });
+            group.appendChild(label);
+            group.appendChild(select);
+            return group;
+          };
+
+          const makeYesNoSelect = function(labelText, value, onChange) {
+            const group = document.createElement('div');
+            group.className = 'form-group';
+            const label = document.createElement('label');
+            label.className = 'font-weight-bold';
+            label.textContent = labelText;
+            const select = document.createElement('select');
+            select.className = 'form-control';
+            select.setAttribute('data-area-field', areaKey);
+            ['', 'Yes', 'No'].forEach(function(optionValue) {
+              const option = document.createElement('option');
+              option.value = optionValue;
+              option.textContent = optionValue || 'Select';
+              if ((value || '').toString().toLowerCase() === optionValue.toLowerCase()) {
+                option.selected = true;
+              }
+              select.appendChild(option);
+            });
+            select.addEventListener('change', function() {
+              const selected = select.value || null;
+              onChange(selected);
+              updateWorkbookCardProgress(areaKey);
+            });
+            group.appendChild(label);
+            group.appendChild(select);
+            return {group: group, select: select};
+          };
+
+          const renderDuplicatePasswords = function(policy, container) {
+            container.innerHTML = '';
+
+            const table = document.createElement('table');
+            table.className = 'table table-sm mb-2';
+            const thead = document.createElement('thead');
+            const headerRow = document.createElement('tr');
+            ['Password', 'Count', ''].forEach(function(text) {
+              const th = document.createElement('th');
+              th.textContent = text;
+              headerRow.appendChild(th);
+            });
+            thead.appendChild(headerRow);
+            table.appendChild(thead);
+            const tbody = document.createElement('tbody');
+
+            const rows = Array.isArray(policy.password_pattern.passwords)
+              ? policy.password_pattern.passwords
+              : [];
+
+            rows.forEach(function(row, index) {
+              const tr = document.createElement('tr');
+              const passwordTd = document.createElement('td');
+              const passwordInput = document.createElement('input');
+              passwordInput.type = 'text';
+              passwordInput.className = 'form-control form-control-sm';
+              passwordInput.setAttribute('data-area-field', areaKey);
+              passwordInput.value = row.password || '';
+              passwordInput.addEventListener('input', function() {
+                row.password = passwordInput.value;
+                updateWorkbookCardProgress(areaKey);
+              });
+              passwordTd.appendChild(passwordInput);
+              const countTd = document.createElement('td');
+              const countInput = document.createElement('input');
+              countInput.type = 'number';
+              countInput.className = 'form-control form-control-sm';
+              countInput.setAttribute('data-area-field', areaKey);
+              countInput.value = typeof row.count === 'number' ? row.count : '';
+              countInput.addEventListener('input', function() {
+                const parsed = countInput.value === '' ? null : parseNumber(countInput.value);
+                row.count = Number.isNaN(parsed) ? null : parsed;
+                updateWorkbookCardProgress(areaKey);
+              });
+              countTd.appendChild(countInput);
+              const actionTd = document.createElement('td');
+              const removeBtn = document.createElement('button');
+              removeBtn.type = 'button';
+              removeBtn.className = 'btn btn-outline-danger btn-sm';
+              removeBtn.textContent = 'Remove';
+              removeBtn.addEventListener('click', function() {
+                policy.password_pattern.passwords.splice(index, 1);
+                renderDuplicatePasswords(policy, container);
+                updateWorkbookCardProgress(areaKey);
+              });
+              actionTd.appendChild(removeBtn);
+              tr.appendChild(passwordTd);
+              tr.appendChild(countTd);
+              tr.appendChild(actionTd);
+              tbody.appendChild(tr);
+            });
+
+            table.appendChild(tbody);
+            container.appendChild(table);
+
+            const addMoreButton = document.createElement('button');
+            addMoreButton.type = 'button';
+            addMoreButton.className = 'btn btn-outline-primary btn-sm';
+            addMoreButton.textContent = 'Add More';
+            addMoreButton.addEventListener('click', function() {
+              policy.password_pattern.passwords.push({password: '', count: null});
+              renderDuplicatePasswords(policy, container);
+              updateWorkbookCardProgress(areaKey);
+            });
+            container.appendChild(addMoreButton);
+          };
+
+          target.innerHTML = '';
+
+          const addDomainButton = document.createElement('button');
+          addDomainButton.type = 'button';
+          addDomainButton.className = 'btn btn-outline-primary mb-3';
+          addDomainButton.textContent = 'Add new Domain';
+          addDomainButton.addEventListener('click', function() {
+            passwordState.policies.push(createEmptyPasswordPolicy());
+            renderPasswordPolicies(target, areaKey, modalId);
+            updateWorkbookCardProgress(areaKey);
+          });
+          target.appendChild(addDomainButton);
+
+          const container = document.createElement('div');
+          target.appendChild(container);
+
+          const renderPolicies = function() {
+            container.innerHTML = '';
+            if (!passwordState.policies.length) {
+              const empty = document.createElement('p');
+              empty.className = 'text-muted mb-0';
+              empty.textContent = 'No domains have been added yet.';
+              container.appendChild(empty);
+              return;
+            }
+
+            passwordState.policies.forEach(function(policy, index) {
+              const wrapper = document.createElement('div');
+              wrapper.className = 'border rounded p-3 mb-3';
+
+              const heading = document.createElement('div');
+              heading.className = 'd-flex justify-content-between align-items-center mb-3 flex-wrap';
+              const title = document.createElement('h6');
+              title.className = 'mb-2 mb-md-0';
+              title.textContent = 'Domain ' + (index + 1);
+              heading.appendChild(title);
+
+              const headingActions = document.createElement('div');
+              headingActions.className = 'd-flex align-items-center flex-wrap';
+
+              const policyUploadInput = document.createElement('input');
+              policyUploadInput.type = 'file';
+              policyUploadInput.accept = '.txt,.log,text/plain';
+              policyUploadInput.className = 'd-none';
+              policyUploadInput.addEventListener('change', function(event) {
+                const file = event.target.files && event.target.files[0];
+                if (!file) {
+                  return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = function(loadEvent) {
+                  try {
+                    const parsed = parsePasswordPolicyText(loadEvent.target && loadEvent.target.result);
+                    applyPasswordPolicyImport(policy, parsed);
+                    renderPolicies();
+                    updateWorkbookCardProgress(areaKey);
+                  } catch (error) {
+                    console.error(error);
+                    alert('Unable to parse the password policy file.');
+                  }
+                };
+                reader.onerror = function() {
+                  alert('Unable to read the password policy file.');
+                };
+                reader.readAsText(file);
+                event.target.value = '';
+              });
+
+              const policyUploadButton = document.createElement('button');
+              policyUploadButton.type = 'button';
+              policyUploadButton.className = 'btn btn-outline-primary btn-sm mr-2';
+              policyUploadButton.textContent = 'Upload Password Policy';
+              policyUploadButton.addEventListener('click', function() { policyUploadInput.click(); });
+              headingActions.appendChild(policyUploadButton);
+              headingActions.appendChild(policyUploadInput);
+
+              const removeDomainButton = document.createElement('button');
+              removeDomainButton.type = 'button';
+              removeDomainButton.className = 'btn btn-outline-danger btn-sm';
+              removeDomainButton.textContent = 'Remove Domain';
+              removeDomainButton.addEventListener('click', function() {
+                passwordState.policies.splice(index, 1);
+                const payload = {areas: {password: serializePasswordPayload()}};
+                submitWorkbookUpdate(payload, null, {
+                  reopenModalId: modalId,
+                  forceCloseModalId: modalId,
+                  afterRender: function() { updateWorkbookCardProgress(areaKey); },
+                });
+              });
+              headingActions.appendChild(removeDomainButton);
+
+              heading.appendChild(headingActions);
+              wrapper.appendChild(heading);
+
+              const domainGroup = document.createElement('div');
+              domainGroup.className = 'form-group';
+              const domainLabel = document.createElement('label');
+              domainLabel.className = 'font-weight-bold';
+              domainLabel.textContent = 'Domain Name';
+              const domainInput = document.createElement('input');
+              domainInput.type = 'text';
+              domainInput.className = 'form-control';
+              domainInput.setAttribute('data-area-field', areaKey);
+              domainInput.value = policy.domain_name || '';
+              domainGroup.appendChild(domainLabel);
+              domainGroup.appendChild(domainInput);
+              const domainWarning = document.createElement('div');
+              domainWarning.className = 'alert alert-warning mt-2 py-2 mb-0 d-none';
+              domainWarning.textContent = 'Domain entered does not match an existing IAM domain!';
+              domainGroup.appendChild(domainWarning);
+              wrapper.appendChild(domainGroup);
+
+              const updateDomainWarning = function() {
+                const key = (domainInput.value || '').toString().trim().toLowerCase();
+                const hasMatch = key && Object.prototype.hasOwnProperty.call(adDomainMap, key);
+                if (hasMatch) {
+                  domainWarning.classList.add('d-none');
+                } else if (domainInput.value && adDomains.length) {
+                  domainWarning.classList.remove('d-none');
+                } else {
+                  domainWarning.classList.add('d-none');
+                }
+              };
+
+              const updatePolicyDomain = function() {
+                policy.domain_name = domainInput.value;
+                updateDomainWarning();
+                updateStrongPasswords();
+                updateWorkbookCardProgress(areaKey);
+              };
+
+              domainInput.addEventListener('input', updatePolicyDomain);
+              updateDomainWarning();
+
+              const fieldsRow = document.createElement('div');
+              fieldsRow.className = 'row';
+              const addField = function(element) {
+                const col = document.createElement('div');
+                col.className = 'col-md-6';
+                col.appendChild(element);
+                fieldsRow.appendChild(col);
+              };
+
+              addField(makeNumberGroup('Maximum Password Age (days)', policy.max_age, function(value) { policy.max_age = value; }).group);
+              addField(makeNumberGroup('Minimum Password Age (days)', policy.min_age, function(value) { policy.min_age = value; }).group);
+              addField(makeNumberGroup('Minimum Password Length', policy.min_length, function(value) { policy.min_length = value; }).group);
+              addField(makeNumberGroup('Password History', policy.history, function(value) { policy.history = value; }).group);
+              addField(makeNumberGroup('Lockout Threshold', policy.lockout_threshold, function(value) { policy.lockout_threshold = value; }).group);
+              addField(makeNumberGroup('Lockout Reset (minutes)', policy.lockout_reset, function(value) { policy.lockout_reset = value; }).group);
+              addField(makeNumberGroup('Lockout Duration (minutes)', policy.lockout_duration, function(value) { policy.lockout_duration = value; }).group);
+              addField(makeBoolSelect('Is Complexity Enabled?', policy.complexity_enabled, function(value) { policy.complexity_enabled = value; }));
+              addField(makeBoolSelect('Is MFA required?', policy.mfa_required, function(value) { policy.mfa_required = value; }));
+
+              const passwordsCracked = makeNumberGroup('Total passwords cracked', policy.passwords_cracked, function(value) {
+                policy.passwords_cracked = value;
+                updateStrongPasswords();
+              });
+              addField(passwordsCracked.group);
+
+              const adminConfirmSelect = makeYesNoSelect('Were Admin accounts cracked?', policy.admin_cracked.confirm, function(value) {
+                policy.admin_cracked.confirm = value;
+                if (value !== 'Yes') {
+                  policy.admin_cracked.count = 0;
+                }
+                toggleAdminCount();
+              });
+              addField(adminConfirmSelect.group);
+
+              const adminCountGroup = makeNumberGroup('How many admin accounts were cracked?', policy.admin_cracked.count, function(value) {
+                policy.admin_cracked.count = value;
+              });
+              addField(adminCountGroup.group);
+
+              const strongPasswordsGroup = makeNumberGroup('\"Strong\" Passwords', policy.strong_passwords, function(value) {
+                policy.strong_passwords = value;
+              });
+              addField(strongPasswordsGroup.group);
+
+              addField(makeYesNoSelect('Were LANMAN hashes stored?', policy.lanman_stored, function(value) { policy.lanman_stored = value; }).group);
+              addField(makeNumberGroup('Of the passwords cracked, how many are enabled accounts?', policy.enabled_accounts, function(value) {
+                policy.enabled_accounts = value;
+              }).group);
+
+              wrapper.appendChild(fieldsRow);
+
+              const patternRow = document.createElement('div');
+              patternRow.className = 'row';
+              const patternCol = document.createElement('div');
+              patternCol.className = 'col-12';
+              const patternSelect = makeYesNoSelect('Is there a password or password pattern shared between many accounts?', policy.password_pattern.confirm, function(value) {
+                policy.password_pattern.confirm = value;
+                if (value === 'Yes' && (!policy.password_pattern.passwords || !policy.password_pattern.passwords.length)) {
+                  policy.password_pattern.passwords = [{password: '', count: null}];
+                }
+                if (value !== 'Yes') {
+                  policy.password_pattern.passwords = [];
+                }
+                toggleDuplicateTable();
+              });
+              patternCol.appendChild(patternSelect.group);
+              const duplicatesContainer = document.createElement('div');
+              patternCol.appendChild(duplicatesContainer);
+              patternRow.appendChild(patternCol);
+              wrapper.appendChild(patternRow);
+
+              const fgppHeader = document.createElement('div');
+              fgppHeader.className = 'd-flex justify-content-between align-items-center mt-3 mb-2 flex-wrap';
+              const fgppTitle = document.createElement('h6');
+              fgppTitle.className = 'mb-2 mb-md-0';
+              fgppTitle.textContent = 'Fine-Grained Password Policies';
+              fgppHeader.appendChild(fgppTitle);
+
+              const fgppActions = document.createElement('div');
+              fgppActions.className = 'd-flex align-items-center flex-wrap';
+
+              const fgppUploadInput = document.createElement('input');
+              fgppUploadInput.type = 'file';
+              fgppUploadInput.accept = '.txt,.log,text/plain';
+              fgppUploadInput.className = 'd-none';
+              fgppUploadInput.addEventListener('change', function(event) {
+                const file = event.target.files && event.target.files[0];
+                if (!file) {
+                  return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = function(loadEvent) {
+                  try {
+                    const parsedEntries = parseFgppText(loadEvent.target && loadEvent.target.result);
+                    if (!Array.isArray(policy.fgpp)) {
+                      policy.fgpp = [];
+                    }
+                    parsedEntries.forEach(function(entry) { policy.fgpp.push(entry); });
+                    renderFgpp();
+                    updateWorkbookCardProgress(areaKey);
+                  } catch (error) {
+                    console.error(error);
+                    alert('Unable to parse the FGPP file.');
+                  }
+                };
+                reader.onerror = function() {
+                  alert('Unable to read the FGPP file.');
+                };
+                reader.readAsText(file);
+                event.target.value = '';
+              });
+
+              const fgppUploadButton = document.createElement('button');
+              fgppUploadButton.type = 'button';
+              fgppUploadButton.className = 'btn btn-outline-primary btn-sm mr-2';
+              fgppUploadButton.textContent = 'Upload FGPP';
+              fgppUploadButton.addEventListener('click', function() { fgppUploadInput.click(); });
+              fgppActions.appendChild(fgppUploadButton);
+              fgppActions.appendChild(fgppUploadInput);
+
+              const addFgppButton = document.createElement('button');
+              addFgppButton.type = 'button';
+              addFgppButton.className = 'btn btn-outline-primary btn-sm';
+              addFgppButton.textContent = 'Add FGPP';
+              addFgppButton.addEventListener('click', function() {
+                policy.fgpp.push(createEmptyFgpp());
+                renderPolicies();
+                updateWorkbookCardProgress(areaKey);
+              });
+              fgppActions.appendChild(addFgppButton);
+
+              fgppHeader.appendChild(fgppActions);
+              wrapper.appendChild(fgppHeader);
+
+              const fgppContainer = document.createElement('div');
+              wrapper.appendChild(fgppContainer);
+
+              const renderFgpp = function() {
+                fgppContainer.innerHTML = '';
+                if (!policy.fgpp || !policy.fgpp.length) {
+                  const empty = document.createElement('p');
+                  empty.className = 'text-muted mb-2';
+                  empty.textContent = 'No fine-grained password policies have been added yet.';
+                  fgppContainer.appendChild(empty);
+                  return;
+                }
+
+                policy.fgpp.forEach(function(entry, fgppIndex) {
+                  const fgppWrapper = document.createElement('div');
+                  fgppWrapper.className = 'border rounded p-3 mb-3';
+                  const fgppHeading = document.createElement('div');
+                  fgppHeading.className = 'd-flex justify-content-between align-items-center flex-wrap mb-3';
+                  const fgppLabel = document.createElement('h6');
+                  fgppLabel.className = 'mb-2 mb-md-0';
+                  fgppLabel.textContent = 'Fine-Grained Password Policy ' + (fgppIndex + 1);
+                  fgppHeading.appendChild(fgppLabel);
+                  const removeFgppButton = document.createElement('button');
+                  removeFgppButton.type = 'button';
+                  removeFgppButton.className = 'btn btn-outline-danger btn-sm';
+                  removeFgppButton.textContent = 'Remove FGPP';
+                  removeFgppButton.addEventListener('click', function() {
+                    policy.fgpp.splice(fgppIndex, 1);
+                    renderFgpp();
+                    updateWorkbookCardProgress(areaKey);
+                  });
+                  fgppHeading.appendChild(removeFgppButton);
+                  fgppWrapper.appendChild(fgppHeading);
+
+                  const fgppRow = document.createElement('div');
+                  fgppRow.className = 'row';
+                  const addFgppField = function(element) {
+                    const col = document.createElement('div');
+                    col.className = 'col-md-6';
+                    col.appendChild(element);
+                    fgppRow.appendChild(col);
+                  };
+
+                  const fgppNameGroup = document.createElement('div');
+                  fgppNameGroup.className = 'form-group';
+                  const fgppNameLabel = document.createElement('label');
+                  fgppNameLabel.className = 'font-weight-bold';
+                  fgppNameLabel.textContent = 'Name';
+                  const fgppNameInput = document.createElement('input');
+                  fgppNameInput.type = 'text';
+                  fgppNameInput.className = 'form-control';
+                  fgppNameInput.setAttribute('data-area-field', areaKey);
+                  fgppNameInput.value = entry.fgpp_name || '';
+                  fgppNameInput.addEventListener('input', function() {
+                    entry.fgpp_name = fgppNameInput.value;
+                    updateWorkbookCardProgress(areaKey);
+                  });
+                  fgppNameGroup.appendChild(fgppNameLabel);
+                  fgppNameGroup.appendChild(fgppNameInput);
+                  addFgppField(fgppNameGroup);
+
+                  addFgppField(makeNumberGroup('Maximum Password Age (days)', entry.max_age, function(value) { entry.max_age = value; }).group);
+                  addFgppField(makeNumberGroup('Minimum Password Age (days)', entry.min_age, function(value) { entry.min_age = value; }).group);
+                  addFgppField(makeNumberGroup('Minimum Password Length', entry.min_length, function(value) { entry.min_length = value; }).group);
+                  addFgppField(makeNumberGroup('Password History', entry.history, function(value) { entry.history = value; }).group);
+                  addFgppField(makeNumberGroup('Lockout Threshold', entry.lockout_threshold, function(value) { entry.lockout_threshold = value; }).group);
+                  addFgppField(makeNumberGroup('Lockout Reset (minutes)', entry.lockout_reset, function(value) { entry.lockout_reset = value; }).group);
+                  addFgppField(makeNumberGroup('Lockout Duration (minutes)', entry.lockout_duration, function(value) { entry.lockout_duration = value; }).group);
+                  addFgppField(makeBoolSelect('Is Complexity Enabled?', entry.complexity_enabled, function(value) { entry.complexity_enabled = value; }));
+
+                  fgppWrapper.appendChild(fgppRow);
+                  fgppContainer.appendChild(fgppWrapper);
+                });
+              };
+
+              const toggleDuplicateTable = function() {
+                duplicatesContainer.innerHTML = '';
+                if (policy.password_pattern.confirm === 'Yes') {
+                  renderDuplicatePasswords(policy, duplicatesContainer);
+                }
+              };
+
+              const toggleAdminCount = function() {
+                const showCount = policy.admin_cracked.confirm === 'Yes';
+                adminCountGroup.group.classList.toggle('d-none', !showCount);
+                if (!showCount) {
+                  policy.admin_cracked.count = 0;
+                  adminCountGroup.input.value = '';
+                }
+              };
+
+              const updateStrongPasswords = function() {
+                const domainKey = (policy.domain_name || '').toString().trim().toLowerCase();
+                const adEntry = domainKey ? adDomainMap[domainKey] : null;
+                const cracked = typeof policy.passwords_cracked === 'number' ? policy.passwords_cracked : parseNumber(policy.passwords_cracked);
+                if (adEntry && typeof adEntry.total_accounts !== 'undefined') {
+                  const totalAccounts = parseNumber(adEntry.total_accounts);
+                  if (totalAccounts !== null && cracked !== null) {
+                    const strongCount = Math.max(totalAccounts - cracked, 0);
+                    policy.strong_passwords = strongCount;
+                    strongPasswordsGroup.input.value = strongCount;
+                    strongPasswordsGroup.input.readOnly = true;
+                    return;
+                  }
+                }
+                strongPasswordsGroup.input.readOnly = false;
+                strongPasswordsGroup.input.value = typeof policy.strong_passwords === 'number' ? policy.strong_passwords : '';
+              };
+
+              toggleDuplicateTable();
+              toggleAdminCount();
+              renderFgpp();
+              updateStrongPasswords();
+
+              wrapper.appendChild(patternRow);
+              container.appendChild(wrapper);
+            });
+          };
+
+          renderPolicies();
+        }
 
         function renderAdDomains(target, areaKey, modalId) {
           const adState = ensureAdState();
@@ -2822,8 +3881,12 @@
               removeButton.className = 'btn btn-outline-danger';
               removeButton.textContent = 'Remove Domain';
               removeButton.addEventListener('click', function() {
+                const domainName = (domainInput.value || domain.domain || '').trim();
                 domains.splice(index, 1);
                 const payload = {areas: {ad: serializeAdPayload()}};
+                if (domainName) {
+                  payload.remove_ad_domain = domainName;
+                }
                 submitWorkbookUpdate(payload, null, {
                   reopenModalId: modalId,
                   forceCloseModalId: modalId,
@@ -3211,6 +4274,8 @@
                 renderFirewallSection(subBody, areaKey, modalId, 'configuration');
               } else if (config && config.renderer === 'ad') {
                 renderAdDomains(subBody, areaKey, modalId);
+              } else if (config && config.renderer === 'password') {
+                renderPasswordPolicies(subBody, areaKey, modalId);
               } else if (subkey === 'dns') {
                 renderDnsDomains(subBody, areaKey, modalId);
               } else if (config && Array.isArray(config.fields)) {

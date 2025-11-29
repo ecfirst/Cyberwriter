@@ -3160,6 +3160,81 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
             )
 
+        ad_domain_removal = payload.get("remove_ad_domain")
+        if isinstance(ad_domain_removal, str):
+            domain = ad_domain_removal.strip()
+            if not domain:
+                return JsonResponse({"error": "A domain name is required."}, status=400)
+
+            artifacts = (
+                project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            )
+            artifacts = dict(artifacts)
+            ad_artifacts = (
+                artifacts.get("ad") if isinstance(artifacts.get("ad"), dict) else {}
+            )
+            if not isinstance(ad_artifacts, dict):
+                ad_artifacts = {}
+
+            ad_artifacts.pop(domain.lower(), None)
+            if ad_artifacts:
+                artifacts["ad"] = ad_artifacts
+            else:
+                artifacts.pop("ad", None)
+
+            normalized_workbook = normalize_workbook_payload(project.workbook_data)
+            ad_state = (
+                normalized_workbook.get("ad")
+                if isinstance(normalized_workbook.get("ad"), dict)
+                else {}
+            )
+            if not isinstance(ad_state, dict):
+                ad_state = {}
+            domain_records = (
+                ad_state.get("domains") if isinstance(ad_state.get("domains"), list) else []
+            )
+            if not isinstance(domain_records, list):
+                domain_records = []
+
+            domain_lower = domain.lower()
+            domain_records = [
+                record
+                for record in domain_records
+                if not isinstance(record, dict)
+                or (record.get("domain") or record.get("name") or "").strip().lower()
+                != domain_lower
+            ]
+
+            password_state = (
+                normalized_workbook.get("password")
+                if isinstance(normalized_workbook.get("password"), dict)
+                else {}
+            )
+            password_policies = (
+                password_state.get("policies")
+                if isinstance(password_state.get("policies"), list)
+                else []
+            )
+            password_policies = [
+                policy
+                for policy in password_policies
+                if not isinstance(policy, dict)
+                or (policy.get("domain_name") or "").strip().lower() != domain_lower
+            ]
+            password_state["policies"] = password_policies
+
+            ad_state["domains"] = domain_records
+
+            workbook_payload = build_workbook_entry_payload(
+                project=project, areas={"ad": ad_state, "password": password_state}
+            )
+            project.workbook_data = workbook_payload
+            project.data_artifacts = artifacts
+            project.save(update_fields=["workbook_data", "data_artifacts"])
+            return JsonResponse(
+                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            )
+
         if payload.get("remove_osint"):
             artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
             artifacts = dict(artifacts)
@@ -3335,7 +3410,30 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         update_fields = ["workbook_data"]
         if artifacts_updated:
             update_fields.append("data_artifacts")
+
         project.save(update_fields=update_fields)
+
+        project_type_name = getattr(getattr(project, "project_type", None), "project_type", None)
+        questions, _ = build_data_configuration(
+            project.workbook_data,
+            project_type_name,
+            data_artifacts=project.data_artifacts,
+            project_risks=project.risks,
+        )
+        existing_grouped = (
+            ensure_data_responses_defaults(project.data_responses)
+            if isinstance(project.data_responses, dict)
+            else ensure_data_responses_defaults({})
+        )
+        refreshed_responses = _build_grouped_data_responses(
+            existing_grouped,
+            questions,
+            existing_grouped=existing_grouped,
+            workbook_data=project.workbook_data,
+        )
+        project.data_responses = ensure_data_responses_defaults(refreshed_responses)
+        project.save(update_fields=update_fields + ["data_responses"])
+
         return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts})
 
 
