@@ -2663,6 +2663,33 @@
           if (!Array.isArray(subkeys) || !subkeys.length) {
             return;
           }
+
+          const preprocessingMap = {
+            iam: {
+              iam_ad: ensureAdState,
+              iam_password: ensurePasswordState,
+              ad: ensureAdState,
+              password: ensurePasswordState,
+            },
+            firewall: {
+              firewall_os: ensureFirewallState,
+              firewall_configuration: ensureFirewallState,
+            },
+          };
+
+          const preprocessors = preprocessingMap[areaKey];
+          if (preprocessors) {
+            subkeys.forEach(function(subkey) {
+              const resolvedConfig = resolveAreaConfig(areaKey, subkey) || {};
+              const preprocessor = preprocessors[subkey]
+                || preprocessors[resolvedConfig.workbookKey]
+                || preprocessors[resolvedConfig.renderer];
+              if (typeof preprocessor === 'function') {
+                preprocessor();
+              }
+            });
+          }
+
           const payload = {areas: {}};
           subkeys.forEach(function(subkey) {
             const config = resolveAreaConfig(areaKey, subkey);

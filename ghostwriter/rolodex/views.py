@@ -3205,10 +3205,28 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 != domain_lower
             ]
 
+            password_state = (
+                normalized_workbook.get("password")
+                if isinstance(normalized_workbook.get("password"), dict)
+                else {}
+            )
+            password_policies = (
+                password_state.get("policies")
+                if isinstance(password_state.get("policies"), list)
+                else []
+            )
+            password_policies = [
+                policy
+                for policy in password_policies
+                if not isinstance(policy, dict)
+                or (policy.get("domain_name") or "").strip().lower() != domain_lower
+            ]
+            password_state["policies"] = password_policies
+
             ad_state["domains"] = domain_records
 
             workbook_payload = build_workbook_entry_payload(
-                project=project, areas={"ad": ad_state}
+                project=project, areas={"ad": ad_state, "password": password_state}
             )
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts

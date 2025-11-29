@@ -401,7 +401,7 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                     normalized_policy["fgpp"] = fgpp_entries
                     normalized_policies.append(normalized_policy)
 
-        if normalized_policies:
+        if isinstance(raw_policies, list):
             normalized["policies"] = normalized_policies
         return normalized
     allowed_fields = AREA_FIELDS.get(area, set())
