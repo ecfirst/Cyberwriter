@@ -3411,7 +3411,11 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         if artifacts_updated:
             update_fields.append("data_artifacts")
 
-        project.save(update_fields=update_fields)
+        project.rebuild_data_artifacts()
+
+        project.refresh_from_db(
+            fields=["workbook_data", "data_artifacts", "data_responses", "cap", "risks"]
+        )
 
         project_type_name = getattr(getattr(project, "project_type", None), "project_type", None)
         questions, _ = build_data_configuration(
@@ -3420,10 +3424,8 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             data_artifacts=project.data_artifacts,
             project_risks=project.risks,
         )
-        existing_grouped = (
-            ensure_data_responses_defaults(project.data_responses)
-            if isinstance(project.data_responses, dict)
-            else ensure_data_responses_defaults({})
+        existing_grouped = ensure_data_responses_defaults(
+            project.data_responses if isinstance(project.data_responses, dict) else {}
         )
         refreshed_responses = _build_grouped_data_responses(
             existing_grouped,
@@ -3432,7 +3434,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             workbook_data=project.workbook_data,
         )
         project.data_responses = ensure_data_responses_defaults(refreshed_responses)
-        project.save(update_fields=update_fields + ["data_responses"])
+        project.save(update_fields=["data_responses"])
 
         return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts})
 

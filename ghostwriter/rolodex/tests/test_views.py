@@ -1275,6 +1275,87 @@ class ProjectWorkbookUploadViewTests(TestCase):
         password_responses = self.project.data_responses.get("password", {})
         self.assertEqual(password_responses.get("entries"), [])
 
+
+class ProjectWorkbookDataUpdateViewTests(TestCase):
+    """Tests for updating workbook data via the area cards."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = MgrFactory(password=PASSWORD)
+
+    def setUp(self):
+        self.client_auth = Client()
+        self.assertTrue(self.client_auth.login(username=self.user.username, password=PASSWORD))
+        self.project = ProjectFactory()
+        self.update_url = reverse(
+            "rolodex:project_workbook_data_update", kwargs={"pk": self.project.pk}
+        )
+
+    def test_password_responses_and_cap_rebuilt_on_area_save(self):
+        self.project.workbook_data = {
+            "password": {
+                "policies": [
+                    {"domain_name": "corp.example.com", "password_min_length": 10},
+                    {"domain_name": "old.example.com", "password_min_length": 8},
+                ]
+            }
+        }
+        self.project.data_responses = {
+            "password": {
+                "entries": [
+                    {"domain": "corp.example.com"},
+                    {"domain": "old.example.com"},
+                ]
+            }
+        }
+        self.project.cap = {
+            "password": {
+                "entries": [
+                    {"domain": "corp.example.com", "policy_cap_values": {"min_length": 10}},
+                    {"domain": "old.example.com", "policy_cap_values": {"min_length": 8}},
+                ]
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {
+                    "areas": {
+                        "password": {
+                            "policies": [
+                                {
+                                    "domain_name": "corp.example.com",
+                                    "password_min_length": 14,
+                                }
+                            ]
+                        }
+                    }
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        password_response = self.project.data_responses.get("password")
+        self.assertIsInstance(password_response, dict)
+        password_entries = password_response.get("entries")
+        self.assertIsInstance(password_entries, list)
+        self.assertListEqual(
+            [entry.get("domain") for entry in password_entries], ["corp.example.com"]
+        )
+
+        password_cap = self.project.cap.get("password")
+        self.assertIsInstance(password_cap, dict)
+        cap_entries = password_cap.get("entries")
+        self.assertIsInstance(cap_entries, list)
+        self.assertListEqual(
+            [entry.get("domain") for entry in cap_entries], ["corp.example.com"]
+        )
+
     def test_upload_populates_project_risks(self):
         workbook_payload = {
             "external_internal_grades": {
