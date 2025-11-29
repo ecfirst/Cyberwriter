@@ -1238,26 +1238,17 @@ class Project(models.Model):
             _,
         ) = build_workbook_password_response(workbook_payload)
         if workbook_password_response:
-            existing_password_section = existing_responses.get("password")
-            if isinstance(existing_password_section, dict):
-                combined_password_section = dict(existing_password_section)
-            elif isinstance(existing_password_section, list):
-                combined_password_section = {"entries": list(existing_password_section)}
-            else:
-                combined_password_section = {}
+            existing_responses.pop("password", None)
+            existing_cap.pop("password", None)
 
-            existing_additional_controls = (
-                existing_password_section.get("password_additional_controls")
-                if isinstance(existing_password_section, dict)
-                else None
-            )
-            existing_enforce_mfa = (
-                existing_password_section.get("password_enforce_mfa_all_accounts")
-                if isinstance(existing_password_section, dict)
-                else None
+            combined_password_section: Dict[str, Any] = dict(
+                workbook_password_response
+                if isinstance(workbook_password_response, dict)
+                else {}
             )
 
-            combined_password_section.update(workbook_password_response)
+            existing_additional_controls = None
+            existing_enforce_mfa = None
 
             workbook_password_entries: List[Dict[str, Any]] = []
             if isinstance(workbook_password_domain_values, dict):
