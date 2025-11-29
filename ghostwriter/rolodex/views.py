@@ -3230,9 +3230,15 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             )
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.save(update_fields=["workbook_data", "data_artifacts"])
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
             return JsonResponse(
-                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                {
+                    "workbook_data": project.workbook_data,
+                    "data_artifacts": project.data_artifacts,
+                }
             )
 
         if payload.get("remove_osint"):
