@@ -1414,6 +1414,71 @@
           return result;
         };
 
+        const parseFgppText = function(text) {
+          const entries = [];
+          if (!text) {
+            return entries;
+          }
+
+          const normalizeBoolString = function(value) {
+            const normalized = (value || '').toString().trim().toUpperCase();
+            if (normalized === 'TRUE') {
+              return 'TRUE';
+            }
+            if (normalized === 'FALSE') {
+              return 'FALSE';
+            }
+            return null;
+          };
+
+          const normalizeNumber = function(value) {
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          const blocks = text.split(/\r?\n\s*\r?\n/).map(function(block) { return block.trim(); }).filter(Boolean);
+          blocks.forEach(function(block) {
+            const values = {};
+            block.split(/\r?\n/).forEach(function(line) {
+              if (!line || line.indexOf(':') === -1) {
+                return;
+              }
+              const parts = line.split(':');
+              const key = (parts.shift() || '').trim();
+              const value = parts.join(':').trim();
+              values[key] = value;
+            });
+
+            const appliesTo = (values.AppliesTo || '').replace(/[{}]/g, '').trim();
+            if (!appliesTo) {
+              return;
+            }
+
+            const fgppEntry = {};
+            const assignIfPresent = function(key, value) {
+              if (value !== null && typeof value !== 'undefined' && value !== '') {
+                fgppEntry[key] = value;
+              }
+            };
+
+            assignIfPresent('fgpp_name', (values.Name || '').trim());
+            assignIfPresent('max_age', parseTimespanToDays(values.MaxPasswordAge));
+            assignIfPresent('min_age', parseTimespanToDays(values.MinPasswordAge));
+            assignIfPresent('min_length', normalizeNumber(values.MinPasswordLength));
+            assignIfPresent('history', normalizeNumber(values.PasswordHistoryCount));
+            assignIfPresent('lockout_threshold', normalizeNumber(values.LockoutThreshold));
+            assignIfPresent('lockout_reset', parseTimespanToMinutes(values.LockoutObservationWindow));
+            assignIfPresent('lockout_duration', parseTimespanToMinutes(values.LockoutDuration));
+            assignIfPresent('complexity_enabled', normalizeBoolString(values.ComplexityEnabled));
+
+            if (Object.keys(fgppEntry).length) {
+              entries.push(fgppEntry);
+            }
+          });
+
+          return entries;
+        };
+
         const applyPasswordPolicyImport = function(policy, importedValues) {
           if (!policy || !importedValues) {
             return;
@@ -3294,6 +3359,50 @@
               fgppTitle.className = 'mb-2 mb-md-0';
               fgppTitle.textContent = 'Fine-Grained Password Policies';
               fgppHeader.appendChild(fgppTitle);
+
+              const fgppActions = document.createElement('div');
+              fgppActions.className = 'd-flex align-items-center flex-wrap';
+
+              const fgppUploadInput = document.createElement('input');
+              fgppUploadInput.type = 'file';
+              fgppUploadInput.accept = '.txt,.log,text/plain';
+              fgppUploadInput.className = 'd-none';
+              fgppUploadInput.addEventListener('change', function(event) {
+                const file = event.target.files && event.target.files[0];
+                if (!file) {
+                  return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = function(loadEvent) {
+                  try {
+                    const parsedEntries = parseFgppText(loadEvent.target && loadEvent.target.result);
+                    if (!Array.isArray(policy.fgpp)) {
+                      policy.fgpp = [];
+                    }
+                    parsedEntries.forEach(function(entry) { policy.fgpp.push(entry); });
+                    renderFgpp();
+                    updateWorkbookCardProgress(areaKey);
+                  } catch (error) {
+                    console.error(error);
+                    alert('Unable to parse the FGPP file.');
+                  }
+                };
+                reader.onerror = function() {
+                  alert('Unable to read the FGPP file.');
+                };
+                reader.readAsText(file);
+                event.target.value = '';
+              });
+
+              const fgppUploadButton = document.createElement('button');
+              fgppUploadButton.type = 'button';
+              fgppUploadButton.className = 'btn btn-outline-primary btn-sm mr-2';
+              fgppUploadButton.textContent = 'Upload FGPP';
+              fgppUploadButton.addEventListener('click', function() { fgppUploadInput.click(); });
+              fgppActions.appendChild(fgppUploadButton);
+              fgppActions.appendChild(fgppUploadInput);
+
               const addFgppButton = document.createElement('button');
               addFgppButton.type = 'button';
               addFgppButton.className = 'btn btn-outline-primary btn-sm';
@@ -3303,7 +3412,9 @@
                 renderPolicies();
                 updateWorkbookCardProgress(areaKey);
               });
-              fgppHeader.appendChild(addFgppButton);
+              fgppActions.appendChild(addFgppButton);
+
+              fgppHeader.appendChild(fgppActions);
               wrapper.appendChild(fgppHeader);
 
               const fgppContainer = document.createElement('div');
