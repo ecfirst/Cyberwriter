@@ -2090,6 +2090,85 @@ class NexposeDataParserTests(TestCase):
             [entry.get("domain") for entry in cap_entries], ["corp.example.com"]
         )
 
+        password_response = project.data_responses.get("password")
+        self.assertIsInstance(password_response, dict)
+        password_entries = password_response.get("entries")
+        self.assertIsInstance(password_entries, list)
+        self.assertListEqual(
+            [entry.get("domain") for entry in password_entries], ["corp.example.com"]
+        )
+
+    def test_password_cap_entries_built_from_workbook_values(self):
+        general_cap_map = {
+            issue: {"recommendation": recommendation, "score": score}
+            for issue, (recommendation, score) in DEFAULT_GENERAL_CAP_MAP.items()
+        }
+
+        workbook_domain_values = {
+            "corp.example.com": {"policy_cap_values": {"min_length": 14}}
+        }
+
+        _, project, _ = GenerateMockProject()
+        project.cap = {}
+        project.workbook_data = {
+            "password": {
+                "policies": [
+                    {"domain_name": "corp.example.com", "password_min_length": 14}
+                ]
+            }
+        }
+        project.data_responses = {}
+        project.save(update_fields=["cap", "workbook_data", "data_responses"])
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch("ghostwriter.rolodex.models.build_workbook_ad_response", return_value={}):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_dns_response", return_value={}
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                        return_value={},
+                    ):
+                        with mock.patch(
+                            "ghostwriter.rolodex.models.build_workbook_password_response",
+                            return_value=(
+                                {"bad_pass_count": 1},
+                                workbook_domain_values,
+                                ["corp.example.com"],
+                            ),
+                        ):
+                            with mock.patch(
+                                "ghostwriter.rolodex.models.load_general_cap_map",
+                                return_value=general_cap_map,
+                            ):
+                                project.rebuild_data_artifacts()
+
+        project.refresh_from_db()
+
+        password_response = project.data_responses.get("password")
+        self.assertIsInstance(password_response, dict)
+        response_entries = password_response.get("entries")
+        self.assertIsInstance(response_entries, list)
+        self.assertListEqual(
+            [entry.get("domain") for entry in response_entries], ["corp.example.com"]
+        )
+        self.assertEqual(
+            response_entries[0].get("policy_cap_values"),
+            workbook_domain_values["corp.example.com"].get("policy_cap_values"),
+        )
+
+        password_cap = project.cap.get("password")
+        self.assertIsInstance(password_cap, dict)
+        cap_entries = password_cap.get("entries")
+        self.assertIsInstance(cap_entries, list)
+        self.assertListEqual(
+            [entry.get("domain") for entry in cap_entries], ["corp.example.com"]
+        )
+        self.assertEqual(
+            cap_entries[0].get("policy_cap_values"),
+            workbook_domain_values["corp.example.com"].get("policy_cap_values"),
+        )
+
     def test_rebuild_populates_ad_cap_map(self):
         workbook_payload = {
             "ad": {

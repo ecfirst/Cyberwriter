@@ -1258,6 +1258,37 @@ class Project(models.Model):
             )
 
             combined_password_section.update(workbook_password_response)
+
+            workbook_password_entries: List[Dict[str, Any]] = []
+            if isinstance(workbook_password_domain_values, dict):
+                for domain, values in workbook_password_domain_values.items():
+                    if not isinstance(values, dict):
+                        continue
+                    domain_text = str(domain).strip()
+                    if not domain_text:
+                        continue
+
+                    entry_payload: Dict[str, Any] = {"domain": domain_text}
+
+                    for key in (
+                        "policy_cap_values",
+                        "policy_cap_fields",
+                        "fgpp_cap_fields",
+                        "fgpp_cap_values",
+                    ):
+                        value = values.get(key)
+                        if isinstance(value, dict) and value:
+                            entry_payload[key] = dict(value)
+                        elif isinstance(value, list) and value:
+                            entry_payload[key] = list(value)
+
+                    workbook_password_entries.append(entry_payload)
+
+            if workbook_password_entries:
+                combined_password_section["entries"] = workbook_password_entries
+            else:
+                combined_password_section.pop("entries", None)
+
             existing_responses["password"] = combined_password_section
 
             password_cap_section = existing_cap.get("password")
