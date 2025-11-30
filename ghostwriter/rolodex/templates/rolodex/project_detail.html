@@ -3841,6 +3841,14 @@
           const domains = adState.domains;
           target.innerHTML = '';
 
+          const refreshPasswordPlaceholderCard = function() {
+            const passwordCardBody = document.getElementById(modalId + '-iam_password-body');
+            if (passwordCardBody) {
+              ensurePasswordState();
+              renderPasswordPolicies(passwordCardBody, areaKey, modalId);
+            }
+          };
+
           const addButton = document.createElement('button');
           addButton.type = 'button';
           addButton.className = 'btn btn-outline-primary mb-3';
@@ -3864,6 +3872,7 @@
             });
             renderAdDomains(target, areaKey, modalId);
             updateWorkbookCardProgress(areaKey);
+            refreshPasswordPlaceholderCard();
           });
           target.appendChild(addButton);
 
@@ -4153,6 +4162,8 @@
               removeButton.addEventListener('click', function() {
                 const domainName = (domainInput.value || domain.domain || '').trim();
                 domains.splice(index, 1);
+                renderAdDomains(target, areaKey, modalId);
+                refreshPasswordPlaceholderCard();
                 const payload = {areas: {ad: serializeAdPayload()}};
                 if (domainName) {
                   payload.remove_ad_domain = domainName;
@@ -4534,6 +4545,7 @@
               subHeader.textContent = subkeyLabel;
               const subBody = document.createElement('div');
               subBody.className = 'card-body';
+              subBody.id = modalId + '-' + subkey + '-body';
               const config = resolvedConfig;
               const uploaderContext = {areaKey: areaKey, subkey: subkey, workbookKey: workbookKey, modalId: modalId};
               if (config && config.renderer === 'web') {
