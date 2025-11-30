@@ -337,6 +337,49 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                     normalized_fgpp.append(fgpp_entry)
             return normalized_fgpp
 
+        def _policy_has_values(policy_entry: Mapping[str, Any], fgpp_entries: list[dict[str, Any]]) -> bool:
+            if fgpp_entries:
+                return True
+
+            if not isinstance(policy_entry, Mapping):
+                return False
+
+            for field in (
+                "max_age",
+                "min_age",
+                "min_length",
+                "history",
+                "lockout_threshold",
+                "lockout_reset",
+                "lockout_duration",
+                "complexity_enabled",
+                "mfa_required",
+                "passwords_cracked",
+                "admin_cracked",
+                "lanman_stored",
+                "enabled_accounts",
+                "password_pattern",
+            ):
+                if field not in policy_entry:
+                    continue
+
+                if field == "admin_cracked":
+                    admin_entry = policy_entry.get("admin_cracked")
+                    if isinstance(admin_entry, Mapping) and admin_entry:
+                        return True
+                    continue
+
+                if field == "password_pattern":
+                    pattern_entry = policy_entry.get("password_pattern")
+                    if isinstance(pattern_entry, Mapping) and pattern_entry:
+                        return True
+                    continue
+
+                if policy_entry.get(field) not in (None, "", []):
+                    return True
+
+            return False
+
         normalized_policies: list[dict[str, Any]] = []
         if isinstance(raw_policies, list):
             for policy in raw_policies:
@@ -397,7 +440,7 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                         normalized_policy["password_pattern"] = pattern_entry
 
                 fgpp_entries = _normalize_fgpp_entries(policy.get("fgpp"))
-                if normalized_policy or fgpp_entries:
+                if _policy_has_values(normalized_policy, fgpp_entries):
                     normalized_policy["fgpp"] = fgpp_entries
                     normalized_policies.append(normalized_policy)
 

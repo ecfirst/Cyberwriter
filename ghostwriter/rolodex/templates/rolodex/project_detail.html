@@ -1597,11 +1597,58 @@
                   : [],
               },
               fgpp: normalizedFgpp,
+              __ad_placeholder: Boolean(policy && policy.__ad_placeholder),
+              __ad_domain_name: policy && policy.__ad_domain_name,
+              __ad_strong_default: policy && policy.__ad_strong_default,
             });
           });
 
           const adState = ensureAdState();
           const adDomains = Array.isArray(adState.domains) ? adState.domains : [];
+          const adDomainMap = {};
+          adDomains.forEach(function(domain) {
+            const name = (domain.domain || domain.name || '').toString().trim();
+            if (name) {
+              adDomainMap[name.toLowerCase()] = domain;
+            }
+          });
+
+          const computeAdStrongPasswords = function(domainName, policy) {
+            const adEntry = adDomainMap[(domainName || '').toString().trim().toLowerCase()];
+            if (!adEntry) {
+              return null;
+            }
+
+            const totalAccounts = normalizeNumber(adEntry.total_accounts);
+            if (totalAccounts === null) {
+              return null;
+            }
+
+            const crackedValue = normalizeNumber(
+              policy && Object.prototype.hasOwnProperty.call(policy, 'passwords_cracked')
+                ? policy.passwords_cracked
+                : null,
+            );
+            const crackedCount = crackedValue === null ? 0 : crackedValue;
+            return Math.max(totalAccounts - crackedCount, 0);
+          };
+
+          passwordState.policies = passwordState.policies.map(function(policy) {
+            if (policy && policy.__ad_placeholder) {
+              const adDomainName = policy.__ad_domain_name || policy.domain_name;
+              const strongDefault = computeAdStrongPasswords(adDomainName, policy);
+              const previousDefault = policy.__ad_strong_default;
+              policy.__ad_strong_default = strongDefault;
+              if (
+                typeof strongDefault !== 'undefined'
+                && (policy.strong_passwords === previousDefault || typeof policy.strong_passwords === 'undefined' || policy.strong_passwords === null)
+              ) {
+                policy.strong_passwords = strongDefault;
+              }
+            }
+            return policy;
+          });
+
           const adDomainNames = adDomains
             .map(function(domain) { return (domain.domain || domain.name || '').toString().trim(); })
             .filter(function(name) { return name; });
@@ -1611,7 +1658,15 @@
           adDomainNames.forEach(function(name) {
             const lower = name.toLowerCase();
             if (!existingDomains.has(lower)) {
-              passwordState.policies.push(createEmptyPasswordPolicy(name));
+              const strongDefault = computeAdStrongPasswords(name, null);
+              passwordState.policies.push(
+                Object.assign(createEmptyPasswordPolicy(name), {
+                  strong_passwords: strongDefault,
+                  __ad_placeholder: true,
+                  __ad_domain_name: name,
+                  __ad_strong_default: strongDefault,
+                }),
+              );
             }
           });
 
@@ -1742,7 +1797,92 @@
             });
           };
 
-          const policies = (passwordState.policies || []).map(function(policy) {
+          const hasValue = function(value) {
+            if (value === null || typeof value === 'undefined') {
+              return false;
+            }
+            if (typeof value === 'number' && !Number.isNaN(value)) {
+              return true;
+            }
+            if (typeof value === 'boolean') {
+              return true;
+            }
+            if (typeof value === 'string') {
+              return value.trim() !== '';
+            }
+            if (Array.isArray(value)) {
+              return value.some(hasValue);
+            }
+            if (typeof value === 'object') {
+              return Object.values(value).some(hasValue);
+            }
+            return false;
+          };
+
+          const policyHasContent = function(policy) {
+            if (!policy || typeof policy !== 'object') {
+              return false;
+            }
+
+            const importantValues = [
+              policy.max_age,
+              policy.min_age,
+              policy.min_length,
+              policy.history,
+              policy.lockout_threshold,
+              policy.lockout_reset,
+              policy.lockout_duration,
+              policy.complexity_enabled,
+              policy.mfa_required,
+              policy.passwords_cracked,
+              policy.enabled_accounts,
+              policy.lanman_stored,
+              policy.password_pattern && policy.password_pattern.confirm,
+              policy.admin_cracked && policy.admin_cracked.confirm,
+              policy.admin_cracked && policy.admin_cracked.count,
+            ];
+
+            if (importantValues.some(hasValue)) {
+              return true;
+            }
+
+            const patternPasswords = policy.password_pattern && policy.password_pattern.passwords;
+            if (Array.isArray(patternPasswords)) {
+              const hasPatternValues = patternPasswords.some(function(entry) {
+                return hasValue(entry && entry.password) || hasValue(entry && entry.count);
+              });
+              if (hasPatternValues) {
+                return true;
+              }
+            }
+
+            if (Array.isArray(policy.fgpp) && policy.fgpp.some(hasValue)) {
+              return true;
+            }
+
+            if (hasValue(policy.strong_passwords)) {
+              if (!policy.__ad_placeholder) {
+                return true;
+              }
+              if (policy.__ad_strong_default !== policy.strong_passwords) {
+                return true;
+              }
+            }
+
+            if (policy.__ad_placeholder) {
+              const currentDomain = (policy.domain_name || '').toString().trim();
+              const defaultDomain = (policy.__ad_domain_name || '').toString().trim();
+              if (currentDomain && defaultDomain && currentDomain.toLowerCase() !== defaultDomain.toLowerCase()) {
+                return true;
+              }
+              return false;
+            }
+
+            return hasValue(policy.domain_name);
+          };
+
+          const policies = [];
+          (passwordState.policies || []).forEach(function(policy) {
             const pattern = policy && policy.password_pattern ? policy.password_pattern : {};
             const patternConfirm = normalizeYesNo(pattern.confirm);
             const adminConfirm = normalizeYesNo(policy.admin_cracked && policy.admin_cracked.confirm);
@@ -1759,7 +1899,7 @@
               }).filter(function(entry) { return entry.password || entry.count !== null; })
               : [];
 
-            return {
+            const serializedPolicy = {
               domain_name: (policy.domain_name || '').toString(),
               max_age: normalizeNumber(policy.max_age),
               min_age: normalizeNumber(policy.min_age),
@@ -1784,6 +1924,10 @@
               },
               fgpp: fgppEntries(policy.fgpp),
             };
+
+            if (!policy.__ad_placeholder || policyHasContent(policy)) {
+              policies.push(serializedPolicy);
+            }
           });
 
           return {policies: policies};
@@ -3538,10 +3682,14 @@
               const updateStrongPasswords = function() {
                 const domainKey = (policy.domain_name || '').toString().trim().toLowerCase();
                 const adEntry = domainKey ? adDomainMap[domainKey] : null;
-                const cracked = typeof policy.passwords_cracked === 'number' ? policy.passwords_cracked : parseNumber(policy.passwords_cracked);
+                const crackedRaw =
+                  typeof policy.passwords_cracked === 'number'
+                    ? policy.passwords_cracked
+                    : parseNumber(policy.passwords_cracked);
+                const cracked = crackedRaw === null ? 0 : crackedRaw;
                 if (adEntry && typeof adEntry.total_accounts !== 'undefined') {
                   const totalAccounts = parseNumber(adEntry.total_accounts);
-                  if (totalAccounts !== null && cracked !== null) {
+                  if (totalAccounts !== null) {
                     const strongCount = Math.max(totalAccounts - cracked, 0);
                     policy.strong_passwords = strongCount;
                     strongPasswordsGroup.input.value = strongCount;

@@ -1501,6 +1501,99 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
             [entry.get("domain") for entry in cap_entries], ["corp.example.com"]
         )
 
+    def test_password_policy_not_created_until_metrics_saved(self):
+        self.project.workbook_data = {
+            "ad": {"domains": [{"domain": "corp.example.com", "total_accounts": 10}]}
+        }
+        self.project.save(update_fields=["workbook_data"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {
+                    "areas": {
+                        "password": {
+                            "policies": [
+                                {
+                                    "domain_name": "corp.example.com",
+                                    "strong_passwords": 10,
+                                }
+                            ]
+                        }
+                    }
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        workbook_password = (
+            self.project.workbook_data.get("password")
+            if isinstance(self.project.workbook_data, dict)
+            else {}
+        )
+        policies = (
+            workbook_password.get("policies") if isinstance(workbook_password, dict) else None
+        )
+        self.assertIsInstance(policies, list)
+        self.assertListEqual(policies, [])
+
+        self.assertNotIn("password", self.project.cap or {})
+        self.assertNotIn("password", self.project.data_responses or {})
+
+    def test_password_policy_saved_after_metrics_added(self):
+        self.project.workbook_data = {
+            "ad": {"domains": [{"domain": "corp.example.com", "total_accounts": 25}]}
+        }
+        self.project.save(update_fields=["workbook_data"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {
+                    "areas": {
+                        "password": {
+                            "policies": [
+                                {
+                                    "domain_name": "corp.example.com",
+                                    "passwords_cracked": 5,
+                                }
+                            ]
+                        }
+                    }
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        workbook_password = (
+            self.project.workbook_data.get("password")
+            if isinstance(self.project.workbook_data, dict)
+            else {}
+        )
+        policies = (
+            workbook_password.get("policies") if isinstance(workbook_password, dict) else None
+        )
+        self.assertIsInstance(policies, list)
+        self.assertListEqual(
+            [policy.get("domain_name") for policy in policies if isinstance(policy, dict)],
+            ["corp.example.com"],
+        )
+
+        password_response = (self.project.data_responses or {}).get("password")
+        self.assertIsInstance(password_response, dict)
+        entries = password_response.get("entries")
+        self.assertIsInstance(entries, list)
+        self.assertListEqual(
+            [entry.get("domain") for entry in entries if isinstance(entry, dict)],
+            ["corp.example.com"],
+        )
+
     def test_password_entries_removed_when_all_domains_deleted(self):
         self.project.workbook_data = {
             "ad": {"domains": [{"domain": "corp.example.com"}]},
