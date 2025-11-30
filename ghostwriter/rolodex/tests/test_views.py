@@ -1726,6 +1726,73 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(general.get("scope_string"), "External network and systems")
         self.assertNotIn("assessment_scope_cloud_on_prem", general)
 
+    def test_password_domain_responses_preserved_after_rebuild(self):
+        workbook_password_response = {"hashes_obtained": "yes"}
+        workbook_domain_values = {
+            "corp.example.com": {"policy_cap_values": {"Password Maturity": "medium"}}
+        }
+
+        questions = [
+            {
+                "key": "password_corp-example-com_risk",
+                "section_key": "password",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "choices": [("high", "High"), ("medium", "Medium"), ("low", "Low")],
+                    "required": False,
+                },
+                "subheading": "corp.example.com",
+                "entry_slug": "password_corp-example-com",
+                "entry_field_key": "risk",
+            }
+        ]
+
+        payload = {"password_corp-example-com_risk": "high"}
+
+        general_cap_map = {
+            issue: {"recommendation": recommendation, "score": score}
+            for issue, (recommendation, score) in DEFAULT_GENERAL_CAP_MAP.items()
+        }
+
+        with mock.patch(
+            "ghostwriter.rolodex.views.build_data_configuration",
+            return_value=(questions, {}),
+        ):
+            with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_ad_response", return_value={}
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_dns_response", return_value={}
+                    ):
+                        with mock.patch(
+                            "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                            return_value={},
+                        ):
+                            with mock.patch(
+                                "ghostwriter.rolodex.models.build_workbook_password_response",
+                                return_value=(
+                                    workbook_password_response,
+                                    workbook_domain_values,
+                                    ["corp.example.com"],
+                                ),
+                            ):
+                                with mock.patch(
+                                    "ghostwriter.rolodex.models.load_general_cap_map",
+                                    return_value=general_cap_map,
+                                ):
+                                    response = self.client_mgr.post(self.url, payload)
+
+        self.assertEqual(response.status_code, 302)
+
+        self.project.refresh_from_db()
+        password_responses = self.project.data_responses.get("password", {})
+        entries = password_responses.get("entries") if isinstance(password_responses, dict) else None
+        self.assertIsInstance(entries, list)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].get("domain"), "corp.example.com")
+        self.assertEqual(entries[0].get("risk"), "high")
+
     def test_password_cap_updates_when_questionnaire_changes(self):
         workbook_password_response = {}
         workbook_domain_values = {

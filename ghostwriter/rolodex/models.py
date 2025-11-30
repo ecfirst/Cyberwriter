@@ -1259,6 +1259,18 @@ class Project(models.Model):
                 "password_enforce_mfa_all_accounts"
             )
 
+            existing_entries = existing_password_section.get("entries")
+            existing_entry_map: Dict[str, Dict[str, Any]] = {}
+            if isinstance(existing_entries, list):
+                for entry in existing_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    domain_value = entry.get("domain") or entry.get("name")
+                    domain_text = str(domain_value).strip() if domain_value else ""
+                    if not domain_text:
+                        continue
+                    existing_entry_map[domain_text] = dict(entry)
+
             workbook_password_entries: List[Dict[str, Any]] = []
             if isinstance(workbook_password_domain_values, dict):
                 for domain, values in workbook_password_domain_values.items():
@@ -1268,7 +1280,10 @@ class Project(models.Model):
                     if not domain_text:
                         continue
 
-                    entry_payload: Dict[str, Any] = {"domain": domain_text}
+                    entry_payload: Dict[str, Any] = dict(
+                        existing_entry_map.get(domain_text, {})
+                    )
+                    entry_payload["domain"] = domain_text
 
                     for key in (
                         "policy_cap_values",
@@ -1281,6 +1296,8 @@ class Project(models.Model):
                             entry_payload[key] = dict(value)
                         elif isinstance(value, list) and value:
                             entry_payload[key] = list(value)
+                        else:
+                            entry_payload.pop(key, None)
 
                     workbook_password_entries.append(entry_payload)
 
