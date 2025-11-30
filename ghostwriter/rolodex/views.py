@@ -3221,6 +3221,17 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 if not isinstance(policy, dict)
                 or (policy.get("domain_name") or "").strip().lower() != domain_lower
             ]
+            removed_domains = password_state.get("removed_ad_domains")
+            if isinstance(removed_domains, list):
+                removed_domains = [
+                    entry
+                    for entry in removed_domains
+                    if (entry or "").strip().lower() != domain_lower
+                ]
+                if removed_domains:
+                    password_state["removed_ad_domains"] = removed_domains
+                else:
+                    password_state.pop("removed_ad_domains", None)
             password_state["policies"] = password_policies
 
             ad_state["domains"] = domain_records

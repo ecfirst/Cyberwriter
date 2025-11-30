@@ -1605,6 +1605,12 @@
 
           const adState = ensureAdState();
           const adDomains = Array.isArray(adState.domains) ? adState.domains : [];
+          const removedAdDomains = Array.isArray(passwordState.removed_ad_domains) ? passwordState.removed_ad_domains : [];
+          const removedDomainSet = new Set(
+            removedAdDomains
+              .map(function(name) { return (name || '').toString().trim().toLowerCase(); })
+              .filter(function(name) { return name; }),
+          );
           const adDomainMap = {};
           adDomains.forEach(function(domain) {
             const name = (domain.domain || domain.name || '').toString().trim();
@@ -1668,9 +1674,15 @@
           const existingDomains = new Set(passwordState.policies.map(function(policy) {
             return (policy.domain_name || '').toString().trim().toLowerCase();
           }));
+          passwordState.policies.forEach(function(policy) {
+            const domainName = (policy && policy.domain_name) ? policy.domain_name.toString().trim().toLowerCase() : '';
+            if (domainName && passwordPolicyHasContent(policy)) {
+              removedDomainSet.delete(domainName);
+            }
+          });
           adDomainNames.forEach(function(name) {
             const lower = name.toLowerCase();
-            if (!existingDomains.has(lower)) {
+            if (!existingDomains.has(lower) && !removedDomainSet.has(lower)) {
               const strongDefault = computeAdStrongPasswords(name, null);
               passwordState.policies.push(
                 Object.assign(createEmptyPasswordPolicy(name), {
@@ -1682,6 +1694,8 @@
               );
             }
           });
+
+          passwordState.removed_ad_domains = Array.from(removedDomainSet);
 
           workbookState.password = passwordState;
           return passwordState;
@@ -1836,11 +1850,16 @@
             return false;
           }
 
-          return hasValue(policy.domain_name);
+          return !policy.__ad_placeholder && hasValue(policy.domain_name);
         };
 
         function serializePasswordPayload() {
           const passwordState = ensurePasswordState();
+          const removedAdDomains = Array.isArray(passwordState.removed_ad_domains)
+            ? passwordState.removed_ad_domains
+                .map(function(name) { return (name || '').toString().trim(); })
+                .filter(function(name) { return name; })
+            : [];
 
           const normalizeNumber = function(value) {
             if (typeof value === 'number' && !Number.isNaN(value)) {
@@ -1943,11 +1962,18 @@
             }
           });
 
-          if (!policies.length) {
+          if (!policies.length && !removedAdDomains.length) {
             return {};
           }
 
-          return {policies: policies};
+          const payload = {};
+          if (policies.length) {
+            payload.policies = policies;
+          }
+          if (removedAdDomains.length) {
+            payload.removed_ad_domains = removedAdDomains;
+          }
+          return payload;
         }
 
         function renderFirewallSection(container, areaKey, modalId, mode) {
@@ -3417,7 +3443,19 @@
               removeDomainButton.className = 'btn btn-outline-danger btn-sm';
               removeDomainButton.textContent = 'Remove Domain';
               removeDomainButton.addEventListener('click', function() {
+                const removedDomain = (policy && (policy.domain_name || policy.__ad_domain_name))
+                  ? (policy.domain_name || policy.__ad_domain_name).toString().trim()
+                  : '';
                 passwordState.policies.splice(index, 1);
+                if (removedDomain) {
+                  const removedSet = new Set(
+                    (passwordState.removed_ad_domains || [])
+                      .map(function(name) { return (name || '').toString().trim(); })
+                      .filter(function(name) { return name; }),
+                  );
+                  removedSet.add(removedDomain);
+                  passwordState.removed_ad_domains = Array.from(removedSet);
+                }
                 const payload = {areas: {password: serializePasswordPayload()}};
                 submitWorkbookUpdate(payload, null, {
                   reopenModalId: modalId,

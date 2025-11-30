@@ -272,6 +272,14 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
         return normalized
     if area == "password" and isinstance(payload, Mapping):
         raw_policies = payload.get("policies")
+        removed_domains_raw = payload.get("removed_ad_domains")
+
+        removed_domains: list[str] = []
+        if isinstance(removed_domains_raw, list):
+            for entry in removed_domains_raw:
+                name = (entry or "").strip()
+                if name:
+                    removed_domains.append(name)
 
         def _normalize_bool_string(value: Any) -> Optional[str]:
             if isinstance(value, bool):
@@ -443,6 +451,9 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                 if _policy_has_values(normalized_policy, fgpp_entries):
                     normalized_policy["fgpp"] = fgpp_entries
                     normalized_policies.append(normalized_policy)
+
+        if removed_domains:
+            normalized["removed_ad_domains"] = removed_domains
 
         if normalized_policies:
             normalized["policies"] = normalized_policies
