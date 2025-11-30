@@ -1613,6 +1613,19 @@
             }
           });
 
+          passwordState.policies = passwordState.policies.map(function(policy) {
+            const domainName = (policy && policy.domain_name) ? policy.domain_name.toString().trim() : '';
+            const lowerDomain = domainName.toLowerCase();
+            const adEntry = lowerDomain ? adDomainMap[lowerDomain] : null;
+            if (adEntry && !policy.__ad_placeholder && !passwordPolicyHasContent(policy)) {
+              return Object.assign({}, policy, {
+                __ad_placeholder: true,
+                __ad_domain_name: policy.__ad_domain_name || domainName,
+              });
+            }
+            return policy;
+          });
+
           const computeAdStrongPasswords = function(domainName, policy) {
             const adEntry = adDomainMap[(domainName || '').toString().trim().toLowerCase()];
             if (!adEntry) {
@@ -1742,6 +1755,90 @@
           return {domains: domains};
         }
 
+        const passwordPolicyHasContent = function(policy) {
+          const hasValue = function(value) {
+            if (value === null || typeof value === 'undefined') {
+              return false;
+            }
+            if (typeof value === 'number' && !Number.isNaN(value)) {
+              return true;
+            }
+            if (typeof value === 'boolean') {
+              return true;
+            }
+            if (typeof value === 'string') {
+              return value.trim() !== '';
+            }
+            if (Array.isArray(value)) {
+              return value.some(hasValue);
+            }
+            if (typeof value === 'object') {
+              return Object.values(value).some(hasValue);
+            }
+            return false;
+          };
+
+          if (!policy || typeof policy !== 'object') {
+            return false;
+          }
+
+          const importantValues = [
+            policy.max_age,
+            policy.min_age,
+            policy.min_length,
+            policy.history,
+            policy.lockout_threshold,
+            policy.lockout_reset,
+            policy.lockout_duration,
+            policy.complexity_enabled,
+            policy.mfa_required,
+            policy.passwords_cracked,
+            policy.enabled_accounts,
+            policy.lanman_stored,
+            policy.password_pattern && policy.password_pattern.confirm,
+            policy.admin_cracked && policy.admin_cracked.confirm,
+            policy.admin_cracked && policy.admin_cracked.count,
+          ];
+
+          if (importantValues.some(hasValue)) {
+            return true;
+          }
+
+          const patternPasswords = policy.password_pattern && policy.password_pattern.passwords;
+          if (Array.isArray(patternPasswords)) {
+            const hasPatternValues = patternPasswords.some(function(entry) {
+              return hasValue(entry && entry.password) || hasValue(entry && entry.count);
+            });
+            if (hasPatternValues) {
+              return true;
+            }
+          }
+
+          if (Array.isArray(policy.fgpp) && policy.fgpp.some(hasValue)) {
+            return true;
+          }
+
+          if (hasValue(policy.strong_passwords)) {
+            if (!policy.__ad_placeholder) {
+              return true;
+            }
+            if (policy.__ad_strong_default !== policy.strong_passwords) {
+              return true;
+            }
+          }
+
+          if (policy.__ad_placeholder) {
+            const currentDomain = (policy.domain_name || '').toString().trim();
+            const defaultDomain = (policy.__ad_domain_name || '').toString().trim();
+            if (currentDomain && defaultDomain && currentDomain.toLowerCase() !== defaultDomain.toLowerCase()) {
+              return true;
+            }
+            return false;
+          }
+
+          return hasValue(policy.domain_name);
+        };
+
         function serializePasswordPayload() {
           const passwordState = ensurePasswordState();
 
@@ -1797,90 +1894,6 @@
             });
           };
 
-          const hasValue = function(value) {
-            if (value === null || typeof value === 'undefined') {
-              return false;
-            }
-            if (typeof value === 'number' && !Number.isNaN(value)) {
-              return true;
-            }
-            if (typeof value === 'boolean') {
-              return true;
-            }
-            if (typeof value === 'string') {
-              return value.trim() !== '';
-            }
-            if (Array.isArray(value)) {
-              return value.some(hasValue);
-            }
-            if (typeof value === 'object') {
-              return Object.values(value).some(hasValue);
-            }
-            return false;
-          };
-
-          const policyHasContent = function(policy) {
-            if (!policy || typeof policy !== 'object') {
-              return false;
-            }
-
-            const importantValues = [
-              policy.max_age,
-              policy.min_age,
-              policy.min_length,
-              policy.history,
-              policy.lockout_threshold,
-              policy.lockout_reset,
-              policy.lockout_duration,
-              policy.complexity_enabled,
-              policy.mfa_required,
-              policy.passwords_cracked,
-              policy.enabled_accounts,
-              policy.lanman_stored,
-              policy.password_pattern && policy.password_pattern.confirm,
-              policy.admin_cracked && policy.admin_cracked.confirm,
-              policy.admin_cracked && policy.admin_cracked.count,
-            ];
-
-            if (importantValues.some(hasValue)) {
-              return true;
-            }
-
-            const patternPasswords = policy.password_pattern && policy.password_pattern.passwords;
-            if (Array.isArray(patternPasswords)) {
-              const hasPatternValues = patternPasswords.some(function(entry) {
-                return hasValue(entry && entry.password) || hasValue(entry && entry.count);
-              });
-              if (hasPatternValues) {
-                return true;
-              }
-            }
-
-            if (Array.isArray(policy.fgpp) && policy.fgpp.some(hasValue)) {
-              return true;
-            }
-
-            if (hasValue(policy.strong_passwords)) {
-              if (!policy.__ad_placeholder) {
-                return true;
-              }
-              if (policy.__ad_strong_default !== policy.strong_passwords) {
-                return true;
-              }
-            }
-
-            if (policy.__ad_placeholder) {
-              const currentDomain = (policy.domain_name || '').toString().trim();
-              const defaultDomain = (policy.__ad_domain_name || '').toString().trim();
-              if (currentDomain && defaultDomain && currentDomain.toLowerCase() !== defaultDomain.toLowerCase()) {
-                return true;
-              }
-              return false;
-            }
-
-            return hasValue(policy.domain_name);
-          };
-
           const policies = [];
           (passwordState.policies || []).forEach(function(policy) {
             const pattern = policy && policy.password_pattern ? policy.password_pattern : {};
@@ -1925,10 +1938,14 @@
               fgpp: fgppEntries(policy.fgpp),
             };
 
-            if (!policy.__ad_placeholder || policyHasContent(policy)) {
+            if (!policy.__ad_placeholder || passwordPolicyHasContent(policy)) {
               policies.push(serializedPolicy);
             }
           });
+
+          if (!policies.length) {
+            return {};
+          }
 
           return {policies: policies};
         }

@@ -1358,6 +1358,30 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
             [entry.get("domain") for entry in cap_entries], ["corp.example.com"]
         )
 
+    def test_iam_save_does_not_persist_placeholder_password_policy(self):
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["workbook_data"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {
+                    "areas": {
+                        "ad": {"domains": [{"domain": "corp.example"}]},
+                        "password": {},
+                    }
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        password_state = self.project.workbook_data.get("password")
+        self.assertIsInstance(password_state, dict)
+        self.assertListEqual(password_state.get("policies"), [])
+
     def test_password_entries_removed_when_ad_domain_deleted(self):
         self.project.workbook_data = {
             "ad": {"domains": [{"domain": "corp.example.com"}, {"domain": "old.example.com"}]},
