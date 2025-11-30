@@ -1580,7 +1580,7 @@
               passwords_cracked: normalizeNumber(policy && policy.passwords_cracked),
               admin_cracked: {
                 confirm: confirmValue,
-                count: confirmValue === 'Yes' ? normalizeNumber(adminCracked.count) : 0,
+                count: confirmValue === 'Yes' ? normalizeNumber(adminCracked.count) : null,
               },
               strong_passwords: normalizeNumber(policy && policy.strong_passwords),
               lanman_stored: normalizeYesNo(policy && policy.lanman_stored),
@@ -1888,7 +1888,7 @@
             const adminConfirm = normalizeYesNo(policy.admin_cracked && policy.admin_cracked.confirm);
             const adminCount = adminConfirm === 'Yes'
               ? normalizeNumber(policy.admin_cracked && policy.admin_cracked.count)
-              : 0;
+              : null;
 
             const patternPasswords = Array.isArray(pattern.passwords)
               ? pattern.passwords.map(function(entry) {
