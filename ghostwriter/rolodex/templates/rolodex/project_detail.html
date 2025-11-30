@@ -1922,6 +1922,14 @@
               ? normalizeNumber(policy.admin_cracked && policy.admin_cracked.count)
               : null;
 
+            const shouldIncludeStrongPasswords = (
+              !policy.__ad_placeholder
+              || policy.__ad_strong_default !== policy.strong_passwords
+            );
+            const strongPasswordsValue = shouldIncludeStrongPasswords
+              ? normalizeNumber(policy.strong_passwords)
+              : null;
+
             const patternPasswords = Array.isArray(pattern.passwords)
               ? pattern.passwords.map(function(entry) {
                 return {
@@ -1947,7 +1955,7 @@
                 confirm: adminConfirm,
                 count: adminCount,
               },
-              strong_passwords: normalizeNumber(policy.strong_passwords),
+              strong_passwords: strongPasswordsValue,
               lanman_stored: normalizeYesNo(policy.lanman_stored),
               enabled_accounts: normalizeNumber(policy.enabled_accounts),
               password_pattern: {
@@ -1963,7 +1971,7 @@
           });
 
           if (!policies.length && !removedAdDomains.length) {
-            return {};
+            return null;
           }
 
           const payload = {};

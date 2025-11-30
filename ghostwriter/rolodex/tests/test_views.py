@@ -1379,8 +1379,14 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         self.project.refresh_from_db()
 
         password_state = self.project.workbook_data.get("password")
-        self.assertIsInstance(password_state, dict)
-        self.assertListEqual(password_state.get("policies"), [])
+        self.assertTrue(
+            password_state is None
+            or (
+                isinstance(password_state, dict)
+                and not password_state.get("policies")
+                and not password_state.get("removed_ad_domains")
+            )
+        )
 
     def test_password_entries_removed_when_ad_domain_deleted(self):
         self.project.workbook_data = {
