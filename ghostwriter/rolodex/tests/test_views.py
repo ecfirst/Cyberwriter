@@ -1499,6 +1499,52 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
             [entry.get("domain") for entry in cap_entries], ["corp.example.com"]
         )
 
+    def test_password_entries_removed_when_all_domains_deleted(self):
+        self.project.workbook_data = {
+            "ad": {"domains": [{"domain": "corp.example.com"}]},
+            "password": {
+                "policies": [
+                    {"domain_name": "corp.example.com", "password_min_length": 14}
+                ]
+            },
+        }
+        self.project.data_responses = {
+            "password": {
+                "entries": [
+                    {"domain": "corp.example.com", "policy_cap_values": {"min_length": 14}}
+                ]
+            }
+        }
+        self.project.cap = {
+            "password": {
+                "entries": [
+                    {"domain": "corp.example.com", "policy_cap_values": {"min_length": 14}}
+                ]
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps({"areas": {"password": {"policies": []}}}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        workbook_password = (
+            self.project.workbook_data.get("password")
+            if isinstance(self.project.workbook_data, dict)
+            else {}
+        )
+        policies = workbook_password.get("policies") if isinstance(workbook_password, dict) else None
+        self.assertIsInstance(policies, list)
+        self.assertListEqual(policies, [])
+
+        self.assertNotIn("password", self.project.data_responses)
+        self.assertNotIn("password", self.project.cap)
+
     def test_upload_populates_project_risks(self):
         workbook_payload = {
             "external_internal_grades": {

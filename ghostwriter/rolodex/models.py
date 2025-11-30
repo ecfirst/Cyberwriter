@@ -1235,12 +1235,13 @@ class Project(models.Model):
         (
             workbook_password_response,
             workbook_password_domain_values,
-            _,
+            workbook_password_domains,
         ) = build_workbook_password_response(workbook_payload)
-        if workbook_password_response:
-            existing_responses.pop("password", None)
-            existing_cap.pop("password", None)
+        existing_responses.pop("password", None)
+        existing_cap.pop("password", None)
 
+        if workbook_password_domain_values and workbook_password_domains:
+            
             combined_password_section: Dict[str, Any] = dict(
                 workbook_password_response
                 if isinstance(workbook_password_response, dict)
