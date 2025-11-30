@@ -1280,6 +1280,7 @@
             enabled_accounts: null,
             password_pattern: {confirm: null, passwords: []},
             fgpp: [],
+            __metrics_opened: true,
           };
         };
 
@@ -1551,6 +1552,9 @@
             const adminCracked = policy && policy.admin_cracked ? policy.admin_cracked : {};
             const fgppEntries = Array.isArray(policy && policy.fgpp) ? policy.fgpp : [];
             const confirmValue = normalizeYesNo(adminCracked.confirm);
+            const metricsOpened = Object.prototype.hasOwnProperty.call(policy || {}, '__metrics_opened')
+              ? Boolean(policy && policy.__metrics_opened)
+              : true;
 
             const normalizedFgpp = fgppEntries.map(function(entry) {
               return Object.assign(createEmptyFgpp(), entry || {}, {
@@ -1600,6 +1604,7 @@
               __ad_placeholder: Boolean(policy && policy.__ad_placeholder),
               __ad_domain_name: policy && policy.__ad_domain_name,
               __ad_strong_default: policy && policy.__ad_strong_default,
+              __metrics_opened: metricsOpened,
             });
           });
 
@@ -1627,6 +1632,7 @@
               return Object.assign({}, policy, {
                 __ad_placeholder: true,
                 __ad_domain_name: policy.__ad_domain_name || domainName,
+                __metrics_opened: false,
               });
             }
             return policy;
@@ -1690,6 +1696,7 @@
                   __ad_placeholder: true,
                   __ad_domain_name: name,
                   __ad_strong_default: strongDefault,
+                  __metrics_opened: false,
                 }),
               );
             }
@@ -1965,7 +1972,8 @@
               fgpp: fgppEntries(policy.fgpp),
             };
 
-            if (!policy.__ad_placeholder || passwordPolicyHasContent(policy)) {
+            const allowPlaceholder = policy.__metrics_opened || passwordPolicyHasContent(policy);
+            if (!policy.__ad_placeholder || allowPlaceholder) {
               policies.push(serializedPolicy);
             }
           });
@@ -3385,6 +3393,30 @@
           const container = document.createElement('div');
           target.appendChild(container);
 
+          const removeDomain = function(policy, index) {
+            const removedDomain = (policy && (policy.domain_name || policy.__ad_domain_name))
+              ? (policy.domain_name || policy.__ad_domain_name).toString().trim()
+              : '';
+            passwordState.policies.splice(index, 1);
+            if (removedDomain) {
+              const removedSet = new Set(
+                (passwordState.removed_ad_domains || [])
+                  .map(function(name) { return (name || '').toString().trim(); })
+                  .filter(function(name) { return name; }),
+              );
+              removedSet.add(removedDomain);
+              passwordState.removed_ad_domains = Array.from(removedSet);
+            }
+            renderPolicies();
+            updateWorkbookCardProgress(areaKey);
+            const payload = {areas: {password: serializePasswordPayload()}};
+            submitWorkbookUpdate(payload, null, {
+              reopenModalId: modalId,
+              forceCloseModalId: modalId,
+              afterRender: function() { updateWorkbookCardProgress(areaKey); },
+            });
+          };
+
           const renderPolicies = function() {
             container.innerHTML = '';
             if (!passwordState.policies.length) {
@@ -3405,6 +3437,53 @@
               title.className = 'mb-2 mb-md-0';
               title.textContent = 'Domain ' + (index + 1);
               heading.appendChild(title);
+
+              const showCollapsedPlaceholder = policy.__ad_placeholder
+                && !policy.__metrics_opened
+                && !passwordPolicyHasContent(policy);
+
+              if (showCollapsedPlaceholder) {
+                const placeholderRow = document.createElement('div');
+                placeholderRow.className = 'd-flex justify-content-between align-items-center w-100 flex-wrap';
+
+                const domainInfo = document.createElement('div');
+                domainInfo.className = 'mb-2 mb-md-0';
+                domainInfo.innerHTML = '<strong>Domain:</strong> ' + (policy.domain_name || policy.__ad_domain_name || '');
+                placeholderRow.appendChild(domainInfo);
+
+                const placeholderActions = document.createElement('div');
+                placeholderActions.className = 'd-flex align-items-center flex-wrap';
+
+                const updateMetricsButton = document.createElement('button');
+                updateMetricsButton.type = 'button';
+                updateMetricsButton.className = 'btn btn-outline-primary btn-sm mr-2';
+                updateMetricsButton.textContent = 'Update Metrics';
+                updateMetricsButton.addEventListener('click', function() {
+                  policy.__metrics_opened = true;
+                  renderPolicies();
+                  updateWorkbookCardProgress(areaKey);
+                });
+                placeholderActions.appendChild(updateMetricsButton);
+
+                const removePlaceholderButton = document.createElement('button');
+                removePlaceholderButton.type = 'button';
+                removePlaceholderButton.className = 'btn btn-outline-danger btn-sm';
+                removePlaceholderButton.textContent = 'Remove Domain';
+                removePlaceholderButton.addEventListener('click', function() { removeDomain(policy, index); });
+                placeholderActions.appendChild(removePlaceholderButton);
+
+                placeholderRow.appendChild(placeholderActions);
+                heading.appendChild(placeholderRow);
+
+                wrapper.appendChild(heading);
+                const placeholderNote = document.createElement('p');
+                placeholderNote.className = 'text-muted mb-0';
+                placeholderNote.textContent = 'Domain imported from IAM. Click "Update Metrics" to enter password details before saving.';
+                wrapper.appendChild(placeholderNote);
+                wrapper.appendChild(document.createElement('hr'));
+                container.appendChild(wrapper);
+                return;
+              }
 
               const headingActions = document.createElement('div');
               headingActions.className = 'd-flex align-items-center flex-wrap';
@@ -3450,29 +3529,7 @@
               removeDomainButton.type = 'button';
               removeDomainButton.className = 'btn btn-outline-danger btn-sm';
               removeDomainButton.textContent = 'Remove Domain';
-              removeDomainButton.addEventListener('click', function() {
-                const removedDomain = (policy && (policy.domain_name || policy.__ad_domain_name))
-                  ? (policy.domain_name || policy.__ad_domain_name).toString().trim()
-                  : '';
-                passwordState.policies.splice(index, 1);
-                if (removedDomain) {
-                  const removedSet = new Set(
-                    (passwordState.removed_ad_domains || [])
-                      .map(function(name) { return (name || '').toString().trim(); })
-                      .filter(function(name) { return name; }),
-                  );
-                  removedSet.add(removedDomain);
-                  passwordState.removed_ad_domains = Array.from(removedSet);
-                }
-                renderPolicies();
-                updateWorkbookCardProgress(areaKey);
-                const payload = {areas: {password: serializePasswordPayload()}};
-                submitWorkbookUpdate(payload, null, {
-                  reopenModalId: modalId,
-                  forceCloseModalId: modalId,
-                  afterRender: function() { updateWorkbookCardProgress(areaKey); },
-                });
-              });
+              removeDomainButton.addEventListener('click', function() { removeDomain(policy, index); });
               headingActions.appendChild(removeDomainButton);
 
               heading.appendChild(headingActions);
