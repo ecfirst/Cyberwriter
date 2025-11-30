@@ -2033,6 +2033,59 @@ class NexposeDataParserTests(TestCase):
         self.assertIn("Additional password controls not implemented", global_entries)
         self.assertIn("MFA not enforced for all accounts", global_entries)
 
+    def test_badpass_cap_omits_global_entries_when_not_no(self):
+        general_cap_map = {
+            issue: {"recommendation": recommendation, "score": score}
+            for issue, (recommendation, score) in DEFAULT_GENERAL_CAP_MAP.items()
+        }
+
+        workbook_password_response = {}
+        workbook_domain_values = {
+            "corp.example.com": {
+                "passwords_cracked": 1,
+                "lanman": False,
+                "no_fgpp": False,
+            }
+        }
+
+        self.project.data_responses = {
+            "password": {
+                "password_additional_controls": "yes",
+                "password_enforce_mfa_all_accounts": "yes",
+            }
+        }
+        self.project.workbook_data = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["data_responses", "workbook_data", "cap"])
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch("ghostwriter.rolodex.models.build_workbook_ad_response", return_value={}):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_dns_response",
+                    return_value={},
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                        return_value={},
+                    ):
+                        with mock.patch(
+                            "ghostwriter.rolodex.models.build_workbook_password_response",
+                            return_value=(workbook_password_response, workbook_domain_values, ["corp.example.com"]),
+                        ):
+                            with mock.patch(
+                                "ghostwriter.rolodex.models.load_general_cap_map",
+                                return_value=general_cap_map,
+                            ):
+                                self.project.rebuild_data_artifacts()
+
+        self.project.refresh_from_db()
+
+        password_cap = self.project.cap.get("password")
+        self.assertIsInstance(password_cap, dict)
+        badpass_cap_map = password_cap.get("badpass_cap_map")
+        self.assertIsInstance(badpass_cap_map, dict)
+        self.assertNotIn("global", badpass_cap_map)
+
     def test_password_cap_entries_removed_when_domains_missing(self):
         general_cap_map = {
             issue: {"recommendation": recommendation, "score": score}

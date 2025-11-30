@@ -1241,15 +1241,24 @@ class Project(models.Model):
         existing_cap.pop("password", None)
 
         if workbook_password_domain_values and workbook_password_domains:
-            
-            combined_password_section: Dict[str, Any] = dict(
-                workbook_password_response
-                if isinstance(workbook_password_response, dict)
+
+            existing_password_section = (
+                existing_responses.get("password")
+                if isinstance(existing_responses.get("password"), dict)
                 else {}
             )
 
-            existing_additional_controls = None
-            existing_enforce_mfa = None
+            combined_password_section: Dict[str, Any] = dict(existing_password_section)
+
+            if isinstance(workbook_password_response, dict):
+                combined_password_section.update(workbook_password_response)
+
+            existing_additional_controls = existing_password_section.get(
+                "password_additional_controls"
+            )
+            existing_enforce_mfa = existing_password_section.get(
+                "password_enforce_mfa_all_accounts"
+            )
 
             workbook_password_entries: List[Dict[str, Any]] = []
             if isinstance(workbook_password_domain_values, dict):
@@ -1386,10 +1395,17 @@ class Project(models.Model):
                     return primary
                 return secondary
 
-            additional_controls_missing = not _is_truthy(
+            def _is_no(value: Any) -> bool:
+                if isinstance(value, str):
+                    return value.strip().lower() == "no"
+                if isinstance(value, bool):
+                    return value is False
+                return False
+
+            additional_controls_missing = _is_no(
                 _coalesce_flag(existing_additional_controls, workbook_additional_controls)
             )
-            enforce_mfa_missing = not _is_truthy(
+            enforce_mfa_missing = _is_no(
                 _coalesce_flag(existing_enforce_mfa, workbook_enforce_mfa)
             )
 

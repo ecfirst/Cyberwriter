@@ -5,8 +5,10 @@ import logging
 import shutil
 import tempfile
 from datetime import date, timedelta
+from unittest import mock
 
 # Django Imports
+from django import forms
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
@@ -1723,6 +1725,124 @@ class ProjectDataResponsesUpdateTests(TestCase):
         self.assertEqual(general.get("scope_count"), 1)
         self.assertEqual(general.get("scope_string"), "External network and systems")
         self.assertNotIn("assessment_scope_cloud_on_prem", general)
+
+    def test_password_cap_updates_when_questionnaire_changes(self):
+        workbook_password_response = {}
+        workbook_domain_values = {
+            "corp.example.com": {
+                "passwords_cracked": 1,
+                "lanman": False,
+                "no_fgpp": False,
+            }
+        }
+
+        general_cap_map = {
+            "Weak passwords in use": {"recommendation": "", "score": 1},
+            "LANMAN password hashing enabled": {"recommendation": "", "score": 1},
+            "Fine-grained Password Policies not defined": {"recommendation": "", "score": 1},
+            "Additional password controls not implemented": {"recommendation": "", "score": 1},
+            "MFA not enforced for all accounts": {"recommendation": "", "score": 1},
+        }
+
+        self.project.data_responses = {
+            "password": {
+                "password_enforce_mfa_all_accounts": "no",
+                "password_additional_controls": "no",
+            }
+        }
+        self.project.save(update_fields=["data_responses"])
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch("ghostwriter.rolodex.models.build_workbook_ad_response", return_value={}):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_dns_response",
+                    return_value={},
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                        return_value={},
+                    ):
+                        with mock.patch(
+                            "ghostwriter.rolodex.models.build_workbook_password_response",
+                            return_value=(
+                                workbook_password_response,
+                                workbook_domain_values,
+                                ["corp.example.com"],
+                            ),
+                        ):
+                            with mock.patch(
+                                "ghostwriter.rolodex.models.load_general_cap_map",
+                                return_value=general_cap_map,
+                            ):
+                                self.project.rebuild_data_artifacts()
+
+        self.project.refresh_from_db()
+        password_cap = self.project.cap.get("password", {})
+        badpass_map = password_cap.get("badpass_cap_map", {})
+        self.assertIn("global", badpass_map)
+
+        questions = [
+            {
+                "key": "password_enforce_mfa_all_accounts",
+                "section_key": "password",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "choices": [("yes", "Yes"), ("no", "No")],
+                    "required": False,
+                },
+            },
+            {
+                "key": "password_additional_controls",
+                "section_key": "password",
+                "field_class": forms.ChoiceField,
+                "field_kwargs": {
+                    "choices": [("yes", "Yes"), ("no", "No")],
+                    "required": False,
+                },
+            },
+        ]
+
+        payload = {
+            "password_enforce_mfa_all_accounts": "yes",
+            "password_additional_controls": "yes",
+        }
+
+        with mock.patch(
+            "ghostwriter.rolodex.views.build_data_configuration",
+            return_value=(questions, {}),
+        ):
+            with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_ad_response", return_value={}
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_dns_response",
+                        return_value={},
+                    ):
+                        with mock.patch(
+                            "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                            return_value={},
+                        ):
+                            with mock.patch(
+                                "ghostwriter.rolodex.models.build_workbook_password_response",
+                                return_value=(
+                                    workbook_password_response,
+                                    workbook_domain_values,
+                                    ["corp.example.com"],
+                                ),
+                            ):
+                                with mock.patch(
+                                    "ghostwriter.rolodex.models.load_general_cap_map",
+                                    return_value=general_cap_map,
+                                ):
+                                    response = self.client_mgr.post(self.url, payload)
+
+        self.assertEqual(response.status_code, 302)
+        self.project.refresh_from_db()
+
+        password_cap = self.project.cap.get("password", {})
+        badpass_map = password_cap.get("badpass_cap_map", {})
+        self.assertNotIn("global", badpass_map)
 
     def test_detail_view_displays_uploaded_workbook_sections(self):
         workbook_payload = {

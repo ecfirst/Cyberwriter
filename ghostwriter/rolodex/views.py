@@ -4028,6 +4028,10 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
 
             project.data_responses = ensure_data_responses_defaults(grouped_responses)
             project.save(update_fields=["data_responses"])
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap", "risks"]
+            )
             messages.success(request, "Project data responses saved.")
         else:
             error_message = form.errors.as_text()
