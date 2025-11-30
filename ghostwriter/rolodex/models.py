@@ -1237,16 +1237,15 @@ class Project(models.Model):
             workbook_password_domain_values,
             workbook_password_domains,
         ) = build_workbook_password_response(workbook_payload)
+        existing_password_section = (
+            existing_responses.get("password")
+            if isinstance(existing_responses.get("password"), dict)
+            else {}
+        )
         existing_responses.pop("password", None)
         existing_cap.pop("password", None)
 
         if workbook_password_domain_values and workbook_password_domains:
-
-            existing_password_section = (
-                existing_responses.get("password")
-                if isinstance(existing_responses.get("password"), dict)
-                else {}
-            )
 
             combined_password_section: Dict[str, Any] = dict(existing_password_section)
 
