@@ -3456,6 +3456,8 @@
                   removedSet.add(removedDomain);
                   passwordState.removed_ad_domains = Array.from(removedSet);
                 }
+                renderPolicies();
+                updateWorkbookCardProgress(areaKey);
                 const payload = {areas: {password: serializePasswordPayload()}};
                 submitWorkbookUpdate(payload, null, {
                   reopenModalId: modalId,
