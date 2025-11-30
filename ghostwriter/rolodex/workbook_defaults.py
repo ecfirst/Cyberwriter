@@ -259,6 +259,7 @@ DATA_RESPONSES_DEFAULTS: Dict[str, Any] = {
         "entries": [],
     },
     "endpoint": {
+        "domains": [],
         "entries": [],
         "domains_str": None,
         "ood_count_str": None,

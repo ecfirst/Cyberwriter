@@ -89,6 +89,13 @@ AD_INACTIVE_ACCOUNT_COUNT_FIELDS = {
     "never",
 }
 
+ENDPOINT_DOMAIN_FIELDS = {
+    "total_computers",
+    "audited_computers",
+    "systems_ood",
+    "open_wifi",
+}
+
 
 def _as_decimal(value: Any) -> Optional[Decimal]:
     if value in (None, ""):
@@ -268,6 +275,35 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
 
                 if domain_entry:
                     normalized_domains.append(domain_entry)
+            normalized["domains"] = normalized_domains
+        return normalized
+    if area == "endpoint" and isinstance(payload, Mapping):
+        raw_domains = payload.get("domains")
+        normalized_domains: list[dict[str, Any]] = []
+        if isinstance(raw_domains, list):
+            for domain_payload in raw_domains:
+                if not isinstance(domain_payload, Mapping):
+                    continue
+                domain_entry: dict[str, Any] = {}
+                domain_value = domain_payload.get("domain") or domain_payload.get("name") or ""
+                domain_text = str(domain_value).strip()
+                if domain_text:
+                    domain_entry["domain"] = domain_text
+
+                for field in ENDPOINT_DOMAIN_FIELDS:
+                    if field in domain_payload:
+                        domain_entry[field] = _as_int(domain_payload.get(field))
+
+                if "usb_control_indication" in domain_payload:
+                    usb_value = str(domain_payload.get("usb_control_indication") or "").strip().lower()
+                    if usb_value in {"yes", "y", "true", "1"}:
+                        domain_entry["usb_control_indication"] = "Yes"
+                    elif usb_value in {"no", "n", "false", "0"}:
+                        domain_entry["usb_control_indication"] = "No"
+
+                if domain_entry:
+                    normalized_domains.append(domain_entry)
+
             normalized["domains"] = normalized_domains
         return normalized
     if area == "password" and isinstance(payload, Mapping):
