@@ -286,13 +286,26 @@ DATA_RESPONSES_DEFAULTS: Dict[str, Any] = {
 }
 
 
-def normalize_workbook_payload(raw_data: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Return ``raw_data`` with default workbook keys populated."""
+  def normalize_workbook_payload(raw_data: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+      """Return ``raw_data`` with default workbook keys populated."""
 
-    normalized = _merge_structure(raw_data if isinstance(raw_data, Mapping) else {}, WORKBOOK_DEFAULTS)
-    uploaded_sections = _detect_uploaded_sections(raw_data)
-    normalized[WORKBOOK_META_KEY] = {WORKBOOK_META_SECTIONS_KEY: sorted(uploaded_sections)}
-    return normalized
+      normalized = _merge_structure(raw_data if isinstance(raw_data, Mapping) else {}, WORKBOOK_DEFAULTS)
+
+      # Ensure Nexpose sections never share the same mapping instance. If earlier
+      # saves aliased these areas, updates in one (for example, External Nexpose)
+      # could overwrite values in another (such as Internal Nexpose). Deep copy
+      # each section to keep them isolated.
+      nexpose_keys = ["external_nexpose", "internal_nexpose", "iot_iomt_nexpose"]
+      for key in nexpose_keys:
+          section = normalized.get(key)
+          if not isinstance(section, MutableMapping):
+              section = {}
+          section_copy = deepcopy(section)
+          normalized[key] = section_copy
+
+      uploaded_sections = _detect_uploaded_sections(raw_data)
+      normalized[WORKBOOK_META_KEY] = {WORKBOOK_META_SECTIONS_KEY: sorted(uploaded_sections)}
+      return normalized
 
 
 def _detect_uploaded_sections(raw_data: Optional[Mapping[str, Any]]) -> Set[str]:
