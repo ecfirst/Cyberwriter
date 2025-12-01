@@ -995,7 +995,33 @@
           }
         };
 
-        const workbookState = parseJsonScript('project-workbook-data') || {};
+        const workbookState = {};
+
+        const cloneValue = function(value, deep) {
+          if (!value || typeof value !== 'object') {
+            return value;
+          }
+          if (deep) {
+            return JSON.parse(JSON.stringify(value));
+          }
+          if (Array.isArray(value)) {
+            return value.slice();
+          }
+          return Object.assign({}, value);
+        };
+
+        const replaceWorkbookState = function(newState) {
+          Object.keys(workbookState).forEach(function(key) {
+            delete workbookState[key];
+          });
+          const incoming = newState && typeof newState === 'object' ? newState : {};
+          Object.keys(incoming).forEach(function(key) {
+            const deepClone = ['external_nexpose', 'internal_nexpose', 'iot_iomt_nexpose'].includes(key);
+            workbookState[key] = cloneValue(incoming[key], deepClone);
+          });
+        };
+
+        replaceWorkbookState(parseJsonScript('project-workbook-data'));
         const dataArtifactsState = parseJsonScript('project-data-artifacts') || {};
         const scopingState = parseJsonScript('project-scoping-data') || {};
         const scopingWeights = parseJsonScript('project-scoping-weights') || {};
@@ -5738,7 +5764,7 @@
 
         const handleWorkbookUpdateResponse = function(data, renderOptions) {
           if (data && data.workbook_data) {
-            Object.assign(workbookState, data.workbook_data);
+            replaceWorkbookState(data.workbook_data);
           }
           if (data && data.data_artifacts) {
             updateDataArtifactsState(data.data_artifacts);
