@@ -1,6 +1,7 @@
 """This contains all the database models used by the Rolodex application."""
 
 # Standard Libraries
+import copy
 import os
 import re
 from collections import OrderedDict
@@ -22,7 +23,10 @@ from timezone_field import TimeZoneField
 # Ghostwriter Libraries
 from ghostwriter.reporting.models import ReportFindingLink, ScopingWeightCategory
 from ghostwriter.rolodex.validators import validate_ip_range
-from ghostwriter.rolodex.workbook_defaults import normalize_workbook_payload
+from ghostwriter.rolodex.workbook_defaults import (
+    WORKBOOK_DEFAULTS,
+    normalize_workbook_payload,
+)
 
 User = get_user_model()
 
@@ -788,6 +792,17 @@ class Project(models.Model):
         workbook_payload = normalize_workbook_payload(
             getattr(self, "workbook_data", None)
         )
+
+        nexpose_keys = ("external_nexpose", "internal_nexpose", "iot_iomt_nexpose")
+        for key in nexpose_keys:
+            existing_area = workbook_payload.get(key)
+            if isinstance(existing_area, dict):
+                workbook_payload[key] = copy.deepcopy(existing_area)
+            else:
+                default_area = WORKBOOK_DEFAULTS.get(key)
+                workbook_payload[key] = (
+                    copy.deepcopy(default_area) if isinstance(default_area, dict) else {}
+                )
 
         def _safe_int(value: Any) -> int:
             if value in (None, ""):

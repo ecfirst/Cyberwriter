@@ -905,4 +905,10 @@ def build_workbook_entry_payload(
     if grade_updates:
         normalized_workbook.setdefault("report_card", {}).update(grade_updates)
 
+    nexpose_keys = ("external_nexpose", "internal_nexpose", "iot_iomt_nexpose")
+    for key in nexpose_keys:
+        area_state = normalized_workbook.get(key)
+        if isinstance(area_state, Mapping):
+            normalized_workbook[key] = deepcopy(area_state)
+
     return normalized_workbook
