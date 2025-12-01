@@ -773,18 +773,12 @@ def build_workbook_entry_payload(
                 continue
 
             if area_key in {"external_nexpose", "internal_nexpose", "iot_iomt_nexpose"}:
+                # Treat Nexpose submissions as full replacements so stale data from other
+                # sections (for example, External Nexpose) cannot bleed into the current
+                # area via previously merged workbook state. The modal sends every field, so
+                # combine the defaults with only the freshly normalized payload.
                 default_payload = deepcopy(WORKBOOK_DEFAULTS.get(area_key, {}))
-                existing_area = (
-                    normalized_workbook.get(area_key)
-                    if isinstance(normalized_workbook.get(area_key), Mapping)
-                    else {}
-                )
                 merged_area = default_payload if isinstance(default_payload, dict) else {}
-                if isinstance(existing_area, Mapping):
-                    existing_area = deepcopy(existing_area)
-                    merged_area.update(
-                        {k: v for k, v in existing_area.items() if k in merged_area}
-                    )
                 merged_area.update(normalized_area)
                 normalized_workbook[area_key] = merged_area
                 continue
