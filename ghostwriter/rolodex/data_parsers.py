@@ -1729,10 +1729,22 @@ def _detect_nexpose_xml_artifact_key(values: Iterable[Any]) -> Optional[str]:
 def _resolve_nexpose_xml_artifact_key(data_file: "ProjectDataFile") -> Optional[str]:
     """Infer the artifact key that should store a Nexpose XML upload."""
 
+    direct_label = (data_file.requirement_label or "").strip().lower()
+    if direct_label:
+        mapped = NEXPOSE_XML_REQUIREMENT_LABEL_MAP.get(direct_label)
+        if mapped:
+            return mapped
+
+    direct_context = (data_file.requirement_context or "").strip().lower()
+    if direct_context:
+        mapped = NEXPOSE_XML_REQUIREMENT_CONTEXT_MAP.get(direct_context)
+        if mapped:
+            return mapped
+
     candidates = [
-        (data_file.requirement_label or ""),
+        direct_label,
         (data_file.requirement_slug or ""),
-        (data_file.requirement_context or ""),
+        direct_context,
         (data_file.description or ""),
     ]
     filename = getattr(data_file, "filename", "")
@@ -3605,6 +3617,18 @@ NEXPOSE_TEST_STATUS_MAP = {
     "potential": "VP",
     "vulnerable-exploited": "VE",
     "vulnerable-version": "VV",
+}
+
+NEXPOSE_XML_REQUIREMENT_LABEL_MAP = {
+    "external_nexpose_xml.xml": "external_nexpose_findings",
+    "internal_nexpose_xml.xml": "internal_nexpose_findings",
+    "iot_nexpose_xml.xml": "iot_iomt_nexpose_findings",
+}
+
+NEXPOSE_XML_REQUIREMENT_CONTEXT_MAP = {
+    "external_nexpose": "external_nexpose_findings",
+    "internal_nexpose": "internal_nexpose_findings",
+    "iot_iomt_nexpose": "iot_iomt_nexpose_findings",
 }
 
 NEXPOSE_XML_ARTIFACT_MAP = {

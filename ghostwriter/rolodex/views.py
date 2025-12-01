@@ -3079,7 +3079,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                             "required", requirement_label
                         ),
                         requirement_label=requirement_label,
-                        requirement_context=f"{upload_field.replace('_', ' ')}",
+                        requirement_context=workbook_key or "",
                         description="",
                     )
                     data_file.file.save(upload.name, upload)
