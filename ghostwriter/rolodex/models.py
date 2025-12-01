@@ -855,17 +855,20 @@ class Project(models.Model):
             summary = summary if isinstance(summary, dict) else {}
 
             majority_type_raw = (metrics_payload.get("majority_type") or "").strip().upper()
+            minority_type_raw = (metrics_payload.get("minority_type") or "").strip().upper()
             majority_label_map = {
                 "OOD": "OOD Software or Missing Patches",
                 "ISC": "Insecure System Configurations",
                 "IWC": "Insecure Web Configurations",
             }
             majority_label = majority_label_map.get(majority_type_raw)
+            minority_label = majority_label_map.get(minority_type_raw)
             majority_summary_map = {
                 "OOD": "total_ood",
                 "ISC": "total_isc",
                 "IWC": "total_iwc",
             }
+            minority_summary_map = majority_summary_map
 
             area_payload = workbook_payload.get(workbook_key)
             if not isinstance(area_payload, dict):
@@ -887,6 +890,14 @@ class Project(models.Model):
                 summary_key = majority_summary_map.get(majority_type_raw)
                 if summary_key:
                     area_payload["unique_majority"] = _safe_int(summary.get(summary_key))
+
+            if minority_label:
+                area_payload["minority_type"] = minority_label
+                minority_summary_key = minority_summary_map.get(minority_type_raw)
+                if minority_summary_key:
+                    area_payload["unique_minority"] = _safe_int(
+                        summary.get(minority_summary_key)
+                    )
 
             workbook_payload[workbook_key] = area_payload
 

@@ -52,7 +52,25 @@ FIREWALL_SUMMARY_FIELDS = {
     "complexity_count",
 }
 
-AREA_FIELDS = {"osint": OSINT_FIELDS, "firewall": FIREWALL_SUMMARY_FIELDS}
+NEXPOSE_SUMMARY_FIELDS = {
+    "total",
+    "total_high",
+    "total_med",
+    "total_low",
+    "unique",
+    "unique_high_med",
+    "unique_majority",
+    "unique_majority_sub",
+    "unique_minority",
+}
+
+AREA_FIELDS = {
+    "osint": OSINT_FIELDS,
+    "firewall": FIREWALL_SUMMARY_FIELDS,
+    "external_nexpose": NEXPOSE_SUMMARY_FIELDS,
+    "internal_nexpose": NEXPOSE_SUMMARY_FIELDS,
+    "iot_iomt_nexpose": NEXPOSE_SUMMARY_FIELDS,
+}
 
 AD_DOMAIN_COUNT_FIELDS = {
     "domain_admins",
@@ -523,6 +541,31 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
         if removed_domains_provided:
             normalized["removed_ad_domains"] = removed_domains
         return normalized
+    if area in {"external_nexpose", "internal_nexpose", "iot_iomt_nexpose"}:
+        if not isinstance(payload, Mapping):
+            return normalized
+
+        def _normalize_type(value: Any) -> Optional[str]:
+            if value in (None, ""):
+                return None
+            text = str(value).strip()
+            return text or None
+
+        for field in NEXPOSE_SUMMARY_FIELDS:
+            if field in payload:
+                normalized[field] = _as_int(payload.get(field))
+
+        if "majority_type" in payload:
+            normalized["majority_type"] = _normalize_type(payload.get("majority_type"))
+        if "unique_majority_sub_info" in payload:
+            normalized["unique_majority_sub_info"] = _normalize_type(
+                payload.get("unique_majority_sub_info")
+            )
+        if "minority_type" in payload:
+            normalized["minority_type"] = _normalize_type(payload.get("minority_type"))
+
+        return normalized
+
     allowed_fields = AREA_FIELDS.get(area, set())
     if not allowed_fields or not isinstance(payload, Mapping):
         return normalized

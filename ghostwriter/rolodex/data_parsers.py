@@ -3767,12 +3767,19 @@ def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, 
         (entry.get("category") or "").strip() for entry in unique_values if entry.get("category")
     )
     majority_type = None
-    majority_value = 0
-    for candidate in ("OOD", "ISC", "IWC"):
-        count = category_counter.get(candidate, 0)
-        if count > majority_value:
-            majority_type = candidate
-            majority_value = count
+    minority_type = None
+    candidate_order = {candidate: index for index, candidate in enumerate(("OOD", "ISC", "IWC"))}
+    candidate_counts = [
+        (candidate, category_counter.get(candidate, 0)) for candidate in candidate_order.keys()
+    ]
+    sorted_candidates = sorted(
+        candidate_counts, key=lambda item: (-item[1], candidate_order[item[0]])
+    )
+
+    if sorted_candidates and sorted_candidates[0][1] > 0:
+        majority_type = sorted_candidates[0][0]
+    if len(sorted_candidates) > 1 and sorted_candidates[1][1] > 0:
+        minority_type = sorted_candidates[1][0]
 
     summary = {
         "total": total_count,
@@ -3830,6 +3837,7 @@ def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, 
         "tab_index_entries": NEXPOSE_TAB_INDEX_ENTRIES,
         "unique_issues": unique_values,
         "majority_type": majority_type,
+        "minority_type": minority_type,
         "majority_unique": majority_unique,
         "majority_subset": majority_subset,
         "all_issues": total_entries,
