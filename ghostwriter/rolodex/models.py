@@ -874,29 +874,29 @@ class Project(models.Model):
             if not isinstance(area_payload, dict):
                 area_payload = {}
 
-            area_payload.update(
-                {
-                    "total": _safe_int(summary.get("total")),
-                    "total_high": _safe_int(summary.get("total_high")),
-                    "total_med": _safe_int(summary.get("total_med")),
-                    "total_low": _safe_int(summary.get("total_low")),
-                    "unique": _safe_int(summary.get("unique")),
-                    "unique_high_med": _safe_int(summary.get("unique_high_med")),
-                }
-            )
+            def _set_if_missing(key: str, value: Any) -> None:
+                if key not in area_payload or area_payload.get(key) in {None, ""}:
+                    area_payload[key] = value
+
+            _set_if_missing("total", _safe_int(summary.get("total")))
+            _set_if_missing("total_high", _safe_int(summary.get("total_high")))
+            _set_if_missing("total_med", _safe_int(summary.get("total_med")))
+            _set_if_missing("total_low", _safe_int(summary.get("total_low")))
+            _set_if_missing("unique", _safe_int(summary.get("unique")))
+            _set_if_missing("unique_high_med", _safe_int(summary.get("unique_high_med")))
 
             if majority_label:
-                area_payload["majority_type"] = majority_label
+                _set_if_missing("majority_type", majority_label)
                 summary_key = majority_summary_map.get(majority_type_raw)
                 if summary_key:
-                    area_payload["unique_majority"] = _safe_int(summary.get(summary_key))
+                    _set_if_missing("unique_majority", _safe_int(summary.get(summary_key)))
 
             if minority_label:
-                area_payload["minority_type"] = minority_label
+                _set_if_missing("minority_type", minority_label)
                 minority_summary_key = minority_summary_map.get(minority_type_raw)
                 if minority_summary_key:
-                    area_payload["unique_minority"] = _safe_int(
-                        summary.get(minority_summary_key)
+                    _set_if_missing(
+                        "unique_minority", _safe_int(summary.get(minority_summary_key))
                     )
 
             workbook_payload[workbook_key] = area_payload
