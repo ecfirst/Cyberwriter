@@ -3049,6 +3049,11 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 "internal_nexpose_xml": "internal_nexpose_xml.xml",
                 "iot_nexpose_xml": "iot_nexpose_xml.xml",
             }
+            nexpose_workbook_keys = {
+                "external_nexpose_xml": "external_nexpose",
+                "internal_nexpose_xml": "internal_nexpose",
+                "iot_nexpose_xml": "iot_iomt_nexpose",
+            }
             for upload_field, requirement_label in nexpose_upload_fields.items():
                 if upload_field in request.FILES:
                     upload = request.FILES.get(upload_field)
@@ -3056,6 +3061,17 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                         return JsonResponse(
                             {"error": "No Nexpose XML provided."}, status=400
                         )
+
+                    workbook_key = nexpose_workbook_keys.get(upload_field)
+                    if workbook_key:
+                        workbook_payload = normalize_workbook_payload(project.workbook_data)
+                        default_values = copy.deepcopy(WORKBOOK_DEFAULTS.get(workbook_key))
+                        if default_values is not None:
+                            workbook_payload[workbook_key] = default_values
+                        else:
+                            workbook_payload.pop(workbook_key, None)
+                        project.workbook_data = workbook_payload
+                        project.save(update_fields=["workbook_data"])
 
                     data_file = ProjectDataFile(
                         project=project,
