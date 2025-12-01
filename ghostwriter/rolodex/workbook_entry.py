@@ -695,7 +695,12 @@ def build_workbook_entry_payload(
             existing_dns.update(normalized_dns)
             normalized_workbook["dns"] = existing_dns
 
+    posted_nexpose_keys: set[str] = set()
     if isinstance(areas, Mapping):
+        for area_key in areas.keys():
+            if area_key in {"external_nexpose", "internal_nexpose", "iot_iomt_nexpose"}:
+                posted_nexpose_keys.add(area_key)
+
         for area_key, area_payload in areas.items():
             normalized_area = _normalize_area_payload(area_key, area_payload)
             area_provided = isinstance(area_payload, Mapping)
@@ -777,8 +782,12 @@ def build_workbook_entry_payload(
                 # sections (for example, External Nexpose) cannot bleed into the current
                 # area via previously merged workbook state. The modal sends every field, so
                 # combine the defaults with only the freshly normalized payload.
-                default_payload = deepcopy(WORKBOOK_DEFAULTS.get(area_key, {}))
-                merged_area = default_payload if isinstance(default_payload, dict) else {}
+                base_area = (
+                    deepcopy(WORKBOOK_DEFAULTS.get(area_key, {}))
+                    if area_key in posted_nexpose_keys
+                    else {}
+                )
+                merged_area = base_area if isinstance(base_area, dict) else {}
                 merged_area.update(normalized_area)
                 normalized_workbook[area_key] = merged_area
                 continue
