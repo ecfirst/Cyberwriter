@@ -189,6 +189,35 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                 if field in payload:
                     normalized[field] = _as_int(payload.get(field))
         return normalized
+    if area in {"external_nexpose", "internal_nexpose", "iot_iomt_nexpose"}:
+        if not isinstance(payload, Mapping):
+            return normalized
+
+        numeric_fields = {
+            "total",
+            "total_high",
+            "total_med",
+            "total_low",
+            "unique",
+            "unique_high_med",
+            "unique_majority",
+            "unique_majority_sub",
+            "unique_minority",
+        }
+
+        text_fields = {"majority_type", "minority_type", "unique_majority_sub_info"}
+
+        for field in numeric_fields:
+            if field in payload:
+                normalized[field] = _as_int(payload.get(field))
+
+        for field in text_fields:
+            if field in payload:
+                text_value = str(payload.get(field) or "").strip()
+                normalized[field] = text_value or None
+
+        return normalized
+
     if area == "firewall" and isinstance(payload, Mapping):
         normalized_devices: list[dict[str, Any]] = []
         raw_devices = payload.get("devices")

@@ -1358,6 +1358,42 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
             [entry.get("domain") for entry in cap_entries], ["corp.example.com"]
         )
 
+    def test_external_nexpose_values_saved(self):
+        payload = {
+            "areas": {
+                "external_nexpose": {
+                    "total": 5,
+                    "total_high": 2,
+                    "unique_high_med": 3,
+                    "majority_type": "OOD Software or Missing Patches",
+                    "unique_majority_sub_info": "Sample info",
+                }
+            }
+        }
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        nexpose_state = (
+            self.project.workbook_data.get("external_nexpose")
+            if isinstance(self.project.workbook_data, dict)
+            else {}
+        )
+
+        self.assertEqual(nexpose_state.get("total"), 5)
+        self.assertEqual(nexpose_state.get("total_high"), 2)
+        self.assertEqual(nexpose_state.get("unique_high_med"), 3)
+        self.assertEqual(
+            nexpose_state.get("majority_type"), "OOD Software or Missing Patches"
+        )
+        self.assertEqual(nexpose_state.get("unique_majority_sub_info"), "Sample info")
+
     def test_iam_save_does_not_persist_placeholder_password_policy(self):
         self.project.workbook_data = {}
         self.project.save(update_fields=["workbook_data"])
