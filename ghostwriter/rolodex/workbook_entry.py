@@ -781,6 +781,7 @@ def build_workbook_entry_payload(
                 )
                 merged_area = default_payload if isinstance(default_payload, dict) else {}
                 if isinstance(existing_area, Mapping):
+                    existing_area = deepcopy(existing_area)
                     merged_area.update(
                         {k: v for k, v in existing_area.items() if k in merged_area}
                     )
