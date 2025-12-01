@@ -3186,7 +3186,19 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
         dns_payload = payload.get("dns") if isinstance(payload, dict) else None
         artifacts_updated = False
-        areas_payload = payload.get("areas") if isinstance(payload.get("areas"), dict) else {}
+        raw_areas_payload = payload.get("areas") if isinstance(payload.get("areas"), dict) else {}
+
+        areas_payload: Dict[str, Any] = {}
+        if isinstance(raw_areas_payload, dict):
+            # Ensure each area update is isolated so shared references across areas (for example,
+            # an external Nexpose payload being re-used for the internal section) do not bleed
+            # into one another when applying updates.
+            for area_key, area_payload in raw_areas_payload.items():
+                if not isinstance(area_payload, Mapping):
+                    areas_payload[area_key] = area_payload
+                    continue
+
+                areas_payload[area_key] = copy.deepcopy(area_payload)
 
         if isinstance(dns_payload, dict):
             artifacts = (
