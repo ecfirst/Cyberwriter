@@ -3565,9 +3565,8 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         )
 
         project.workbook_data = workbook_payload
-        update_fields = ["workbook_data"]
         if artifacts_updated:
-            update_fields.append("data_artifacts")
+            project.save(update_fields=["workbook_data", "data_artifacts"])
 
         project.rebuild_data_artifacts()
 
@@ -3594,7 +3593,9 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.data_responses = ensure_data_responses_defaults(refreshed_responses)
         project.save(update_fields=["data_responses"])
 
-        return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts})
+        return JsonResponse(
+            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+        )
 
     def _handle_endpoint_csv_upload(self, request, project):
         upload = request.FILES.get("endpoint_csv")
