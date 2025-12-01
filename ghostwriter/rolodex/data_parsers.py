@@ -3612,6 +3612,8 @@ NEXPOSE_XML_ARTIFACT_MAP = {
     "internal": "internal_nexpose_findings",
     "iot": "iot_iomt_nexpose_findings",
     "iomt": "iot_iomt_nexpose_findings",
+    "iot_iomt": "iot_iomt_nexpose_findings",
+    "iot-iomt": "iot_iomt_nexpose_findings",
 }
 
 NEXPOSE_FINDINGS_VULNERABILITY_MAP = {

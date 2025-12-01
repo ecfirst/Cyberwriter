@@ -10,7 +10,7 @@ from typing import Any, Dict, Mapping, MutableMapping, Optional
 
 from ghostwriter.reporting.models import RiskScoreRangeMapping
 from ghostwriter.rolodex.models import normalize_project_scoping
-from ghostwriter.rolodex.workbook_defaults import normalize_workbook_payload
+from ghostwriter.rolodex.workbook_defaults import WORKBOOK_DEFAULTS, normalize_workbook_payload
 
 
 _SCORE_PRECISION = Decimal("0.1")
@@ -698,7 +698,9 @@ def build_workbook_entry_payload(
     if isinstance(areas, Mapping):
         for area_key, area_payload in areas.items():
             normalized_area = _normalize_area_payload(area_key, area_payload)
-            if not normalized_area:
+            area_provided = isinstance(area_payload, Mapping)
+
+            if not normalized_area and not area_provided:
                 continue
 
             if area_key == "password":
@@ -768,6 +770,22 @@ def build_workbook_entry_payload(
 
             if area_key == "endpoint":
                 normalized_workbook["endpoint"] = dict(normalized_area)
+                continue
+
+            if area_key in {"external_nexpose", "internal_nexpose", "iot_iomt_nexpose"}:
+                default_payload = deepcopy(WORKBOOK_DEFAULTS.get(area_key, {}))
+                existing_area = (
+                    normalized_workbook.get(area_key)
+                    if isinstance(normalized_workbook.get(area_key), Mapping)
+                    else {}
+                )
+                merged_area = default_payload if isinstance(default_payload, dict) else {}
+                if isinstance(existing_area, Mapping):
+                    merged_area.update(
+                        {k: v for k, v in existing_area.items() if k in merged_area}
+                    )
+                merged_area.update(normalized_area)
+                normalized_workbook[area_key] = merged_area
                 continue
 
             normalized_workbook.setdefault(area_key, {}).update(normalized_area)
