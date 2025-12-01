@@ -3581,8 +3581,11 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         )
 
         project.workbook_data = workbook_payload
-        if artifacts_updated:
-            project.save(update_fields=["workbook_data", "data_artifacts"])
+        project.save(
+            update_fields=["workbook_data", "data_artifacts"]
+            if artifacts_updated
+            else ["workbook_data"]
+        )
 
         project.rebuild_data_artifacts()
 
