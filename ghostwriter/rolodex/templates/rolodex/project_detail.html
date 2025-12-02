@@ -3454,7 +3454,10 @@
             if (config && typeof config.serializer === 'function') {
               const serialized = config.serializer({areaKey: areaKey, subkey: subkey, workbookKey: workbookKey});
               if (serialized && typeof serialized === 'object') {
-                payload.areas[workbookKey] = serialized;
+                const existingAreaPayload = (payload.areas[workbookKey] && typeof payload.areas[workbookKey] === 'object')
+                  ? payload.areas[workbookKey]
+                  : {};
+                payload.areas[workbookKey] = Object.assign({}, existingAreaPayload, serialized);
               }
               return;
             }
@@ -3476,7 +3479,10 @@
                 fieldPayload[field.key] = rawValue || null;
               }
             });
-            payload.areas[workbookKey] = fieldPayload;
+            const existingAreaPayload = (payload.areas[workbookKey] && typeof payload.areas[workbookKey] === 'object')
+              ? payload.areas[workbookKey]
+              : {};
+            payload.areas[workbookKey] = Object.assign({}, existingAreaPayload, fieldPayload);
           });
           submitWorkbookUpdate(payload, function() {
             if (modalId) {
@@ -3898,6 +3904,10 @@
         };
 
         const removeWirelessSegmentation = function(areaKey, modalId) {
+          const segmentationInput = document.getElementById(buildAreaFieldId(areaKey, 'segmentation', 'internal_access'));
+          if (segmentationInput) {
+            segmentationInput.value = '';
+          }
           const payload = {
             areas: {
               wireless: {
