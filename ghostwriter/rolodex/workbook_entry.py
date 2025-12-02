@@ -189,6 +189,32 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                 if field in payload:
                     normalized[field] = _as_int(payload.get(field))
         return normalized
+    if area == "wireless" and isinstance(payload, Mapping):
+        for field in (
+            "open_count",
+            "psk_count",
+            "hidden_count",
+            "rogue_count",
+        ):
+            if field in payload:
+                normalized[field] = _as_int(payload.get(field))
+
+        for field in ("rogue_signals", "weak_psks", "802_1x_used"):
+            if field in payload:
+                normalized[field] = _normalize_yes_no(payload.get(field))
+
+        wep_payload = payload.get("wep_inuse")
+        if isinstance(wep_payload, Mapping):
+            confirm_value = _normalize_yes_no(wep_payload.get("confirm"))
+            key_cracked_value = _normalize_yes_no(wep_payload.get("key_cracked"))
+            wep_state: dict[str, Any] = {}
+            if confirm_value:
+                wep_state["confirm"] = confirm_value
+            if key_cracked_value:
+                wep_state["key_cracked"] = key_cracked_value
+            normalized["wep_inuse"] = wep_state
+
+        return normalized
     if area == "firewall" and isinstance(payload, Mapping):
         normalized_devices: list[dict[str, Any]] = []
         raw_devices = payload.get("devices")

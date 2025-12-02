@@ -3833,6 +3833,28 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 }
             )
 
+        if payload.get("remove_wireless"):
+            workbook_payload = normalize_workbook_payload(project.workbook_data)
+            default_wireless = copy.deepcopy(WORKBOOK_DEFAULTS.get("wireless"))
+            if default_wireless is not None:
+                workbook_payload["wireless"] = default_wireless
+            else:
+                workbook_payload.pop("wireless", None)
+
+            project.workbook_data = workbook_payload
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
+
+            return JsonResponse(
+                {
+                    "workbook_data": project.workbook_data,
+                    "data_artifacts": project.data_artifacts,
+                    "cap": project.cap,
+                }
+            )
+
         if payload.get("remove_web"):
             requirement_slug = _slugify_identifier("required", "burp_xml.xml")
             for data_file in project.data_files.filter(requirement_slug=requirement_slug):

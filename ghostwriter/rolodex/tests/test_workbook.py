@@ -641,3 +641,40 @@ class WorkbookEntryIsolationTests(SimpleTestCase):
             "Insecure System Configurations",
         )
         self.assertIsNone(payload["external_nexpose"].get("majority_type"))
+
+    def test_wireless_payload_is_normalized(self):
+        class DummyProject:
+            def __init__(self):
+                self.workbook_data = {}
+                self.scoping = {}
+                self.scoping_weights = {}
+
+        project = DummyProject()
+
+        payload = build_workbook_entry_payload(
+            project=project,
+            areas={
+                "wireless": {
+                    "open_count": "5",
+                    "psk_count": 2,
+                    "hidden_count": "0",
+                    "rogue_count": "3",
+                    "rogue_signals": "yes",
+                    "weak_psks": "No",
+                    "wep_inuse": {"confirm": "YES", "key_cracked": "n"},
+                    "802_1x_used": False,
+                }
+            },
+        )
+
+        wireless = payload["wireless"]
+        self.assertEqual(wireless.get("open_count"), 5)
+        self.assertEqual(wireless.get("psk_count"), 2)
+        self.assertEqual(wireless.get("hidden_count"), 0)
+        self.assertEqual(wireless.get("rogue_count"), 3)
+        self.assertEqual(wireless.get("rogue_signals"), "Yes")
+        self.assertEqual(wireless.get("weak_psks"), "No")
+        self.assertEqual(wireless.get("802_1x_used"), "No")
+        wep_state = wireless.get("wep_inuse") or {}
+        self.assertEqual(wep_state.get("confirm"), "Yes")
+        self.assertEqual(wep_state.get("key_cracked"), "No")

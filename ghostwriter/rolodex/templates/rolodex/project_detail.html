@@ -2349,6 +2349,101 @@
           return Object.keys(payload).length ? payload : null;
         }
 
+        function ensureWirelessState() {
+          const wirelessState = (workbookState && typeof workbookState.wireless === 'object') ? workbookState.wireless : {};
+
+          const normalizeNumber = function(value) {
+            if (typeof value === 'number' && !Number.isNaN(value)) {
+              return value;
+            }
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          const normalizeYesNo = function(value) {
+            if (typeof value === 'boolean') {
+              return value ? 'Yes' : 'No';
+            }
+            const text = (value || '').toString().trim().toLowerCase();
+            if (!text) {
+              return null;
+            }
+            return text === 'yes' ? 'Yes' : text === 'no' ? 'No' : null;
+          };
+
+          ['open_count', 'psk_count', 'hidden_count', 'rogue_count'].forEach(function(key) {
+            if (typeof wirelessState[key] === 'undefined') {
+              wirelessState[key] = null;
+            } else {
+              wirelessState[key] = normalizeNumber(wirelessState[key]);
+            }
+          });
+
+          ['rogue_signals', 'weak_psks', '802_1x_used'].forEach(function(key) {
+            if (typeof wirelessState[key] !== 'undefined') {
+              wirelessState[key] = normalizeYesNo(wirelessState[key]);
+            }
+          });
+
+          const wepState = (wirelessState.wep_inuse && typeof wirelessState.wep_inuse === 'object') ? wirelessState.wep_inuse : {};
+          wepState.confirm = normalizeYesNo(wepState.confirm);
+          wepState.key_cracked = normalizeYesNo(wepState.key_cracked);
+          wirelessState.wep_inuse = wepState;
+
+          workbookState.wireless = wirelessState;
+          return wirelessState;
+        }
+
+        function serializeWirelessPayload() {
+          const wirelessState = ensureWirelessState();
+
+          const normalizeNumber = function(value) {
+            if (typeof value === 'number' && !Number.isNaN(value)) {
+              return value;
+            }
+            if (value === null || typeof value === 'undefined') {
+              return null;
+            }
+            const parsed = Number(value);
+            return Number.isNaN(parsed) ? null : parsed;
+          };
+
+          const normalizeYesNo = function(value) {
+            const text = (value || '').toString().trim().toLowerCase();
+            if (text === 'yes') {
+              return 'Yes';
+            }
+            if (text === 'no') {
+              return 'No';
+            }
+            return null;
+          };
+
+          const payload = {
+            open_count: normalizeNumber(wirelessState.open_count),
+            psk_count: normalizeNumber(wirelessState.psk_count),
+            hidden_count: normalizeNumber(wirelessState.hidden_count),
+            rogue_count: normalizeNumber(wirelessState.rogue_count),
+            rogue_signals: normalizeYesNo(wirelessState.rogue_signals),
+            weak_psks: normalizeYesNo(wirelessState.weak_psks),
+            802_1x_used: normalizeYesNo(wirelessState['802_1x_used']),
+          };
+
+          const wepConfirm = normalizeYesNo(wirelessState.wep_inuse && wirelessState.wep_inuse.confirm);
+          const wepKeyCracked = normalizeYesNo(wirelessState.wep_inuse && wirelessState.wep_inuse.key_cracked);
+          if (wepConfirm !== null || wepKeyCracked !== null) {
+            payload.wep_inuse = {};
+            if (wepConfirm !== null) {
+              payload.wep_inuse.confirm = wepConfirm;
+            }
+            if (wepKeyCracked !== null) {
+              payload.wep_inuse.key_cracked = wepKeyCracked;
+            }
+          }
+
+          return payload;
+        }
+
         function renderFirewallSection(container, areaKey, modalId, mode) {
           const triggerRerender = function() {
             firewallRenderCallbacks.forEach(function(cb) { cb(); });
@@ -2728,6 +2823,136 @@
           renderFooter();
         }
 
+        function renderWirelessWalkthru(container, areaKey, modalId) {
+          const wirelessState = ensureWirelessState();
+          container.innerHTML = '';
+
+          const makeNumberGroup = function(labelText, fieldKey) {
+            const group = document.createElement('div');
+            group.className = 'form-group';
+            const label = document.createElement('label');
+            label.className = 'font-weight-bold';
+            label.textContent = labelText;
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.className = 'form-control';
+            input.setAttribute('data-area-field', areaKey);
+            input.value = typeof wirelessState[fieldKey] === 'number' ? wirelessState[fieldKey] : '';
+            input.addEventListener('input', function() {
+              const value = input.value === '' ? null : Number(input.value);
+              wirelessState[fieldKey] = Number.isNaN(value) ? null : value;
+              updateWorkbookCardProgress(areaKey);
+            });
+            group.appendChild(label);
+            group.appendChild(input);
+            return group;
+          };
+
+          const makeYesNoGroup = function(labelText, getValue, setValue) {
+            const group = document.createElement('div');
+            group.className = 'form-group';
+            const label = document.createElement('label');
+            label.className = 'font-weight-bold';
+            label.textContent = labelText;
+            const select = document.createElement('select');
+            select.className = 'form-control';
+            select.setAttribute('data-area-field', areaKey);
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Select';
+            select.appendChild(placeholder);
+            ['Yes', 'No'].forEach(function(option) {
+              const opt = document.createElement('option');
+              opt.value = option;
+              opt.textContent = option;
+              if ((getValue() || '').toString() === option) {
+                opt.selected = true;
+              }
+              select.appendChild(opt);
+            });
+            select.addEventListener('change', function() {
+              setValue(select.value || null);
+              updateWorkbookCardProgress(areaKey);
+            });
+            group.appendChild(label);
+            group.appendChild(select);
+            return {group: group, select: select};
+          };
+
+          container.appendChild(makeNumberGroup('Open Count', 'open_count'));
+          container.appendChild(makeNumberGroup('PSK Count', 'psk_count'));
+          container.appendChild(makeNumberGroup('Hidden Count', 'hidden_count'));
+          container.appendChild(makeNumberGroup('Rogue Count', 'rogue_count'));
+
+          container.appendChild(makeYesNoGroup(
+            'Do any of the rogues have strong signals or appear to be on the same equipment as the client?',
+            function() { return wirelessState.rogue_signals; },
+            function(val) { wirelessState.rogue_signals = val; },
+          ).group);
+
+          container.appendChild(makeYesNoGroup(
+            "Are any of the PSK's in use weak?",
+            function() { return wirelessState.weak_psks; },
+            function(val) { wirelessState.weak_psks = val; },
+          ).group);
+
+          const wepConfirm = makeYesNoGroup(
+            'Is WEP in use on the wireless networks?',
+            function() { return wirelessState.wep_inuse && wirelessState.wep_inuse.confirm; },
+            function(val) {
+              if (!wirelessState.wep_inuse || typeof wirelessState.wep_inuse !== 'object') {
+                wirelessState.wep_inuse = {};
+              }
+              wirelessState.wep_inuse.confirm = val || null;
+            },
+          );
+          container.appendChild(wepConfirm.group);
+
+          const wepKeyCracked = makeYesNoGroup(
+            'Were you able to crack the WEP key?',
+            function() { return wirelessState.wep_inuse && wirelessState.wep_inuse.key_cracked; },
+            function(val) {
+              if (!wirelessState.wep_inuse || typeof wirelessState.wep_inuse !== 'object') {
+                wirelessState.wep_inuse = {};
+              }
+              wirelessState.wep_inuse.key_cracked = val || null;
+            },
+          );
+          container.appendChild(wepKeyCracked.group);
+
+          const updateWepFollowup = function() {
+            const confirmValue = (wirelessState.wep_inuse && wirelessState.wep_inuse.confirm) || '';
+            const isYes = confirmValue.toLowerCase() === 'yes';
+            wepKeyCracked.group.classList.toggle('d-none', !isYes);
+            if (!isYes) {
+              if (wirelessState.wep_inuse && typeof wirelessState.wep_inuse === 'object') {
+                wirelessState.wep_inuse.key_cracked = null;
+              }
+              wepKeyCracked.select.value = '';
+            }
+          };
+          wepConfirm.select.addEventListener('change', updateWepFollowup);
+          updateWepFollowup();
+
+          container.appendChild(makeYesNoGroup(
+            'Is 802.1x authentication used for all non-Guest wireless access?',
+            function() { return wirelessState['802_1x_used']; },
+            function(val) { wirelessState['802_1x_used'] = val; },
+          ).group);
+
+          const removeWrapper = document.createElement('div');
+          removeWrapper.className = 'mt-2';
+          const removeButton = document.createElement('button');
+          removeButton.type = 'button';
+          removeButton.className = 'btn btn-outline-danger';
+          removeButton.textContent = 'Remove Walkthru Data';
+          removeButton.addEventListener('click', function() {
+            removeWirelessData(areaKey, modalId);
+          });
+          removeWrapper.appendChild(removeButton);
+          container.appendChild(removeWrapper);
+        }
+
         const areaSubsectionConfig = {
           osint: {
             label: 'OSINT',
@@ -2755,6 +2980,12 @@
             workbookKey: 'password',
             renderer: 'password',
             serializer: serializePasswordPayload,
+          },
+          wireless_walkthru: {
+            label: 'Walkthru',
+            workbookKey: 'wireless',
+            renderer: 'wireless_walkthru',
+            serializer: serializeWirelessPayload,
           },
           external_web: {
             label: 'Web',
@@ -3786,6 +4017,15 @@
           submitWorkbookUpdate(payload, null, {
             reopenModalId: modalId,
             forceCloseModalId: modalId,
+          });
+        };
+
+        const removeWirelessData = function(areaKey, modalId) {
+          const payload = {remove_wireless: true};
+          submitWorkbookUpdate(payload, null, {
+            reopenModalId: modalId,
+            forceCloseModalId: modalId,
+            afterRender: function() { updateWorkbookCardProgress(areaKey); },
           });
         };
 
@@ -5498,6 +5738,8 @@
                 renderAdDomains(subBody, areaKey, modalId);
               } else if (config && config.renderer === 'password') {
                 renderPasswordPolicies(subBody, areaKey, modalId);
+              } else if (config && config.renderer === 'wireless_walkthru') {
+                renderWirelessWalkthru(subBody, areaKey, modalId);
               } else if (subkey === 'dns') {
                 renderDnsDomains(subBody, areaKey, modalId);
               } else if (config && Array.isArray(config.fields)) {
