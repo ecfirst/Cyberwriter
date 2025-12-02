@@ -2911,6 +2911,7 @@
           wireless_walkthru: {
             label: 'Walkthru',
             workbookKey: 'wireless',
+            serializer: serializeWirelessPayload,
             fields: [
               {key: 'open_count', label: 'Open Count', type: 'number'},
               {key: 'psk_count', label: 'PSK Count', type: 'number'},
@@ -2966,6 +2967,7 @@
           wireless_segmentation: {
             label: 'Segmentation',
             workbookKey: 'wireless',
+            serializer: serializeWirelessPayload,
             fields: [
               {
                 key: 'internal_access',
@@ -3095,6 +3097,54 @@
           }
         };
 
+        const serializeWirelessPayload = function(options) {
+          const areaKey = options.areaKey;
+          const subkey = options.subkey;
+          const workbookKey = options.workbookKey;
+
+          const config = resolveAreaConfig(areaKey, subkey);
+          if (!config || !config.fields) {
+            return null;
+          }
+
+          const payload = {};
+          let wepConfirm;
+          let wepKeyCracked;
+
+          config.fields.forEach(function(field) {
+            const input = document.getElementById(buildAreaFieldId(areaKey, subkey, field.key));
+            if (!input) {
+              return;
+            }
+            const rawValue = (input.value || '').trim();
+            if (field.key === 'wep_confirm') {
+              wepConfirm = rawValue || null;
+              return;
+            }
+            if (field.key === 'wep_key_cracked') {
+              wepKeyCracked = rawValue || null;
+              return;
+            }
+            if (field.type === 'number') {
+              payload[field.key] = rawValue === '' ? null : Number(rawValue);
+            } else if (field.type === 'select') {
+              payload[field.key] = rawValue || null;
+            } else {
+              payload[field.key] = rawValue || null;
+            }
+          });
+
+          if (wepConfirm !== undefined || wepKeyCracked !== undefined) {
+            const normalizedConfirm = wepConfirm || null;
+            const normalizedKeyCracked = (normalizedConfirm || '').toLowerCase() === 'yes'
+              ? (wepKeyCracked || null)
+              : null;
+            payload.wep_inuse = {confirm: normalizedConfirm, key_cracked: normalizedKeyCracked};
+          }
+
+          return payload;
+        };
+
         const createAreaFieldGroup = function(areaKey, subkey, workbookKey, field) {
           const inlineLayout = field.layout !== 'stacked' && field.type !== 'text';
           const formGroup = document.createElement('div');
@@ -3119,6 +3169,13 @@
               existing = unsupportedState.confirm;
             } else if (existing === undefined && field.key === 'unsupported_count') {
               existing = unsupportedState.count;
+            }
+          } else if (areaKey === 'wireless') {
+            const wepState = existingArea.wep_inuse || {};
+            if (existing === undefined && field.key === 'wep_confirm') {
+              existing = wepState.confirm;
+            } else if (existing === undefined && field.key === 'wep_key_cracked') {
+              existing = wepState.key_cracked;
             }
           }
 
@@ -3895,7 +3952,45 @@
         };
 
         const removeWirelessData = function(areaKey, modalId) {
-          const payload = {remove_wireless: true};
+          const wepConfirmInput = document.getElementById(buildAreaFieldId(areaKey, 'walkthru', 'wep_confirm'));
+          const wepKeyCrackedInput = document.getElementById(buildAreaFieldId(areaKey, 'walkthru', 'wep_key_cracked'));
+
+          ['open_count', 'psk_count', 'hidden_count', 'rogue_count'].forEach(function(fieldKey) {
+            const input = document.getElementById(buildAreaFieldId(areaKey, 'walkthru', fieldKey));
+            if (input) {
+              input.value = '';
+            }
+          });
+
+          ['rogue_signals', 'weak_psks', '802_1x_used'].forEach(function(fieldKey) {
+            const select = document.getElementById(buildAreaFieldId(areaKey, 'walkthru', fieldKey));
+            if (select) {
+              select.value = '';
+            }
+          });
+
+          if (wepConfirmInput) {
+            wepConfirmInput.value = '';
+          }
+          if (wepKeyCrackedInput) {
+            wepKeyCrackedInput.value = '';
+          }
+          updateWirelessWepFollowup(areaKey, 'walkthru');
+
+          const payload = {
+            areas: {
+              wireless: {
+                open_count: null,
+                psk_count: null,
+                hidden_count: null,
+                rogue_count: null,
+                rogue_signals: null,
+                weak_psks: null,
+                wep_inuse: {confirm: null, key_cracked: null},
+                '802_1x_used': null,
+              },
+            },
+          };
           submitWorkbookUpdate(payload, null, {
             reopenModalId: modalId,
             forceCloseModalId: modalId,
