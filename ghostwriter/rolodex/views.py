@@ -3887,6 +3887,31 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 }
             )
 
+        if payload.get("remove_wireless"):
+            workbook_payload = normalize_workbook_payload(project.workbook_data)
+            default_values = copy.deepcopy(WORKBOOK_DEFAULTS.get("wireless"))
+            if default_values is not None:
+                workbook_payload["wireless"] = default_values
+            else:
+                workbook_payload.pop("wireless", None)
+
+            cap_payload = dict(project.cap or {})
+            cap_payload.pop("wireless", None)
+
+            project.workbook_data = workbook_payload
+            project.cap = cap_payload
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
+
+            return JsonResponse(
+                {
+                    "workbook_data": project.workbook_data,
+                    "data_artifacts": project.data_artifacts,
+                }
+            )
+
         nexpose_removal_key = payload.get("remove_nexpose")
         if isinstance(nexpose_removal_key, str) and nexpose_removal_key:
             nexpose_removal_key = nexpose_removal_key.strip()
