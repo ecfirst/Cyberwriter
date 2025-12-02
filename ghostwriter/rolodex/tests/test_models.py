@@ -484,6 +484,18 @@ class ProjectScopingNormalizationTests(TestCase):
         normalized = normalize_project_scoping(payload)
         self.assertFalse(normalized["cloud"]["system_configuration"])
 
+    def test_category_selected_derives_from_options_when_missing(self):
+        payload = {
+            "wireless": {
+                "walkthru": True,
+            }
+        }
+
+        normalized = normalize_project_scoping(payload)
+
+        self.assertTrue(normalized["wireless"]["selected"])
+        self.assertTrue(normalized["wireless"]["walkthru"])
+
 
 class ProjectScopingWeightTests(TestCase):
     """Validate helper utilities for project scoping weights."""

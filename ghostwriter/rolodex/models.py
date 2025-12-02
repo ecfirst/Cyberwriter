@@ -133,10 +133,13 @@ def normalize_project_scoping(payload: Optional[Dict[str, Any]]) -> Dict[str, Di
         if category_key not in normalized or not isinstance(category_payload, dict):
             continue
         normalized_category = normalized[category_key]
-        normalized_category["selected"] = bool(category_payload.get("selected"))
-        for option_key in normalized_category.keys():
-            if option_key == "selected":
-                continue
+        option_keys = [option for option in normalized_category.keys() if option != "selected"]
+        selected = bool(category_payload.get("selected"))
+        if not selected:
+            selected = any(bool(category_payload.get(option_key)) for option_key in option_keys)
+
+        normalized_category["selected"] = selected
+        for option_key in option_keys:
             normalized_category[option_key] = bool(category_payload.get(option_key))
 
         if (
