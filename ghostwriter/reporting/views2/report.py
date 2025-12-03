@@ -1,5 +1,7 @@
 
 from datetime import datetime
+import base64
+import binascii
 import io
 import os
 import logging
@@ -45,9 +47,296 @@ from ghostwriter.rolodex.data_parsers import (
     has_open_nexpose_matrix_gaps,
     has_open_web_issue_matrix_gaps,
 )
+from xlsxwriter.workbook import Workbook
 
 logger = logging.getLogger(__name__)
 channel_layer = get_channel_layer()
+
+
+def _stringify_cell(value):
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(_stringify_cell(item) for item in value)
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {v}" for k, v in value.items())
+    return str(value)
+
+
+def _value_from_row(row, header):
+    if not isinstance(row, dict):
+        return ""
+    normalized_candidates = [
+        header,
+        header.lower(),
+        header.replace(" ", "_"),
+        header.replace(" ", "").lower(),
+    ]
+    for key in normalized_candidates:
+        if key in row:
+            return row.get(key)
+    return ""
+
+
+class SupplementalWorkbookBuilder:
+    def __init__(self):
+        self.output = io.BytesIO()
+        self.workbook = Workbook(
+            self.output,
+            {
+                "in_memory": True,
+                "strings_to_formulas": False,
+                "strings_to_urls": False,
+            },
+        )
+        self.header_format = self.workbook.add_format(
+            {"bold": True, "bg_color": "#0066CC", "border": 1}
+        )
+        self.data_format = self.workbook.add_format({"border": 1})
+        self.banded_format = self.workbook.add_format(
+            {"border": 1, "bg_color": "#99CCFF"}
+        )
+        self.alert_format = self.workbook.add_format(
+            {"border": 1, "font_color": "#FF0000"}
+        )
+        self.alert_banded_format = self.workbook.add_format(
+            {"border": 1, "bg_color": "#99CCFF", "font_color": "#FF0000"}
+        )
+
+    @staticmethod
+    def _sanitize_sheet_name(name: str) -> str:
+        return name[:31] if name else "Sheet1"
+
+    def _pick_format(self, index: int, highlight: bool = False):
+        even_row = (index + 1) % 2 == 0
+        if highlight:
+            return self.alert_banded_format if even_row else self.alert_format
+        return self.banded_format if even_row else self.data_format
+
+    def add_table(self, name, headers, rows, highlight_key: str = ""):
+        worksheet = self.workbook.add_worksheet(self._sanitize_sheet_name(name))
+        col_widths = [len(str(header)) for header in headers]
+        for col, header in enumerate(headers):
+            worksheet.write(0, col, header, self.header_format)
+
+        for row_index, row in enumerate(rows, start=1):
+            highlight = False
+            if highlight_key:
+                highlight = str(row.get(highlight_key, "")).lower() == "read-write"
+
+            for col, header in enumerate(headers):
+                value = _stringify_cell(_value_from_row(row, header))
+                col_widths[col] = max(col_widths[col], len(str(value)))
+                worksheet.write(row_index, col, value, self._pick_format(row_index - 1, highlight))
+
+        for col, width in enumerate(col_widths):
+            worksheet.set_column(col, col, width + 2)
+
+    def close(self) -> bytes:
+        self.workbook.close()
+        return self.output.getvalue()
+
+
+class SupplementalDocumentGenerator:
+    def __init__(self, project):
+        self.project = project
+        self.client_name = getattr(project.client, "name", "Client") if project else "Client"
+        self.artifacts = project.data_artifacts if isinstance(getattr(project, "data_artifacts", None), dict) else {}
+
+    def _add_workbook(self, worksheets, filename):
+        builder = SupplementalWorkbookBuilder()
+        added = False
+        for sheet_name, headers, rows, highlight_key in worksheets:
+            if rows:
+                builder.add_table(sheet_name, headers, rows, highlight_key=highlight_key)
+                added = True
+        if not added:
+            return None
+        data = builder.close()
+        if data:
+            return filename, data
+        return None
+
+    def _osint_workbook(self):
+        rows = [entry for entry in self.artifacts.get("osint", []) if isinstance(entry, dict)]
+        if not rows:
+            return None
+        filename = f"{self.client_name} OSINT Report.xlsx"
+        return self._add_workbook([
+            ("OSINT", ["Domain", "Hostname", "altNames", "IP", "Port", "Info"], rows, ""),
+        ], filename)
+
+    def _dns_findings_workbook(self):
+        domains = self.artifacts.get("dns_findings") if isinstance(self.artifacts.get("dns_findings"), dict) else {}
+        worksheets = []
+        for domain, entries in domains.items():
+            if not isinstance(entries, list):
+                continue
+            filtered = [entry for entry in entries if isinstance(entry, dict)]
+            if filtered:
+                worksheets.append(
+                    (
+                        domain,
+                        ["Test", "Status", "Info"],
+                        filtered,
+                        "",
+                    )
+                )
+        if not worksheets:
+            return None
+        filename = f"{self.client_name} DNS Report.xlsx"
+        return self._add_workbook(worksheets, filename)
+
+    def _dns_records_workbook(self):
+        records = self.artifacts.get("dns_records") if isinstance(self.artifacts.get("dns_records"), dict) else {}
+        worksheets = []
+        headers = [
+            "type",
+            "zone_transfer",
+            "ns_server",
+            "domain",
+            "mname",
+            "address",
+            "target",
+            "recursive",
+            "Version",
+            "exchange",
+            "name",
+            "strings",
+        ]
+        for domain, entries in records.items():
+            if not isinstance(entries, list):
+                continue
+            filtered = [entry for entry in entries if isinstance(entry, dict)]
+            if filtered:
+                worksheets.append((domain, headers, filtered, ""))
+        if not worksheets:
+            return None
+        filename = f"{self.client_name} DNS Records.xlsx"
+        return self._add_workbook(worksheets, filename)
+
+    def _nexpose_software_workbook(self):
+        nexpose = self.artifacts.get("internal_nexpose_findings")
+        software_entries = nexpose.get("software") if isinstance(nexpose, dict) else None
+        rows = [entry for entry in software_entries or [] if isinstance(entry, dict)]
+        if not rows:
+            return None
+        filename = f"{self.client_name} Internal System Installed Software.xlsx"
+        return self._add_workbook([
+            ("Software", ["System", "Software", "Version"], rows, ""),
+        ], filename)
+
+    def _ad_workbook(self, key, headers, title):
+        ad_section = self.artifacts.get("ad") if isinstance(self.artifacts.get("ad"), dict) else {}
+        worksheets = []
+        for domain, payload in ad_section.items():
+            if not isinstance(payload, dict):
+                continue
+            entries = payload.get(key)
+            filtered = [entry for entry in entries or [] if isinstance(entry, dict)]
+            if filtered:
+                worksheets.append((domain, headers, filtered, ""))
+        if not worksheets:
+            return None
+        filename = f"{self.client_name} {title}.xlsx"
+        return self._add_workbook(worksheets, filename)
+
+    def _snmp_workbook(self):
+        snmp_entries = [entry for entry in self.artifacts.get("snmp", []) if isinstance(entry, dict)]
+        snmp_hosts = [entry for entry in self.artifacts.get("snmp_hosts", []) if isinstance(entry, dict)]
+        if not snmp_entries and not snmp_hosts:
+            return None
+        worksheets = []
+        if snmp_entries:
+            worksheets.append(
+                (
+                    "SNMP",
+                    ["Host", "String", "Desc", "Access"],
+                    snmp_entries,
+                    "Access",
+                )
+            )
+        if snmp_hosts:
+            worksheets.append(
+                (
+                    "Hosts",
+                    ["Host"],
+                    snmp_hosts,
+                    "",
+                )
+            )
+        filename = f"{self.client_name} Insecure SNMP Community String Findings.xlsx"
+        return self._add_workbook(worksheets, filename)
+
+    def _processed_payload(self, key, default_name):
+        payload = self.artifacts.get(key)
+        if not isinstance(payload, dict):
+            return None
+        workbook_b64 = payload.get("xlsx_base64")
+        if not workbook_b64:
+            return None
+        try:
+            workbook_bytes = base64.b64decode(workbook_b64)
+        except (ValueError, binascii.Error):  # pragma: no cover - defensive guard
+            logger.exception("Failed to decode %s XLSX payload", key)
+            return None
+        filename = payload.get("xlsx_filename") or f"{self.client_name} {default_name}.xlsx"
+        return filename, workbook_bytes
+
+    def _endpoint_processed_payloads(self):
+        artifacts = self.artifacts.get("endpoint") if isinstance(self.artifacts.get("endpoint"), dict) else {}
+        metrics = artifacts.get("metrics") if isinstance(artifacts.get("metrics"), dict) else {}
+        payloads = []
+        for domain, payload in metrics.items():
+            if not isinstance(payload, dict):
+                continue
+            workbook_b64 = payload.get("xlsx_base64")
+            if not workbook_b64:
+                continue
+            try:
+                workbook_bytes = base64.b64decode(workbook_b64)
+            except (ValueError, binascii.Error):  # pragma: no cover - defensive guard
+                logger.exception("Failed to decode endpoint XLSX payload for domain %s", domain)
+                continue
+            filename = (
+                payload.get("xlsx_filename")
+                or f"{self.client_name} Detailed Endpoint Findings{f' - {domain}' if domain else ''}.xlsx"
+            )
+            payloads.append((filename, workbook_bytes))
+        return payloads
+
+    def generate(self):
+        files = []
+
+        for builder in (
+            self._osint_workbook,
+            self._dns_findings_workbook,
+            self._dns_records_workbook,
+            self._nexpose_software_workbook,
+            lambda: self._ad_workbook("domain_admins", ["Account", "Password Last Set"], "IAM - Domain Admins"),
+            lambda: self._ad_workbook("ent_admins", ["Account", "Password Last Set"], "IAM - Enterprise Admins"),
+            lambda: self._ad_workbook("exp_passwords", ["Account", "Password Last Set"], "IAM - Accounts with Expired Passwords"),
+            lambda: self._ad_workbook("passwords_never_exp", ["Account", "Password Last Set"], "IAM - Accounts with Passwords that Never Expire"),
+            lambda: self._ad_workbook("inactive_accounts", ["Account", "LastLogin", "Creation Date", "Days Past"], "IAM - Potentially Inactive Accounts"),
+            lambda: self._ad_workbook("generic_accounts", ["Account", "Creation Date"], "IAM - Generic Accounts"),
+            lambda: self._ad_workbook("generic_logins", ["Computer", "Username"], "IAM - Systems Logged in with Generic Accounts"),
+            lambda: self._ad_workbook("old_passwords", ["Account", "Password Last Set Date", "Days Past Due"], "IAM – Accounts with Old Passwords"),
+            self._snmp_workbook,
+        ):
+            workbook = builder()
+            if workbook:
+                files.append(workbook)
+
+        for payload in (
+            self._processed_payload("web_metrics", "Detailed Web App Vulnerability Findings"),
+            self._processed_payload("firewall_metrics", "Detailed Firewall Vulnerability Findings"),
+        ):
+            if payload:
+                files.append(payload)
+
+        files.extend(self._endpoint_processed_payloads())
+
+        return files
 
 class ReportListView(RoleBasedAccessControlMixin, ListView):
     """
@@ -849,6 +1138,45 @@ class GenerateReportXLSX(GenerateReportBase):
                 extra_tags="alert-danger",
             )
         return HttpResponseRedirect(reverse("reporting:report_detail", kwargs={"pk": obj.pk}) + "#generate")
+
+
+class GenerateSupplementalDocs(GenerateReportBase):
+    """Generate supplemental XLSX documents from project data artifacts."""
+
+    def get(self, *args, **kwargs):
+        obj = self.object
+        project = getattr(obj, "project", None)
+        if not project:
+            messages.error(
+                self.request,
+                "A project is required to generate supplemental documents.",
+                extra_tags="alert-danger",
+            )
+            return HttpResponseRedirect(reverse("reporting:report_detail", kwargs={"pk": obj.pk}) + "#generate")
+
+        generator = SupplementalDocumentGenerator(project)
+        files = generator.generate()
+
+        if not files:
+            messages.error(
+                self.request,
+                "No supplemental documents are available for this project.",
+                extra_tags="alert-danger",
+            )
+            return HttpResponseRedirect(reverse("reporting:report_detail", kwargs={"pk": obj.pk}) + "#generate")
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "a") as zf:
+            for filename, content in files:
+                zf.writestr(filename, content)
+        zip_buffer.seek(0)
+
+        response = HttpResponse(
+            zip_buffer.read(),
+            content_type="application/x-zip-compressed",
+        )
+        add_content_disposition_header(response, "supplemental_docs.zip")
+        return response
 
 
 class GenerateReportPPTX(GenerateReportBase):

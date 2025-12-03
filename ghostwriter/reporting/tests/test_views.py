@@ -1,7 +1,9 @@
 # Standard Libraries
+import io
 import json
 import logging
 import os
+import zipfile
 from datetime import datetime
 
 # Django Imports
@@ -2254,6 +2256,9 @@ class GenerateReportTests(TestCase):
         cls.pptx_uri = reverse("reporting:generate_pptx", kwargs={"pk": cls.report.pk})
         cls.json_uri = reverse("reporting:generate_json", kwargs={"pk": cls.report.pk})
         cls.all_uri = reverse("reporting:generate_all", kwargs={"pk": cls.report.pk})
+        cls.supplemental_uri = reverse(
+            "reporting:generate_supplemental_docs", kwargs={"pk": cls.report.pk}
+        )
 
     def setUp(self):
         self.client = Client()
@@ -2321,6 +2326,31 @@ class GenerateReportTests(TestCase):
         response = self.client_mgr.get(self.all_uri)
         self.assertEqual(response.status_code, 200, str(response))
         self.assertEqual(response.get("Content-Type"), "application/x-zip-compressed", str(response))
+
+    def test_supplemental_zip_contains_expected_workbook(self):
+        self.report.project.data_artifacts = {
+            "osint": [
+                {
+                    "Domain": "example.com",
+                    "Hostname": "test",
+                    "altNames": "",
+                    "IP": "127.0.0.1",
+                    "Port": "443",
+                    "Info": "info",
+                }
+            ]
+        }
+        self.report.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.supplemental_uri)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get("Content-Type"), "application/x-zip-compressed")
+
+        with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+            self.assertIn(
+                f"{self.project.client.name} OSINT Report.xlsx",
+                zf.namelist(),
+            )
 
     def test_view_json_requires_login_and_permissions(self):
         response = self.client.get(self.json_uri)

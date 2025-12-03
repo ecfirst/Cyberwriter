@@ -280,6 +280,11 @@ urlpatterns += [
         name="generate_xlsx",
     ),
     path(
+        "reports/<int:pk>/supplemental/",
+        ghostwriter.reporting.views2.report.GenerateSupplementalDocs.as_view(),
+        name="generate_supplemental_docs",
+    ),
+    path(
         "reports/<int:pk>/pptx/",
         ghostwriter.reporting.views2.report.GenerateReportPPTX.as_view(),
         name="generate_pptx",
