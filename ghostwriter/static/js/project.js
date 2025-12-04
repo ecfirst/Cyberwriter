@@ -216,26 +216,36 @@ $(document).ready(function () {
       return;
     }
 
+    if ($toggle.data('request-pending')) {
+      return;
+    }
+
     $.ajax({
       url: url,
       type: 'POST',
-      headers: {
-        'X-CSRFToken': csrftoken,
+      beforeSend: function (xhr, settings) {
+        if (!csrfSafeMethod(settings.type) && !this.crossDomain) {
+          xhr.setRequestHeader('X-CSRFToken', csrftoken);
+        }
+        $toggle.addClass('disabled');
+        $toggle.data('request-pending', true);
       },
       success: function (data) {
         if (data.result === 'success') {
           const $icon = $('#js-toggle-project-status-icon');
           const $statusText = $('#js-project-status');
+          const isComplete = data.toggle === 1 || data.status === 'Complete';
 
           if ($icon.length) {
             $icon.removeClass('fa-toggle-on fa-toggle-off');
-            $icon.addClass(data.toggle === 1 ? 'fa-toggle-on' : 'fa-toggle-off');
+            $icon.addClass(isComplete ? 'fa-toggle-on' : 'fa-toggle-off');
           }
 
-          if ($statusText.length && data.status) {
-            $statusText.text(data.status);
+          if ($statusText.length) {
+            $statusText.text(data.status || (isComplete ? 'Complete' : 'In Progress'));
           }
 
+          $toggle.attr('aria-pressed', isComplete);
           displayToastTop({type: 'success', string: data.message || 'Project status updated.'});
         } else {
           displayToastTop({type: 'error', string: data.message || 'Could not update project status.'});
@@ -248,6 +258,10 @@ $(document).ready(function () {
         }
 
         displayToastTop({type: 'error', string: message});
+      },
+      complete: function () {
+        $toggle.removeClass('disabled');
+        $toggle.data('request-pending', false);
       },
     });
   });
