@@ -203,3 +203,53 @@ function update_project_contacts() {
   }
 }
 
+$(document).ready(function () {
+  $(document).on('click', '.js-toggle-project-status', function (event) {
+    event.preventDefault();
+
+    const $toggle = $(this);
+    const csrftoken = $toggle.attr('toggle-project-status-csrftoken');
+    const url = $toggle.attr('toggle-project-status-url');
+
+    if (!csrftoken || !url) {
+      console.error('Missing toggle-project-status configuration');
+      return;
+    }
+
+    $.ajax({
+      url: url,
+      type: 'POST',
+      headers: {
+        'X-CSRFToken': csrftoken,
+      },
+      success: function (data) {
+        if (data.result === 'success') {
+          const $icon = $('#js-toggle-project-status-icon');
+          const $statusText = $('#js-project-status');
+
+          if ($icon.length) {
+            $icon.removeClass('fa-toggle-on fa-toggle-off');
+            $icon.addClass(data.toggle === 1 ? 'fa-toggle-on' : 'fa-toggle-off');
+          }
+
+          if ($statusText.length && data.status) {
+            $statusText.text(data.status);
+          }
+
+          displayToastTop({type: 'success', string: data.message || 'Project status updated.'});
+        } else {
+          displayToastTop({type: 'error', string: data.message || 'Could not update project status.'});
+        }
+      },
+      error: function (xhr) {
+        let message = 'Could not update project status.';
+        if (xhr.responseJSON && xhr.responseJSON.message) {
+          message = xhr.responseJSON.message;
+        }
+
+        displayToastTop({type: 'error', string: message});
+      },
+    });
+  });
+});
+
