@@ -10,6 +10,7 @@ export default function LinkButton(props: { editor: Editor }) {
     const [processing, setProcessing] = useState<null | "save" | "remove">(null);
     const [formUrl, setFormUrl] = useState("");
     const urlId = useId();
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     const enabled = editor
         .can()
@@ -57,12 +58,13 @@ export default function LinkButton(props: { editor: Editor }) {
                     </div>
                     <form
                         className="modal-body text-center"
-                        onSubmit={(ev) => {
+                        onSubmit={async (ev) => {
                             ev.preventDefault();
                             setProcessing("save");
                             if (formUrl) {
                                 editor.chain().setLink({ href: formUrl }).run();
                             }
+                            await tick();
                             setModalMode(null);
                             setProcessing(null);
                         }}
@@ -98,10 +100,11 @@ export default function LinkButton(props: { editor: Editor }) {
                                     type="button"
                                     className="btn btn-danger"
                                     disabled={processing !== null}
-                                    onClick={(e) => {
+                                    onClick={async (e) => {
                                         e.preventDefault();
                                         setProcessing("remove");
                                         editor.chain().unsetLink().run();
+                                        await tick();
                                         setModalMode(null);
                                         setProcessing(null);
                                     }}

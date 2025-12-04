@@ -4,7 +4,7 @@ import { EvidencesContext } from "../../../../tiptap_gw/evidence";
 type DjangoFormErrors = Record<string, string[]>;
 
 export default function EvidenceUploadForm(props: {
-    onSubmit: (id: number | null) => void;
+    onSubmit: (id: number | null) => void | Promise<void>;
     switchMode: () => void;
 }) {
     const evidences = useContext(EvidencesContext)!;
@@ -50,7 +50,7 @@ export default function EvidenceUploadForm(props: {
                     if (res.status === 200) {
                         const body = await res.json();
                         await evidences?.poll();
-                        props.onSubmit(body.pk);
+                        await props.onSubmit(body.pk);
                     } else if (res.status === 400) {
                         const body = await res.json();
                         console.error(body);

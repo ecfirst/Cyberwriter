@@ -7,7 +7,7 @@ import EvidenceUploadForm from "./upload";
 export default function EvidenceModal(props: {
     editor: Editor;
     initialId: null | number;
-    setEvidenceId: (id: number | null) => void;
+    setEvidenceId: (id: number | null) => void | Promise<void>;
 }) {
     const [uploadMode, setUploadMode] = useState<boolean>(false);
 
@@ -50,7 +50,7 @@ export default function EvidenceModal(props: {
 
 function EvidenceSelectForm(props: {
     initial: number | null;
-    onSubmit: (id: number | null) => void;
+    onSubmit: (id: number | null) => void | Promise<void>;
     switchMode: () => void;
 }) {
     const evidences = useContext(EvidencesContext);
@@ -104,12 +104,14 @@ function EvidenceSelectForm(props: {
                 <button
                     className="btn btn-primary"
                     disabled={selectedId === null || saving}
-                    onClick={(e) => {
+                    onClick={async (e) => {
                         e.preventDefault();
                         setSaving(true);
-                        Promise.resolve(props.onSubmit(selectedId)).finally(() => {
+                        try {
+                            await props.onSubmit(selectedId);
+                        } finally {
                             if (isMounted.current) setSaving(false);
-                        });
+                        }
                     }}
                 >
                     {saving && (

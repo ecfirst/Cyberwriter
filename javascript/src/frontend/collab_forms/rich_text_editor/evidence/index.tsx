@@ -19,10 +19,12 @@ export default function EvidenceButton({ editor }: { editor: Editor }) {
     const active = editor.isActive("evidence");
 
     const applyCb = useCallback(
-        (id: number | null) => {
+        async (id: number | null) => {
             if (id) {
                 editor.chain().setEvidence({ id }).run();
             }
+            // Allow a paint cycle before closing so any loading UI can render.
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
             setModalInitial(null);
         },
         [setModalInitial, editor]
