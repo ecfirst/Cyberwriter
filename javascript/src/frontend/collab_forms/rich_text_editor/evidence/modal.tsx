@@ -1,4 +1,4 @@
-import { useContext, useId, useState } from "react";
+import { useContext, useEffect, useId, useRef, useState } from "react";
 import ReactModal from "react-modal";
 import { EvidencesContext } from "../../../../tiptap_gw/evidence";
 import { Editor } from "@tiptap/react";
@@ -55,7 +55,15 @@ function EvidenceSelectForm(props: {
 }) {
     const evidences = useContext(EvidencesContext);
     const [selectedId, setSelectedId] = useState<number | null>(null);
+    const [saving, setSaving] = useState(false);
+    const isMounted = useRef(true);
     const nameId = useId();
+
+    useEffect(() => {
+        return () => {
+            isMounted.current = false;
+        };
+    }, []);
     return (
         <>
             <div className="modal-body">
@@ -85,6 +93,7 @@ function EvidenceSelectForm(props: {
             <div className="modal-footer">
                 <button
                     className="btn btn-secondary"
+                    disabled={saving}
                     onClick={(e) => {
                         e.preventDefault();
                         props.switchMode();
@@ -94,16 +103,31 @@ function EvidenceSelectForm(props: {
                 </button>
                 <button
                     className="btn btn-primary"
-                    disabled={selectedId === null}
+                    disabled={selectedId === null || saving}
                     onClick={(e) => {
                         e.preventDefault();
-                        props.onSubmit(selectedId);
+                        setSaving(true);
+                        Promise.resolve(props.onSubmit(selectedId)).finally(() => {
+                            if (isMounted.current) setSaving(false);
+                        });
                     }}
                 >
-                    {props.initial === null ? "Insert" : "Save"}
+                    {saving && (
+                        <span
+                            className="spinner-border spinner-border-sm mr-2"
+                            role="status"
+                            aria-hidden="true"
+                        />
+                    )}
+                    {saving
+                        ? "Saving..."
+                        : props.initial === null
+                          ? "Insert"
+                          : "Save"}
                 </button>
                 <button
                     className="btn btn-secondary-outline"
+                    disabled={saving}
                     onClick={(e) => {
                         e.preventDefault();
                         props.onSubmit(null);

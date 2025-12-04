@@ -18,6 +18,14 @@ export default function EvidenceUploadForm(props: {
     const disabled = state === "loading";
     const errors = state !== "loading" ? state : null;
 
+    const loadingSpinner = (
+        <span
+            className="spinner-border spinner-border-sm mr-2"
+            role="status"
+            aria-hidden="true"
+        />
+    );
+
     return (
         <form
             ref={formRef}
@@ -125,6 +133,7 @@ export default function EvidenceUploadForm(props: {
             <div className="modal-footer">
                 <button
                     className="btn btn-secondary"
+                    disabled={disabled}
                     onClick={(e) => {
                         e.preventDefault();
                         props.switchMode();
@@ -132,13 +141,17 @@ export default function EvidenceUploadForm(props: {
                 >
                     Select Existing
                 </button>
-                <input
+                <button
                     className="btn btn-primary"
                     type="submit"
-                    value="Submit"
-                />
+                    disabled={disabled}
+                >
+                    {disabled && loadingSpinner}
+                    {disabled ? "Uploading..." : "Upload"}
+                </button>
                 <button
                     className="btn btn-outline-secondary"
+                    disabled={disabled}
                     onClick={(ev) => {
                         ev.preventDefault();
                         props.onSubmit(null);

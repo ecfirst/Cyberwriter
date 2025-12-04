@@ -7,6 +7,7 @@ import ReactModal from "react-modal";
 export default function LinkButton(props: { editor: Editor }) {
     const { editor } = props;
     const [modalMode, setModalMode] = useState<null | "new" | "edit">(null);
+    const [processing, setProcessing] = useState<null | "save" | "remove">(null);
     const [formUrl, setFormUrl] = useState("");
     const urlId = useId();
 
@@ -35,6 +36,7 @@ export default function LinkButton(props: { editor: Editor }) {
                     } else {
                         setFormUrl("");
                     }
+                    setProcessing(null);
                     setModalMode(active ? "edit" : "new");
                 }}
             >
@@ -42,7 +44,10 @@ export default function LinkButton(props: { editor: Editor }) {
             </button>
             <ReactModal
                 isOpen={!!modalMode}
-                onRequestClose={() => setModalMode(null)}
+                onRequestClose={() => {
+                    setProcessing(null);
+                    setModalMode(null);
+                }}
                 contentLabel="Edit Link"
                 className="modal-dialog modal-dialog-centered"
             >
@@ -54,10 +59,12 @@ export default function LinkButton(props: { editor: Editor }) {
                         className="modal-body text-center"
                         onSubmit={(ev) => {
                             ev.preventDefault();
+                            setProcessing("save");
                             if (formUrl) {
                                 editor.chain().setLink({ href: formUrl }).run();
                             }
                             setModalMode(null);
+                            setProcessing(null);
                         }}
                     >
                         <div className="form-group">
@@ -73,23 +80,48 @@ export default function LinkButton(props: { editor: Editor }) {
                         </div>
 
                         <div className="modal-footer">
-                            <button className="btn btn-primary">Save</button>
+                            <button
+                                className="btn btn-primary"
+                                disabled={processing !== null}
+                            >
+                                {processing === "save" && (
+                                    <span
+                                        className="spinner-border spinner-border-sm mr-2"
+                                        role="status"
+                                        aria-hidden="true"
+                                    />
+                                )}
+                                {processing === "save" ? "Saving..." : "Save"}
+                            </button>
                             {modalMode === "edit" && (
                                 <button
                                     type="button"
                                     className="btn btn-danger"
+                                    disabled={processing !== null}
                                     onClick={(e) => {
                                         e.preventDefault();
+                                        setProcessing("remove");
                                         editor.chain().unsetLink().run();
                                         setModalMode(null);
+                                        setProcessing(null);
                                     }}
                                 >
-                                    Remove
+                                    {processing === "remove" && (
+                                        <span
+                                            className="spinner-border spinner-border-sm mr-2"
+                                            role="status"
+                                            aria-hidden="true"
+                                        />
+                                    )}
+                                    {processing === "remove"
+                                        ? "Removing..."
+                                        : "Remove"}
                                 </button>
                             )}
                             <button
                                 type="button"
                                 className="btn btn-secondary"
+                                disabled={processing !== null}
                                 onClick={(e) => {
                                     e.preventDefault();
                                     setModalMode(null);
