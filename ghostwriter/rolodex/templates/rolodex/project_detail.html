@@ -1151,6 +1151,24 @@
           bar.textContent = percent + '%';
         };
 
+        const isAreaFieldVisible = function(element) {
+          if (!element) {
+            return false;
+          }
+          let current = element;
+          while (current && current !== document.body) {
+            if (
+              current.classList.contains('d-none')
+              || current.hasAttribute('hidden')
+              || current.getAttribute('aria-hidden') === 'true'
+            ) {
+              return false;
+            }
+            current = current.parentElement;
+          }
+          return true;
+        };
+
         const updateWorkbookCardProgress = function(cardKey) {
           const shouldUpdate = function(target) {
             return !cardKey || cardKey === target;
@@ -1191,7 +1209,9 @@
             if (!areaKey || (cardKey && cardKey !== areaKey)) {
               return;
             }
-            const inputs = document.querySelectorAll('[data-area-field="' + areaKey + '"]');
+            const inputs = Array.prototype.slice.call(
+              document.querySelectorAll('[data-area-field="' + areaKey + '"]')
+            ).filter(isAreaFieldVisible);
             let filled = 0;
             inputs.forEach(function(input) {
               if ((input.value || '').toString().trim()) {
