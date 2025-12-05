@@ -78,3 +78,17 @@ def test_render_risk_rich_text_sanitizes_fragments():
     assert isinstance(rendered, dict)
     assert "script" not in rendered["text"]
     assert rendered["text"].startswith("<p><span")
+
+
+def test_render_risk_rich_text_normalizes_comments_and_invalid_characters():
+    container = {"overall_rt": '<!--bad--><p>Ok\x01</p>'}
+
+    ExportProjectBase._render_risk_rich_text_fields(
+        DummyExporter(), container, "workbook report card", {"sentinel": True}
+    )
+
+    rendered = container["overall_rt"]
+    assert isinstance(rendered, dict)
+    assert "<!--" not in rendered["text"]
+    assert "\x01" not in rendered["text"]
+    assert rendered["text"] == "<p>Ok</p>"

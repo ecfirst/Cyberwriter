@@ -245,61 +245,33 @@ class ExportProjectBase(ExportBase):
 
     @staticmethod
     def _sanitize_rich_text_html(html: str) -> str:
-        """Remove dangerous/unsupported tags before converting to rich text.
+        """Remove dangerous/unsupported tags and normalize HTML for DOCX conversion.
 
         The DOCX exporter is sensitive to malformed or unsupported HTML. We keep the
         visible content while stripping tags that could produce invalid XML (for
-        example, ``<script>``) and return a cleaned fragment that preserves
-        user-provided styling.
+        example, ``<script>``), drop comments, remove invalid XML characters, and
+        reserialize the fragment so it is well-formed before converting it to a
+        sub-document.
         """
 
-        from html import escape
-        from html.parser import HTMLParser
+        from bs4 import BeautifulSoup, Comment
 
-        class _Cleaner(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.out: list[str] = []
-                self.skip_level = 0
+        from ghostwriter.modules.reportwriter.richtext.ooxml import (
+            remove_invalid_xml_chars,
+        )
 
-            def handle_starttag(self, tag, attrs):
-                if tag in {"script", "style"}:
-                    self.skip_level += 1
-                    return
-                if self.skip_level:
-                    return
-                attr_str = "".join(
-                    f' {name}="{escape(value, quote=True)}"'
-                    for name, value in attrs
-                )
-                self.out.append(f"<{tag}{attr_str}>")
+        soup = BeautifulSoup(html, "html.parser")
 
-            def handle_endtag(self, tag):
-                if tag in {"script", "style"}:
-                    if self.skip_level:
-                        self.skip_level -= 1
-                    return
-                if self.skip_level:
-                    return
-                self.out.append(f"</{tag}>")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
 
-            def handle_startendtag(self, tag, attrs):
-                if tag in {"script", "style"} or self.skip_level:
-                    return
-                attr_str = "".join(
-                    f' {name}="{escape(value, quote=True)}"'
-                    for name, value in attrs
-                )
-                self.out.append(f"<{tag}{attr_str} />")
+        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            comment.extract()
 
-            def handle_data(self, data):
-                if self.skip_level:
-                    return
-                self.out.append(escape(data))
+        body = soup.body if soup.body else soup
+        cleaned = "".join(str(child) for child in body.contents)
+        cleaned = remove_invalid_xml_chars(cleaned)
 
-        parser = _Cleaner()
-        parser.feed(html)
-        cleaned = "".join(parser.out)
         return cleaned if cleaned.strip() else html
 
     @classmethod
