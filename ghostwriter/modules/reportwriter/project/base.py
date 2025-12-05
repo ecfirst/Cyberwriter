@@ -229,7 +229,10 @@ class ExportProjectBase(ExportBase):
                 if isinstance(value, LazilyRenderedTemplate):
                     continue
 
-                wrapped_value = RiskScoreRangeMapping._wrap_inline_rich_text(str(value))
+                sanitized_value = ExportProjectBase._sanitize_rich_text_html(str(value))
+                wrapped_value = RiskScoreRangeMapping._wrap_inline_rich_text(
+                    sanitized_value
+                )
 
                 container[key] = ex.create_lazy_template(
                     child_location, wrapped_value, rich_text_context
@@ -239,6 +242,65 @@ class ExportProjectBase(ExportBase):
                 ExportProjectBase._render_risk_rich_text_fields(
                     ex, item, f"{location} item {index + 1}", rich_text_context
                 )
+
+    @staticmethod
+    def _sanitize_rich_text_html(html: str) -> str:
+        """Remove dangerous/unsupported tags before converting to rich text.
+
+        The DOCX exporter is sensitive to malformed or unsupported HTML. We keep the
+        visible content while stripping tags that could produce invalid XML (for
+        example, ``<script>``) and return a cleaned fragment that preserves
+        user-provided styling.
+        """
+
+        from html import escape
+        from html.parser import HTMLParser
+
+        class _Cleaner(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.out: list[str] = []
+                self.skip_level = 0
+
+            def handle_starttag(self, tag, attrs):
+                if tag in {"script", "style"}:
+                    self.skip_level += 1
+                    return
+                if self.skip_level:
+                    return
+                attr_str = "".join(
+                    f' {name}="{escape(value, quote=True)}"'
+                    for name, value in attrs
+                )
+                self.out.append(f"<{tag}{attr_str}>")
+
+            def handle_endtag(self, tag):
+                if tag in {"script", "style"}:
+                    if self.skip_level:
+                        self.skip_level -= 1
+                    return
+                if self.skip_level:
+                    return
+                self.out.append(f"</{tag}>")
+
+            def handle_startendtag(self, tag, attrs):
+                if tag in {"script", "style"} or self.skip_level:
+                    return
+                attr_str = "".join(
+                    f' {name}="{escape(value, quote=True)}"'
+                    for name, value in attrs
+                )
+                self.out.append(f"<{tag}{attr_str} />")
+
+            def handle_data(self, data):
+                if self.skip_level:
+                    return
+                self.out.append(escape(data))
+
+        parser = _Cleaner()
+        parser.feed(html)
+        cleaned = "".join(parser.out)
+        return cleaned if cleaned.strip() else html
 
     @classmethod
     def generate_lint_data(cls):

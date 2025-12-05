@@ -63,3 +63,18 @@ def test_render_risk_rich_text_wraps_inline_content():
     rendered = container["overall_rt"]
     assert isinstance(rendered, dict)
     assert rendered["text"] == "<p><b>Medium</b></p>"
+
+
+def test_render_risk_rich_text_sanitizes_fragments():
+    container = {
+        "overall_rt": '<p><span style="color:#00b050">Low</span><script>alert(1)</script></p>'
+    }
+
+    ExportProjectBase._render_risk_rich_text_fields(
+        DummyExporter(), container, "workbook report card", {"sentinel": True}
+    )
+
+    rendered = container["overall_rt"]
+    assert isinstance(rendered, dict)
+    assert "script" not in rendered["text"]
+    assert rendered["text"].startswith("<p><span")
