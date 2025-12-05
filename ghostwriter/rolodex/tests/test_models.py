@@ -573,7 +573,7 @@ class ProjectRiskBackfillTests(TestCase):
         self.assertEqual(project.risks.get("overall_risk"), "Medium")
         self.assertEqual(project.risks.get("internal"), "High")
 
-    def test_backfill_skips_projects_with_existing_risks(self):
+    def test_backfill_merges_new_risks_with_existing_data(self):
         project: Project = ProjectFactory()
         Project.objects.filter(pk=project.pk).update(
             workbook_data=self.workbook_payload,
@@ -582,10 +582,12 @@ class ProjectRiskBackfillTests(TestCase):
 
         updated = risk_helpers.backfill_missing_project_risks()
 
-        self.assertEqual(updated, 0)
+        self.assertEqual(updated, 1)
 
         project.refresh_from_db()
-        self.assertEqual(project.risks, {"osint": "Medium"})
+        self.assertEqual(project.risks.get("osint"), "Medium")
+        self.assertEqual(project.risks.get("overall_risk"), "Medium")
+        self.assertEqual(project.risks.get("internal"), "High")
 
 
 class ProjectRoleModelTests(TestCase):

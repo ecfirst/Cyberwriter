@@ -142,7 +142,8 @@ def backfill_missing_project_risks(*, using: str = "default", batch_size: int = 
 
     The helper is intended for upgrade paths where :class:`~ghostwriter.rolodex.models.Project`
     instances already contain workbook data but were saved before ``Project.risks`` was
-    introduced. Projects that already have risk information recorded are left untouched.
+    introduced. Projects that already have risk information recorded are merged with any new
+    values discovered in the workbook data, preserving existing risk entries.
 
     Parameters
     ----------
@@ -163,7 +164,6 @@ def backfill_missing_project_risks(*, using: str = "default", batch_size: int = 
         Project.objects.using(using)
         .exclude(workbook_data__isnull=True)
         .exclude(workbook_data={})
-        .filter(Q(risks__isnull=True) | Q(risks={}))
     )
 
     updated = 0
@@ -171,7 +171,20 @@ def backfill_missing_project_risks(*, using: str = "default", batch_size: int = 
         summary = build_project_risk_summary(getattr(project, "workbook_data", {}))
         if not summary:
             continue
-        Project.objects.using(using).filter(pk=project.pk).update(risks=summary)
+
+        existing_risks = getattr(project, "risks", {}) or {}
+        merged = dict(existing_risks)
+        changed = False
+
+        for key, value in summary.items():
+            if key not in merged or merged.get(key) in (None, ""):
+                merged[key] = value
+                changed = True
+
+        if not changed:
+            continue
+
+        Project.objects.using(using).filter(pk=project.pk).update(risks=merged)
         updated += 1
 
     return updated
