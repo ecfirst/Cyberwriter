@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, Iterable, Optional, Sequence
 
 from django.apps import apps as django_apps
@@ -17,41 +16,29 @@ _RISK_LABELS = {
     "low": "Low",
 }
 
-_WORKBOOK_RISK_PATHS: Dict[str, Sequence[Sequence[str]]] = {
-    "osint": (("external_internal_grades", "external", "osint", "risk"),),
-    "dns": (("external_internal_grades", "external", "dns", "risk"),),
-    "external_nexpose": (("external_internal_grades", "external", "nexpose", "risk"),),
-    "web": (("external_internal_grades", "external", "web", "risk"),),
-    "cloud_config": (("external_internal_grades", "internal", "cloud", "risk"),),
-    "system_config": (("external_internal_grades", "internal", "configuration", "risk"),),
-    "internal_nexpose": (("external_internal_grades", "internal", "nexpose", "risk"),),
-    "endpoint": (("external_internal_grades", "internal", "endpoint", "risk"),),
-    "snmp": (("external_internal_grades", "internal", "snmp", "risk"),),
-    "sql": (("external_internal_grades", "internal", "sql", "risk"),),
-    "iam": (("external_internal_grades", "internal", "iam", "risk"),),
-    "password": (
-        ("external_internal_grades", "iam", "password", "risk"),
-        ("external_internal_grades", "internal", "password", "risk"),
-    ),
-    "ad": (("external_internal_grades", "iam", "ad", "risk"),),
-    "cloud": (("external_internal_grades", "internal", "cloud", "risk"),),
-    "configuration": (("external_internal_grades", "internal", "configuration", "risk"),),
-    "firewall": (("external_internal_grades", "firewall", "risk"),),
-    "wireless": (("external_internal_grades", "wireless", "risk"),),
-    "iam_management": (("external_internal_grades", "cloud", "iam_management", "risk"),),
-    "cloud_management": (("external_internal_grades", "cloud", "cloud_management", "risk"),),
-    "system_configuration": (
-        ("external_internal_grades", "cloud", "system_configuration", "risk"),
-    ),
-    "iot_iomt_nexpose": (("external_internal_grades", "internal", "iot_iomt", "risk"),),
+_WORKBOOK_RISK_PATHS: Dict[str, Sequence[str]] = {
+    "osint": ("external_internal_grades", "external", "osint", "risk"),
+    "dns": ("external_internal_grades", "external", "dns", "risk"),
+    "external_nexpose": ("external_internal_grades", "external", "nexpose", "risk"),
+    "web": ("external_internal_grades", "external", "web", "risk"),
+    "cloud_config": ("external_internal_grades", "internal", "cloud", "risk"),
+    "system_config": ("external_internal_grades", "internal", "configuration", "risk"),
+    "internal_nexpose": ("external_internal_grades", "internal", "nexpose", "risk"),
+    "endpoint": ("external_internal_grades", "internal", "endpoint", "risk"),
+    "snmp": ("external_internal_grades", "internal", "snmp", "risk"),
+    "sql": ("external_internal_grades", "internal", "sql", "risk"),
+    "iam": ("external_internal_grades", "internal", "iam", "risk"),
+    "password": ("external_internal_grades", "internal", "password", "risk"),
+    "cloud": ("external_internal_grades", "internal", "cloud", "risk"),
+    "configuration": ("external_internal_grades", "internal", "configuration", "risk"),
 }
 
 _GRADE_FIELD_MAP: Dict[str, Sequence[str]] = {
     "overall_risk": ("overall_grade", "overall"),
     "external": ("external_grade", "external"),
     "internal": ("internal_grade", "internal"),
-    "wireless": ("wireless_grade", "wireless"),
-    "firewall": ("firewall_grade", "firewall"),
+    "wireless": ("wireless_grade", "wireless", "grade"),
+    "firewall": ("firewall_grade", "firewall", "grade"),
 }
 
 
@@ -88,14 +75,9 @@ def _collect_grade_sources(workbook_data: Dict[str, Any]) -> Sequence[Dict[str, 
 
     external_internal_grades = workbook_data.get("external_internal_grades")
     if isinstance(external_internal_grades, dict):
-        grade_fields = {
-            "overall_grade": external_internal_grades.get("overall"),
-            "external_grade": external_internal_grades.get("external", {}).get("grade"),
-            "internal_grade": external_internal_grades.get("internal", {}).get("grade"),
-            "wireless_grade": external_internal_grades.get("wireless", {}).get("grade"),
-            "firewall_grade": external_internal_grades.get("firewall", {}).get("grade"),
-        }
-        candidates.append({k: v for k, v in grade_fields.items() if v not in (None, "")})
+        for category in external_internal_grades.values():
+            if isinstance(category, dict):
+                candidates.append(category)
     return candidates
 
 
@@ -112,23 +94,15 @@ def build_project_risk_summary(workbook_data: Any) -> Dict[str, str]:
     """Return a mapping of risk values derived from ``workbook_data``."""
 
     if not isinstance(workbook_data, dict):
-        if isinstance(workbook_data, str):
-            try:
-                workbook_data = json.loads(workbook_data)
-            except (TypeError, ValueError):
-                return {}
-        else:
-            return {}
+        return {}
 
     results: Dict[str, str] = {}
 
-    for key, paths in _WORKBOOK_RISK_PATHS.items():
-        for path in paths:
-            raw_value = _get_nested_value(workbook_data, path)
-            normalized = _normalize_risk(raw_value)
-            if normalized:
-                results[key] = normalized
-                break
+    for key, path in _WORKBOOK_RISK_PATHS.items():
+        raw_value = _get_nested_value(workbook_data, path)
+        normalized = _normalize_risk(raw_value)
+        if normalized:
+            results[key] = normalized
 
     grade_sources = _collect_grade_sources(workbook_data)
     grade_map = GradeRiskMapping.get_grade_map()
@@ -150,8 +124,7 @@ def backfill_missing_project_risks(*, using: str = "default", batch_size: int = 
 
     The helper is intended for upgrade paths where :class:`~ghostwriter.rolodex.models.Project`
     instances already contain workbook data but were saved before ``Project.risks`` was
-    introduced. Projects that already have risk information recorded are merged with any new
-    values discovered in the workbook data, preserving existing risk entries.
+    introduced. Projects that already have risk information recorded are left untouched.
 
     Parameters
     ----------
@@ -172,6 +145,7 @@ def backfill_missing_project_risks(*, using: str = "default", batch_size: int = 
         Project.objects.using(using)
         .exclude(workbook_data__isnull=True)
         .exclude(workbook_data={})
+        .filter(Q(risks__isnull=True) | Q(risks={}))
     )
 
     updated = 0
@@ -179,20 +153,7 @@ def backfill_missing_project_risks(*, using: str = "default", batch_size: int = 
         summary = build_project_risk_summary(getattr(project, "workbook_data", {}))
         if not summary:
             continue
-
-        existing_risks = getattr(project, "risks", {}) or {}
-        merged = dict(existing_risks)
-        changed = False
-
-        for key, value in summary.items():
-            if key not in merged or merged.get(key) in (None, ""):
-                merged[key] = value
-                changed = True
-
-        if not changed:
-            continue
-
-        Project.objects.using(using).filter(pk=project.pk).update(risks=merged)
+        Project.objects.using(using).filter(pk=project.pk).update(risks=summary)
         updated += 1
 
     return updated

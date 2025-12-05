@@ -1,5 +1,4 @@
 # Standard Libraries
-import json
 import logging
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -286,16 +285,7 @@ class ProjectModelTests(TestCase):
                     "snmp": {"risk": "low"},
                     "sql": {"risk": "medium"},
                     "iam": {"risk": "high"},
-                    "iot_iomt": {"risk": "medium"},
-                },
-                "iam": {"ad": {"risk": "high"}, "password": {"risk": "low"}},
-                "wireless": {"grade": "A-"},
-                "firewall": {"grade": "C-"},
-                "cloud": {
-                    "cloud_management": {"risk": "high"},
-                    "iam_management": {"risk": "medium"},
-                    "system_configuration": {"risk": "low"},
-                    "grade": "B",
+                    "password": {"risk": "low"},
                 },
             },
             "report_card": {
@@ -314,14 +304,6 @@ class ProjectModelTests(TestCase):
         self.assertEqual(project.risks.get("osint"), "High")
         self.assertEqual(project.risks.get("overall_risk"), "Medium")
         self.assertEqual(project.risks.get("internal"), "High")
-        self.assertEqual(project.risks.get("ad"), "High")
-        self.assertEqual(project.risks.get("password"), "Low")
-        self.assertEqual(project.risks.get("firewall"), "High")
-        self.assertEqual(project.risks.get("wireless"), "Low")
-        self.assertEqual(project.risks.get("cloud_management"), "Medium")
-        self.assertEqual(project.risks.get("iam_management"), "Medium")
-        self.assertEqual(project.risks.get("system_configuration"), "Low")
-        self.assertEqual(project.risks.get("iot_iomt_nexpose"), "Medium")
 
         assignment = ProjectAssignmentFactory(operator=user, project=project)
         self.assertFalse(Project.user_can_create(user))
@@ -554,7 +536,6 @@ class ProjectRiskBackfillTests(TestCase):
                 },
                 "internal": {
                     "cloud": {"risk": "low"},
-                    "iot_iomt": {"risk": "low"},
                 },
             },
             "report_card": {
@@ -562,15 +543,6 @@ class ProjectRiskBackfillTests(TestCase):
                 "external": "C+",
                 "internal": "D",
             },
-        }
-
-        self.workbook_payload_with_wireless_firewall = {
-            "external_internal_grades": {
-                "external": {"osint": {"risk": "low"}},
-                "wireless": {"grade": "A-"},
-                "firewall": {"grade": "C-"},
-            },
-            "report_card": {"wireless": "A-", "firewall": "C-"},
         }
 
     def test_backfill_updates_projects_missing_risks(self):
@@ -585,25 +557,8 @@ class ProjectRiskBackfillTests(TestCase):
         self.assertEqual(project.risks.get("osint"), "High")
         self.assertEqual(project.risks.get("overall_risk"), "Medium")
         self.assertEqual(project.risks.get("internal"), "High")
-        self.assertEqual(project.risks.get("iot_iomt_nexpose"), "Low")
 
-    def test_backfill_adds_wireless_and_firewall_from_stringified_workbook(self):
-        project: Project = ProjectFactory()
-        Project.objects.filter(pk=project.pk).update(
-            workbook_data=json.dumps(self.workbook_payload_with_wireless_firewall),
-            risks={"osint": "Low"},
-        )
-
-        updated = risk_helpers.backfill_missing_project_risks()
-
-        self.assertEqual(updated, 1)
-
-        project.refresh_from_db()
-        self.assertEqual(project.risks.get("osint"), "Low")
-        self.assertEqual(project.risks.get("wireless"), "Low")
-        self.assertEqual(project.risks.get("firewall"), "High")
-
-    def test_backfill_merges_new_risks_with_existing_data(self):
+    def test_backfill_skips_projects_with_existing_risks(self):
         project: Project = ProjectFactory()
         Project.objects.filter(pk=project.pk).update(
             workbook_data=self.workbook_payload,
@@ -612,13 +567,30 @@ class ProjectRiskBackfillTests(TestCase):
 
         updated = risk_helpers.backfill_missing_project_risks()
 
+        self.assertEqual(updated, 0)
+
+        project.refresh_from_db()
+        self.assertEqual(project.risks, {"osint": "Medium"})
+
+    def test_backfill_uses_wireless_and_firewall_grades(self):
+        project: Project = ProjectFactory()
+        Project.objects.filter(pk=project.pk).update(
+            workbook_data={
+                "external_internal_grades": {
+                    "wireless": {"grade": "A"},
+                    "firewall": {"grade": "B"},
+                }
+            },
+            risks={},
+        )
+
+        updated = risk_helpers.backfill_missing_project_risks()
+
         self.assertEqual(updated, 1)
 
         project.refresh_from_db()
-        self.assertEqual(project.risks.get("osint"), "Medium")
-        self.assertEqual(project.risks.get("overall_risk"), "Medium")
-        self.assertEqual(project.risks.get("internal"), "High")
-        self.assertEqual(project.risks.get("iot_iomt_nexpose"), "Low")
+        self.assertEqual(project.risks.get("wireless"), "Low")
+        self.assertEqual(project.risks.get("firewall"), "Medium")
 
 
 class ProjectRoleModelTests(TestCase):
