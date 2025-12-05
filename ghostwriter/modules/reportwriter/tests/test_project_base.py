@@ -1,8 +1,13 @@
 import os
 
 import importlib.util
-import django
 import pytest
+
+
+if importlib.util.find_spec("django") is None:
+    pytest.skip("Django dependencies not installed", allow_module_level=True)
+
+import django
 
 
 if importlib.util.find_spec("channels") is None:
@@ -46,3 +51,15 @@ def test_render_risk_rich_text_fields_recurses_nested_structures():
     assert container["nested"][1]["deep"]["already"] is lazy_template
     # Non-rt fields should be untouched
     assert container["nested"][0]["other"] == "x"
+
+
+def test_render_risk_rich_text_wraps_inline_content():
+    container = {"overall_rt": "<b>Medium</b>"}
+
+    ExportProjectBase._render_risk_rich_text_fields(
+        DummyExporter(), container, "workbook report card", {"sentinel": True}
+    )
+
+    rendered = container["overall_rt"]
+    assert isinstance(rendered, dict)
+    assert rendered["text"] == "<p><b>Medium</b></p>"

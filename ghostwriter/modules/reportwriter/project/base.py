@@ -8,7 +8,7 @@ from ghostwriter.modules.reportwriter import jinja_funcs
 from ghostwriter.modules.reportwriter.base.base import ExportBase
 from ghostwriter.modules.reportwriter.base.html_rich_text import LazilyRenderedTemplate
 from ghostwriter.oplog.models import OplogEntry
-from ghostwriter.reporting.models import Report
+from ghostwriter.reporting.models import Report, RiskScoreRangeMapping
 from ghostwriter.rolodex.models import Client, Project
 from ghostwriter.shepherd.models import Domain, StaticServer
 
@@ -229,8 +229,10 @@ class ExportProjectBase(ExportBase):
                 if isinstance(value, LazilyRenderedTemplate):
                     continue
 
+                wrapped_value = RiskScoreRangeMapping._wrap_inline_rich_text(str(value))
+
                 container[key] = ex.create_lazy_template(
-                    child_location, str(value), rich_text_context
+                    child_location, wrapped_value, rich_text_context
                 )
         elif isinstance(container, list):
             for index, item in enumerate(container):
