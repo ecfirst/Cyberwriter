@@ -291,9 +291,9 @@ class ProjectModelTests(TestCase):
                 "wireless": {"grade": "A-"},
                 "firewall": {"grade": "C-"},
                 "cloud": {
-                    "iam_management": {"risk": "high"},
-                    "cloud_management": {"risk": "medium"},
-                    "system_configuration": {"risk": "low"},
+                    "iam_management": {"risk": "high", "risk_rt": "high"},
+                    "cloud_management": {"risk": "medium", "risk_rt": "medium"},
+                    "system_configuration": {"risk": "low", "risk_rt": "low"},
                 },
             },
             "report_card": {
@@ -317,6 +317,9 @@ class ProjectModelTests(TestCase):
         self.assertEqual(project.risks.get("iam_management"), "High")
         self.assertEqual(project.risks.get("cloud_management"), "Medium")
         self.assertEqual(project.risks.get("system_configuration"), "Low")
+        self.assertEqual(project.risks.get("iam_management_rt"), "High")
+        self.assertEqual(project.risks.get("cloud_management_rt"), "Medium")
+        self.assertEqual(project.risks.get("system_configuration_rt"), "Low")
 
         assignment = ProjectAssignmentFactory(operator=user, project=project)
         self.assertFalse(Project.user_can_create(user))
