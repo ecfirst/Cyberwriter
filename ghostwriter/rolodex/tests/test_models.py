@@ -285,7 +285,15 @@ class ProjectModelTests(TestCase):
                     "snmp": {"risk": "low"},
                     "sql": {"risk": "medium"},
                     "iam": {"risk": "high"},
-                    "password": {"risk": "low"},
+                },
+                "iam": {"ad": {"risk": "high"}, "password": {"risk": "low"}},
+                "wireless": {"grade": "A-"},
+                "firewall": {"grade": "C-"},
+                "cloud": {
+                    "cloud_management": {"risk": "high"},
+                    "iam_management": {"risk": "medium"},
+                    "system_configuration": {"risk": "low"},
+                    "grade": "B",
                 },
             },
             "report_card": {
@@ -304,6 +312,13 @@ class ProjectModelTests(TestCase):
         self.assertEqual(project.risks.get("osint"), "High")
         self.assertEqual(project.risks.get("overall_risk"), "Medium")
         self.assertEqual(project.risks.get("internal"), "High")
+        self.assertEqual(project.risks.get("ad"), "High")
+        self.assertEqual(project.risks.get("password"), "Low")
+        self.assertEqual(project.risks.get("firewall"), "High")
+        self.assertEqual(project.risks.get("wireless"), "Low")
+        self.assertEqual(project.risks.get("cloud_management"), "Medium")
+        self.assertEqual(project.risks.get("iam_management"), "Medium")
+        self.assertEqual(project.risks.get("system_configuration"), "Low")
 
         assignment = ProjectAssignmentFactory(operator=user, project=project)
         self.assertFalse(Project.user_can_create(user))
