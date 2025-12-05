@@ -42,6 +42,7 @@ _WORKBOOK_RISK_PATHS: Dict[str, Sequence[Sequence[str]]] = {
     "system_configuration": (
         ("external_internal_grades", "cloud", "system_configuration", "risk"),
     ),
+    "iot_iomt_nexpose": (("external_internal_grades", "internal", "iot_iomt", "risk"),),
 }
 
 _GRADE_FIELD_MAP: Dict[str, Sequence[str]] = {

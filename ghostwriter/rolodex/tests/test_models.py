@@ -285,6 +285,7 @@ class ProjectModelTests(TestCase):
                     "snmp": {"risk": "low"},
                     "sql": {"risk": "medium"},
                     "iam": {"risk": "high"},
+                    "iot_iomt": {"risk": "medium"},
                 },
                 "iam": {"ad": {"risk": "high"}, "password": {"risk": "low"}},
                 "wireless": {"grade": "A-"},
@@ -319,6 +320,7 @@ class ProjectModelTests(TestCase):
         self.assertEqual(project.risks.get("cloud_management"), "Medium")
         self.assertEqual(project.risks.get("iam_management"), "Medium")
         self.assertEqual(project.risks.get("system_configuration"), "Low")
+        self.assertEqual(project.risks.get("iot_iomt_nexpose"), "Medium")
 
         assignment = ProjectAssignmentFactory(operator=user, project=project)
         self.assertFalse(Project.user_can_create(user))
@@ -551,6 +553,7 @@ class ProjectRiskBackfillTests(TestCase):
                 },
                 "internal": {
                     "cloud": {"risk": "low"},
+                    "iot_iomt": {"risk": "low"},
                 },
             },
             "report_card": {
@@ -572,6 +575,7 @@ class ProjectRiskBackfillTests(TestCase):
         self.assertEqual(project.risks.get("osint"), "High")
         self.assertEqual(project.risks.get("overall_risk"), "Medium")
         self.assertEqual(project.risks.get("internal"), "High")
+        self.assertEqual(project.risks.get("iot_iomt_nexpose"), "Low")
 
     def test_backfill_merges_new_risks_with_existing_data(self):
         project: Project = ProjectFactory()
@@ -588,6 +592,7 @@ class ProjectRiskBackfillTests(TestCase):
         self.assertEqual(project.risks.get("osint"), "Medium")
         self.assertEqual(project.risks.get("overall_risk"), "Medium")
         self.assertEqual(project.risks.get("internal"), "High")
+        self.assertEqual(project.risks.get("iot_iomt_nexpose"), "Low")
 
 
 class ProjectRoleModelTests(TestCase):
