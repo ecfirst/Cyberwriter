@@ -6,6 +6,7 @@ from ghostwriter.modules.custom_serializers import FullProjectSerializer
 from ghostwriter.modules.linting_utils import LINTER_CONTEXT
 from ghostwriter.modules.reportwriter import jinja_funcs
 from ghostwriter.modules.reportwriter.base.base import ExportBase
+from ghostwriter.modules.reportwriter.base.html_rich_text import LazilyRenderedTemplate
 from ghostwriter.oplog.models import OplogEntry
 from ghostwriter.reporting.models import Report
 from ghostwriter.rolodex.models import Client, Project
@@ -177,15 +178,10 @@ class ExportProjectBase(ExportBase):
                     rich_text_context,
                 )
 
-        def render_risk_rich_text_fields(container: dict | None, location: str):
-            if not isinstance(container, dict):
-                return
-            for key, value in list(container.items()):
-                if not (isinstance(key, str) and key.endswith("_rt")):
-                    continue
-                if value in (None, ""):
-                    continue
-                container[key] = ex.create_lazy_template(location, str(value), rich_text_context)
+        def render_risk_rich_text_fields(container: dict | list | None, location: str):
+            ExportProjectBase._render_risk_rich_text_fields(
+                ex, container, location, rich_text_context
+            )
 
         project_context = base_context.get("project", {}) if isinstance(base_context.get("project"), dict) else {}
         render_risk_rich_text_fields(project_context.get("risks"), "the project risk label")
@@ -207,6 +203,40 @@ class ExportProjectBase(ExportBase):
                                 subvalue if isinstance(subvalue, dict) else {},
                                 f"the {category_key} {subkey} risk label",
                             )
+
+    @staticmethod
+    def _render_risk_rich_text_fields(
+        ex: ExportBase,
+        container: dict | list | None,
+        location: str,
+        rich_text_context: dict,
+    ) -> None:
+        if isinstance(container, dict):
+            for key, value in list(container.items()):
+                child_location = location
+                if isinstance(key, str):
+                    child_location = f"{location} ({key})"
+
+                if isinstance(value, (dict, list)):
+                    ExportProjectBase._render_risk_rich_text_fields(
+                        ex, value, child_location, rich_text_context
+                    )
+
+                if not (isinstance(key, str) and key.endswith("_rt")):
+                    continue
+                if value in (None, ""):
+                    continue
+                if isinstance(value, LazilyRenderedTemplate):
+                    continue
+
+                container[key] = ex.create_lazy_template(
+                    child_location, str(value), rich_text_context
+                )
+        elif isinstance(container, list):
+            for index, item in enumerate(container):
+                ExportProjectBase._render_risk_rich_text_fields(
+                    ex, item, f"{location} item {index + 1}", rich_text_context
+                )
 
     @classmethod
     def generate_lint_data(cls):
