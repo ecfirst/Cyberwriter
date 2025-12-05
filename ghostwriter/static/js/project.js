@@ -68,6 +68,20 @@ function csrfSafeMethod(method) {
     return /^(GET|HEAD|OPTIONS|TRACE)$/.test(method);
 }
 
+// Retrieve Django's CSRF cookie if present
+function getCSRFCookie() {
+    const name = 'csrftoken';
+    const cookies = document.cookie ? document.cookie.split(';') : [];
+
+    for (let i = 0; i < cookies.length; i++) {
+        const cookie = cookies[i].trim();
+        if (cookie.substring(0, name.length + 1) === (name + '=')) {
+            return decodeURIComponent(cookie.substring(name.length + 1));
+        }
+    }
+    return null;
+}
+
 // Generate a filename for a download with the current date and time
 function generateDownloadName(name) {
     let d = new Date();
@@ -203,16 +217,21 @@ function update_project_contacts() {
   }
 }
 
-$(document).ready(function () {
-  $(document).on('click', '.js-toggle-project-status', function (event) {
+$(function () {
+  $(document).off('click.projectStatus').on('click.projectStatus', '.js-toggle-project-status', function (event) {
     event.preventDefault();
 
     const $toggle = $(this);
-    const csrftoken = $toggle.attr('toggle-project-status-csrftoken');
+    const csrftoken = $toggle.attr('toggle-project-status-csrftoken') || getCSRFCookie();
     const url = $toggle.attr('toggle-project-status-url');
 
-    if (!csrftoken || !url) {
-      console.error('Missing toggle-project-status configuration');
+    if (!url) {
+      displayToastTop({type: 'error', string: 'Missing project status toggle URL.'});
+      return;
+    }
+
+    if (!csrftoken) {
+      displayToastTop({type: 'error', string: 'Missing CSRF token for toggling project status.'});
       return;
     }
 
