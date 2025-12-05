@@ -1,4 +1,5 @@
 # Standard Libraries
+import json
 import logging
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -563,6 +564,15 @@ class ProjectRiskBackfillTests(TestCase):
             },
         }
 
+        self.workbook_payload_with_wireless_firewall = {
+            "external_internal_grades": {
+                "external": {"osint": {"risk": "low"}},
+                "wireless": {"grade": "A-"},
+                "firewall": {"grade": "C-"},
+            },
+            "report_card": {"wireless": "A-", "firewall": "C-"},
+        }
+
     def test_backfill_updates_projects_missing_risks(self):
         project: Project = ProjectFactory()
         Project.objects.filter(pk=project.pk).update(workbook_data=self.workbook_payload, risks={})
@@ -576,6 +586,22 @@ class ProjectRiskBackfillTests(TestCase):
         self.assertEqual(project.risks.get("overall_risk"), "Medium")
         self.assertEqual(project.risks.get("internal"), "High")
         self.assertEqual(project.risks.get("iot_iomt_nexpose"), "Low")
+
+    def test_backfill_adds_wireless_and_firewall_from_stringified_workbook(self):
+        project: Project = ProjectFactory()
+        Project.objects.filter(pk=project.pk).update(
+            workbook_data=json.dumps(self.workbook_payload_with_wireless_firewall),
+            risks={"osint": "Low"},
+        )
+
+        updated = risk_helpers.backfill_missing_project_risks()
+
+        self.assertEqual(updated, 1)
+
+        project.refresh_from_db()
+        self.assertEqual(project.risks.get("osint"), "Low")
+        self.assertEqual(project.risks.get("wireless"), "Low")
+        self.assertEqual(project.risks.get("firewall"), "High")
 
     def test_backfill_merges_new_risks_with_existing_data(self):
         project: Project = ProjectFactory()

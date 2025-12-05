@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Iterable, Optional, Sequence
 
 from django.apps import apps as django_apps
@@ -111,7 +112,13 @@ def build_project_risk_summary(workbook_data: Any) -> Dict[str, str]:
     """Return a mapping of risk values derived from ``workbook_data``."""
 
     if not isinstance(workbook_data, dict):
-        return {}
+        if isinstance(workbook_data, str):
+            try:
+                workbook_data = json.loads(workbook_data)
+            except (TypeError, ValueError):
+                return {}
+        else:
+            return {}
 
     results: Dict[str, str] = {}
 
