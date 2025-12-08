@@ -3376,6 +3376,48 @@
           attemptBind();
         };
 
+        const setAreaFieldValue = function(areaKey, subkey, workbookKey, field, rawValue) {
+          const targetKey = workbookKey || subkey;
+          const areaState = workbookState[targetKey] || {};
+          const normalizeValue = function() {
+            if (field.type === 'number') {
+              if (rawValue === '' || rawValue === null || typeof rawValue === 'undefined') {
+                return null;
+              }
+              const parsed = Number(rawValue);
+              return Number.isNaN(parsed) ? null : parsed;
+            }
+            if (field.type === 'select') {
+              return (rawValue || '').trim() || null;
+            }
+            return (rawValue || '').toString();
+          };
+
+          const value = normalizeValue();
+          if (areaKey === 'internal' && subkey === 'sql' && field.key.startsWith('unsupported_')) {
+            const unsupportedState = areaState.unsupported_dbs || {};
+            if (field.key === 'unsupported_confirm') {
+              unsupportedState.confirm = value;
+            } else if (field.key === 'unsupported_count') {
+              unsupportedState.count = value;
+            }
+            areaState.unsupported_dbs = unsupportedState;
+          } else if (areaKey === 'wireless' && subkey === 'walkthru' && field.key.startsWith('wep_')) {
+            const wepState = areaState.wep_inuse || {};
+            if (field.key === 'wep_confirm') {
+              wepState.confirm = value;
+            } else if (field.key === 'wep_key_cracked') {
+              wepState.key_cracked = value;
+            }
+            areaState.wep_inuse = wepState;
+          } else {
+            areaState[field.key] = value;
+          }
+
+          workbookState[targetKey] = areaState;
+          scheduleWorkbookCollabSync();
+        };
+
         const createAreaFieldGroup = function(areaKey, subkey, workbookKey, field) {
           const inlineLayout = field.layout !== 'stacked' && field.type !== 'text';
           const formGroup = document.createElement('div');
@@ -3435,6 +3477,7 @@
             });
             input.addEventListener('change', function() {
               updateWorkbookCardProgress(areaKey);
+              setAreaFieldValue(areaKey, subkey, workbookKey, field, input.value);
             });
             if (areaKey === 'internal' && subkey === 'sql' && field.key === 'unsupported_confirm') {
               input.addEventListener('change', function() {
@@ -3450,6 +3493,7 @@
             input.value = typeof existing === 'number' ? existing : (existing || '');
             input.addEventListener('input', function() {
               updateWorkbookCardProgress(areaKey);
+              setAreaFieldValue(areaKey, subkey, workbookKey, field, input.value);
             });
           } else {
             input = document.createElement('input');
@@ -3460,6 +3504,7 @@
             input.value = typeof existing === 'number' ? existing : (existing || '');
             input.addEventListener('input', function() {
               updateWorkbookCardProgress(areaKey);
+              setAreaFieldValue(areaKey, subkey, workbookKey, field, input.value);
             });
           }
           if (inlineLayout) {
@@ -3568,6 +3613,11 @@
             input.value = existing ? formatDateForInput(existing) : '';
             input.addEventListener('input', function() {
               updateWorkbookCardProgress('general');
+              if (!workbookState.general) {
+                workbookState.general = {};
+              }
+              workbookState.general[field.key] = input.value || null;
+              scheduleWorkbookCollabSync();
             });
             col.appendChild(label);
             col.appendChild(input);
@@ -3640,7 +3690,8 @@
             inputs.forEach(function(input) {
               const option = input.getAttribute('data-option');
               const raw = parseFloat(input.value);
-              const value = Number.isNaN(raw) ? 0 : Math.min(Math.max(raw, 0), 6);
+              const sanitizedScore = Number.isNaN(raw) ? null : Math.min(Math.max(raw, 0), 6);
+              const value = sanitizedScore === null ? 0 : sanitizedScore;
               const weight = weightLookup[option];
               if (hasWeights && typeof weight === 'number') {
                 total += value * weight;
@@ -3652,6 +3703,14 @@
               if (!Number.isNaN(raw)) {
                 populated = true;
               }
+              if (!workbookState.external_internal_grades) {
+                workbookState.external_internal_grades = {};
+              }
+              const categoryState = workbookState.external_internal_grades[category] || {};
+              const optionState = categoryState[option] || {};
+              optionState.score = sanitizedScore;
+              categoryState[option] = optionState;
+              workbookState.external_internal_grades[category] = categoryState;
             });
             if (!populated) {
               if (totalDisplay) { totalDisplay.textContent = '—'; }
@@ -3680,6 +3739,7 @@
           });
           updateWorkbookCardProgress('grades');
           updateWorkbookCardProgress('scoring');
+          scheduleWorkbookCollabSync();
           return computedGrades;
         };
 
@@ -5922,6 +5982,7 @@
                   const value = input.value === '' ? null : Number(input.value);
                   target[key] = Number.isNaN(value) ? null : value;
                   updateWorkbookCardProgress(areaKey);
+                  scheduleWorkbookCollabSync();
                 });
                 group.appendChild(label);
                 group.appendChild(input);
@@ -6207,6 +6268,7 @@
               domainInput.addEventListener('input', function() {
                 record.domain = domainInput.value;
                 updateWorkbookCardProgress(areaKey);
+                scheduleWorkbookCollabSync();
               });
               domainGroup.appendChild(domainLabel);
               domainGroup.appendChild(domainInput);
@@ -6226,6 +6288,7 @@
                 const value = totalInput.value === '' ? null : Number(totalInput.value);
                 record.total = Number.isNaN(value) ? null : value;
                 updateWorkbookCardProgress(areaKey);
+                scheduleWorkbookCollabSync();
               });
               totalGroup.appendChild(totalLabel);
               totalGroup.appendChild(totalInput);
@@ -6255,6 +6318,7 @@
               zoneSelect.addEventListener('change', function() {
                 record.zone_transfer = zoneSelect.value || null;
                 updateWorkbookCardProgress(areaKey);
+                scheduleWorkbookCollabSync();
               });
               zoneGroup.appendChild(zoneLabel);
               zoneGroup.appendChild(zoneSelect);
@@ -7106,6 +7170,11 @@
             }
             select.addEventListener('change', function() {
               updateWorkbookCardProgress('grades');
+              if (!workbookState.report_card) {
+                workbookState.report_card = {};
+              }
+              workbookState.report_card[categoryKey] = select.value || null;
+              scheduleWorkbookCollabSync();
             });
             calculatedGrades[categoryKey] = currentGrade;
             card.appendChild(label);
@@ -7142,6 +7211,11 @@
           }
           overallSelect.addEventListener('change', function() {
             updateWorkbookCardProgress('grades');
+            if (!workbookState.report_card) {
+              workbookState.report_card = {};
+            }
+            workbookState.report_card.overall = overallSelect.value || null;
+            scheduleWorkbookCollabSync();
           });
           overallWrapper.appendChild(overallLabel);
           overallWrapper.appendChild(overallSelect);
@@ -7179,6 +7253,17 @@
             return;
           }
           renderAll();
+        };
+
+        let collabSyncTimer = null;
+        const scheduleWorkbookCollabSync = function() {
+          if (collabSyncTimer) {
+            return;
+          }
+          collabSyncTimer = setTimeout(function() {
+            collabSyncTimer = null;
+            pushWorkbookCollabState();
+          }, 100);
         };
 
         const pushWorkbookCollabState = function() {
