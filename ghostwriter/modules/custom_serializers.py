@@ -16,6 +16,7 @@ from django.utils.text import slugify
 
 # 3rd Party Libraries
 from bs4 import BeautifulSoup
+from markupsafe import Markup
 from rest_framework import serializers
 from rest_framework.serializers import (
     RelatedField,
@@ -927,14 +928,14 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if not normalized:
             return None
         if normalized in risk_rich_text_map:
-            return risk_rich_text_map[normalized]
+            return Markup(risk_rich_text_map[normalized])
 
         normalized_lower = normalized.lower()
         for risk_label, rich_text in risk_rich_text_map.items():
             if risk_label.lower() == normalized_lower:
-                return rich_text
+                return Markup(rich_text)
 
-        return RiskScoreRangeMapping._wrap_inline_rich_text(normalized)
+        return Markup(RiskScoreRangeMapping._wrap_inline_rich_text(normalized))
 
     @classmethod
     def _apply_project_risk_rich_text(

@@ -1,11 +1,15 @@
 from collections import ChainMap
 import copy
+import re
+
+from markupsafe import Markup
 
 from ghostwriter.commandcenter.models import ExtraFieldSpec
 from ghostwriter.modules.custom_serializers import FullProjectSerializer
 from ghostwriter.modules.linting_utils import LINTER_CONTEXT
 from ghostwriter.modules.reportwriter import jinja_funcs
 from ghostwriter.modules.reportwriter.base.base import ExportBase
+from ghostwriter.modules.reportwriter.base.html_rich_text import LazilyRenderedTemplate
 from ghostwriter.oplog.models import OplogEntry
 from ghostwriter.reporting.models import Report
 from ghostwriter.rolodex.models import Client, Project
@@ -180,12 +184,24 @@ class ExportProjectBase(ExportBase):
         def render_risk_rich_text_fields(container: dict | None, location: str):
             if not isinstance(container, dict):
                 return
+
+            def _has_jinja(text: str) -> bool:
+                return bool(re.search(r"\{[{%]", text))
+
             for key, value in list(container.items()):
                 if not (isinstance(key, str) and key.endswith("_rt")):
                     continue
                 if value in (None, ""):
                     continue
-                container[key] = ex.create_lazy_template(location, str(value), rich_text_context)
+
+                if isinstance(value, LazilyRenderedTemplate):
+                    continue
+
+                text = str(value)
+                if _has_jinja(text):
+                    container[key] = ex.create_lazy_template(location, text, rich_text_context)
+                else:
+                    container[key] = Markup(text)
 
         def render_nested_risk_rich_text_fields(container: dict | None, location: str):
             if not isinstance(container, dict):
