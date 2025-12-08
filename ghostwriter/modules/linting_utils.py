@@ -1560,6 +1560,61 @@ LINTER_CONTEXT = {
 }
 
 
+def _populate_risk_rich_text_fields():
+    """Add rich text variants for select risk fields using configured mappings."""
+
+    risk_rich_text_map = RiskScoreRangeMapping.get_risk_rich_text_map()
+    normalized_risk_map = {label.lower(): rich_text for label, rich_text in risk_rich_text_map.items()}
+
+    def _risk_rich_text(value):
+        if value is None:
+            return ""
+
+        label = str(value).strip()
+        if not label:
+            return ""
+
+        return (
+            risk_rich_text_map.get(label)
+            or risk_rich_text_map.get(label.title())
+            or normalized_risk_map.get(label.lower())
+            or RiskScoreRangeMapping._wrap_inline_rich_text(label)
+        )
+
+    def _apply_rich_text(container, key):
+        if isinstance(container, dict) and key in container:
+            container[f"{key}_rt"] = _risk_rich_text(container.get(key))
+
+    project = LINTER_CONTEXT.get("project", {})
+    data_responses = project.get("data_responses", {})
+
+    intelligence = data_responses.get("intelligence", {})
+    for risk_field in ("osint_bucket_risk", "osint_leaked_creds_risk"):
+        _apply_rich_text(intelligence, risk_field)
+
+    ad = data_responses.get("ad", {})
+    for risk_field in (
+        "da_risk_string",
+        "ea_risk_string",
+        "ep_risk_string",
+        "ne_risk_string",
+        "ia_risk_string",
+        "ga_risk_string",
+        "gl_risk_string",
+    ):
+        _apply_rich_text(ad, risk_field)
+
+    password = data_responses.get("password", {})
+    _apply_rich_text(password, "cracked_risk_string")
+
+    endpoint = data_responses.get("endpoint", {})
+    for risk_field in ("ood_risk_string", "wifi_risk_string"):
+        _apply_rich_text(endpoint, risk_field)
+
+
+_populate_risk_rich_text_fields()
+
+
 def _wrap_risk_rich_text_samples():
     """Wrap inline-only risk rich text samples with block-level markup."""
 
