@@ -3,6 +3,34 @@
 from ghostwriter.reporting.models import RiskScoreRangeMapping
 from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
 
+
+RISK_RICH_TEXT_MAP = RiskScoreRangeMapping.get_risk_rich_text_map()
+
+
+def _risk_rt_sample(value):
+    """Look up a sample risk rich text value for ``value`` using configured mapping."""
+
+    if value in (None, ""):
+        return ""
+
+    text = str(value).strip()
+    if not text:
+        return ""
+
+    candidates = (
+        text,
+        text.title(),
+        text.capitalize(),
+        text.upper(),
+        text.lower().capitalize(),
+    )
+    for candidate in candidates:
+        rich_text = RISK_RICH_TEXT_MAP.get(candidate)
+        if rich_text:
+            return rich_text
+
+    return RiskScoreRangeMapping._wrap_inline_rich_text(text)
+
 # Example JSON reporting data for loading into templates for rendering tests
 LINTER_CONTEXT = {
     "report_date": "Mar. 25, 2021",
@@ -488,6 +516,8 @@ LINTER_CONTEXT = {
                 "osint_squat_concern": "example.com",
                 "osint_bucket_risk": "High",
                 "osint_leaked_creds_risk": "Medium",
+                "osint_bucket_risk_rt": _risk_rt_sample("High"),
+                "osint_leaked_creds_risk_rt": _risk_rt_sample("Medium"),
             },
             "iot_iomt": {"iot_testing_confirm": "yes"},
             "dns": {
@@ -510,6 +540,10 @@ LINTER_CONTEXT = {
                 "open_risk": "high",
                 "rogue_risk": "medium",
                 "hidden_risk": "low",
+                "psk_risk_rt": _risk_rt_sample("medium"),
+                "open_risk_rt": _risk_rt_sample("high"),
+                "rogue_risk_rt": _risk_rt_sample("medium"),
+                "hidden_risk_rt": _risk_rt_sample("low"),
                 "psk_rotation_concern": "yes",
                 "segmentation_tested": True,
                 "psk_weak_reasons": "to short and not enough entropy",
@@ -548,6 +582,13 @@ LINTER_CONTEXT = {
                 "ia_risk_string": "Medium",
                 "ga_risk_string": "High",
                 "gl_risk_string": "Medium",
+                "da_risk_string_rt": _risk_rt_sample("High"),
+                "ea_risk_string_rt": _risk_rt_sample("Medium"),
+                "ep_risk_string_rt": _risk_rt_sample("Low"),
+                "ne_risk_string_rt": _risk_rt_sample("Low"),
+                "ia_risk_string_rt": _risk_rt_sample("Medium"),
+                "ga_risk_string_rt": _risk_rt_sample("High"),
+                "gl_risk_string_rt": _risk_rt_sample("Medium"),
                 "old_domains_string": "'legacy.local' and 'ancient.local'",
                 "old_domains_str": "'legacy.local'/'ancient.local'",
                 "old_domains_count": 2,
@@ -627,6 +668,9 @@ LINTER_CONTEXT = {
                 "domains_str": "'corp.example.com'/'lab.example.com'",
                 "cracked_count_str": "17/9",
                 "cracked_risk_string": "Medium/High",
+                "cracked_risk_string_rt": "/".join(
+                    _risk_rt_sample(value) for value in ("Medium", "High")
+                ),
                 "cracked_finding_string": "17 and 9",
                 "enabled_count_string": "220 and 150",
                 "admin_cracked_string": "2 and 1",
@@ -723,6 +767,12 @@ LINTER_CONTEXT = {
                 "wifi_count_str": "3/1",
                 "ood_risk_string": "Medium/High",
                 "wifi_risk_string": "Low/High",
+                "ood_risk_string_rt": "/".join(
+                    _risk_rt_sample(value) for value in ("Medium", "High")
+                ),
+                "wifi_risk_string_rt": "/".join(
+                    _risk_rt_sample(value) for value in ("Low", "High")
+                ),
             },
             "firewall": {
                 "entries": [
@@ -1570,10 +1620,14 @@ def _wrap_risk_rich_text_samples():
                 continue
             if isinstance(value, dict):
                 _wrap_risk_fields(value)
-            if isinstance(key, str) and key.endswith("_rt"):
-                container[key] = RiskScoreRangeMapping._wrap_inline_rich_text(str(value))
+                if isinstance(key, str) and key.endswith("_rt"):
+                    container[key] = RiskScoreRangeMapping._wrap_inline_rich_text(str(value))
 
     _wrap_risk_fields(LINTER_CONTEXT.get("project", {}).get("risks"))
+
+    data_responses = LINTER_CONTEXT.get("project", {}).get("data_responses")
+    if isinstance(data_responses, dict):
+        _wrap_risk_fields(data_responses)
 
     workbook_data = LINTER_CONTEXT.get("project", {}).get("workbook_data")
     if isinstance(workbook_data, dict):
