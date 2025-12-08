@@ -1,10 +1,20 @@
 """This contains utilities and values used by template linting."""
 
+from collections import OrderedDict
+
+from django.core.exceptions import SynchronousOnlyOperation
+
 from ghostwriter.reporting.models import RiskScoreRangeMapping
 from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
 
 
-RISK_RICH_TEXT_MAP = RiskScoreRangeMapping.get_risk_rich_text_map()
+try:
+    RISK_RICH_TEXT_MAP = RiskScoreRangeMapping.get_risk_rich_text_map()
+except SynchronousOnlyOperation:
+    RISK_RICH_TEXT_MAP = OrderedDict(
+        (risk, RiskScoreRangeMapping._wrap_inline_rich_text(risk))
+        for risk in RiskScoreRangeMapping.DEFAULT_RISK_SCORE_MAP
+    )
 
 
 def _risk_rt_sample(value):
