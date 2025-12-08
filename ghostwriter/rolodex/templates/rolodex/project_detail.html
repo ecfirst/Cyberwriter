@@ -866,6 +866,11 @@
 {% block morescripts %}
   {{ block.super }}
   {% get_solo "commandcenter.ReportConfiguration" as report_config %}
+  <script type="text/plain" id="yjs-url">/ws-collab</script>
+  <script type="text/plain" id="yjs-object-id">{{ project.id }}</script>
+  <script type="text/plain" id="yjs-username">{{ request.user.get_username }}</script>
+  <script type="text/plain" id="yjs-jwt">{{ collab_jwt }}</script>
+  <script type="module" src="{% static 'assets/workbook_collab.js' %}"></script>
   <script>
     const PROJECT_SCROLL_STORAGE_PREFIX = 'project-detail-scroll:';
 
@@ -1164,6 +1169,9 @@
         const scopingConfig = parseJsonScript('project-scoping-config') || {};
         const riskScoreMap = parseJsonScript('project-risk-score-map') || {};
         const riskLabels = Object.keys(riskScoreMap);
+        const getWorkbookCollab = function() {
+          return window.gwWorkbookCollab || null;
+        };
 
         const getNexposeMissingEntries = function(artifactKey) {
           if (!artifactKey) {
@@ -7173,6 +7181,17 @@
           renderAll();
         };
 
+        const pushWorkbookCollabState = function() {
+          const workbookCollab = getWorkbookCollab();
+          if (!workbookCollab) {
+            return;
+          }
+          workbookCollab.pushSnapshot({
+            workbook_data: workbookState,
+            data_artifacts: dataArtifactsState,
+          });
+        };
+
         const handleWorkbookUpdateResponse = function(data, renderOptions) {
           if (data && data.workbook_data) {
             Object.assign(workbookState, data.workbook_data);
@@ -7182,6 +7201,7 @@
           }
           refreshWorkbookUi(renderOptions);
           refreshProjectDataTabs();
+          pushWorkbookCollabState();
         };
 
         const getCsrfToken = function() {
@@ -7307,6 +7327,40 @@
             updateWorkbookCardProgress('grades');
           });
         }
+
+        const initWorkbookCollab = function() {
+          const collabApi = getWorkbookCollab();
+          if (!collabApi) {
+            setTimeout(initWorkbookCollab, 200);
+            return;
+          }
+
+          collabApi.ready.then(function() {
+            const snapshot = collabApi.getSnapshot();
+            if (snapshot && snapshot.workbook_data) {
+              Object.assign(workbookState, snapshot.workbook_data);
+            }
+            if (snapshot && snapshot.data_artifacts) {
+              updateDataArtifactsState(snapshot.data_artifacts);
+            }
+            refreshWorkbookUi();
+            refreshProjectDataTabs();
+          });
+
+          collabApi.subscribe(function(snapshot) {
+            if (snapshot && snapshot.workbook_data) {
+              Object.assign(workbookState, snapshot.workbook_data);
+            }
+            if (snapshot && snapshot.data_artifacts) {
+              updateDataArtifactsState(snapshot.data_artifacts);
+            }
+            refreshWorkbookUi();
+            refreshProjectDataTabs();
+          });
+
+          pushWorkbookCollabState();
+        };
+        initWorkbookCollab();
 
         renderWorkbookUi();
         buildRiskLegend();

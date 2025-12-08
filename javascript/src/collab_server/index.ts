@@ -20,6 +20,7 @@ import ReportObservationLinkHandler from "./handlers/report_observation_link";
 import FindingHandler from "./handlers/finding";
 import ReportFindingLinkHandler from "./handlers/report_finding_link";
 import ReportHandler from "./handlers/report";
+import ProjectWorkbookHandler from "./handlers/project_workbook";
 
 // Extend this with your model handlers. See how-to-collab.md.
 const HANDLERS: Map<string, ModelHandler<any>> = new Map([
@@ -28,6 +29,7 @@ const HANDLERS: Map<string, ModelHandler<any>> = new Map([
     ["finding", FindingHandler],
     ["report_finding_link", ReportFindingLinkHandler],
     ["report", ReportHandler],
+    ["project_workbook", ProjectWorkbookHandler],
 ]);
 
 // Graphql Client

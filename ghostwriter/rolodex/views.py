@@ -43,6 +43,7 @@ from ghostwriter.api.utils import (
     ForbiddenJsonResponse,
     RoleBasedAccessControlMixin,
     get_client_list,
+    generate_jwt,
     get_project_list,
     verify_user_is_privileged,
 )
@@ -2268,6 +2269,11 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             risk: {"min": float(bounds[0]), "max": float(bounds[1])}
             for risk, bounds in RiskScoreRangeMapping.get_risk_score_map().items()
         }
+        ctx["collab_jwt"] = generate_jwt(
+            self.request.user,
+            exp=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=24),
+        )[1]
         ctx["workbook_data_json"] = normalized_workbook
         ctx["data_responses_fields"] = {
             definition["key"]: data_responses_form[definition["key"]]
