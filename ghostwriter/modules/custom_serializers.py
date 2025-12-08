@@ -1146,14 +1146,24 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 continue
             entries[key[len(prefix) :]] = value
 
-        if isinstance(risk_rich_text_map, dict):
-            for key in ("psk_risk", "open_risk", "rogue_risk", "hidden_risk"):
-                if key in entries:
-                    rich_text_value = ProjectSerializer._risk_rich_text(
-                        entries.get(key), risk_rich_text_map
-                    )
-                    if rich_text_value is not None:
-                        entries[f"{key}_rt"] = rich_text_value
+        for key in ("psk_risk", "open_risk", "rogue_risk", "hidden_risk"):
+            if key not in entries:
+                continue
+
+            if isinstance(risk_rich_text_map, dict):
+                rich_text_value = ProjectSerializer._risk_rich_text(
+                    entries.get(key), risk_rich_text_map
+                )
+            else:
+                rich_text_value = None
+
+            if rich_text_value is None and entries.get(key) not in (None, ""):
+                rich_text_value = RiskScoreRangeMapping._wrap_inline_rich_text(
+                    str(entries.get(key))
+                )
+
+            if rich_text_value is not None:
+                entries[f"{key}_rt"] = rich_text_value
 
         return entries
 
@@ -1352,15 +1362,19 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             for field, parts in risk_parts.items():
                 summary[field] = "/".join(parts)
 
-            if isinstance(risk_rich_text_map, dict):
-                for field, parts in risk_parts.items():
-                    summary[f"{field}_rt"] = "/".join(
-                        (
-                            ProjectSerializer._risk_rich_text(part, risk_rich_text_map)
-                            or ""
+            for field, parts in risk_parts.items():
+                rich_text_parts = []
+                for part in parts:
+                    rich_text = None
+                    if isinstance(risk_rich_text_map, dict):
+                        rich_text = ProjectSerializer._risk_rich_text(
+                            part, risk_rich_text_map
                         )
-                        for part in parts
-                    )
+                    if rich_text is None and part not in (None, ""):
+                        rich_text = RiskScoreRangeMapping._wrap_inline_rich_text(str(part))
+                    rich_text_parts.append(rich_text or "")
+
+                summary[f"{field}_rt"] = "/".join(rich_text_parts)
 
             if legacy_domains:
                 summary["old_domains_str"] = _format_domains(legacy_domains)
@@ -1598,7 +1612,15 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 rich_text_value = ProjectSerializer._risk_rich_text(
                     entry.get("risk"), risk_rich_text_map
                 )
-                cracked_risk_parts_rt.append(rich_text_value or "")
+            else:
+                rich_text_value = None
+
+            if rich_text_value is None and entry.get("risk") not in (None, ""):
+                rich_text_value = RiskScoreRangeMapping._wrap_inline_rich_text(
+                    str(entry.get("risk"))
+                )
+
+            cracked_risk_parts_rt.append(rich_text_value or "")
 
         if not ordered_entries:
             return {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
@@ -1639,7 +1661,14 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if isinstance(existing_summary, dict):
             entry_list = existing_summary.get("entries") if isinstance(existing_summary, dict) else None
             if isinstance(entry_list, list) and entry_list:
-                return existing_summary
+                for entry in entry_list:
+                    domain = entry.get("domain") or entry.get("name")
+                    if not domain:
+                        continue
+                    domain = str(domain)
+                    entries[domain] = dict(entry)
+                    if domain not in order:
+                        order.append(domain)
 
         for record in domains:
             if not isinstance(record, dict):
@@ -1716,10 +1745,15 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             return text.capitalize() if text else ""
 
         def _format_risk_rich_text(value):
-            if not isinstance(risk_rich_text_map, dict):
-                return ""
-            rich_text = ProjectSerializer._risk_rich_text(value, risk_rich_text_map)
-            return rich_text if rich_text is not None else ""
+            if isinstance(risk_rich_text_map, dict):
+                rich_text = ProjectSerializer._risk_rich_text(value, risk_rich_text_map)
+            else:
+                rich_text = None
+
+            if rich_text is None and value not in (None, ""):
+                return RiskScoreRangeMapping._wrap_inline_rich_text(str(value))
+
+            return rich_text or ""
 
         for entry in ordered_entries:
             domain = entry.get("domain", "")
