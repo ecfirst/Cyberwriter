@@ -12,6 +12,7 @@ from django.views.decorators.csrf import requires_csrf_token
 
 from ghostwriter.api.utils import RoleBasedAccessControlMixin, generate_jwt
 from ghostwriter.commandcenter.models import ExtraFieldSpec
+from ghostwriter.rolodex.models import Project
 from ghostwriter.modules.custom_serializers import ExtraFieldsSpecSerializer
 
 # Ensure a CSRF token is available for JS code that makes use of it.
@@ -61,3 +62,13 @@ class CollabModelUpdate(RoleBasedAccessControlMixin, DetailView):
                 ExtraFieldSpec.for_model(extra_fields_model), many=True
             ).data
         return context
+
+
+class ProjectWorkbookEdit(CollabModelUpdate):
+    model = Project
+    template_name = "rolodex/project_workbook_edit.html"
+    has_extra_fields = False
+
+    @property
+    def collab_editing_script_path(self) -> str:
+        return "assets/collab_forms_workbook.js"

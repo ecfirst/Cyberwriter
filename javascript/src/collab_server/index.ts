@@ -20,15 +20,22 @@ import ReportObservationLinkHandler from "./handlers/report_observation_link";
 import FindingHandler from "./handlers/finding";
 import ReportFindingLinkHandler from "./handlers/report_finding_link";
 import ReportHandler from "./handlers/report";
+import ProjectWorkbookHandler from "./handlers/project_workbook";
 
 // Extend this with your model handlers. See how-to-collab.md.
-const HANDLERS: Map<string, ModelHandler<any>> = new Map([
-    ["observation", ObservationHandler],
-    ["report_observation_link", ReportObservationLinkHandler],
-    ["finding", FindingHandler],
-    ["report_finding_link", ReportFindingLinkHandler],
-    ["report", ReportHandler],
-]);
+const HANDLERS: Map<string, ModelHandler<any>> = new Map();
+HANDLERS.set("observation", ObservationHandler as ModelHandler<any>);
+HANDLERS.set(
+    "report_observation_link",
+    ReportObservationLinkHandler as ModelHandler<any>
+);
+HANDLERS.set("finding", FindingHandler as ModelHandler<any>);
+HANDLERS.set(
+    "report_finding_link",
+    ReportFindingLinkHandler as ModelHandler<any>
+);
+HANDLERS.set("report", ReportHandler as ModelHandler<any>);
+HANDLERS.set("project_workbook", ProjectWorkbookHandler as ModelHandler<any>);
 
 // Graphql Client
 

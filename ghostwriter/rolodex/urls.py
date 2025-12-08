@@ -5,6 +5,7 @@ from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 
 # Ghostwriter Libraries
+from ghostwriter.commandcenter import views as commandcenter_views
 from ghostwriter.rolodex import views, views_matrices
 
 app_name = "rolodex"
@@ -235,6 +236,11 @@ urlpatterns += [
 urlpatterns += [
     path("projects/<int:pk>", views.ProjectDetailView.as_view(), name="project_detail"),
     path("projects/<int:pk>/workbook/", views.ProjectWorkbookUpload.as_view(), name="project_workbook"),
+    path(
+        "projects/<int:pk>/workbook/edit/",
+        commandcenter_views.ProjectWorkbookEdit.as_view(),
+        name="project_workbook_edit",
+    ),
     path(
         "projects/<int:pk>/workbook/data/",
         views.ProjectWorkbookDataUpdate.as_view(),

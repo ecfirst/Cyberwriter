@@ -1,0 +1,13 @@
+{% extends "collab_editing/update.html" %}
+
+{% block pagetitle %}Project Workbook{% endblock %}
+
+{% block breadcrumbs %}
+    <nav aria-label="breadcrumb">
+        <ul class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{% url 'home:dashboard' %}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{% url 'rolodex:project_detail' pk=object.id %}#workbook">Project</a></li>
+            <li class="breadcrumb-item active" aria-current="page">Workbook Editor</li>
+        </ul>
+    </nav>
+{% endblock %}
