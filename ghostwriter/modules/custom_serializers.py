@@ -939,9 +939,13 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         normalized = str(value).strip()
         if not normalized:
             return None
-        return risk_rich_text_map.get(
-            normalized, RiskScoreRangeMapping._wrap_inline_rich_text(normalized)
-        )
+
+        candidates = [normalized, normalized.capitalize(), normalized.title()]
+        for candidate in candidates:
+            if candidate in risk_rich_text_map:
+                return risk_rich_text_map[candidate]
+
+        return RiskScoreRangeMapping._wrap_inline_rich_text(normalized)
 
     @classmethod
     def _apply_project_risk_rich_text(
@@ -1293,7 +1297,6 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 "gl_risk_string": "generic_logins",
             }
             risk_parts = {field: [] for field in risk_fields}
-            risk_parts_rt = {f"{field}_rt": [] for field in risk_fields}
 
             def _format_count(value):
                 if value in (None, ""):
@@ -1305,12 +1308,6 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     return ""
                 text = str(value).strip()
                 return text.capitalize() if text else ""
-
-            def _format_risk_rich_text(value):
-                if not isinstance(risk_rich_text_map, dict):
-                    return ""
-                rich_text = ProjectSerializer._risk_rich_text(value, risk_rich_text_map)
-                return rich_text if rich_text is not None else ""
 
             def _format_domains(values):
                 entries = [value for value in values if value]
@@ -1330,9 +1327,6 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
                 for output_field, metric in risk_fields.items():
                     risk_parts[output_field].append(_format_risk_value(entry.get(metric)))
-                    risk_parts_rt[f"{output_field}_rt"].append(
-                        _format_risk_rich_text(entry.get(metric))
-                    )
 
             summary.update(
                 {
@@ -1347,8 +1341,15 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             for field, parts in risk_parts.items():
                 summary[field] = "/".join(parts)
 
-            for field, parts in risk_parts_rt.items():
-                summary[field] = "/".join(parts)
+            if isinstance(risk_rich_text_map, dict):
+                for field, parts in risk_parts.items():
+                    summary[f"{field}_rt"] = "/".join(
+                        (
+                            ProjectSerializer._risk_rich_text(part, risk_rich_text_map)
+                            or ""
+                        )
+                        for part in parts
+                    )
 
             if legacy_domains:
                 summary["old_domains_str"] = _format_domains(legacy_domains)
