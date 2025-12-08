@@ -738,14 +738,16 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             data["data_artifacts"] = normalize_nexpose_artifacts_map(data["data_artifacts"])
         raw_responses = instance.data_responses or {}
         workbook_data = instance.workbook_data or {}
-        data["data_responses"] = self._format_data_responses(raw_responses, workbook_data)
         risk_rich_text_map = RiskScoreRangeMapping.get_risk_rich_text_map()
+        data["data_responses"] = self._format_data_responses(
+            raw_responses, workbook_data, risk_rich_text_map
+        )
         self._apply_project_risk_rich_text(data.get("risks"), risk_rich_text_map)
         self._apply_workbook_risk_rich_text(data.get("workbook_data"), risk_rich_text_map)
         return data
 
     @staticmethod
-    def _format_data_responses(raw_responses, workbook_data):
+    def _format_data_responses(raw_responses, workbook_data, risk_rich_text_map=None):
         if not isinstance(raw_responses, dict):
             return raw_responses or {}
 
@@ -782,6 +784,14 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
         intelligence_section = _extract_simple_section("intelligence", INTELLIGENCE_RESPONSE_KEYS)
         if intelligence_section:
+            if isinstance(risk_rich_text_map, dict):
+                for key in ("osint_bucket_risk", "osint_leaked_creds_risk"):
+                    if key in intelligence_section:
+                        rich_text_value = ProjectSerializer._risk_rich_text(
+                            intelligence_section.get(key), risk_rich_text_map
+                        )
+                        if rich_text_value is not None:
+                            intelligence_section[f"{key}_rt"] = rich_text_value
             result["intelligence"] = ProjectSerializer._strip_internal_metadata(intelligence_section)
 
         iot_section = _extract_simple_section("iot_iomt", set())
@@ -809,17 +819,23 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         if overall_risk_section:
             result["overall_risk"] = ProjectSerializer._strip_internal_metadata(overall_risk_section)
 
-        ad_entries = ProjectSerializer._collect_ad_responses(source, workbook_data)
+        ad_entries = ProjectSerializer._collect_ad_responses(
+            source, workbook_data, risk_rich_text_map
+        )
         if ad_entries:
             result["ad"] = ProjectSerializer._strip_internal_metadata(ad_entries)
         source.pop("ad", None)
 
-        password_entries = ProjectSerializer._collect_password_responses(source, workbook_data)
+        password_entries = ProjectSerializer._collect_password_responses(
+            source, workbook_data, risk_rich_text_map
+        )
         if password_entries:
             result["password"] = ProjectSerializer._strip_internal_metadata(password_entries)
         source.pop("password", None)
 
-        endpoint_entries = ProjectSerializer._collect_endpoint_responses(source, workbook_data)
+        endpoint_entries = ProjectSerializer._collect_endpoint_responses(
+            source, workbook_data, risk_rich_text_map
+        )
         if endpoint_entries:
             result["endpoint"] = ProjectSerializer._strip_internal_metadata(endpoint_entries)
         source.pop("endpoint", None)
@@ -1127,7 +1143,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         return entries
 
     @staticmethod
-    def _collect_ad_responses(raw_responses, workbook_data):
+    def _collect_ad_responses(raw_responses, workbook_data, risk_rich_text_map=None):
         ad_data = (workbook_data or {}).get("ad", {})
         domains = ad_data.get("domains", []) if isinstance(ad_data, dict) else []
         domain_entries = {}
@@ -1277,6 +1293,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 "gl_risk_string": "generic_logins",
             }
             risk_parts = {field: [] for field in risk_fields}
+            risk_parts_rt = {f"{field}_rt": [] for field in risk_fields}
 
             def _format_count(value):
                 if value in (None, ""):
@@ -1288,6 +1305,12 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     return ""
                 text = str(value).strip()
                 return text.capitalize() if text else ""
+
+            def _format_risk_rich_text(value):
+                if not isinstance(risk_rich_text_map, dict):
+                    return ""
+                rich_text = ProjectSerializer._risk_rich_text(value, risk_rich_text_map)
+                return rich_text if rich_text is not None else ""
 
             def _format_domains(values):
                 entries = [value for value in values if value]
@@ -1307,6 +1330,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
                 for output_field, metric in risk_fields.items():
                     risk_parts[output_field].append(_format_risk_value(entry.get(metric)))
+                    risk_parts_rt[f"{output_field}_rt"].append(
+                        _format_risk_rich_text(entry.get(metric))
+                    )
 
             summary.update(
                 {
@@ -1319,6 +1345,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 summary[field] = "/".join(parts)
 
             for field, parts in risk_parts.items():
+                summary[field] = "/".join(parts)
+
+            for field, parts in risk_parts_rt.items():
                 summary[field] = "/".join(parts)
 
             if legacy_domains:
@@ -1337,7 +1366,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         return summary if summary else {}
 
     @staticmethod
-    def _collect_password_responses(raw_responses, workbook_data):
+    def _collect_password_responses(raw_responses, workbook_data, risk_rich_text_map=None):
         (
             workbook_summary,
             workbook_domain_values,
@@ -1501,6 +1530,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         domains_str_parts = []
         cracked_count_parts = []
         cracked_risk_parts = []
+        cracked_risk_parts_rt = []
         enabled_count_parts = []
         admin_cracked_parts = []
         lanman_domains = []
@@ -1552,6 +1582,11 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 no_fgpp_domains.append(domain)
 
             cracked_risk_parts.append(_format_risk(entry.get("risk")))
+            if isinstance(risk_rich_text_map, dict):
+                rich_text_value = ProjectSerializer._risk_rich_text(
+                    entry.get("risk"), risk_rich_text_map
+                )
+                cracked_risk_parts_rt.append(rich_text_value or "")
 
         if not ordered_entries:
             return {"bad_pass_count": bad_pass_count, "total_cracked": total_cracked}
@@ -1561,6 +1596,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             "domains_str": _format_domains(domains_str_parts),
             "cracked_count_str": "/".join(cracked_count_parts),
             "cracked_risk_string": "/".join(cracked_risk_parts),
+            "cracked_risk_string_rt": "/".join(cracked_risk_parts_rt),
             "cracked_finding_string": _format_plain(cracked_count_parts),
             "enabled_count_string": _format_plain(enabled_count_parts),
             "admin_cracked_string": _format_plain(admin_cracked_parts),
@@ -1578,7 +1614,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         return _inject_cap_details(summary)
 
     @staticmethod
-    def _collect_endpoint_responses(raw_responses, workbook_data):
+    def _collect_endpoint_responses(raw_responses, workbook_data, risk_rich_text_map=None):
         endpoint_data = (workbook_data or {}).get("endpoint", {})
         domains = endpoint_data.get("domains", []) if isinstance(endpoint_data, dict) else []
         entries = {}
@@ -1658,12 +1694,20 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         wifi_count_parts = []
         ood_risk_parts = []
         wifi_risk_parts = []
+        ood_risk_parts_rt = []
+        wifi_risk_parts_rt = []
 
         def _format_risk_value(value):
             if value is None:
                 return ""
             text = str(value).strip()
             return text.capitalize() if text else ""
+
+        def _format_risk_rich_text(value):
+            if not isinstance(risk_rich_text_map, dict):
+                return ""
+            rich_text = ProjectSerializer._risk_rich_text(value, risk_rich_text_map)
+            return rich_text if rich_text is not None else ""
 
         for entry in ordered_entries:
             domain = entry.get("domain", "")
@@ -1678,6 +1722,8 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
 
             ood_risk_parts.append(_format_risk_value(entry.get("av_gap")))
             wifi_risk_parts.append(_format_risk_value(entry.get("open_wifi")))
+            ood_risk_parts_rt.append(_format_risk_rich_text(entry.get("av_gap")))
+            wifi_risk_parts_rt.append(_format_risk_rich_text(entry.get("open_wifi")))
 
         return {
             "entries": ordered_entries,
@@ -1686,6 +1732,8 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             "wifi_count_str": "/".join(wifi_count_parts),
             "ood_risk_string": "/".join(ood_risk_parts),
             "wifi_risk_string": "/".join(wifi_risk_parts),
+            "ood_risk_string_rt": "/".join(ood_risk_parts_rt),
+            "wifi_risk_string_rt": "/".join(wifi_risk_parts_rt),
         }
 
     @staticmethod
