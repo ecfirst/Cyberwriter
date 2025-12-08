@@ -850,7 +850,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             result["dns"] = ProjectSerializer._strip_internal_metadata(dns_entries)
         source.pop("dns", None)
 
-        wireless_entries = ProjectSerializer._collect_wireless_responses(source)
+        wireless_entries = ProjectSerializer._collect_wireless_responses(
+            source, risk_rich_text_map
+        )
         if wireless_entries:
             result["wireless"] = ProjectSerializer._strip_internal_metadata(wireless_entries)
         source.pop("wireless", None)
@@ -1132,7 +1134,7 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         return section
 
     @staticmethod
-    def _collect_wireless_responses(raw_responses):
+    def _collect_wireless_responses(raw_responses, risk_rich_text_map=None):
         entries = {}
         existing_group = raw_responses.get("wireless")
         if isinstance(existing_group, dict):
@@ -1143,6 +1145,15 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             if not isinstance(key, str) or not key.startswith(prefix):
                 continue
             entries[key[len(prefix) :]] = value
+
+        if isinstance(risk_rich_text_map, dict):
+            for key in ("psk_risk", "open_risk", "rogue_risk", "hidden_risk"):
+                if key in entries:
+                    rich_text_value = ProjectSerializer._risk_rich_text(
+                        entries.get(key), risk_rich_text_map
+                    )
+                    if rich_text_value is not None:
+                        entries[f"{key}_rt"] = rich_text_value
 
         return entries
 
