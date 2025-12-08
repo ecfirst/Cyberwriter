@@ -9,6 +9,7 @@ from decimal import Decimal
 
 # Django Imports
 from django.conf import settings
+from django.core.exceptions import SynchronousOnlyOperation
 from django.core.files.storage import FileSystemStorage
 from django.core.validators import MinValueValidator
 from django.db import models
@@ -1422,7 +1423,7 @@ class RiskScoreRangeMapping(models.Model):
 
         try:
             records = cls.objects.all()
-        except (ProgrammingError, OperationalError):  # pragma: no cover - table not ready
+        except (ProgrammingError, OperationalError, SynchronousOnlyOperation):  # pragma: no cover - table not ready
             return OrderedDict(cls.DEFAULT_RISK_SCORE_MAP)
 
         mapping = OrderedDict(
@@ -1438,7 +1439,7 @@ class RiskScoreRangeMapping(models.Model):
 
         try:
             records = cls.objects.all()
-        except (ProgrammingError, OperationalError):  # pragma: no cover - table not ready
+        except (ProgrammingError, OperationalError, SynchronousOnlyOperation):  # pragma: no cover - table not ready
             return OrderedDict(
                 (risk, cls._wrap_inline_rich_text(risk))
                 for risk in cls.DEFAULT_RISK_SCORE_MAP
