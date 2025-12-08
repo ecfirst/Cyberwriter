@@ -742,6 +742,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         risk_rich_text_map = RiskScoreRangeMapping.get_risk_rich_text_map()
         self._apply_project_risk_rich_text(data.get("risks"), risk_rich_text_map)
         self._apply_workbook_risk_rich_text(data.get("workbook_data"), risk_rich_text_map)
+        self._apply_data_response_risk_rich_text(
+            data.get("data_responses"), risk_rich_text_map
+        )
         return data
 
     @staticmethod
@@ -923,9 +926,15 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         normalized = str(value).strip()
         if not normalized:
             return None
-        return risk_rich_text_map.get(
-            normalized, RiskScoreRangeMapping._wrap_inline_rich_text(normalized)
-        )
+        if normalized in risk_rich_text_map:
+            return risk_rich_text_map[normalized]
+
+        normalized_lower = normalized.lower()
+        for risk_label, rich_text in risk_rich_text_map.items():
+            if risk_label.lower() == normalized_lower:
+                return rich_text
+
+        return RiskScoreRangeMapping._wrap_inline_rich_text(normalized)
 
     @classmethod
     def _apply_project_risk_rich_text(
@@ -970,6 +979,72 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                     rich_text_risk = cls._risk_rich_text(risk_value, risk_rich_text_map)
                     if rich_text_risk is not None:
                         subvalue["risk_rt"] = rich_text_risk
+
+    @classmethod
+    def _apply_data_response_risk_rich_text(
+        cls, data_responses: Any, risk_rich_text_map: Dict[str, str]
+    ) -> None:
+        if not isinstance(data_responses, dict):
+            return
+
+        def _apply_simple(container: Any, keys: tuple[str, ...]):
+            if not isinstance(container, dict):
+                return
+            for key in keys:
+                rich_text_value = cls._risk_rich_text(
+                    container.get(key), risk_rich_text_map
+                )
+                if rich_text_value is not None:
+                    container[f"{key}_rt"] = rich_text_value
+
+        def _apply_joined(container: Any, keys: tuple[str, ...]):
+            if not isinstance(container, dict):
+                return
+            for key in keys:
+                value = container.get(key)
+                if value in (None, ""):
+                    continue
+
+                parts = str(value).split("/")
+                rich_text_parts = []
+                for part in parts:
+                    if part == "":
+                        rich_text_parts.append("")
+                        continue
+                    rich_text_value = cls._risk_rich_text(part, risk_rich_text_map)
+                    rich_text_parts.append(rich_text_value or "")
+
+                container[f"{key}_rt"] = "/".join(rich_text_parts)
+
+        _apply_simple(
+            data_responses.get("intelligence"),
+            ("osint_bucket_risk", "osint_leaked_creds_risk"),
+        )
+
+        _apply_joined(
+            data_responses.get("ad"),
+            (
+                "da_risk_string",
+                "ea_risk_string",
+                "ep_risk_string",
+                "ne_risk_string",
+                "ia_risk_string",
+                "ga_risk_string",
+                "gl_risk_string",
+            ),
+        )
+
+        _apply_joined(data_responses.get("password"), ("cracked_risk_string",))
+
+        _apply_joined(
+            data_responses.get("endpoint"),
+            ("ood_risk_string", "wifi_risk_string"),
+        )
+
+        _apply_simple(
+            data_responses.get("wireless"),
+            ("psk_risk", "open_risk", "rogue_risk", "hidden_risk"),
+        )
 
     @staticmethod
     def _collect_firewall_responses(raw_responses, workbook_data):

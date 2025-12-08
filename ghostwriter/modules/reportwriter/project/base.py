@@ -187,6 +187,16 @@ class ExportProjectBase(ExportBase):
                     continue
                 container[key] = ex.create_lazy_template(location, str(value), rich_text_context)
 
+        def render_nested_risk_rich_text_fields(container: dict | None, location: str):
+            if not isinstance(container, dict):
+                return
+            render_risk_rich_text_fields(container, location)
+            for key, value in container.items():
+                if isinstance(value, dict):
+                    render_nested_risk_rich_text_fields(
+                        value, f"{location} {key}"
+                    )
+
         project_context = base_context.get("project", {}) if isinstance(base_context.get("project"), dict) else {}
         render_risk_rich_text_fields(project_context.get("risks"), "the project risk label")
 
@@ -207,6 +217,10 @@ class ExportProjectBase(ExportBase):
                                 subvalue if isinstance(subvalue, dict) else {},
                                 f"the {category_key} {subkey} risk label",
                             )
+
+            render_nested_risk_rich_text_fields(
+                project_context.get("data_responses"), "the data response risk label"
+            )
 
     @classmethod
     def generate_lint_data(cls):
