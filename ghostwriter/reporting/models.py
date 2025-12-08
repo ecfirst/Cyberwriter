@@ -1438,7 +1438,7 @@ class RiskScoreRangeMapping(models.Model):
         """Return configured rich text labels keyed by risk label."""
 
         try:
-            records = cls.objects.all()
+            records = list(cls.objects.all())
         except (ProgrammingError, OperationalError, SynchronousOnlyOperation):  # pragma: no cover - table not ready
             return OrderedDict(
                 (risk, cls._wrap_inline_rich_text(risk))
