@@ -1261,6 +1261,65 @@
 
         const workbookTab = document.getElementById('workbook');
         const workbookUpdateUrl = workbookTab ? workbookTab.getAttribute('data-workbook-update-url') : null;
+
+        // Realtime workbook helpers
+        let collabSubmitOverride = null;
+        let collabRealtimeReady = false;
+        const workbookAutosaveTimers = {};
+
+        const buildWorkbookPatch = function(path, value) {
+          const parts = (path || '').split('.').filter(Boolean);
+          const root = {};
+          let cursor = root;
+          parts.forEach(function(part, idx) {
+            if (idx === parts.length - 1) {
+              cursor[part] = value;
+            } else {
+              cursor[part] = cursor[part] || {};
+              cursor = cursor[part];
+            }
+          });
+          return root;
+        };
+
+        const scheduleWorkbookAutosave = function(path, value) {
+          if (!path || !collabRealtimeReady) {
+            return;
+          }
+          const timerKey = path;
+          if (workbookAutosaveTimers[timerKey]) {
+            clearTimeout(workbookAutosaveTimers[timerKey]);
+          }
+          workbookAutosaveTimers[timerKey] = setTimeout(function() {
+            const patch = buildWorkbookPatch(path, value);
+            submitWorkbookUpdate(patch);
+          }, 250);
+        };
+
+        const attachWorkbookFieldListeners = function(input, path, type) {
+          if (!input || !path) {
+            return;
+          }
+          input.dataset.workbookPath = path;
+          if (type) {
+            input.dataset.workbookType = type;
+          }
+          const handler = function() {
+            let value = input.value;
+            if (input.type === 'number' || type === 'number') {
+              value = value === '' ? null : Number(value);
+            } else {
+              value = value === '' ? null : value;
+            }
+            scheduleWorkbookAutosave(path, value);
+          };
+          const changeEvent = input.tagName === 'SELECT' ? 'change' : 'input';
+          input.addEventListener(changeEvent, handler);
+          if (changeEvent !== 'change') {
+            input.addEventListener('change', handler);
+          }
+        };
+
         const parseJsonScript = function(id) {
           const node = document.getElementById(id);
           if (!node) {
@@ -3924,6 +3983,11 @@
               updateWorkbookCardProgress(areaKey);
             });
           }
+          attachWorkbookFieldListeners(
+            input,
+            ['areas', workbookKey, field.key].join('.'),
+            field.type === 'number' ? 'number' : field.type
+          );
           if (inlineLayout) {
             const inputWrapper = document.createElement('div');
             inputWrapper.className = 'col-12 col-sm-6 col-md-7 col-lg-6';
@@ -4031,6 +4095,11 @@
             input.addEventListener('input', function() {
               updateWorkbookCardProgress('general');
             });
+            attachWorkbookFieldListeners(
+              input,
+              ['general', field.key].join('.'),
+              field.type === 'number' ? 'number' : field.type
+            );
             col.appendChild(label);
             col.appendChild(input);
             fragment.appendChild(col);
@@ -7789,11 +7858,12 @@
           });
           handleWorkbookUpdateResponse({workbook_data: nextState}, renderOptions);
         };
-        let collabSubmitOverride = null;
+
         collabApi.replaceState = setWorkbookStateFromCollab;
         collabApi.setSaveError = setWorkbookSaveError;
         collabApi.setSubmitOverride = function(fn) {
           collabSubmitOverride = fn;
+          collabRealtimeReady = Boolean(fn);
         };
         window.gwWorkbookCollabApi = collabApi;
         setWorkbookSaveError(false);
