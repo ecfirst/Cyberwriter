@@ -903,6 +903,7 @@
     window.gwWorkbookCollabApi = window.gwWorkbookCollabApi || {};
   </script>
   <link rel="stylesheet" href="{% static 'assets/collab_common.css' %}">
+  <script type="module" src="{% static collab_editing_script_path %}"></script>
   {% get_solo "commandcenter.ReportConfiguration" as report_config %}
   <script>
     const PROJECT_SCROLL_STORAGE_PREFIX = 'project-detail-scroll:';
