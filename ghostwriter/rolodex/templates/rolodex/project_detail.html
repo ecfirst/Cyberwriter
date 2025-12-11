@@ -1,6 +1,6 @@
 {% extends "base_generic.html" %}
 
-{% load determine_primary bleach_tags custom_tags extra_fields settings_tags %}
+{% load determine_primary bleach_tags custom_tags extra_fields settings_tags static %}
 
 {% block pagetitle %}{{ project.client }} {{ project.project_type }} Details{% endblock %}
 
@@ -126,6 +126,9 @@
       </div>
 
       <div id="workbook" class="tab-pane" data-workbook-update-url="{% url 'rolodex:project_workbook_data_update' project.id %}">
+        <div id="workbook-collab-error" class="alert alert-danger d-none" role="alert">
+          Unable to save workbook changes right now. Please check your connection and try again.
+        </div>
         <h4>Workbook</h4>
         <hr/>
         <div class="row mb-3">
@@ -889,6 +892,17 @@
 
 {% block morescripts %}
   {{ block.super }}
+  <script type="text/plain" id="yjs-url">/ws-collab</script>
+  <script type="text/plain" id="yjs-object-id">{{ project.id }}</script>
+  <script type="text/plain" id="yjs-username">{{ user.get_username }}</script>
+  <script type="text/plain" id="yjs-jwt">{{ jwt }}</script>
+  <script type="text/plain" id="graphql-path">/v1/graphql</script>
+  <script type="text/plain" id="graphql-auth">{{ jwt }}</script>
+  <script type="text/plain" id="graphql-media-url">{{ media_url }}</script>
+  <script>
+    window.gwWorkbookCollabApi = window.gwWorkbookCollabApi || {};
+  </script>
+  <link rel="stylesheet" href="{% static 'assets/collab_common.css' %}">
   {% get_solo "commandcenter.ReportConfiguration" as report_config %}
   <script>
     const PROJECT_SCROLL_STORAGE_PREFIX = 'project-detail-scroll:';
@@ -7754,6 +7768,36 @@
           refreshProjectDataTabs();
         };
 
+        const collabApi = window.gwWorkbookCollabApi || {};
+        const workbookCollabError = document.getElementById('workbook-collab-error');
+        const setWorkbookSaveError = function(hasError) {
+          if (!workbookCollabError) {
+            return;
+          }
+          if (hasError) {
+            workbookCollabError.classList.remove('d-none');
+          } else {
+            workbookCollabError.classList.add('d-none');
+          }
+        };
+        const setWorkbookStateFromCollab = function(data, renderOptions) {
+          const nextState = (data && typeof data === 'object') ? data : {};
+          Object.keys(workbookState).forEach(function(key) {
+            if (!Object.prototype.hasOwnProperty.call(nextState, key)) {
+              delete workbookState[key];
+            }
+          });
+          handleWorkbookUpdateResponse({workbook_data: nextState}, renderOptions);
+        };
+        let collabSubmitOverride = null;
+        collabApi.replaceState = setWorkbookStateFromCollab;
+        collabApi.setSaveError = setWorkbookSaveError;
+        collabApi.setSubmitOverride = function(fn) {
+          collabSubmitOverride = fn;
+        };
+        window.gwWorkbookCollabApi = collabApi;
+        setWorkbookSaveError(false);
+
         const getCsrfToken = function() {
           const cookieString = document.cookie || '';
           const cookies = cookieString.split(';');
@@ -7767,6 +7811,11 @@
         };
 
         const submitWorkbookUpdate = function(payload, onSuccess, renderOptions) {
+          if (collabSubmitOverride) {
+            return Promise.resolve(
+              collabSubmitOverride(payload, onSuccess, renderOptions)
+            );
+          }
           if (!workbookUpdateUrl) {
             return;
           }
@@ -8074,12 +8123,13 @@
       }
     });
 
-    window.addEventListener('pageshow', function(event) {
-      if (event && event.persisted) {
-        restoreProjectScrollPosition();
-      }
-    });
+  window.addEventListener('pageshow', function(event) {
+    if (event && event.persisted) {
+      restoreProjectScrollPosition();
+    }
+  });
   </script>
+  <script type="module" src="{% static collab_editing_script_path %}"></script>
 {% endblock %}
 
 {% include "confirm_delete_modal.html" %}

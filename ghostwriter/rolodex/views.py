@@ -48,6 +48,7 @@ from ghostwriter.api.utils import (
     get_project_list,
     verify_user_is_privileged,
 )
+from ghostwriter.commandcenter.views import CollabModelUpdate
 from ghostwriter.commandcenter.models import ExtraFieldSpec, ReportConfiguration
 from ghostwriter.modules import codenames
 from ghostwriter.modules.openai_client import submit_prompt_to_assistant
@@ -2970,7 +2971,7 @@ class ProjectListView(RoleBasedAccessControlMixin, ListView):
         return ctx
 
 
-class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
+class ProjectDetailView(CollabModelUpdate):
     """
     Display an individual :model:`rolodex.Project`.
 
@@ -2980,6 +2981,12 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
     """
 
     model = Project
+    template_name = "rolodex/project_detail.html"
+    has_extra_fields = False
+
+    @property
+    def collab_editing_script_path(self) -> str:
+        return "assets/collab_forms_workbook.js"
 
     def test_func(self):
         return self.get_object().user_can_view(self.request.user)
