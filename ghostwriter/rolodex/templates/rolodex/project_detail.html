@@ -7835,7 +7835,9 @@
             updateDataArtifactsState(data.data_artifacts);
           }
           refreshWorkbookUi(renderOptions);
-          refreshProjectDataTabs();
+          if (!renderOptions || !renderOptions.skipRefresh) {
+            refreshProjectDataTabs();
+          }
         };
 
         const collabApi = window.gwWorkbookCollabApi || {};
@@ -7857,7 +7859,10 @@
               delete workbookState[key];
             }
           });
-          handleWorkbookUpdateResponse({workbook_data: nextState}, renderOptions);
+          handleWorkbookUpdateResponse(
+            {workbook_data: nextState},
+            Object.assign({skipRefresh: true}, renderOptions)
+          );
         };
 
         collabApi.replaceState = setWorkbookStateFromCollab;
