@@ -1266,7 +1266,30 @@
         // Realtime workbook helpers
         let collabSubmitOverride = null;
         let collabRealtimeReady = false;
+        const pendingCollabPatches = [];
         const workbookAutosaveTimers = {};
+
+        const applyPatchToState = function(target, patch) {
+          if (!patch || typeof patch !== 'object') {
+            return;
+          }
+          Object.keys(patch).forEach(function(key) {
+            const next = patch[key];
+            if (next && typeof next === 'object' && !Array.isArray(next)) {
+              const existing = (target && typeof target[key] === 'object' && !Array.isArray(target[key]))
+                ? target[key]
+                : {};
+              target[key] = existing;
+              applyPatchToState(existing, next);
+              return;
+            }
+            if (next === null) {
+              target[key] = null;
+              return;
+            }
+            target[key] = Array.isArray(next) ? next.slice() : next;
+          });
+        };
 
         const buildWorkbookPatch = function(path, value) {
           const parts = (path || '').split('.').filter(Boolean);
@@ -1284,7 +1307,7 @@
         };
 
         const scheduleWorkbookAutosave = function(path, value) {
-          if (!path || !collabRealtimeReady) {
+          if (!path) {
             return;
           }
           const timerKey = path;
@@ -1293,7 +1316,13 @@
           }
           workbookAutosaveTimers[timerKey] = setTimeout(function() {
             const patch = buildWorkbookPatch(path, value);
-            submitWorkbookUpdate(patch);
+            if (!collabRealtimeReady) {
+              pendingCollabPatches.push(patch);
+              applyPatchToState(workbookState, patch);
+              refreshWorkbookUi({skipRefresh: true});
+              return;
+            }
+            submitWorkbookUpdate(patch, null, {skipRefresh: true});
           }, 250);
         };
 
@@ -7870,6 +7899,12 @@
         collabApi.setSubmitOverride = function(fn) {
           collabSubmitOverride = fn;
           collabRealtimeReady = Boolean(fn);
+          if (collabRealtimeReady && pendingCollabPatches.length) {
+            const queued = pendingCollabPatches.splice(0, pendingCollabPatches.length);
+            queued.forEach(function(patch) {
+              submitWorkbookUpdate(patch, null, {skipRefresh: true});
+            });
+          }
         };
         window.gwWorkbookCollabApi = collabApi;
         setWorkbookSaveError(false);
