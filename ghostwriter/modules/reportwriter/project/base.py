@@ -26,7 +26,10 @@ class ExportProjectBase(ExportBase):
 
     def map_rich_texts(self):
         base_context = copy.deepcopy(self.data)
-        rich_text_context = ChainMap(ExportProjectBase.rich_text_jinja_overlay(self.data), base_context)
+        logos = getattr(self, "logo_lookup", {})
+        base_context["_logos"] = logos
+        base_context["mk_logo"] = jinja_funcs.mk_logo
+        rich_text_context = ChainMap(ExportProjectBase.rich_text_jinja_overlay(self.data, logos), base_context)
 
         # Fields on Project
         ExportProjectBase.process_projects_richtext(self, base_context, rich_text_context)
@@ -34,8 +37,9 @@ class ExportProjectBase(ExportBase):
         return base_context
 
     @staticmethod
-    def rich_text_jinja_overlay(data):
-        return {
+    def rich_text_jinja_overlay(data, logos=None):
+        logos = logos or {}
+        overlay = {
             # `{{.foo}}` converts to `{{_old_dot_vars.foo}}`
             "_old_dot_vars": {
                 "client": data["client"]["short_name"] or data["client"]["name"],
@@ -45,8 +49,14 @@ class ExportProjectBase(ExportBase):
             },
             "mk_caption": jinja_funcs.caption,
             "mk_ref": jinja_funcs.ref,
+            "mk_logo": jinja_funcs.mk_logo,
+            "_logos": logos,
             # "get_type": type,
         }
+
+        overlay["_old_dot_vars"].update({f"logo {key}": jinja_funcs.raw_mk_logo(key) for key in logos})
+
+        return overlay
 
     @staticmethod
     def process_projects_richtext(

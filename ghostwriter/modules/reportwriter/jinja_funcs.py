@@ -266,6 +266,22 @@ def ref(ref_name):
 
 
 @jinja2.pass_context
+def mk_logo(context: jinja2.runtime.Context, logo_key: str = "logo") -> Markup:
+    """Insert a client logo placeholder for later rendering."""
+
+    logos = context.get("_logos") or {}
+    if logo_key not in logos:
+        raise ReportExportTemplateError(
+            f"No such logo '{logo_key}' found or no logo is configured for this client"
+        )
+    return raw_mk_logo(logo_key)
+
+
+def raw_mk_logo(logo_key: str) -> Markup:
+    return Markup('<span data-gw-logo="' + html.escape(str(logo_key)) + '"></span>')
+
+
+@jinja2.pass_context
 def mk_evidence(context: jinja2.runtime.Context, evidence_name: str) -> Markup:
     """
     `{{mk_evidence(name)}}` function in jinja.

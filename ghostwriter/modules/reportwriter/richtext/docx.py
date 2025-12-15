@@ -285,6 +285,7 @@ class HtmlToDocxWithEvidence(HtmlToDocx):
         p_style,
         evidence_image_width,
         evidences,
+        logos,
         figure_label: str,
         figure_prefix: str,
         figure_caption_location: str,
@@ -307,6 +308,7 @@ class HtmlToDocxWithEvidence(HtmlToDocx):
         self.title_case_exceptions = title_case_exceptions
         self.border_color_width = border_color_width
         self.evidence_image_width = evidence_image_width
+        self.logos = logos or {}
         self.plural_acronym_pattern = re.compile(r"^[^a-z]+(:?s|'s)$")
         self.current_bookmark_id = 1000 # Hopefully won't conflict with templates
 
@@ -322,6 +324,11 @@ class HtmlToDocxWithEvidence(HtmlToDocx):
             except (KeyError, ValueError):
                 return
             self.make_evidence(par, evidence)
+        elif "data-gw-logo" in el.attrs:
+            logo_key = el.attrs["data-gw-logo"]
+            logo = self.logos.get(logo_key)
+            if logo:
+                self.make_logo(par, logo)
         elif "data-gw-caption" in el.attrs:
             ref_name = el.attrs["data-gw-caption"]
             self.make_caption(par, self.figure_label, ref_name or None)
@@ -354,6 +361,23 @@ class HtmlToDocxWithEvidence(HtmlToDocx):
             self.make_evidence(par, evidence)
         else:
             super().tag_div(el, **kwargs)
+
+    def make_logo(self, par, logo: dict):
+        width_in = logo.get("width_inches")
+        height_in = logo.get("height_inches")
+        if not logo.get("path"):
+            return
+
+        kwargs = {}
+        if width_in:
+            kwargs["width"] = Inches(width_in)
+        if height_in:
+            kwargs["height"] = Inches(height_in)
+
+        try:
+            par.add_run().add_picture(logo["path"], **kwargs)
+        except FileNotFoundError:
+            logger.exception("Logo file missing at %s", logo["path"])
 
     def _mk_table_caption(self, caption_el, caption_bookmark=None):
         par_caption = self.doc.add_paragraph()

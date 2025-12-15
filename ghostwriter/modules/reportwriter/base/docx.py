@@ -24,6 +24,7 @@ from ghostwriter.modules.reportwriter.base.html_rich_text import (
 )
 from ghostwriter.modules.reportwriter.richtext.docx import HtmlToDocxWithEvidence
 from ghostwriter.modules.reportwriter.base.docx_template import GhostwriterDocxTemplate
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,9 @@ class ExportDocxBase(ExportBase):
         self.border_color = global_report_config.border_color
         self.border_weight = global_report_config.border_weight
 
+        # Client logos available for templating
+        self.logo_lookup = self._build_logo_lookup()
+
         # Caption options
         prefix_figure = global_report_config.prefix_figure
         self.prefix_figure = f"{prefix_figure}"
@@ -218,6 +222,44 @@ class ExportDocxBase(ExportBase):
             raise ReportExportTemplateError(
                 "An evidence file was missing – try uploading it again.", "the DOCX template"
             ) from err
+
+    def _build_logo_lookup(self) -> dict:
+        client = None
+        obj = getattr(self, "input_object", None)
+        if obj is not None:
+            if hasattr(obj, "project") and getattr(obj, "project", None) is not None:
+                client = getattr(obj.project, "client", None)
+            elif hasattr(obj, "client"):
+                client = getattr(obj, "client", None)
+
+        logos: dict[str, dict[str, object]] = {}
+        for key, field in (("logo", getattr(client, "logo", None)), ("logo_header", getattr(client, "logo_header", None))):
+            if not field or not getattr(field, "name", None):
+                continue
+
+            try:
+                field.open("rb")
+                content = field.read()
+                with Image.open(io.BytesIO(content)) as img:
+                    width_px, height_px = img.size
+                    dpi_x, dpi_y = img.info.get("dpi", (300, 300))
+            except Exception:
+                continue
+            finally:
+                try:
+                    field.close()
+                except Exception:
+                    pass
+
+            dpi_x = dpi_x or 300
+            dpi_y = dpi_y or dpi_x or 300
+            logos[key] = {
+                "path": field.path,
+                "width_inches": width_px / dpi_x,
+                "height_inches": height_px / dpi_y,
+            }
+
+        return logos
 
         out = io.BytesIO()
         self.word_doc.save(out)
@@ -328,6 +370,7 @@ class ExportDocxBase(ExportBase):
                     p_style=self.p_style,
                     evidence_image_width=self.evidence_image_width,
                     evidences=self.evidences_by_id,
+                    logos=self.logo_lookup,
                     figure_label=self.label_figure,
                     figure_prefix=self.prefix_figure,
                     figure_caption_location=self.figure_caption_location,

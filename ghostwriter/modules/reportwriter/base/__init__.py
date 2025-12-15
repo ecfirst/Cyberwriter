@@ -130,6 +130,10 @@ def rich_text_template(env: jinja2.Environment, text: str) -> jinja2.Template:
             return jinja_funcs.caption("")
         elif contents.startswith("caption "):
             return jinja_funcs.caption(contents[8:].strip())
+        elif contents.startswith("logo"):
+            parts = contents.split(None, 1)
+            logo_key = parts[1].strip() if len(parts) > 1 else "logo"
+            return jinja_funcs.raw_mk_logo(logo_key)
         return "{{ _old_dot_vars[" + repr(contents.strip()) + "]}}"
 
     text = re.sub(r"\{\{\.([^\{\}]*)\}\}", replace_old_tag, text)
