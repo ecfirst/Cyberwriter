@@ -28,6 +28,7 @@ class ExportProjectBase(ExportBase):
         base_context = copy.deepcopy(self.data)
         logos = getattr(self, "logo_lookup", {})
         base_context["_logos"] = logos
+        base_context["_linting"] = getattr(self, "linting", False)
         base_context["mk_logo"] = jinja_funcs.mk_logo
         rich_text_context = ChainMap(ExportProjectBase.rich_text_jinja_overlay(self.data, logos), base_context)
 

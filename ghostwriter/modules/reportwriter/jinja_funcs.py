@@ -271,6 +271,8 @@ def mk_logo(context: jinja2.runtime.Context, logo_key: str = "logo") -> Markup:
 
     logos = context.get("_logos") or {}
     if logo_key not in logos:
+        if context.get("_linting"):
+            return raw_mk_logo(logo_key)
         raise ReportExportTemplateError(
             f"No such logo '{logo_key}' found or no logo is configured for this client"
         )
