@@ -223,6 +223,11 @@ class ExportDocxBase(ExportBase):
                 "An evidence file was missing – try uploading it again.", "the DOCX template"
             ) from err
 
+        out = io.BytesIO()
+        self.word_doc.save(out)
+        out.seek(0)
+        return out
+
     def _build_logo_lookup(self) -> dict:
         client = None
         obj = getattr(self, "input_object", None)
@@ -260,10 +265,6 @@ class ExportDocxBase(ExportBase):
             }
 
         return logos
-
-        out = io.BytesIO()
-        self.word_doc.save(out)
-        return out
 
     def create_styles(self):
         """
