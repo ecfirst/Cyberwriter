@@ -28,7 +28,9 @@ def prepare_jinja2_env(debug=False):
 
             def _fail_with_undefined_error(self, *args, **kwargs):
                 self._record()
-                return super()._fail_with_undefined_error(*args, **kwargs)
+                # When linting, treat undefined accesses as empty strings so rendering can
+                # continue and the variables can be reported as warnings instead of errors.
+                return ""
 
             def __str__(self) -> str:
                 self._record()
