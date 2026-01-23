@@ -2707,6 +2707,265 @@ def _iter_nipper_sections(root: "ElementTree.Element", ref: str) -> List["Elemen
     return matches
 
 
+def _normalize_nipper_risk(value: str) -> str:
+    normalized = (value or "").strip()
+    if normalized.lower() == "critical":
+        normalized = "High"
+    if normalized.lower() == "informational":
+        normalized = "Low"
+    return normalized
+
+
+def iter_report_findings(root: "ElementTree.Element") -> Iterable["ElementTree.Element"]:
+    """Yield candidate finding sections under report-root schema."""
+
+    sections_node = _find_child_element(root, "sections")
+    for parent in _find_child_elements(sections_node, "section"):
+        subsections = _find_child_element(parent, "subsections")
+        for candidate in _find_child_elements(subsections, "section"):
+            title = (_get_element_field(candidate, "title") or "").strip()
+            if not title:
+                continue
+            title_lower = title.lower()
+            audit_text = get_extra(candidate, "AUDIT")
+            has_devices = bool(get_devices(candidate))
+            has_finding = bool(get_subsection_text(candidate, "Finding"))
+            has_recommendation = bool(get_subsection_text(candidate, "Recommendation"))
+            if (
+                ("introduction" in title_lower
+                 or "conclusions" in title_lower
+                 or "recommendations" in title_lower)
+                and not (audit_text or has_devices or has_finding or has_recommendation)
+            ):
+                continue
+            yield candidate
+
+
+def get_subsection_text(section: "ElementTree.Element", title_name: str) -> str:
+    """Return concatenated content text for a subsection title."""
+
+    subsections = _find_child_element(section, "subsections")
+    target = (title_name or "").strip().lower()
+    for subsection in _find_child_elements(subsections, "section"):
+        title = (_get_element_field(subsection, "title") or "").strip()
+        if title.lower() != target:
+            continue
+        contents = _find_child_element(subsection, "contents")
+        content_texts = [
+            _element_text(content)
+            for content in _find_child_elements(contents, "content")
+            if _element_text(content)
+        ]
+        return "\n".join(content_texts)
+    return ""
+
+
+def get_extra(section: "ElementTree.Element", key: str) -> str:
+    """Return text for extra-info node."""
+
+    extra_info = _find_child_element(section, "extra-info")
+    if extra_info is None:
+        return ""
+    return _get_element_field(extra_info, key)
+
+
+def get_devices(section: "ElementTree.Element") -> str:
+    """Return unique device names for report-root schema."""
+
+    devices_node = _find_child_element(section, "devices")
+    device_entries: List[str] = []
+    for device in _find_child_elements(devices_node, "device"):
+        name = (device.attrib.get("name") or _get_element_field(device, "name") or "").strip()
+        if not name:
+            continue
+        if name not in device_entries:
+            device_entries.append(name)
+    return "\n".join(device_entries)
+
+
+def parse_nipper_firewall_report_report_root(
+    root: "ElementTree.Element", project_type: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Parse report-root Nipper XML exports into normalized findings."""
+
+    tier_map = {
+        "silver": 1,
+        "gold": 2,
+        "cloudfirst": 2,
+        "platinum": 3,
+        "titanium": 3,
+    }
+    normalized_tier = (project_type or "").strip().lower()
+    tier = tier_map.get(normalized_tier, 3)
+    bytes_read = root.attrib.get("_bytes_read") or "0"
+
+    logger.info(
+        "Parsing Nipper firewall report (report-root schema; tier=%s); bytes_read=%s",
+        normalized_tier or "auto",
+        bytes_read,
+    )
+
+    applicable_refs = ["VULNAUDIT"]
+    if tier >= 2:
+        applicable_refs.append("SECURITYAUDIT")
+    if tier >= 3:
+        applicable_refs.append("COMPLEXITY")
+
+    findings: List[Dict[str, Any]] = []
+    vuln_count = 0
+    security_count = 0
+    complexity_count = 0
+
+    for section in iter_report_findings(root):
+        audit = get_extra(section, "AUDIT").lower()
+        if not any(keyword in audit for keyword in ("nvd", "vuln", "vulnerability", "nist")):
+            continue
+
+        issue = _get_element_field(section, "title")
+        nipper_node = _find_child_element(section, "nipper")
+        risk_text = _get_element_field(nipper_node, "summary")
+        if not risk_text:
+            risk_text = _get_element_field(nipper_node, "impact")
+        risk = _normalize_nipper_risk(risk_text)
+
+        details = get_subsection_text(section, "Finding") or get_extra(section, "CON")
+        impact = get_subsection_text(section, "Impact") or details
+
+        score: Any = ""
+        cvss = _find_child_element(section, "cvssv3.1")
+        base_node = _find_child_element(cvss, "base")
+        score_value = _get_element_field(base_node, "score")
+        if score_value:
+            score = _safe_float(score_value)
+
+        devices = get_devices(section)
+        reference = _build_cve_links(issue)
+
+        findings.append(
+            {
+                "Risk": risk,
+                "Issue": issue,
+                "Devices": devices,
+                "Solution": "Apply a patch, upgrade the OS or apply vendor mitigations",
+                "Impact": impact,
+                "Details": details,
+                "Reference": reference,
+                "Score": score,
+                "Accepted": "No",
+                "Type": "Vuln",
+            }
+        )
+        vuln_count += 1
+
+    if "SECURITYAUDIT" in applicable_refs:
+        for section in iter_report_findings(root):
+            audit = get_extra(section, "AUDIT").lower()
+            if not any(
+                keyword in audit
+                for keyword in ("best practice", "security", "configuration", "audit")
+            ):
+                continue
+
+            issue = _get_element_field(section, "title")
+            devices = get_devices(section)
+            nipper_node = _find_child_element(section, "nipper")
+            risk_text = _get_element_field(nipper_node, "summary")
+            if not risk_text:
+                risk_text = _get_element_field(nipper_node, "impact")
+            risk = _normalize_nipper_risk(risk_text)
+
+            impact = get_subsection_text(section, "Impact")
+            if not impact:
+                impact = get_extra(section, "CON") or get_subsection_text(section, "Finding")
+
+            details = get_subsection_text(section, "Finding") or get_extra(section, "CON")
+            solution = get_subsection_text(section, "Recommendation") or get_extra(section, "REC")
+
+            score: Any = ""
+            cvss = _find_child_element(section, "cvssv3.1")
+            base_node = _find_child_element(cvss, "base")
+            score_value = _get_element_field(base_node, "score")
+            if score_value:
+                score = _safe_float(score_value)
+
+            classification = get_extra(section, "CLASSIFICATION")
+            classification_upper = (classification or "").upper()
+            section_type = (
+                "Rule"
+                if classification_upper.startswith("FILTER") or "FILTER" in classification_upper
+                else "Config"
+            )
+
+            findings.append(
+                {
+                    "Risk": risk,
+                    "Issue": issue,
+                    "Devices": devices,
+                    "Solution": solution,
+                    "Impact": impact,
+                    "Details": details,
+                    "Reference": "N/A",
+                    "Score": score,
+                    "Accepted": "No",
+                    "Type": section_type,
+                }
+            )
+            security_count += 1
+
+    if "COMPLEXITY" in applicable_refs:
+        default_impact = (
+            "While not a technical vulnerability, adherence to best practice calls for these items to be addressed"
+        )
+        default_solution = "Review these items and address them appropriately"
+        for section in iter_report_findings(root):
+            audit = get_extra(section, "AUDIT").lower()
+            classification = get_extra(section, "CLASSIFICATION").lower()
+            related = get_extra(section, "RELATED").lower()
+            if not any("complexity" in value for value in (audit, classification, related)):
+                continue
+
+            issue = _get_element_field(section, "title")
+            devices = get_devices(section)
+            details = get_subsection_text(section, "Finding")
+            if not details:
+                subsections = _find_child_element(section, "subsections")
+                detail_parts = [
+                    _element_text(content)
+                    for subsection in _find_child_elements(subsections, "section")
+                    for content in _find_child_elements(
+                        _find_child_element(subsection, "contents"), "content"
+                    )
+                    if _element_text(content)
+                ]
+                details = "\n".join(detail_parts)
+
+            findings.append(
+                {
+                    "Risk": "Low",
+                    "Issue": issue,
+                    "Devices": devices,
+                    "Solution": default_solution,
+                    "Impact": default_impact,
+                    "Details": details,
+                    "Reference": "N/A",
+                    "Score": 1,
+                    "Accepted": "No",
+                    "Type": "Complexity",
+                }
+            )
+            complexity_count += 1
+
+    logger.info(
+        "Finished Nipper firewall report-root parsing: vulnaudit=%d security=%d complexity=%d findings=%d",
+        vuln_count,
+        security_count,
+        complexity_count,
+        len(findings),
+    )
+
+    return findings
+
+
 def parse_nipper_firewall_report(
     file_obj: File, project_type: Optional[str] = None
 ) -> List[Dict[str, Any]]:
@@ -2734,7 +2993,15 @@ def parse_nipper_firewall_report(
         logger.info("Unable to parse Nipper firewall XML", exc_info=True)
         return []
 
-    document = _find_child_element(root, "document") or root
+    document_node = _find_child_element(root, "document")
+    if root.tag == "document" or document_node is not None:
+        document = document_node or root
+    elif root.tag == "report":
+        root.attrib["_bytes_read"] = str(len(raw_bytes))
+        return parse_nipper_firewall_report_report_root(root, project_type)
+    else:
+        document = document_node or root
+
     info_block = _find_child_element(document, "information")
     devices_node = _find_child_element(info_block, "devices")
     device_names = [
