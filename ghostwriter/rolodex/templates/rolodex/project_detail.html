@@ -321,6 +321,26 @@
         <p>Create as many scope lists as you desire. Break-up large scopes into categories (e.g., External) or by
           objectives.</p>
 
+        <p>Suggested naming conventions for your scope lists:</p>
+        <table class="table table-sm table-borderless col-md-8 offset-md-2">
+          <thead>
+            <tr>
+              <th class="text-left">Name</th>
+              <th class="text-left">Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="text-left"><code>Seed-Network Ranges</code></td><td class="text-left">Client provided network ranges</td></tr>
+            <tr><td class="text-left"><code>Seed-Domains</code></td><td class="text-left">Client provided domains</td></tr>
+            <tr><td class="text-left"><code>Seed-IPs</code></td><td class="text-left">Client provided IPs</td></tr>
+            <tr><td class="text-left"><code>Found-Network Ranges</code></td><td class="text-left">Discovered network ranges</td></tr>
+            <tr><td class="text-left"><code>Found-Domains</code></td><td class="text-left">Discovered domains</td></tr>
+            <tr><td class="text-left"><code>Found-IPs</code></td><td class="text-left">Discovered IPs</td></tr>
+            <tr><td class="text-left"><code>Found-Hostnames</code></td><td class="text-left">Discovered hostnames</td></tr>
+            <tr><td class="text-left"><code>Found-Employees</code></td><td class="text-left">Discovered personnel</td></tr>
+          </tbody>
+        </table>
+
         {% if project.projectscope_set.all %}
           <table id="scopeTable" class="tablesorter table">
             <thead>
