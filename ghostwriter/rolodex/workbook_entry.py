@@ -73,6 +73,21 @@ AD_DOMAIN_COUNT_FIELDS = {
     "total_accounts",
 }
 
+ATTACK_PATHS_DOMAIN_COUNT_FIELDS = {
+    "kerberoastable",
+    "asrep_roastable",
+    "unconstrained_delegation",
+    "constrained_delegation",
+    "rbcd",
+    "shadow_credentials",
+    "privileged_not_protected",
+    "laps_coverage",
+    "gpp_passwords",
+    "ldap_bind_test",
+    "adcs_vulnerable_templates",
+    "adcs_ca_config",
+}
+
 AD_OLD_PASSWORD_COUNT_FIELDS = {
     "compliant",
     "30_days",
@@ -282,6 +297,30 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                                 raw_inactive_counts.get(field)
                             )
                     domain_entry["inactive_account_counts"] = inactive_counts
+
+                if domain_entry:
+                    normalized_domains.append(domain_entry)
+            normalized["domains"] = normalized_domains
+        return normalized
+    if area == "ad_attack_paths" and isinstance(payload, Mapping):
+        raw_domains = payload.get("domains")
+        normalized_domains: list[dict[str, Any]] = []
+        if isinstance(raw_domains, list):
+            for domain_payload in raw_domains:
+                if not isinstance(domain_payload, Mapping):
+                    continue
+                domain_entry: dict[str, Any] = {}
+                domain_value = (
+                    domain_payload.get("domain")
+                    or domain_payload.get("name")
+                    or ""
+                )
+                domain_text = str(domain_value).strip()
+                if domain_text:
+                    domain_entry["domain"] = domain_text
+                for field in ATTACK_PATHS_DOMAIN_COUNT_FIELDS:
+                    if field in domain_payload:
+                        domain_entry[field] = _as_int(domain_payload.get(field))
 
                 if domain_entry:
                     normalized_domains.append(domain_entry)

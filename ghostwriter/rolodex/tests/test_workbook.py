@@ -266,6 +266,32 @@ class WorkbookHelpersTests(SimpleTestCase):
         self.assertEqual(len(endpoint_domains), 1)
         self.assertEqual(endpoint_domains[0].get("access_pct"), "40.00%")
 
+    def test_ad_attack_paths_domains_round_trip(self):
+        project = type("Dummy", (), {"workbook_data": {}, "scoping": {}})()
+
+        workbook_payload = build_workbook_entry_payload(
+            project=project,
+            areas={
+                "ad_attack_paths": {
+                    "domains": [
+                        {
+                            "domain": "corp.example.com",
+                            "kerberoastable": 3,
+                            "gpp_passwords": 1,
+                        }
+                    ]
+                }
+            },
+        )
+
+        attack_paths_domains = workbook_payload.get("ad_attack_paths", {}).get("domains")
+        self.assertIsInstance(attack_paths_domains, list)
+        self.assertEqual(len(attack_paths_domains), 1)
+        self.assertEqual(attack_paths_domains[0].get("domain"), "corp.example.com")
+        self.assertEqual(attack_paths_domains[0].get("kerberoastable"), 3)
+        self.assertEqual(attack_paths_domains[0].get("gpp_passwords"), 1)
+        self.assertIsNone(attack_paths_domains[0].get("asrep_roastable"))
+
     def test_ensure_data_responses_defaults_populates_structure(self):
         defaults = ensure_data_responses_defaults({})
 

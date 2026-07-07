@@ -712,6 +712,81 @@ AD_CSV_HEADER_MAP: dict[str, dict[str, str]] = {
     "generic_logins": {"computer": "Computer", "username": "Username"},
 }
 
+ATTACK_PATHS_CSV_HEADER_MAP: dict[str, dict[str, str]] = {
+    "kerberoastable": {
+        "account": "Account",
+        "spn": "SPN",
+        "passwordlastset": "Password Last Set",
+        "lastlogondate": "Last Logon Date",
+        "dayssincepwdset": "Days Since Pwd Set",
+        "privileged": "Privileged",
+    },
+    "asrep_roastable": {
+        "account": "Account",
+        "passwordlastset": "Password Last Set",
+        "lastlogondate": "Last Logon Date",
+        "dayssincepwdset": "Days Since Pwd Set",
+        "privileged": "Privileged",
+    },
+    "unconstrained_delegation": {
+        "account": "Account",
+        "type": "Type",
+        "os": "OS",
+    },
+    "constrained_delegation": {
+        "account": "Account",
+        "type": "Type",
+        "delegatesto": "DelegatesTo",
+        "protocoltransition": "ProtocolTransition",
+    },
+    "rbcd": {
+        "target": "Target",
+        "type": "Type",
+        "allowedprincipal": "AllowedPrincipal",
+    },
+    "shadow_credentials": {
+        "account": "Account",
+        "type": "Type",
+        "keycount": "KeyCount",
+        "lastchanged": "LastChanged",
+    },
+    "privileged_not_protected": {
+        "account": "Account",
+        "role": "Role",
+    },
+    "laps_coverage": {
+        "computer": "Computer",
+        "legacylaps": "LegacyLAPS",
+        "windowslaps": "WindowsLAPS",
+        "expiration": "Expiration",
+    },
+    "gpp_passwords": {
+        "policyguid": "PolicyGUID",
+        "xmlfile": "XMLFile",
+        "username": "UserName",
+        "cpassword": "CPassword",
+        "decryptedpassword": "DecryptedPassword",
+    },
+    "ldap_bind_test": {
+        "dc": "DC",
+        "anonymousbind": "AnonymousBind",
+        "unsignedbind": "UnsignedBind",
+    },
+    "adcs_vulnerable_templates": {
+        "template": "Template",
+        "escfindings": "ESCFindings",
+        "enrollmentprincipals": "EnrollmentPrincipals",
+        "ca": "CA",
+        "publishedto": "PublishedTo",
+        "ekus": "EKUs",
+    },
+    "adcs_ca_config": {
+        "ca": "CA",
+        "findings": "Findings",
+        "detail": "Detail",
+    },
+}
+
 
 def _is_empty_response(value: Any) -> bool:
     if value in (None, "", (), []):
@@ -4817,6 +4892,94 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
         )
 
+    def _handle_attack_paths_csv_upload(self, request, project):
+        upload = request.FILES.get("attack_paths_csv")
+        if not upload:
+            return JsonResponse({"error": "No AD Attack Paths CSV provided."}, status=400)
+
+        domain = (request.POST.get("domain") or "").strip()
+        if not domain:
+            return JsonResponse(
+                {"error": "A domain name is required for this upload."}, status=400
+            )
+
+        metric = (request.POST.get("attack_paths_metric") or "").strip()
+
+        if metric not in ATTACK_PATHS_CSV_HEADER_MAP:
+            return JsonResponse(
+                {"error": "Invalid AD Attack Paths metric provided."}, status=400
+            )
+
+        rows, error_message = self._parse_ad_csv(upload, ATTACK_PATHS_CSV_HEADER_MAP[metric])
+        if error_message:
+            return JsonResponse({"error": error_message}, status=400)
+
+        artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+        artifacts = dict(artifacts)
+        attack_paths_artifacts = (
+            artifacts.get("ad_attack_paths")
+            if isinstance(artifacts.get("ad_attack_paths"), dict)
+            else {}
+        )
+        if not isinstance(attack_paths_artifacts, dict):
+            attack_paths_artifacts = {}
+        domain_key = domain.lower()
+        domain_entry = (
+            attack_paths_artifacts.get(domain_key)
+            if isinstance(attack_paths_artifacts, dict)
+            else {}
+        )
+        if not isinstance(domain_entry, dict):
+            domain_entry = {}
+        domain_entry[metric] = rows or []
+        domain_entry[f"{metric}_file_name"] = upload.name
+        attack_paths_artifacts[domain_key] = domain_entry
+        artifacts["ad_attack_paths"] = attack_paths_artifacts
+
+        normalized_workbook = normalize_workbook_payload(project.workbook_data)
+        attack_paths_state = (
+            normalized_workbook.get("ad_attack_paths")
+            if isinstance(normalized_workbook.get("ad_attack_paths"), dict)
+            else {}
+        )
+        if not isinstance(attack_paths_state, dict):
+            attack_paths_state = {}
+        domain_records = (
+            attack_paths_state.get("domains")
+            if isinstance(attack_paths_state.get("domains"), list)
+            else []
+        )
+        if not isinstance(domain_records, list):
+            domain_records = []
+
+        match = None
+        for record in domain_records:
+            if not isinstance(record, dict):
+                continue
+            domain_value = (record.get("domain") or record.get("name") or "").strip()
+            if domain_value.lower() == domain_key:
+                match = record
+                break
+
+        if match is None:
+            match = {"domain": domain}
+            domain_records.append(match)
+
+        match["domain"] = domain
+        match[metric] = len(rows or [])
+
+        attack_paths_state["domains"] = domain_records
+
+        workbook_payload = build_workbook_entry_payload(
+            project=project, areas={"ad_attack_paths": attack_paths_state}
+        )
+        project.workbook_data = workbook_payload
+        project.data_artifacts = artifacts
+        project.save(update_fields=["workbook_data", "data_artifacts"])
+        return JsonResponse(
+            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+        )
+
     def _handle_ad_log_upload(self, request, project):
         upload = request.FILES.get("ad_log")
         if not upload:
@@ -5601,6 +5764,9 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             if "ad_log" in request.FILES:
                 return self._handle_ad_log_upload(request, project)
 
+            if "attack_paths_csv" in request.FILES:
+                return self._handle_attack_paths_csv_upload(request, project)
+
             if "password_csv" in request.FILES:
                 return self._handle_password_csv_upload(request, project)
 
@@ -5804,6 +5970,93 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
             )
 
+        attack_paths_removal = payload.get("remove_attack_paths_metric")
+        if isinstance(attack_paths_removal, dict):
+            domain = (attack_paths_removal.get("domain") or "").strip()
+            metric = (attack_paths_removal.get("metric") or "").strip()
+
+            if not domain or metric not in ATTACK_PATHS_CSV_HEADER_MAP:
+                return JsonResponse(
+                    {"error": "Invalid AD Attack Paths removal request."}, status=400
+                )
+
+            artifacts = (
+                project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            )
+            artifacts = dict(artifacts)
+            attack_paths_artifacts = (
+                artifacts.get("ad_attack_paths")
+                if isinstance(artifacts.get("ad_attack_paths"), dict)
+                else {}
+            )
+            if not isinstance(attack_paths_artifacts, dict):
+                attack_paths_artifacts = {}
+
+            domain_key = domain.lower()
+            domain_artifact = (
+                attack_paths_artifacts.get(domain_key)
+                if isinstance(attack_paths_artifacts, dict)
+                else {}
+            )
+            if not isinstance(domain_artifact, dict):
+                domain_artifact = {}
+            domain_artifact.pop(metric, None)
+            domain_artifact.pop(f"{metric}_file_name", None)
+
+            if domain_artifact:
+                attack_paths_artifacts[domain_key] = domain_artifact
+            else:
+                attack_paths_artifacts.pop(domain_key, None)
+
+            if attack_paths_artifacts:
+                artifacts["ad_attack_paths"] = attack_paths_artifacts
+            else:
+                artifacts.pop("ad_attack_paths", None)
+
+            normalized_workbook = normalize_workbook_payload(project.workbook_data)
+            attack_paths_state = (
+                normalized_workbook.get("ad_attack_paths")
+                if isinstance(normalized_workbook.get("ad_attack_paths"), dict)
+                else {}
+            )
+            if not isinstance(attack_paths_state, dict):
+                attack_paths_state = {}
+            domain_records = (
+                attack_paths_state.get("domains")
+                if isinstance(attack_paths_state.get("domains"), list)
+                else []
+            )
+            if not isinstance(domain_records, list):
+                domain_records = []
+
+            match = None
+            for record in domain_records:
+                if not isinstance(record, dict):
+                    continue
+                domain_value = (record.get("domain") or record.get("name") or "").strip()
+                if domain_value.lower() == domain_key:
+                    match = record
+                    break
+
+            if match is None and domain:
+                match = {"domain": domain}
+                domain_records.append(match)
+
+            if match is not None:
+                match[metric] = None
+
+            attack_paths_state["domains"] = domain_records
+
+            workbook_payload = build_workbook_entry_payload(
+                project=project, areas={"ad_attack_paths": attack_paths_state}
+            )
+            project.workbook_data = workbook_payload
+            project.data_artifacts = artifacts
+            project.save(update_fields=["workbook_data", "data_artifacts"])
+            return JsonResponse(
+                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            )
+
         ad_domain_removal = payload.get("remove_ad_domain")
         if isinstance(ad_domain_removal, str):
             domain = ad_domain_removal.strip()
@@ -5825,6 +6078,19 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 artifacts["ad"] = ad_artifacts
             else:
                 artifacts.pop("ad", None)
+
+            attack_paths_artifacts = (
+                artifacts.get("ad_attack_paths")
+                if isinstance(artifacts.get("ad_attack_paths"), dict)
+                else {}
+            )
+            if not isinstance(attack_paths_artifacts, dict):
+                attack_paths_artifacts = {}
+            attack_paths_artifacts.pop(domain.lower(), None)
+            if attack_paths_artifacts:
+                artifacts["ad_attack_paths"] = attack_paths_artifacts
+            else:
+                artifacts.pop("ad_attack_paths", None)
 
             normalized_workbook = normalize_workbook_payload(project.workbook_data)
             ad_state = (
@@ -5848,6 +6114,29 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 or (record.get("domain") or record.get("name") or "").strip().lower()
                 != domain_lower
             ]
+
+            attack_paths_state = (
+                normalized_workbook.get("ad_attack_paths")
+                if isinstance(normalized_workbook.get("ad_attack_paths"), dict)
+                else {}
+            )
+            if not isinstance(attack_paths_state, dict):
+                attack_paths_state = {}
+            attack_paths_domain_records = (
+                attack_paths_state.get("domains")
+                if isinstance(attack_paths_state.get("domains"), list)
+                else []
+            )
+            if not isinstance(attack_paths_domain_records, list):
+                attack_paths_domain_records = []
+            attack_paths_domain_records = [
+                record
+                for record in attack_paths_domain_records
+                if not isinstance(record, dict)
+                or (record.get("domain") or record.get("name") or "").strip().lower()
+                != domain_lower
+            ]
+            attack_paths_state["domains"] = attack_paths_domain_records
 
             password_state = (
                 normalized_workbook.get("password")
@@ -5881,7 +6170,12 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             ad_state["domains"] = domain_records
 
             workbook_payload = build_workbook_entry_payload(
-                project=project, areas={"ad": ad_state, "password": password_state}
+                project=project,
+                areas={
+                    "ad": ad_state,
+                    "ad_attack_paths": attack_paths_state,
+                    "password": password_state,
+                },
             )
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts

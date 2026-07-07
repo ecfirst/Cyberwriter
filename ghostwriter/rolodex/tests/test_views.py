@@ -1718,6 +1718,132 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
             [entry.get("domain") for entry in cap_entries], ["corp.example.com"]
         )
 
+    def test_upload_attack_paths_csv_updates_metrics_and_artifacts(self):
+        csv_file = SimpleUploadedFile(
+            "kerberoastable.csv",
+            b"Account,SPN,PasswordLastSet,LastLogonDate,DaysSincePwdSet,Privileged\n"
+            b"svc-sql,MSSQLSvc/sql01,2023-01-01,2024-01-01,400,Yes\n"
+            b"svc-web,HTTP/web01,2023-06-01,2024-01-01,200,No\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "kerberoastable",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        domains = payload.get("workbook_data", {}).get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(len(domains), 1)
+        self.assertEqual(domains[0].get("domain"), "corp.example.com")
+        self.assertEqual(domains[0].get("kerberoastable"), 2)
+
+        self.project.refresh_from_db()
+        artifacts = self.project.data_artifacts or {}
+        domain_entry = artifacts.get("ad_attack_paths", {}).get("corp.example.com", {})
+        self.assertEqual(len(domain_entry.get("kerberoastable", [])), 2)
+        self.assertEqual(domain_entry.get("kerberoastable_file_name"), "kerberoastable.csv")
+        workbook_domains = self.project.workbook_data.get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(workbook_domains[0].get("kerberoastable"), 2)
+
+    def test_upload_attack_paths_csv_validates_headers(self):
+        bad_csv = SimpleUploadedFile(
+            "bad_kerberoastable.csv",
+            b"User,SPN\nsvc-sql,MSSQLSvc/sql01\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": bad_csv,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "kerberoastable",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self.assertIn("Missing required headers", payload.get("error", ""))
+
+        self.project.refresh_from_db()
+        self.assertNotIn("ad_attack_paths", self.project.data_artifacts or {})
+
+    def test_remove_attack_paths_metric_clears_artifact_and_count(self):
+        self.project.workbook_data = {
+            "ad_attack_paths": {"domains": [{"domain": "corp.example.com", "kerberoastable": 2}]},
+        }
+        self.project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [{"Account": "svc-sql"}, {"Account": "svc-web"}],
+                    "kerberoastable_file_name": "kerberoastable.csv",
+                }
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {
+                    "remove_attack_paths_metric": {
+                        "domain": "corp.example.com",
+                        "metric": "kerberoastable",
+                    }
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+        self.assertNotIn("ad_attack_paths", self.project.data_artifacts or {})
+        domains = self.project.workbook_data.get("ad_attack_paths", {}).get("domains", [])
+        self.assertIsNone(domains[0].get("kerberoastable"))
+
+    def test_attack_paths_entries_removed_when_ad_domain_deleted(self):
+        self.project.workbook_data = {
+            "ad": {"domains": [{"domain": "corp.example.com"}, {"domain": "old.example.com"}]},
+            "ad_attack_paths": {
+                "domains": [
+                    {"domain": "corp.example.com", "kerberoastable": 2},
+                    {"domain": "old.example.com", "kerberoastable": 1},
+                ]
+            },
+        }
+        self.project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {"kerberoastable": [{"Account": "a"}, {"Account": "b"}]},
+                "old.example.com": {"kerberoastable": [{"Account": "c"}]},
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps({"remove_ad_domain": "old.example.com"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        attack_paths_state = self.project.workbook_data.get("ad_attack_paths", {})
+        attack_paths_domains = attack_paths_state.get("domains", [])
+        self.assertListEqual(
+            [entry.get("domain") for entry in attack_paths_domains if isinstance(entry, dict)],
+            ["corp.example.com"],
+        )
+        self.assertNotIn(
+            "old.example.com", self.project.data_artifacts.get("ad_attack_paths", {})
+        )
+
     def test_password_entries_removed_when_password_domain_deleted(self):
         self.project.workbook_data = {
             "ad": {"domains": [{"domain": "corp.example.com"}, {"domain": "old.example.com"}]},

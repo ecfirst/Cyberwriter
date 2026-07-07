@@ -80,6 +80,7 @@ PROJECT_SCOPING_CONFIGURATION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
                 "options": OrderedDict(
                     [
                         ("ad", "AD"),
+                        ("ad_attack_paths", "AD Attack Paths"),
                         ("password", "Password"),
                     ]
                 ),
@@ -950,6 +951,11 @@ class Project(models.Model):
         ad_artifacts = (
             existing_artifacts.get("ad") if isinstance(existing_artifacts.get("ad"), Mapping) else None
         )
+        attack_paths_artifacts = (
+            existing_artifacts.get("ad_attack_paths")
+            if isinstance(existing_artifacts.get("ad_attack_paths"), Mapping)
+            else None
+        )
 
         for preserved_key in ("dns_records", "password"):
             if preserved_key in existing_artifacts and preserved_key not in artifacts:
@@ -974,6 +980,9 @@ class Project(models.Model):
 
         if ad_artifacts and "ad" not in artifacts:
             artifacts["ad"] = dict(ad_artifacts)
+
+        if attack_paths_artifacts and "ad_attack_paths" not in artifacts:
+            artifacts["ad_attack_paths"] = dict(attack_paths_artifacts)
 
         endpoint_artifact = existing_artifacts.get("endpoint")
         if isinstance(endpoint_artifact, dict):

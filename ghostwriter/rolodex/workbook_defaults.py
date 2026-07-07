@@ -171,6 +171,7 @@ WORKBOOK_DEFAULTS: Dict[str, Any] = {
         "complexity_count": None,
     },
     "ad": {"domains": []},
+    "ad_attack_paths": {"domains": []},
     "password": {"policies": []},
     "internal_nexpose": {
         "total": None,

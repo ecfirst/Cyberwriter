@@ -2422,6 +2422,44 @@ class GenerateReportTests(TestCase):
             filenames,
         )
 
+    def test_attack_paths_files_are_included_in_supplemental_zip(self):
+        project = self.report.project
+        project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [
+                        {
+                            "Account": "svc-sql",
+                            "SPN": "MSSQLSvc/sql01",
+                            "Password Last Set": "2023-01-01",
+                            "Last Logon Date": "2024-01-01",
+                            "Days Since Pwd Set": "400",
+                            "Privileged": "Yes",
+                        }
+                    ],
+                    "gpp_passwords": [
+                        {
+                            "PolicyGUID": "{GUID}",
+                            "XMLFile": "Groups.xml",
+                            "UserName": "localadmin",
+                            "CPassword": "abc123",
+                            "DecryptedPassword": "Password1",
+                        }
+                    ],
+                }
+            }
+        }
+        project.save(update_fields=["data_artifacts"])
+        self.addCleanup(self._reset_project_artifacts)
+
+        builder = SupplementalDocumentBuilder(project)
+        files = builder.build()
+        filenames = [name for name, _ in files]
+
+        self.assertIn(f"{project.client.name} IAM - Kerberoastable Accounts.xlsx", filenames)
+        self.assertIn(f"{project.client.name} IAM - GPP Passwords.xlsx", filenames)
+        self.assertNotIn(f"{project.client.name} IAM - RBCD.xlsx", filenames)
+
     def test_password_file_included_in_supplemental_zip_without_state(self):
         project = self.report.project
         domain_rows = [
