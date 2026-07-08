@@ -166,6 +166,7 @@ AI_REVIEW_SECTIONS = (
     ("external_nexpose_rt", "External Nexpose", "external", "nexpose"),
     ("web_rt", "Web", "external", "web"),
     ("ad_rt", "AD", "iam", "ad"),
+    ("ad_attack_paths_rt", "AD Attack Paths", "iam", "ad_attack_paths"),
     ("password_rt", "Password", "iam", "password"),
     ("internal_nexpose_rt", "Internal Nexpose", "internal", "nexpose"),
     ("iot_iomt_nexpose_rt", "IoT/IoMT Nexpose", "internal", "iot_iomt"),
@@ -230,6 +231,7 @@ def _normalize_ai_review_payload(ai_review_payload: Any) -> Dict[str, Any]:
         "wireless": "wireless_rt",
         "web": "web_rt",
         "ad": "ad_rt",
+        "ad_attack_paths": "ad_attack_paths_rt",
         "password": "password_rt",
         "cloud_management": "cloud_management_rt",
         "iam_management": "iam_management_rt",
@@ -309,6 +311,10 @@ def _build_ai_review_prompt(
         "wireless": "Review of the Wireless networks accessible at a location, a comparison to 'approved' SSIDs, a review of the wireless security and wireless-to-internal network segmentation testing (when applicable)",
         "web": "Web application vulnerability scan results",
         "ad": "Active Directory metrics covering privileged groups and user account hygiene",
+        "ad_attack_paths": (
+            "Active Directory attack path findings covering Kerberoasting, delegation abuse, "
+            "ADCS misconfiguration, and related identity attack surface"
+        ),
         "password": "Password policy effectiveness, cracked credentials, and related controls",
         "iam_management": "Review of the M365 configuration settings as compared to the CIS Benchmark recommendations",
         "cloud_management": "Review of the applicable cloud provider configuration settings as compared to the CIS Benchmark recommendations",
@@ -321,6 +327,7 @@ def _build_ai_review_prompt(
         "external_nexpose": "Based on the vulnerabilities discovered, ecfirst rates the overall risk of the external network and systems as a {risk} risk.",
         "web": "ecfirst has determined these issues represent a {risk} risk for web sites/applications.",
         "ad": "ecfirst has determined that the deviations from best practice identified create a {risk} risk to IAM.",
+        "ad_attack_paths": "ecfirst has determined that the identified AD attack paths create a {risk} risk of domain compromise.",
         "password": "ecfirst has determined that, based on the defined and implemented password policy, along with the number of accounts using weak passwords, the risk of account compromise is {risk}.",
         "internal_nexpose": "Based on the vulnerabilities discovered, ecfirst rates the overall risk of the internal network and systems as a {risk} risk.",
         "iot_iomt_nexpose": "Based on the vulnerabilities discovered, ecfirst rates the overall risk of the IoT/IoMT systems as a {risk} risk.",
@@ -600,6 +607,58 @@ def _build_ai_review_prompt(
             "ad_entries": ad_entries,
         }
         payload = details_map if domain_metrics or ad_entries else {"note": "No Active Directory metrics or entries provided."}
+        details = json.dumps(_attach_risk(payload), indent=2, default=str)
+    elif normalized_key == "ad_attack_paths":
+        attack_paths_data = workbook.get("ad_attack_paths") if isinstance(workbook, Mapping) else {}
+        attack_paths_domains = (
+            attack_paths_data.get("domains") if isinstance(attack_paths_data, Mapping) else []
+        )
+        attack_paths_metric_labels = (
+            ("kerberoastable", "Kerberoastable Accounts"),
+            ("asrep_roastable", "ASREP Roastable"),
+            ("unconstrained_delegation", "Unconstrained Delegation"),
+            ("constrained_delegation", "Constrained Delegation"),
+            ("rbcd", "RBCD"),
+            ("shadow_credentials", "Shadow Credentials"),
+            ("privileged_not_protected", "Privileged Not Protected"),
+            ("laps_coverage", "LAPS Coverage"),
+            ("gpp_passwords", "GPP Passwords"),
+            ("ldap_bind_test", "LDAP Bind Test"),
+            ("adcs_vulnerable_templates", "ADCS Vulnerable Templates"),
+            ("adcs_ca_config", "ADCS CA Config"),
+        )
+        attack_paths_domain_metrics: list[dict[str, Any]] = []
+        if isinstance(attack_paths_domains, list):
+            for entry in attack_paths_domains:
+                if not isinstance(entry, Mapping):
+                    continue
+                domain_name = (entry.get("domain") or entry.get("name") or "").strip() or "Unknown Domain"
+                labeled_entry: dict[str, Any] = {"Domain": domain_name}
+                for field, label in attack_paths_metric_labels:
+                    value = entry.get(field)
+                    if value not in (None, ""):
+                        labeled_entry[label] = value
+                attack_paths_domain_metrics.append(labeled_entry)
+
+        grades_section = workbook.get("external_internal_grades") if isinstance(workbook, Mapping) else {}
+        iam_grades = grades_section.get("iam") if isinstance(grades_section, Mapping) else {}
+        attack_paths_grades = iam_grades.get("ad_attack_paths") if isinstance(iam_grades, Mapping) else {}
+        metric_scores = (
+            attack_paths_grades.get("metric_scores")
+            if isinstance(attack_paths_grades, Mapping)
+            else {}
+        )
+        metric_scores = metric_scores if isinstance(metric_scores, Mapping) else {}
+
+        details_map = {
+            "domains": attack_paths_domain_metrics,
+            "rubric_scores": metric_scores,
+        }
+        payload = (
+            details_map
+            if attack_paths_domain_metrics or metric_scores
+            else {"note": "No AD Attack Paths metrics provided."}
+        )
         details = json.dumps(_attach_risk(payload), indent=2, default=str)
     elif normalized_key == "password":
         password_data = workbook.get("password") if isinstance(workbook, Mapping) else {}

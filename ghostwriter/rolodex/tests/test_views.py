@@ -68,6 +68,7 @@ from ghostwriter.rolodex.workbook_defaults import (
     ensure_data_responses_defaults,
 )
 from ghostwriter.rolodex.templatetags import determine_primary
+from ghostwriter.rolodex.views import _build_ai_review_prompt, _build_ai_review_sections
 
 logging.disable(logging.CRITICAL)
 
@@ -3837,3 +3838,52 @@ class MatrixViewTests(TestCase):
         response = self.client.get(reverse("rolodex:web_issue_matrix") + "?q=Missing")
         self.assertContains(response, "Missing CSP")
         self.assertNotContains(response, "Cross-Site Scripting")
+
+
+class AiReviewAttackPathsParityTests(TestCase):
+    """Confirm AD Attack Paths reaches AI Review parity with AD/Password."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.project = ProjectFactory()
+
+    def test_section_appears_when_scoped(self):
+        scoping_state = {
+            "iam": {"selected": True, "ad": True, "ad_attack_paths": True, "password": True},
+        }
+        sections = _build_ai_review_sections(scoping_state, {})
+        section_keys = {section["key"] for section in sections}
+        self.assertIn("ad_attack_paths_rt", section_keys)
+        attack_paths_section = next(s for s in sections if s["key"] == "ad_attack_paths_rt")
+        self.assertEqual(attack_paths_section["label"], "AD Attack Paths")
+
+    def test_section_omitted_when_not_scoped(self):
+        scoping_state = {
+            "iam": {"selected": True, "ad": True, "ad_attack_paths": False, "password": True},
+        }
+        sections = _build_ai_review_sections(scoping_state, {})
+        section_keys = {section["key"] for section in sections}
+        self.assertNotIn("ad_attack_paths_rt", section_keys)
+
+    def test_prompt_includes_domain_metrics_and_risk(self):
+        workbook = {
+            "ad_attack_paths": {
+                "domains": [
+                    {"domain": "corp.example.com", "kerberoastable": 2, "gpp_passwords": 1},
+                ]
+            },
+            "external_internal_grades": {
+                "iam": {
+                    "ad_attack_paths": {
+                        "score": 6.0,
+                        "risk": "High",
+                        "metric_scores": {"kerberoastable": 6, "gpp_passwords": 5},
+                    }
+                }
+            },
+        }
+        prompt = _build_ai_review_prompt("ad_attack_paths_rt", self.project, workbook, {})
+        self.assertIn("Active Directory attack path findings", prompt)
+        self.assertIn("corp.example.com", prompt)
+        self.assertIn("Kerberoastable Accounts", prompt)
+        self.assertIn("High", prompt)
