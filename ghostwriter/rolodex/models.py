@@ -940,6 +940,7 @@ class Project(models.Model):
             NEXPOSE_METRICS_KEY_MAP,
             build_ad_risk_contrib,
             build_project_artifacts,
+            build_workbook_ad_attack_paths_response,
             build_workbook_ad_response,
             build_workbook_dns_response,
             build_workbook_firewall_response,
@@ -1609,6 +1610,19 @@ class Project(models.Model):
             existing_cap["ad"] = ad_cap_section
         else:
             existing_cap.pop("ad", None)
+
+        workbook_attack_paths_response = build_workbook_ad_attack_paths_response(
+            workbook_payload
+        )
+        if workbook_attack_paths_response:
+            existing_attack_paths_section = existing_responses.get("ad_attack_paths")
+            combined_attack_paths_section = (
+                dict(existing_attack_paths_section)
+                if isinstance(existing_attack_paths_section, dict)
+                else {}
+            )
+            combined_attack_paths_section.update(workbook_attack_paths_response)
+            existing_responses["ad_attack_paths"] = combined_attack_paths_section
 
         attack_paths_cap_section = existing_cap.get("ad_attack_paths")
         if isinstance(attack_paths_cap_section, dict):

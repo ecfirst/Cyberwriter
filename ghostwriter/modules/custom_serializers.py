@@ -902,6 +902,14 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
         else:
             ad_section.setdefault("entries", [])
 
+        attack_paths_section = result.get("ad_attack_paths")
+        if not isinstance(attack_paths_section, dict):
+            attack_paths_section = {"entries": [], "domains_str": None}
+            result["ad_attack_paths"] = attack_paths_section
+        else:
+            attack_paths_section.setdefault("entries", [])
+            attack_paths_section.setdefault("domains_str", None)
+
         password_section = result.get("password")
         if not isinstance(password_section, dict):
             password_section = {"entries": [], "bad_pass_count": 0, "total_cracked": 0}

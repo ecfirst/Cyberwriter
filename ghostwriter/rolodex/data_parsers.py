@@ -6300,6 +6300,52 @@ def build_workbook_ad_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[
     return response
 
 
+def build_workbook_ad_attack_paths_response(
+    workbook_data: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Generate AD Attack Paths response data sourced from workbook details."""
+
+    from ghostwriter.rolodex.ad_attack_paths_scoring import ATTACK_PATHS_METRIC_KEYS
+
+    if not isinstance(workbook_data, dict):
+        return {}
+
+    attack_paths_data = workbook_data.get("ad_attack_paths", {})
+    domains = (
+        attack_paths_data.get("domains", []) if isinstance(attack_paths_data, dict) else []
+    )
+    if not isinstance(domains, list):
+        return {}
+
+    domain_names: List[str] = []
+    metric_counts: Dict[str, List[str]] = {metric: [] for metric in ATTACK_PATHS_METRIC_KEYS}
+
+    for entry in domains:
+        if isinstance(entry, dict):
+            domain_value = entry.get("domain") or entry.get("name") or ""
+        else:
+            domain_value = entry
+
+        domain_text = str(domain_value).strip() if domain_value else ""
+        if not domain_text:
+            continue
+
+        domain_names.append(domain_text)
+        for metric in ATTACK_PATHS_METRIC_KEYS:
+            value = _coerce_int(entry.get(metric)) if isinstance(entry, dict) else None
+            metric_counts[metric].append(_format_integer_value(value))
+
+    if not domain_names:
+        return {}
+
+    response: Dict[str, Any] = {"domains_str": _format_slash_separated_string(domain_names)}
+    for metric, formatted_counts in metric_counts.items():
+        response[f"{metric}_string"] = _format_plain_list(formatted_counts)
+        response[f"{metric}_count_str"] = "/".join(formatted_counts)
+
+    return response
+
+
 def build_workbook_password_response(
     workbook_data: Optional[Dict[str, Any]]
 ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]], List[str]]:

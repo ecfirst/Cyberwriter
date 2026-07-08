@@ -24,6 +24,7 @@ from ghostwriter.rolodex.data_parsers import (
     load_dns_soa_cap_map,
     load_password_cap_map,
     load_password_compliance_matrix,
+    build_workbook_ad_attack_paths_response,
     build_workbook_password_response,
     parse_dns_report,
     DEFAULT_GENERAL_CAP_MAP,
@@ -2783,6 +2784,57 @@ class NexposeDataParserTests(TestCase):
         # AD Attack Paths (6.0 @ 0.375), and Password (2.0 @ 0.25).
         expected_total = round(3.0 * 0.375 + 6.0 * 0.375 + 2.0 * 0.25, 1)
         self.assertEqual(iam_grades.get("total"), expected_total)
+
+        # data_responses should now have an "ad_attack_paths" section with
+        # domains_str and both *_string/*_count_str forms, mirroring "ad".
+        attack_paths_response = self.project.data_responses.get("ad_attack_paths", {})
+        self.assertEqual(attack_paths_response.get("domains_str"), "'corp.example.com'")
+        self.assertEqual(attack_paths_response.get("kerberoastable_string"), "1")
+        self.assertEqual(attack_paths_response.get("kerberoastable_count_str"), "1")
+        self.assertEqual(attack_paths_response.get("gpp_passwords_string"), "0")
+        self.assertEqual(attack_paths_response.get("gpp_passwords_count_str"), "0")
+
+    def test_build_workbook_ad_attack_paths_response_multiple_domains(self):
+        workbook_payload = {
+            "ad_attack_paths": {
+                "domains": [
+                    {"domain": "corp.example.com", "kerberoastable": 5, "gpp_passwords": 0},
+                    {"domain": "child.example.com", "kerberoastable": 3, "gpp_passwords": 1},
+                ]
+            }
+        }
+
+        response = build_workbook_ad_attack_paths_response(workbook_payload)
+
+        self.assertEqual(response.get("domains_str"), "'corp.example.com'/'child.example.com'")
+        self.assertEqual(response.get("kerberoastable_string"), "5 and 3")
+        self.assertEqual(response.get("kerberoastable_count_str"), "5/3")
+        self.assertEqual(response.get("gpp_passwords_string"), "0 and 1")
+        self.assertEqual(response.get("gpp_passwords_count_str"), "0/1")
+        # Every metric should produce both a *_string and *_count_str field.
+        for metric in (
+            "kerberoastable",
+            "asrep_roastable",
+            "unconstrained_delegation",
+            "constrained_delegation",
+            "rbcd",
+            "shadow_credentials",
+            "privileged_not_protected",
+            "laps_coverage",
+            "gpp_passwords",
+            "ldap_bind_test",
+            "adcs_vulnerable_templates",
+            "adcs_ca_config",
+        ):
+            self.assertIn(f"{metric}_string", response)
+            self.assertIn(f"{metric}_count_str", response)
+
+    def test_build_workbook_ad_attack_paths_response_empty_input(self):
+        self.assertEqual(build_workbook_ad_attack_paths_response(None), {})
+        self.assertEqual(build_workbook_ad_attack_paths_response({}), {})
+        self.assertEqual(
+            build_workbook_ad_attack_paths_response({"ad_attack_paths": {"domains": []}}), {}
+        )
 
     def test_firewall_ood_names_populated_from_workbook(self):
         workbook_payload = {

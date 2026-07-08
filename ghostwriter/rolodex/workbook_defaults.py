@@ -270,6 +270,7 @@ DATA_RESPONSES_DEFAULTS: Dict[str, Any] = {
         "ood_name_list": "",
     },
     "ad": {"entries": [], "old_domains_str": None},
+    "ad_attack_paths": {"entries": [], "domains_str": None},
     "password": {
         "password_additional_controls": None,
         "password_enforce_mfa_all_accounts": None,
