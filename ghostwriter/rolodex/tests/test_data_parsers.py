@@ -2659,6 +2659,71 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(ad_cap_map.get("ancient.local"), expected_ancient)
         self.assertNotIn("modern.local", ad_cap_map)
 
+    def test_rebuild_populates_ad_attack_paths_cap_map(self):
+        workbook_payload = {
+            "ad_attack_paths": {
+                "domains": [
+                    {
+                        "domain": "corp.example.com",
+                        "kerberoastable": 2,
+                        "gpp_passwords": 1,
+                        "rbcd": 0,
+                        "laps_coverage": None,
+                    },
+                    {
+                        "domain": "clean.example.com",
+                        "kerberoastable": 0,
+                        "gpp_passwords": 0,
+                        "rbcd": 0,
+                    },
+                ]
+            }
+        }
+
+        self.project.workbook_data = workbook_payload
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["workbook_data", "data_responses", "cap"])
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch(
+                "ghostwriter.rolodex.models.build_workbook_password_response",
+                return_value=({}, {}, []),
+            ):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                    return_value={},
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_dns_response",
+                        return_value={},
+                    ):
+                        self.project.rebuild_data_artifacts()
+
+        self.project.refresh_from_db()
+
+        attack_paths_cap = self.project.cap.get("ad_attack_paths")
+        self.assertIsInstance(attack_paths_cap, dict)
+        attack_paths_cap_map = attack_paths_cap.get("ad_attack_paths_cap_map")
+        self.assertIsInstance(attack_paths_cap_map, dict)
+
+        def _expected(issue: str) -> Dict[str, Any]:
+            recommendation, score = DEFAULT_GENERAL_CAP_MAP[issue]
+            return {"recommendation": recommendation, "score": score}
+
+        expected_corp = {
+            "Enabled User Accounts Allow Kerberoasting": _expected(
+                "Enabled User Accounts Allow Kerberoasting"
+            ),
+            "Plaintext Credentials Recoverable from Group Policy Preferences on SYSVOL": (
+                _expected(
+                    "Plaintext Credentials Recoverable from Group Policy Preferences on SYSVOL"
+                )
+            ),
+        }
+        self.assertEqual(attack_paths_cap_map.get("corp.example.com"), expected_corp)
+        self.assertNotIn("clean.example.com", attack_paths_cap_map)
+
     def test_firewall_ood_names_populated_from_workbook(self):
         workbook_payload = {
             "firewall": {

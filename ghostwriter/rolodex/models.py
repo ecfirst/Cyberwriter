@@ -931,6 +931,7 @@ class Project(models.Model):
         """Rebuild supporting data artifacts derived from uploaded files."""
 
         from ghostwriter.rolodex.data_parsers import (
+            ATTACK_PATHS_CAP_ISSUES,
             NEXPOSE_ARTIFACT_KEYS,
             NEXPOSE_METRICS_KEY_MAP,
             build_ad_risk_contrib,
@@ -1597,6 +1598,55 @@ class Project(models.Model):
             existing_cap["ad"] = ad_cap_section
         else:
             existing_cap.pop("ad", None)
+
+        attack_paths_cap_section = existing_cap.get("ad_attack_paths")
+        if isinstance(attack_paths_cap_section, dict):
+            attack_paths_cap_section = dict(attack_paths_cap_section)
+        else:
+            attack_paths_cap_section = {}
+
+        attack_paths_cap_map: Dict[str, Dict[str, Any]] = {}
+
+        workbook_attack_paths_data = (
+            workbook_payload.get("ad_attack_paths")
+            if isinstance(workbook_payload, dict)
+            else None
+        )
+        workbook_attack_paths_domains = (
+            workbook_attack_paths_data.get("domains")
+            if isinstance(workbook_attack_paths_data, dict)
+            else None
+        )
+        if isinstance(workbook_attack_paths_domains, list):
+            for domain_entry in workbook_attack_paths_domains:
+                if not isinstance(domain_entry, dict):
+                    continue
+
+                domain_value = domain_entry.get("domain") or domain_entry.get("name")
+                domain = str(domain_value).strip() if domain_value else ""
+                if not domain:
+                    continue
+
+                def _record_attack_paths_issue(metric_key: str, issue: str) -> None:
+                    if _safe_int(domain_entry.get(metric_key)) <= 0:
+                        return
+                    entry = _clone_cap_entry(issue)
+                    if entry:
+                        domain_issues = attack_paths_cap_map.setdefault(domain, {})
+                        domain_issues[issue] = entry
+
+                for metric_key, issue in ATTACK_PATHS_CAP_ISSUES.items():
+                    _record_attack_paths_issue(metric_key, issue)
+
+        if attack_paths_cap_map:
+            attack_paths_cap_section["ad_attack_paths_cap_map"] = attack_paths_cap_map
+        else:
+            attack_paths_cap_section.pop("ad_attack_paths_cap_map", None)
+
+        if attack_paths_cap_section:
+            existing_cap["ad_attack_paths"] = attack_paths_cap_section
+        else:
+            existing_cap.pop("ad_attack_paths", None)
 
         (
             workbook_password_response,

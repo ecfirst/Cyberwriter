@@ -263,6 +263,96 @@ DEFAULT_GENERAL_CAP_MAP: Dict[str, Tuple[str, int]] = {
         "network access requirements",
         5,
     ),
+    "Active Directory Certificate Services Templates Enable Privilege Escalation": (
+        "Restrict enrollment on client-authentication templates to privileged groups, remove "
+        "`ENROLLEE_SUPPLIES_SUBJECT` from any template granting client auth EKUs, and require manager "
+        "approval on high-privilege templates.",
+        10,
+    ),
+    "Plaintext Credentials Recoverable from Group Policy Preferences on SYSVOL": (
+        "Remove every Group Policy Preferences XML file containing `cpassword` from SYSVOL and treat "
+        "every exposed account as compromised — rotate all referenced credentials immediately.",
+        9,
+    ),
+    "Non-Domain-Controller Principals Configured for Unconstrained Delegation": (
+        "Convert non-DC unconstrained delegation to constrained delegation with protocol transition "
+        "only where required, and remove `TRUSTED_FOR_DELEGATION` from user accounts entirely.",
+        9,
+    ),
+    "Active Directory Certificate Authority Configuration Enables Privilege Escalation": (
+        "Disable `EDITF_ATTRIBUTESUBJECTALTNAME2` on all Certificate Authorities, restrict ManageCA "
+        "and ManageCertificates rights to tier-0 administrators, and disable HTTP CA web enrollment.",
+        8,
+    ),
+    "User Accounts Do Not Require Kerberos Pre-Authentication": (
+        'Remove the "Do not require Kerberos preauthentication" flag from all user accounts and '
+        "verify no privileged account carries it.",
+        8,
+    ),
+    "Alternate Certificate-Based Credentials Present on Domain Accounts (Shadow Credentials)": (
+        "Triage each `msDS-KeyCredentialLink` entry against the client's Windows Hello for Business "
+        "enrollment inventory and remove any credential not tied to an authorized enrollment.",
+        8,
+    ),
+    "Enabled User Accounts Allow Kerberoasting": (
+        "Migrate SPN-bearing user accounts to group Managed Service Accounts where possible, and "
+        "enforce 25+ character random passwords on any that must remain.",
+        8,
+    ),
+    "Local Administrator Password Rotation (LAPS) Not Fully Deployed": (
+        "Deploy Windows LAPS to 100% of domain-joined workstations and member servers, retire legacy "
+        "LAPS on any remaining endpoints, and confirm rotation is occurring on schedule.",
+        7,
+    ),
+    "Objects Grant Resource-Based Constrained Delegation to Other Principals": (
+        "Audit `msDS-AllowedToActOnBehalfOfOtherIdentity` values across the domain and remove any not "
+        "tied to a documented delegation requirement.",
+        7,
+    ),
+    "Domain Controllers Accept Anonymous or Unsigned LDAP Binds": (
+        "Disable anonymous LDAP bind on all Domain Controllers and enforce LDAP signing and channel "
+        "binding (`LdapEnforceChannelBinding=2`).",
+        7,
+    ),
+    "Accounts Configured for Kerberos Constrained Delegation with Protocol Transition": (
+        "Remove `TrustedToAuthForDelegation` (T2A4D) from any account whose workflow does not require "
+        "protocol transition, and document the remaining legitimate use cases.",
+        7,
+    ),
+    "Privileged Accounts Are Not Members of the Protected Users Group": (
+        "Add all Domain Admins and Enterprise Admins to the Protected Users group after validating no "
+        "service dependency will break under its protocol restrictions.",
+        6,
+    ),
+}
+
+ATTACK_PATHS_CAP_ISSUES: Dict[str, str] = {
+    "adcs_vulnerable_templates": (
+        "Active Directory Certificate Services Templates Enable Privilege Escalation"
+    ),
+    "gpp_passwords": (
+        "Plaintext Credentials Recoverable from Group Policy Preferences on SYSVOL"
+    ),
+    "unconstrained_delegation": (
+        "Non-Domain-Controller Principals Configured for Unconstrained Delegation"
+    ),
+    "adcs_ca_config": (
+        "Active Directory Certificate Authority Configuration Enables Privilege Escalation"
+    ),
+    "asrep_roastable": "User Accounts Do Not Require Kerberos Pre-Authentication",
+    "shadow_credentials": (
+        "Alternate Certificate-Based Credentials Present on Domain Accounts (Shadow Credentials)"
+    ),
+    "kerberoastable": "Enabled User Accounts Allow Kerberoasting",
+    "laps_coverage": "Local Administrator Password Rotation (LAPS) Not Fully Deployed",
+    "rbcd": "Objects Grant Resource-Based Constrained Delegation to Other Principals",
+    "ldap_bind_test": "Domain Controllers Accept Anonymous or Unsigned LDAP Binds",
+    "constrained_delegation": (
+        "Accounts Configured for Kerberos Constrained Delegation with Protocol Transition"
+    ),
+    "privileged_not_protected": (
+        "Privileged Accounts Are Not Members of the Protected Users Group"
+    ),
 }
 
 DEFAULT_PASSWORD_COMPLIANCE_MATRIX: Dict[str, Dict[str, Any]] = {

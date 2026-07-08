@@ -4887,9 +4887,12 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         workbook_payload = build_workbook_entry_payload(project=project, areas={"ad": ad_state})
         project.workbook_data = workbook_payload
         project.data_artifacts = artifacts
-        project.save(update_fields=["workbook_data", "data_artifacts"])
+        project.rebuild_data_artifacts()
+        project.refresh_from_db(
+            fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+        )
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
         )
 
     def _handle_attack_paths_csv_upload(self, request, project):
@@ -4975,9 +4978,12 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         )
         project.workbook_data = workbook_payload
         project.data_artifacts = artifacts
-        project.save(update_fields=["workbook_data", "data_artifacts"])
+        project.rebuild_data_artifacts()
+        project.refresh_from_db(
+            fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+        )
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
         )
 
     def _handle_ad_log_upload(self, request, project):
@@ -5072,10 +5078,13 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         workbook_payload = build_workbook_entry_payload(project=project, areas={"ad": ad_state})
         project.workbook_data = workbook_payload
         project.data_artifacts = artifacts
-        project.save(update_fields=["workbook_data", "data_artifacts"])
+        project.rebuild_data_artifacts()
+        project.refresh_from_db(
+            fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+        )
 
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
         )
 
     def _handle_ad_admin_users_upload(self, request, project):
@@ -5965,9 +5974,12 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             )
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.save(update_fields=["workbook_data", "data_artifacts"])
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
             return JsonResponse(
-                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
             )
 
         attack_paths_removal = payload.get("remove_attack_paths_metric")
@@ -6052,9 +6064,15 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             )
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.save(update_fields=["workbook_data", "data_artifacts"])
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
             return JsonResponse(
-                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                {
+                    "workbook_data": project.workbook_data,
+                    "data_artifacts": project.data_artifacts,
+                }
             )
 
         ad_domain_removal = payload.get("remove_ad_domain")

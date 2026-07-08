@@ -1653,6 +1653,77 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
             )
         )
 
+    def test_upload_ad_csv_generates_cap_entry(self):
+        csv_file = SimpleUploadedFile(
+            "ent_admins.csv",
+            b"Account,Password Last Set\n"
+            b"admin1,2023-01-01\n"
+            b"admin2,2023-06-01\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "ad_csv": csv_file,
+                "domain": "corp.example.com",
+                "ad_metric": "ent_admins",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.project.refresh_from_db()
+        ad_cap = self.project.cap.get("ad", {})
+        cap_map = ad_cap.get("ad_cap_map", {})
+        corp_issues = cap_map.get("corp.example.com", {})
+        issue = "Number of Enterprise Admins"
+        self.assertIn(issue, corp_issues)
+        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[issue]
+        self.assertEqual(
+            corp_issues[issue],
+            {"recommendation": expected_recommendation, "score": expected_score},
+        )
+
+    def test_remove_ad_metric_clears_cap_entry(self):
+        issue = "Number of Enterprise Admins"
+        recommendation, score = DEFAULT_GENERAL_CAP_MAP[issue]
+        self.project.workbook_data = {
+            "ad": {"domains": [{"domain": "corp.example.com", "ent_admins": 2}]},
+        }
+        self.project.data_artifacts = {
+            "ad": {
+                "corp.example.com": {
+                    "ent_admins": [{"Account": "admin1"}, {"Account": "admin2"}],
+                    "ent_admins_file_name": "ent_admins.csv",
+                }
+            }
+        }
+        self.project.cap = {
+            "ad": {
+                "ad_cap_map": {
+                    "corp.example.com": {
+                        issue: {"recommendation": recommendation, "score": score}
+                    }
+                }
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts", "cap"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {"remove_ad_metric": {"domain": "corp.example.com", "metric": "ent_admins"}}
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+        ad_cap = self.project.cap.get("ad", {})
+        cap_map = ad_cap.get("ad_cap_map", {})
+        self.assertNotIn("corp.example.com", cap_map)
+
     def test_password_entries_removed_when_ad_domain_deleted(self):
         self.project.workbook_data = {
             "ad": {"domains": [{"domain": "corp.example.com"}, {"domain": "old.example.com"}]},
@@ -1751,6 +1822,37 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         workbook_domains = self.project.workbook_data.get("ad_attack_paths", {}).get("domains", [])
         self.assertEqual(workbook_domains[0].get("kerberoastable"), 2)
 
+    def test_upload_attack_paths_csv_generates_cap_entry(self):
+        csv_file = SimpleUploadedFile(
+            "kerberoastable.csv",
+            b"Account,SPN,PasswordLastSet,LastLogonDate,DaysSincePwdSet,Privileged\n"
+            b"svc-sql,MSSQLSvc/sql01,2023-01-01,2024-01-01,400,Yes\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "kerberoastable",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.project.refresh_from_db()
+        attack_paths_cap = self.project.cap.get("ad_attack_paths", {})
+        cap_map = attack_paths_cap.get("ad_attack_paths_cap_map", {})
+        corp_issues = cap_map.get("corp.example.com", {})
+        issue = "Enabled User Accounts Allow Kerberoasting"
+        self.assertIn(issue, corp_issues)
+        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[issue]
+        self.assertEqual(
+            corp_issues[issue],
+            {"recommendation": expected_recommendation, "score": expected_score},
+        )
+
     def test_upload_attack_paths_csv_validates_headers(self):
         bad_csv = SimpleUploadedFile(
             "bad_kerberoastable.csv",
@@ -1806,6 +1908,50 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         self.assertNotIn("ad_attack_paths", self.project.data_artifacts or {})
         domains = self.project.workbook_data.get("ad_attack_paths", {}).get("domains", [])
         self.assertIsNone(domains[0].get("kerberoastable"))
+
+    def test_remove_attack_paths_metric_clears_cap_entry(self):
+        issue = "Enabled User Accounts Allow Kerberoasting"
+        recommendation, score = DEFAULT_GENERAL_CAP_MAP[issue]
+        self.project.workbook_data = {
+            "ad_attack_paths": {"domains": [{"domain": "corp.example.com", "kerberoastable": 2}]},
+        }
+        self.project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [{"Account": "svc-sql"}, {"Account": "svc-web"}],
+                    "kerberoastable_file_name": "kerberoastable.csv",
+                }
+            }
+        }
+        self.project.cap = {
+            "ad_attack_paths": {
+                "ad_attack_paths_cap_map": {
+                    "corp.example.com": {
+                        issue: {"recommendation": recommendation, "score": score}
+                    }
+                }
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts", "cap"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {
+                    "remove_attack_paths_metric": {
+                        "domain": "corp.example.com",
+                        "metric": "kerberoastable",
+                    }
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+        attack_paths_cap = self.project.cap.get("ad_attack_paths", {})
+        cap_map = attack_paths_cap.get("ad_attack_paths_cap_map", {})
+        self.assertNotIn("corp.example.com", cap_map)
 
     def test_attack_paths_entries_removed_when_ad_domain_deleted(self):
         self.project.workbook_data = {
