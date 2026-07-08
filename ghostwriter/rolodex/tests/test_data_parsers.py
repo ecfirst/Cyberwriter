@@ -2724,6 +2724,66 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(attack_paths_cap_map.get("corp.example.com"), expected_corp)
         self.assertNotIn("clean.example.com", attack_paths_cap_map)
 
+    def test_rebuild_populates_ad_attack_paths_score_and_iam_total(self):
+        self.project.scoping = {
+            "iam": {"selected": True, "ad": True, "ad_attack_paths": True, "password": True}
+        }
+        self.project.workbook_data = {
+            "ad": {"domains": [{"domain": "corp.example.com", "domain_admins": 4, "ent_admins": 1}]},
+            "ad_attack_paths": {"domains": [{"domain": "corp.example.com", "kerberoastable": 1}]},
+            "external_internal_grades": {
+                "iam": {
+                    "ad": {"score": 3.0, "risk": "Medium"},
+                    "password": {"score": 2.0, "risk": "Low-->Medium"},
+                }
+            },
+        }
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [
+                        {"Account": "svc-sql", "Privileged": "Yes", "Days Since Pwd Set": "400"}
+                    ],
+                }
+            }
+        }
+        self.project.save(
+            update_fields=["scoping", "workbook_data", "data_responses", "cap", "data_artifacts"]
+        )
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch(
+                "ghostwriter.rolodex.models.build_workbook_password_response",
+                return_value=({}, {}, []),
+            ):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                    return_value={},
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_dns_response",
+                        return_value={},
+                    ):
+                        self.project.rebuild_data_artifacts()
+
+        self.project.refresh_from_db()
+
+        iam_grades = self.project.workbook_data.get("external_internal_grades", {}).get("iam", {})
+        attack_paths_grades = iam_grades.get("ad_attack_paths", {})
+        # A single Privileged=Yes + stale-password Kerberoastable row scores 6 (the
+        # only populated check), so the aggregate is 6.0 (no compounding bump: only
+        # one check scored >=5).
+        self.assertEqual(attack_paths_grades.get("score"), 6.0)
+        self.assertEqual(attack_paths_grades.get("risk"), "High")
+        self.assertEqual(attack_paths_grades.get("metric_scores", {}).get("kerberoastable"), 6)
+
+        # IAM total should now be the weighted blend of AD (3.0 @ 0.375),
+        # AD Attack Paths (6.0 @ 0.375), and Password (2.0 @ 0.25).
+        expected_total = round(3.0 * 0.375 + 6.0 * 0.375 + 2.0 * 0.25, 1)
+        self.assertEqual(iam_grades.get("total"), expected_total)
+
     def test_firewall_ood_names_populated_from_workbook(self):
         workbook_payload = {
             "firewall": {

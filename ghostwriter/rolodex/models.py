@@ -20,7 +20,11 @@ from taggit.managers import TaggableManager
 from timezone_field import TimeZoneField
 
 # Ghostwriter Libraries
-from ghostwriter.reporting.models import ReportFindingLink, ScopingWeightCategory
+from ghostwriter.reporting.models import (
+    ReportFindingLink,
+    RiskScoreRangeMapping,
+    ScopingWeightCategory,
+)
 from ghostwriter.commandcenter.models import validate_endpoint
 from ghostwriter.rolodex.validators import validate_ip_range
 from ghostwriter.rolodex.constants import (
@@ -945,6 +949,13 @@ class Project(models.Model):
             load_ad_threshold_map,
             load_general_cap_map,
         )
+        from ghostwriter.rolodex.ad_attack_paths_scoring import score_attack_paths
+        from ghostwriter.rolodex.workbook_entry import (
+            _as_decimal,
+            _normalize_score_map,
+            _score_to_risk,
+            compute_category_score_summary,
+        )
 
         existing_artifacts = dict(self.data_artifacts or {})
         artifacts = build_project_artifacts(self)
@@ -1647,6 +1658,55 @@ class Project(models.Model):
             existing_cap["ad_attack_paths"] = attack_paths_cap_section
         else:
             existing_cap.pop("ad_attack_paths", None)
+
+        risk_score_map = _normalize_score_map(RiskScoreRangeMapping.get_risk_score_map())
+
+        attack_paths_data_artifacts = (
+            artifacts.get("ad_attack_paths")
+            if isinstance(artifacts.get("ad_attack_paths"), dict)
+            else {}
+        )
+        ad_domains_for_scoring = (
+            workbook_payload.get("ad", {}).get("domains")
+            if isinstance(workbook_payload.get("ad"), dict)
+            else None
+        )
+        attack_paths_score_result = score_attack_paths(
+            attack_paths_data_artifacts, ad_domains_for_scoring
+        )
+
+        grades_section = workbook_payload.get("external_internal_grades")
+        if not isinstance(grades_section, dict):
+            grades_section = {}
+        iam_grades = grades_section.get("iam")
+        if not isinstance(iam_grades, dict):
+            iam_grades = {}
+
+        aap_score_decimal = _as_decimal(attack_paths_score_result.get("aggregate"))
+        iam_grades["ad_attack_paths"] = {
+            "score": None if aap_score_decimal is None else float(aap_score_decimal),
+            "risk": _score_to_risk(aap_score_decimal, risk_score_map),
+            "metric_scores": attack_paths_score_result.get("metric_scores", {}),
+        }
+
+        iam_option_scores: Dict[str, Any] = {}
+        for option_key in ("ad", "ad_attack_paths", "password"):
+            existing_option = iam_grades.get(option_key)
+            if isinstance(existing_option, dict):
+                option_score = _as_decimal(existing_option.get("score"))
+                if option_score is not None:
+                    iam_option_scores[option_key] = option_score
+
+        iam_weights = (self.scoping_weights or {}).get("iam", {})
+        iam_summary = compute_category_score_summary(
+            scores=iam_option_scores, weights=iam_weights, risk_score_map=risk_score_map
+        )
+        iam_total = iam_summary["total"]
+        iam_grades["total"] = None if iam_total is None else float(iam_total)
+        iam_grades["grade"] = iam_summary["grade"]
+
+        grades_section["iam"] = iam_grades
+        workbook_payload["external_internal_grades"] = grades_section
 
         (
             workbook_password_response,

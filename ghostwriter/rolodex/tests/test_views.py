@@ -1853,6 +1853,34 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
             {"recommendation": expected_recommendation, "score": expected_score},
         )
 
+    def test_upload_attack_paths_csv_refreshes_rubric_score(self):
+        csv_file = SimpleUploadedFile(
+            "kerberoastable.csv",
+            b"Account,SPN,PasswordLastSet,LastLogonDate,DaysSincePwdSet,Privileged\n"
+            b"svc-sql,MSSQLSvc/sql01,2023-01-01,2024-01-01,400,Yes\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "kerberoastable",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.project.refresh_from_db()
+        iam_grades = self.project.workbook_data.get("external_internal_grades", {}).get("iam", {})
+        attack_paths_grades = iam_grades.get("ad_attack_paths", {})
+        # A privileged account with a password >365 days old scores 6 per the
+        # rubric; it's the only populated check, so the aggregate is 6.0.
+        self.assertEqual(attack_paths_grades.get("score"), 6.0)
+        self.assertEqual(attack_paths_grades.get("risk"), "High")
+        self.assertEqual(attack_paths_grades.get("metric_scores", {}).get("kerberoastable"), 6)
+
     def test_upload_attack_paths_csv_validates_headers(self):
         bad_csv = SimpleUploadedFile(
             "bad_kerberoastable.csv",

@@ -780,6 +780,23 @@ def _normalize_area_updates(
     return normalized
 
 
+def compute_category_score_summary(
+    *,
+    scores: Mapping[str, Optional[Decimal]],
+    weights: Mapping[str, Decimal],
+    risk_score_map: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Return a scoring category's weighted total (Decimal) and derived risk/grade label.
+
+    Shared by ``build_workbook_entry_payload`` (analyst-typed scores) and
+    ``Project.rebuild_data_artifacts`` (auto-computed scores, e.g. AD Attack Paths),
+    so both paths recompute a category's total/grade identically.
+    """
+
+    total = _calculate_category_total(scores=scores, weights=weights)
+    return {"total": total, "grade": _score_to_risk(total, risk_score_map)}
+
+
 def _calculate_category_total(
     *, scores: Mapping[str, Optional[Decimal]], weights: Mapping[str, Decimal]
 ) -> Optional[Decimal]:
@@ -1044,10 +1061,13 @@ def build_workbook_entry_payload(
                         "risk": _score_to_risk(score_value, risk_score_map),
                     }
             weights = scoping_weights.get(category, {}) or {}
-            total = _calculate_category_total(scores=option_scores, weights=weights)
+            summary = compute_category_score_summary(
+                scores=option_scores, weights=weights, risk_score_map=risk_score_map
+            )
+            total = summary["total"]
             category_scores[category] = total
             category_entry["total"] = None if total is None else float(total)
-            category_entry["grade"] = _score_to_risk(total, risk_score_map)
+            category_entry["grade"] = summary["grade"]
         normalized_workbook["external_internal_grades"] = score_updates
 
     grade_updates: Dict[str, Any] = {}

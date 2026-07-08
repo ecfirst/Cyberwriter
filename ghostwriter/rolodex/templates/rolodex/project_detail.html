@@ -272,6 +272,171 @@
           </div>
         </div>
 
+        <div class="modal fade" id="adAttackPathsRubricModal" tabindex="-1" role="dialog"
+             aria-labelledby="adAttackPathsRubricLabel" aria-hidden="true">
+          <div class="modal-dialog modal-xl workbook-modal" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="adAttackPathsRubricLabel">AD Attack Paths Risk Scoring Rubric</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                  <span aria-hidden="true">&times;</span>
+                </button>
+              </div>
+              <div class="modal-body">
+                <p class="small text-muted">
+                  Each of the 12 AD Attack Paths metrics is auto-scored 1-6 from the uploaded CSV data using the
+                  rubric below. The "Total" is the aggregate of the individual check scores: the maximum score
+                  across all checks, plus 0.5 (capped at 6) when two or more checks score 5 or higher, since an
+                  attacker exploits the single easiest path rather than the average of all paths.
+                </p>
+                <table class="table table-sm table-bordered small">
+                  <thead>
+                    <tr>
+                      <th>Score</th>
+                      <th>Rating</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>1</td><td>Low</td></tr>
+                    <tr><td>2</td><td>Low (upper) / Medium (lower) &mdash; boundary</td></tr>
+                    <tr><td>3</td><td>Medium</td></tr>
+                    <tr><td>4</td><td>Medium (upper) / High (lower) &mdash; boundary</td></tr>
+                    <tr><td>5</td><td>High</td></tr>
+                    <tr><td>6</td><td>High (critical)</td></tr>
+                  </tbody>
+                </table>
+                <div class="table-responsive">
+                  <table class="table table-sm table-bordered small">
+                    <thead>
+                      <tr>
+                        <th>Check</th>
+                        <th>1 (Low)</th>
+                        <th>2</th>
+                        <th>3</th>
+                        <th>4 (Med)</th>
+                        <th>5 (High)</th>
+                        <th>6</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>Kerberoastable</td>
+                        <td>0 rows</td><td>1&ndash;3 non-priv</td><td>4&ndash;10 non-priv</td><td>11+ non-priv</td>
+                        <td><strong>Any Privileged=Yes</strong></td><td>Priv + Days Since Pwd Set &gt; 365</td>
+                      </tr>
+                      <tr>
+                        <td>AS-REP Roastable</td>
+                        <td>0 rows</td><td>1&ndash;3 non-priv</td><td>4&ndash;10 non-priv</td><td>11+ non-priv</td>
+                        <td><strong>Any Privileged=Yes</strong></td><td>Priv + Days Since Pwd Set &gt; 365</td>
+                      </tr>
+                      <tr>
+                        <td>Unconstrained Delegation</td>
+                        <td>0</td><td>&mdash;</td><td>&mdash;</td><td>1+ Computer</td>
+                        <td><strong>1+ User</strong></td><td>Multiple, or hits on tier-0 assets</td>
+                      </tr>
+                      <tr>
+                        <td>Constrained Delegation</td>
+                        <td>0</td><td>1&ndash;5 standard</td><td>6&ndash;20 standard</td>
+                        <td>21+ standard <strong>or</strong> any T2A4D</td><td>3+ T2A4D</td><td>10+ T2A4D</td>
+                      </tr>
+                      <tr>
+                        <td>RBCD</td>
+                        <td>0</td><td>1&ndash;2 rows</td><td>3&ndash;10 rows</td>
+                        <td>11+ rows, or any "Unable to decode"</td><td>&mdash;</td>
+                        <td>Any target that's a DC or tier-0</td>
+                      </tr>
+                      <tr>
+                        <td>Shadow Credentials</td>
+                        <td>0</td><td>1&ndash;3 (manual triage)</td><td>4+</td>
+                        <td>&gt; 5% of enabled account population</td><td>&mdash;</td>
+                        <td><strong>Any on a privileged account</strong></td>
+                      </tr>
+                      <tr>
+                        <td>Privileged-NotProtected</td>
+                        <td>100% covered</td><td>75&ndash;99%</td><td>50&ndash;74%</td><td>25&ndash;49%</td>
+                        <td>0&ndash;24%</td><td>Group empty/missing AND 5+ active DA/EA</td>
+                      </tr>
+                      <tr>
+                        <td>LAPS Coverage</td>
+                        <td>90&ndash;100% covered</td><td>75&ndash;89%</td><td>50&ndash;74%</td><td>25&ndash;49%</td>
+                        <td>0&ndash;24%, or schema present + zero rotations</td>
+                        <td><strong>LAPS schema absent from AD</strong></td>
+                      </tr>
+                      <tr>
+                        <td>GPP Passwords</td>
+                        <td>0</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>
+                        <td><strong>Any row</strong></td>
+                        <td>Any DecryptedPassword matches a still-active or privileged account</td>
+                      </tr>
+                      <tr>
+                        <td>LDAP Bind Test</td>
+                        <td>All DCs: both flags No</td><td>&mdash;</td><td>UnsignedBind=Yes on some DCs</td>
+                        <td>UnsignedBind=Yes on all DCs</td>
+                        <td><strong>AnonymousBind=Yes on any DC</strong></td>
+                        <td>AnonymousBind=Yes on all DCs</td>
+                      </tr>
+                      <tr>
+                        <td>ADCS Vulnerable Templates</td>
+                        <td>0</td><td>&mdash;</td><td>&mdash;</td><td>Any ESC9 or ESC13 only</td>
+                        <td>Any ESC2</td>
+                        <td><strong>Any ESC1/3/4/8/15</strong> &mdash; or multiple ESC classes across templates</td>
+                      </tr>
+                      <tr>
+                        <td>ADCS CA Config</td>
+                        <td>0</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>
+                        <td>Any ESC6/7/8</td><td>Multiple ESC6/7/8</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <h6 class="mt-3">Notes on the rubric</h6>
+                <ul class="small">
+                  <li>
+                    <strong>Privileged=Yes</strong> in the Kerberoast/AS-REP files is the <code>adminCount=1</code>
+                    flag from AD. That flag is sticky, so accounts that were once privileged still register as
+                    Privileged even if they've since been demoted &mdash; confirm current group membership before
+                    treating any single row as a 5-or-6 finding.
+                  </li>
+                  <li>
+                    <strong>RBCD "Unable to decode"</strong> rows land the check at 4 pending manual review, because
+                    the ambiguity itself is the finding.
+                  </li>
+                  <li>
+                    <strong>Shadow Credentials</strong> always requires manual triage. Windows Hello for Business
+                    enrollments legitimately populate <code>msDS-KeyCredentialLink</code>; the auto-computed score
+                    is a starting point, not a verdict.
+                  </li>
+                  <li>
+                    <strong>LAPS "schema absent" scoring at 6</strong> assumes the client has more than a token
+                    number of workstations &mdash; downgrade manually for a domain with only a handful of
+                    manually-managed servers and no user endpoints.
+                  </li>
+                  <li>
+                    Several top-tier criteria (tier-0 asset hits, a GPP password matching a still-active account,
+                    a Shadow Credential matching a known WHfB enrollment) require context this tool doesn't have.
+                    Those checks are auto-scored at the highest tier computable from the uploaded CSV data alone;
+                    manual review may justify a higher score.
+                  </li>
+                </ul>
+                <h6 class="mt-3">Analyst override</h6>
+                <p class="small">
+                  The final aggregate carries a documented &plusmn;1 analyst adjustment, capped so the rubric can't
+                  be overridden out of existence, with the reason written into the report. Adjust down when
+                  compensating controls apply (PAM/MFA enforced on privileged accounts, LAPS gaps covered by
+                  Entra/Intune management, a recovered GPP password tied to a disabled account, an ADCS template
+                  published to no CA, delegation isolated on a segmented host, or a legacy/lab domain). Adjust up
+                  when password policy is weak, MFA is absent everywhere, other findings point to broader tier-0
+                  hygiene issues, or the domain has a prior compromise history that wasn't fully remediated. This
+                  override is a reporting judgment call made by the analyst &mdash; it is not applied automatically.
+                </p>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="modal fade" id="workbookGradesModal" tabindex="-1" role="dialog" aria-labelledby="workbookGradesLabel"
              aria-hidden="true">
           <div class="modal-dialog modal-xl workbook-modal" role="document">
@@ -7893,6 +8058,84 @@
           updateWorkbookCardProgress();
         };
 
+        const buildAttackPathsScoreBlock = function(categoryKey, optionKey) {
+          const wrapper = document.createElement('div');
+          wrapper.className = 'workbook-score-attack-paths mb-2';
+
+          const headerRow = document.createElement('div');
+          headerRow.className = 'mb-1';
+          const headerLabel = document.createElement('span');
+          headerLabel.className = 'font-weight-bold workbook-score-label';
+          headerLabel.textContent = 'AD Attack Paths ';
+          const infoIcon = document.createElement('i');
+          infoIcon.className = 'fas fa-info-circle text-primary';
+          infoIcon.setAttribute('role', 'button');
+          infoIcon.setAttribute('data-toggle', 'modal');
+          infoIcon.setAttribute('data-target', '#adAttackPathsRubricModal');
+          infoIcon.setAttribute('title', 'View the AD Attack Paths scoring rubric');
+          headerLabel.appendChild(infoIcon);
+          headerRow.appendChild(headerLabel);
+          wrapper.appendChild(headerRow);
+
+          const attackPathsGrades = (workbookState.external_internal_grades
+            && workbookState.external_internal_grades[categoryKey]
+            && workbookState.external_internal_grades[categoryKey][optionKey]) || {};
+          const metricScores = attackPathsGrades.metric_scores || {};
+
+          ATTACK_PATHS_METRICS.forEach(function(metric) {
+            const row = document.createElement('div');
+            row.className = 'form-group row align-items-center mb-1 mx-0';
+            const label = document.createElement('label');
+            label.className = 'col-8 col-form-label pr-1 pl-0 small workbook-score-label';
+            label.textContent = metric.label;
+            const valueWrapper = document.createElement('div');
+            valueWrapper.className = 'col-4 pl-0';
+            const metricInput = document.createElement('input');
+            metricInput.type = 'number';
+            metricInput.className = 'form-control form-control-sm';
+            metricInput.readOnly = true;
+            metricInput.tabIndex = -1;
+            const metricScore = metricScores[metric.key];
+            metricInput.value = typeof metricScore === 'number' ? metricScore : '';
+            valueWrapper.appendChild(metricInput);
+            row.appendChild(label);
+            row.appendChild(valueWrapper);
+            wrapper.appendChild(row);
+          });
+
+          const totalRow = document.createElement('div');
+          totalRow.className = 'form-group row align-items-center mb-1 mx-0 border-top pt-2 mt-1';
+          const totalLabel = document.createElement('label');
+          totalLabel.className = 'col-8 col-form-label pr-1 pl-0 font-weight-bold workbook-score-label';
+          totalLabel.textContent = 'Total (Aggregate)';
+          totalLabel.setAttribute('for', 'score-' + categoryKey + '-' + optionKey);
+          const totalWrapper = document.createElement('div');
+          totalWrapper.className = 'col-4 pl-0';
+          const totalInput = document.createElement('input');
+          totalInput.type = 'number';
+          totalInput.className = 'form-control workbook-score-input';
+          totalInput.step = '0.1';
+          totalInput.min = '0';
+          totalInput.max = '6';
+          totalInput.readOnly = true;
+          totalInput.tabIndex = -1;
+          totalInput.id = 'score-' + categoryKey + '-' + optionKey;
+          totalInput.setAttribute('data-category', categoryKey);
+          totalInput.setAttribute('data-option', optionKey);
+          totalInput.value = typeof attackPathsGrades.score === 'number' ? attackPathsGrades.score : '';
+          totalWrapper.appendChild(totalInput);
+          totalRow.appendChild(totalLabel);
+          totalRow.appendChild(totalWrapper);
+          wrapper.appendChild(totalRow);
+
+          const riskRow = document.createElement('div');
+          riskRow.className = 'small text-muted text-right pr-1';
+          riskRow.textContent = attackPathsGrades.risk ? ('Risk: ' + attackPathsGrades.risk) : '';
+          wrapper.appendChild(riskRow);
+
+          return wrapper;
+        };
+
         const renderScoringGroups = function() {
           const container = document.getElementById('workbook-scoring-groups');
           if (!container) {
@@ -7924,6 +8167,10 @@
             const cardBody = document.createElement('div');
             cardBody.className = 'card-body d-flex flex-column workbook-score-body';
             optionKeys.forEach(function(optionKey) {
+              if (categoryKey === 'iam' && optionKey === 'ad_attack_paths') {
+                cardBody.appendChild(buildAttackPathsScoreBlock(categoryKey, optionKey));
+                return;
+              }
               const group = document.createElement('div');
               group.className = 'form-group row align-items-center mb-2 mx-0';
               const label = document.createElement('label');

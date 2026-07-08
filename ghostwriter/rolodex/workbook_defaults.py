@@ -85,6 +85,7 @@ WORKBOOK_DEFAULTS: Dict[str, Any] = {
         },
         "iam": {
             "ad": {"score": None, "risk": None},
+            "ad_attack_paths": {"score": None, "risk": None, "metric_scores": {}},
             "password": {"score": None, "risk": None},
             "total": None,
             "grade": None,
