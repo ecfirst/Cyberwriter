@@ -2794,6 +2794,63 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(attack_paths_response.get("gpp_passwords_string"), "0")
         self.assertEqual(attack_paths_response.get("gpp_passwords_count_str"), "0")
 
+        # With a single domain, the risk string is just that domain's label.
+        self.assertEqual(attack_paths_response.get("kerberoastable_risk_string"), "High")
+
+    def test_rebuild_scores_per_domain_and_joins_risk_strings_across_domains(self):
+        self.project.scoping = {
+            "iam": {"selected": True, "ad": True, "ad_attack_paths": True, "password": True}
+        }
+        self.project.workbook_data = {
+            "ad_attack_paths": {
+                "domains": [
+                    {"domain": "corp.example.com", "kerberoastable": 1},
+                    {"domain": "clean.example.com", "kerberoastable": 0},
+                ]
+            },
+        }
+        self.project.data_responses = {}
+        self.project.cap = {}
+        self.project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [
+                        {"Account": "svc-sql", "Privileged": "Yes", "Days Since Pwd Set": "400"}
+                    ],
+                },
+            }
+        }
+        self.project.save(
+            update_fields=["scoping", "workbook_data", "data_responses", "cap", "data_artifacts"]
+        )
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch(
+                "ghostwriter.rolodex.models.build_workbook_password_response",
+                return_value=({}, {}, []),
+            ):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                    return_value={},
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_dns_response",
+                        return_value={},
+                    ):
+                        self.project.rebuild_data_artifacts()
+
+        self.project.refresh_from_db()
+
+        # corp.example.com scores High (6) for kerberoastable; clean.example.com
+        # has no rows and scores Low (1). The project-wide roll-up is the worst
+        # (6), but the per-domain data_responses risk string reflects both.
+        iam_grades = self.project.workbook_data.get("external_internal_grades", {}).get("iam", {})
+        attack_paths_grades = iam_grades.get("ad_attack_paths", {})
+        self.assertEqual(attack_paths_grades.get("metric_scores", {}).get("kerberoastable"), 6)
+
+        attack_paths_response = self.project.data_responses.get("ad_attack_paths", {})
+        self.assertEqual(attack_paths_response.get("kerberoastable_risk_string"), "High/Low")
+
     def test_build_workbook_ad_attack_paths_response_multiple_domains(self):
         workbook_payload = {
             "ad_attack_paths": {

@@ -9,6 +9,7 @@ import math
 from typing import Any, Dict, Mapping, MutableMapping, Optional
 
 from ghostwriter.reporting.models import RiskScoreRangeMapping
+from ghostwriter.rolodex.ad_attack_paths_scoring import ATTACK_PATHS_SCORE_OVERRIDE_FIELDS
 from ghostwriter.rolodex.models import normalize_project_scoping
 from ghostwriter.rolodex.workbook_defaults import normalize_workbook_payload
 
@@ -321,6 +322,14 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                 for field in ATTACK_PATHS_DOMAIN_COUNT_FIELDS:
                     if field in domain_payload:
                         domain_entry[field] = _as_int(domain_payload.get(field))
+                for field in ATTACK_PATHS_SCORE_OVERRIDE_FIELDS:
+                    if field in domain_payload:
+                        override_value = _as_int(domain_payload.get(field))
+                        domain_entry[field] = (
+                            override_value
+                            if isinstance(override_value, int) and 1 <= override_value <= 6
+                            else None
+                        )
 
                 if domain_entry:
                     normalized_domains.append(domain_entry)

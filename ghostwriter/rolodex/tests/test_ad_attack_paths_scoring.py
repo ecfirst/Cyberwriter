@@ -7,6 +7,7 @@ from ghostwriter.rolodex.ad_attack_paths_scoring import (
     score_adcs_ca_config,
     score_adcs_vulnerable_templates,
     score_attack_paths,
+    score_attack_paths_domain,
     score_constrained_delegation,
     score_gpp_passwords,
     score_kerberoastable,
@@ -211,37 +212,111 @@ class AggregateScoringTests(SimpleTestCase):
         self.assertEqual(compute_aggregate({"a": 5, "b": 1}), 5.0)
 
 
-class ScoreAttackPathsEntryPointTests(SimpleTestCase):
-    def test_combines_rows_across_domains(self):
-        artifacts = {
-            "corp.example.com": {
-                "kerberoastable": [{"Privileged": "No"}, {"Privileged": "No"}],
-            },
-            "child.example.com": {
-                "kerberoastable": [{"Privileged": "No"}, {"Privileged": "No"}],
-            },
-        }
-        result = score_attack_paths(artifacts, ad_domains=[])
-        # 4 combined non-privileged rows -> tier 3, not tier 2 (which a
-        # per-domain-only view of 2+2 would incorrectly produce).
+class ScoreAttackPathsDomainTests(SimpleTestCase):
+    """Tests for scoring a single domain, including assessor overrides."""
+
+    def test_scores_only_that_domains_rows(self):
+        artifacts = {"corp.example.com": {"kerberoastable": _rows(5, Privileged="No")}}
+        domain_entry = {"domain": "corp.example.com"}
+        result = score_attack_paths_domain(artifacts, domain_entry, None)
         self.assertEqual(result["metric_scores"]["kerberoastable"], 3)
 
-    def test_privileged_not_protected_cross_references_ad_domain_admin_counts(self):
-        artifacts = {
-            "corp.example.com": {
-                "privileged_not_protected": [{"Account": "svc-da"}],
-            }
-        }
-        ad_domains = [{"domain": "corp.example.com", "domain_admins": 8, "ent_admins": 2}]
-        result = score_attack_paths(artifacts, ad_domains=ad_domains)
+    def test_override_wins_over_computed_score(self):
+        artifacts = {"corp.example.com": {"kerberoastable": _rows(5, Privileged="No")}}
+        domain_entry = {"domain": "corp.example.com", "kerberoastable_score_override": 6}
+        result = score_attack_paths_domain(artifacts, domain_entry, None)
+        self.assertEqual(result["metric_scores"]["kerberoastable"], 6)
+
+    def test_invalid_override_falls_back_to_computed_score(self):
+        artifacts = {"corp.example.com": {"kerberoastable": _rows(5, Privileged="No")}}
+        domain_entry = {"domain": "corp.example.com", "kerberoastable_score_override": 9}
+        result = score_attack_paths_domain(artifacts, domain_entry, None)
+        self.assertEqual(result["metric_scores"]["kerberoastable"], 3)
+
+    def test_privileged_not_protected_uses_matching_ad_domain_only(self):
+        artifacts = {"corp.example.com": {"privileged_not_protected": _rows(1)}}
+        domain_entry = {"domain": "corp.example.com"}
+        ad_domain_entry = {"domain": "corp.example.com", "domain_admins": 8, "ent_admins": 2}
+        result = score_attack_paths_domain(artifacts, domain_entry, ad_domain_entry)
         # 1 of 10 not protected -> 90% coverage -> tier 2.
         self.assertEqual(result["metric_scores"]["privileged_not_protected"], 2)
 
-    def test_no_data_scores_everything_low_and_aggregate_is_one(self):
-        result = score_attack_paths({}, ad_domains=[])
+    def test_privileged_not_protected_can_also_be_overridden(self):
+        artifacts = {"corp.example.com": {"privileged_not_protected": _rows(1)}}
+        domain_entry = {
+            "domain": "corp.example.com",
+            "privileged_not_protected_score_override": 1,
+        }
+        ad_domain_entry = {"domain": "corp.example.com", "domain_admins": 8, "ent_admins": 2}
+        result = score_attack_paths_domain(artifacts, domain_entry, ad_domain_entry)
+        self.assertEqual(result["metric_scores"]["privileged_not_protected"], 1)
+
+
+class ScoreAttackPathsRollupTests(SimpleTestCase):
+    """Tests for the project-wide roll-up across all of a project's domains."""
+
+    def test_scores_each_domain_independently(self):
+        artifacts = {
+            "corp.example.com": {"kerberoastable": _rows(5, Privileged="No")},  # tier 3
+            "child.example.com": {"kerberoastable": _rows(2, Privileged="No")},  # tier 2
+        }
+        attack_paths_domains = [
+            {"domain": "corp.example.com"},
+            {"domain": "child.example.com"},
+        ]
+        result = score_attack_paths(artifacts, attack_paths_domains, [])
+        self.assertEqual(
+            result["domains"]["corp.example.com"]["metric_scores"]["kerberoastable"], 3
+        )
+        self.assertEqual(
+            result["domains"]["child.example.com"]["metric_scores"]["kerberoastable"], 2
+        )
+        # The roll-up is the worst (max) across domains, not a combined count.
+        self.assertEqual(result["metric_scores"]["kerberoastable"], 3)
+
+    def test_rollup_aggregate_is_worst_domain_aggregate(self):
+        artifacts = {
+            "corp.example.com": {
+                "kerberoastable": [{"Privileged": "Yes", "Days Since Pwd Set": "400"}]
+            },
+            "child.example.com": {},
+        }
+        attack_paths_domains = [
+            {"domain": "corp.example.com"},
+            {"domain": "child.example.com"},
+        ]
+        result = score_attack_paths(artifacts, attack_paths_domains, [])
+        self.assertEqual(result["domains"]["corp.example.com"]["aggregate"], 6.0)
+        self.assertEqual(result["domains"]["child.example.com"]["aggregate"], 1.0)
+        self.assertEqual(result["aggregate"], 6.0)
+
+    def test_privileged_not_protected_matches_ad_domain_by_name(self):
+        artifacts = {
+            "corp.example.com": {"privileged_not_protected": _rows(1)},
+            "child.example.com": {"privileged_not_protected": _rows(1)},
+        }
+        attack_paths_domains = [
+            {"domain": "corp.example.com"},
+            {"domain": "child.example.com"},
+        ]
+        ad_domains = [
+            {"domain": "corp.example.com", "domain_admins": 9, "ent_admins": 1},  # 90% -> 2
+            {"domain": "child.example.com", "domain_admins": 1, "ent_admins": 1},  # 50% -> 3
+        ]
+        result = score_attack_paths(artifacts, attack_paths_domains, ad_domains)
+        self.assertEqual(
+            result["domains"]["corp.example.com"]["metric_scores"]["privileged_not_protected"], 2
+        )
+        self.assertEqual(
+            result["domains"]["child.example.com"]["metric_scores"]["privileged_not_protected"], 3
+        )
+
+    def test_no_domains_scores_everything_low_and_aggregate_is_one(self):
+        result = score_attack_paths({}, [], [])
         self.assertTrue(all(score == 1 for score in result["metric_scores"].values()))
         self.assertEqual(result["aggregate"], 1.0)
+        self.assertEqual(result["domains"], {})
 
-    def test_missing_artifacts_does_not_raise(self):
-        result = score_attack_paths(None, ad_domains=None)
+    def test_missing_inputs_does_not_raise(self):
+        result = score_attack_paths(None, None, None)
         self.assertEqual(result["aggregate"], 1.0)

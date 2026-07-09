@@ -3,11 +3,20 @@
 Implements the per-check scoring rules from the "AD Attack-Path Risk Scoring
 Rubric" reference document. Each function scores one metric from the raw CSV
 rows uploaded for that metric (see ``ATTACK_PATHS_CSV_HEADER_MAP`` in
-``ghostwriter/rolodex/views.py`` for the canonical column labels), combined
-across every domain in the project. Where the rubric's top tier requires data
-this tool doesn't have (e.g. a curated "tier-0 asset" list, or whether a
-recovered password still authenticates somewhere), scoring is capped at the
-highest tier computable from the CSV's own columns rather than guessed.
+``ghostwriter/rolodex/views.py`` for the canonical column labels), for a
+single domain at a time — mirroring how AD's own risk questionnaire rates
+each domain independently rather than combining them. Where the rubric's top
+tier requires data this tool doesn't have (e.g. a curated "tier-0 asset"
+list, or whether a recovered password still authenticates somewhere),
+scoring is capped at the highest tier computable from the CSV's own columns
+rather than guessed.
+
+An assessor can override any per-domain, per-metric score directly (see
+``score_attack_paths_domain``); the override wins over the auto-computed
+value whenever present. The project-wide summary (``score_attack_paths``)
+rolls per-domain scores up by taking the worst (maximum) value across
+domains, both per metric and for the overall aggregate — consistent with the
+rubric's own philosophy that an attacker only needs the single easiest path.
 """
 
 from __future__ import annotations
@@ -286,37 +295,62 @@ ATTACK_PATHS_METRIC_KEYS: List[str] = [
 ]
 
 
-def _combined_rows(artifacts: Mapping[str, Any], metric_key: str) -> List[Mapping[str, Any]]:
-    """Concatenate a metric's uploaded rows across every domain."""
-
-    combined: List[Mapping[str, Any]] = []
-    if not isinstance(artifacts, Mapping):
-        return combined
-    for domain_entry in artifacts.values():
-        if not isinstance(domain_entry, Mapping):
-            continue
-        rows = domain_entry.get(metric_key)
-        if isinstance(rows, list):
-            combined.extend(row for row in rows if isinstance(row, Mapping))
-    return combined
+# The 12 assessor-override field names, one per metric, stored alongside each
+# domain's count fields in workbook_data["ad_attack_paths"]["domains"][i].
+ATTACK_PATHS_SCORE_OVERRIDE_FIELDS: List[str] = [
+    f"{metric_key}_score_override" for metric_key in ATTACK_PATHS_METRIC_KEYS
+]
 
 
-def _total_privileged_accounts(ad_domains: Optional[Sequence[Mapping[str, Any]]]) -> int:
-    """Sum domain_admins + ent_admins across every AD domain in the project."""
+def _domain_key(entry: Optional[Mapping[str, Any]]) -> str:
+    """Return a normalized (lowercased, stripped) domain name for matching."""
+
+    if not isinstance(entry, Mapping):
+        return ""
+    value = entry.get("domain") or entry.get("name") or ""
+    return str(value).strip().lower()
+
+
+def _domain_rows(
+    artifacts: Mapping[str, Any], domain_key: str, metric_key: str
+) -> List[Mapping[str, Any]]:
+    """Return the uploaded CSV rows for one domain's one metric."""
+
+    domain_entry = artifacts.get(domain_key) if isinstance(artifacts, Mapping) else None
+    if not isinstance(domain_entry, Mapping):
+        return []
+    rows = domain_entry.get(metric_key)
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, Mapping)]
+
+
+def _domain_privileged_count(ad_domain_entry: Optional[Mapping[str, Any]]) -> int:
+    """Sum domain_admins + ent_admins for a single AD domain entry."""
 
     total = 0
-    if not isinstance(ad_domains, Sequence):
+    if not isinstance(ad_domain_entry, Mapping):
         return total
-    for domain_entry in ad_domains:
-        if not isinstance(domain_entry, Mapping):
+    for field in ("domain_admins", "ent_admins"):
+        value = ad_domain_entry.get(field)
+        if isinstance(value, bool):
             continue
-        for field in ("domain_admins", "ent_admins"):
-            value = domain_entry.get(field)
-            if isinstance(value, bool):
-                continue
-            if isinstance(value, (int, float)):
-                total += int(value)
+        if isinstance(value, (int, float)):
+            total += int(value)
     return total
+
+
+def _score_override(domain_entry: Mapping[str, Any], metric_key: str) -> Optional[int]:
+    """Return a valid 1-6 assessor override for a metric, or None if not set."""
+
+    if not isinstance(domain_entry, Mapping):
+        return None
+    value = domain_entry.get(f"{metric_key}_score_override")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and 1 <= value <= 6:
+        return int(value)
+    return None
 
 
 def compute_aggregate(metric_scores: Mapping[str, int]) -> Optional[float]:
@@ -333,30 +367,113 @@ def compute_aggregate(metric_scores: Mapping[str, int]) -> Optional[float]:
     return aggregate
 
 
+def score_attack_paths_domain(
+    artifacts: Mapping[str, Any],
+    domain_entry: Mapping[str, Any],
+    ad_domain_entry: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Score one domain's 12 AD Attack Paths metrics, honoring any assessor overrides.
+
+    ``artifacts`` is ``Project.data_artifacts["ad_attack_paths"]``. ``domain_entry``
+    is this domain's entry from ``workbook_data["ad_attack_paths"]["domains"]``
+    (carries any ``{metric}_score_override`` values). ``ad_domain_entry`` is the
+    matching (by domain name) entry from ``workbook_data["ad"]["domains"]``, used
+    only for the Privileged-NotProtected denominator.
+    """
+
+    domain_key = _domain_key(domain_entry)
+
+    metric_scores: Dict[str, int] = {}
+    for metric_key, score_fn in _SIMPLE_SCORE_FUNCTIONS.items():
+        override = _score_override(domain_entry, metric_key)
+        if override is not None:
+            metric_scores[metric_key] = override
+            continue
+        rows = _domain_rows(artifacts, domain_key, metric_key)
+        metric_scores[metric_key] = score_fn(rows)
+
+    override = _score_override(domain_entry, "privileged_not_protected")
+    if override is not None:
+        metric_scores["privileged_not_protected"] = override
+    else:
+        rows = _domain_rows(artifacts, domain_key, "privileged_not_protected")
+        total_privileged = _domain_privileged_count(ad_domain_entry)
+        metric_scores["privileged_not_protected"] = score_privileged_not_protected(
+            rows, total_privileged
+        )
+
+    return {"metric_scores": metric_scores, "aggregate": compute_aggregate(metric_scores)}
+
+
 def score_attack_paths(
     artifacts: Optional[Mapping[str, Any]],
+    attack_paths_domains: Optional[Sequence[Mapping[str, Any]]] = None,
     ad_domains: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Score every AD Attack Paths metric and return the per-check scores + aggregate.
+    """Score every AD Attack Paths domain and roll up a project-wide summary.
 
     ``artifacts`` is ``Project.data_artifacts["ad_attack_paths"]`` (domain -> metric
-    -> parsed CSV rows). ``ad_domains`` is ``workbook_data["ad"]["domains"]``,
-    used only to cross-reference the Privileged-NotProtected denominator.
+    -> parsed CSV rows). ``attack_paths_domains`` is
+    ``workbook_data["ad_attack_paths"]["domains"]`` — drives which domains get
+    scored and carries any assessor score overrides. ``ad_domains`` is
+    ``workbook_data["ad"]["domains"]``, matched by domain name to cross-reference
+    the Privileged-NotProtected denominator for that same domain.
+
+    Returns ``{"domains": {name: {"metric_scores": ..., "aggregate": ...}},
+    "metric_scores": {...}, "aggregate": ...}`` — the top-level ``metric_scores``/
+    ``aggregate`` are project-wide roll-ups (the worst value across domains, per
+    metric and overall), kept at the same keys the Scoring card and IAM grading
+    already read.
     """
 
     artifacts = artifacts if isinstance(artifacts, Mapping) else {}
 
-    metric_scores: Dict[str, int] = {}
-    for metric_key, score_fn in _SIMPLE_SCORE_FUNCTIONS.items():
-        rows = _combined_rows(artifacts, metric_key)
-        metric_scores[metric_key] = score_fn(rows)
+    ad_domains_by_key: Dict[str, Mapping[str, Any]] = {}
+    if isinstance(ad_domains, Sequence):
+        for entry in ad_domains:
+            if isinstance(entry, Mapping):
+                key = _domain_key(entry)
+                if key:
+                    ad_domains_by_key[key] = entry
 
-    privileged_not_protected_rows = _combined_rows(artifacts, "privileged_not_protected")
-    total_privileged = _total_privileged_accounts(ad_domains)
-    metric_scores["privileged_not_protected"] = score_privileged_not_protected(
-        privileged_not_protected_rows, total_privileged
-    )
+    domains_result: Dict[str, Any] = {}
+    if isinstance(attack_paths_domains, Sequence):
+        for domain_entry in attack_paths_domains:
+            if not isinstance(domain_entry, Mapping):
+                continue
+            domain_name = (domain_entry.get("domain") or domain_entry.get("name") or "").strip()
+            if not domain_name:
+                continue
+            ad_domain_entry = ad_domains_by_key.get(_domain_key(domain_entry))
+            domains_result[domain_name] = score_attack_paths_domain(
+                artifacts, domain_entry, ad_domain_entry
+            )
 
-    aggregate = compute_aggregate(metric_scores)
+    if not domains_result:
+        # No domains configured at all: fall back to the same "everything
+        # clean" baseline every individual check already returns for 0 rows.
+        baseline_scores = {metric_key: 1 for metric_key in ATTACK_PATHS_METRIC_KEYS}
+        return {
+            "domains": {},
+            "metric_scores": baseline_scores,
+            "aggregate": compute_aggregate(baseline_scores),
+        }
 
-    return {"metric_scores": metric_scores, "aggregate": aggregate}
+    rollup_metric_scores: Dict[str, int] = {}
+    for metric_key in ATTACK_PATHS_METRIC_KEYS:
+        rollup_metric_scores[metric_key] = max(
+            result["metric_scores"][metric_key] for result in domains_result.values()
+        )
+
+    domain_aggregates = [
+        result["aggregate"]
+        for result in domains_result.values()
+        if result["aggregate"] is not None
+    ]
+    aggregate = max(domain_aggregates) if domain_aggregates else None
+
+    return {
+        "domains": domains_result,
+        "metric_scores": rollup_metric_scores,
+        "aggregate": aggregate,
+    }

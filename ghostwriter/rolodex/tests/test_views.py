@@ -1882,6 +1882,56 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         self.assertEqual(attack_paths_grades.get("risk"), "High")
         self.assertEqual(attack_paths_grades.get("metric_scores", {}).get("kerberoastable"), 6)
 
+    def test_attack_paths_score_override_wins_over_computed_score(self):
+        self.project.workbook_data = {
+            "ad_attack_paths": {
+                "domains": [{"domain": "corp.example.com", "kerberoastable": 1}]
+            }
+        }
+        self.project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [
+                        {"Account": "svc-sql", "Privileged": "Yes", "Days Since Pwd Set": "400"}
+                    ],
+                }
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {
+                    "areas": {
+                        "ad_attack_paths": {
+                            "domains": [
+                                {
+                                    "domain": "corp.example.com",
+                                    "kerberoastable": 1,
+                                    "kerberoastable_score_override": 2,
+                                }
+                            ]
+                        }
+                    }
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        workbook_domains = self.project.workbook_data.get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(workbook_domains[0].get("kerberoastable_score_override"), 2)
+
+        iam_grades = self.project.workbook_data.get("external_internal_grades", {}).get("iam", {})
+        attack_paths_grades = iam_grades.get("ad_attack_paths", {})
+        # Without the override, this row would score 6 (Privileged + stale
+        # password); the override of 2 should win instead.
+        self.assertEqual(attack_paths_grades.get("metric_scores", {}).get("kerberoastable"), 2)
+        self.assertEqual(attack_paths_grades.get("score"), 2.0)
+
     def test_upload_attack_paths_csv_validates_headers(self):
         bad_csv = SimpleUploadedFile(
             "bad_kerberoastable.csv",

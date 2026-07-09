@@ -1966,6 +1966,7 @@
             const base = {domain: name};
             ATTACK_PATHS_METRICS.forEach(function(metric) {
               base[metric.key] = null;
+              base[metric.key + '_score_override'] = null;
             });
             return Object.assign(base, existing || {}, {domain: name});
           });
@@ -2643,6 +2644,9 @@
             const normalizedDomain = {domain: domainName};
             ATTACK_PATHS_METRICS.forEach(function(metric) {
               normalizedDomain[metric.key] = normalizeNumber(domain[metric.key]);
+              normalizedDomain[metric.key + '_score_override'] = normalizeNumber(
+                domain[metric.key + '_score_override']
+              );
             });
             return normalizedDomain;
           });
@@ -6998,6 +7002,31 @@
                   updateWorkbookCardProgress(areaKey);
                 });
                 group.appendChild(input);
+
+                const overrideField = metricKey + '_score_override';
+                const overrideWrapper = document.createElement('div');
+                overrideWrapper.className = 'd-flex align-items-center mt-1';
+                const overrideLabel = document.createElement('label');
+                overrideLabel.className = 'small text-muted mb-0 mr-2';
+                overrideLabel.textContent = 'Score override (1-6):';
+                const overrideInput = document.createElement('input');
+                overrideInput.type = 'number';
+                overrideInput.className = 'form-control form-control-sm';
+                overrideInput.style.maxWidth = '5rem';
+                overrideInput.min = '1';
+                overrideInput.max = '6';
+                overrideInput.step = '1';
+                overrideInput.setAttribute('data-area-field', areaKey);
+                overrideInput.value = typeof domain[overrideField] === 'number' ? domain[overrideField] : '';
+                overrideInput.addEventListener('input', function() {
+                  const value = overrideInput.value === '' ? null : Number(overrideInput.value);
+                  domain[overrideField] = Number.isNaN(value) ? null : value;
+                  updateWorkbookCardProgress(areaKey);
+                });
+                overrideWrapper.appendChild(overrideLabel);
+                overrideWrapper.appendChild(overrideInput);
+                group.appendChild(overrideWrapper);
+
                 group.appendChild(fileInfo);
                 updateFileInfo();
                 metricFileUpdateCallbacks.push(updateFileInfo);

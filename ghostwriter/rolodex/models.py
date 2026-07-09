@@ -950,7 +950,10 @@ class Project(models.Model):
             load_ad_threshold_map,
             load_general_cap_map,
         )
-        from ghostwriter.rolodex.ad_attack_paths_scoring import score_attack_paths
+        from ghostwriter.rolodex.ad_attack_paths_scoring import (
+            ATTACK_PATHS_METRIC_KEYS,
+            score_attack_paths,
+        )
         from ghostwriter.rolodex.workbook_entry import (
             _as_decimal,
             _normalize_score_map,
@@ -1685,8 +1688,15 @@ class Project(models.Model):
             if isinstance(workbook_payload.get("ad"), dict)
             else None
         )
+        attack_paths_domains_for_scoring = (
+            workbook_payload.get("ad_attack_paths", {}).get("domains")
+            if isinstance(workbook_payload.get("ad_attack_paths"), dict)
+            else None
+        )
         attack_paths_score_result = score_attack_paths(
-            attack_paths_data_artifacts, ad_domains_for_scoring
+            attack_paths_data_artifacts,
+            attack_paths_domains_for_scoring,
+            ad_domains_for_scoring,
         )
 
         grades_section = workbook_payload.get("external_internal_grades")
@@ -1702,6 +1712,26 @@ class Project(models.Model):
             "risk": _score_to_risk(aap_score_decimal, risk_score_map),
             "metric_scores": attack_paths_score_result.get("metric_scores", {}),
         }
+
+        attack_paths_domain_results = attack_paths_score_result.get("domains", {})
+        if attack_paths_domain_results:
+            attack_paths_risk_strings: Dict[str, Any] = {}
+            for metric_key in ATTACK_PATHS_METRIC_KEYS:
+                per_domain_labels = []
+                for domain_result in attack_paths_domain_results.values():
+                    domain_metric_score = domain_result.get("metric_scores", {}).get(metric_key)
+                    risk_label = _score_to_risk(_as_decimal(domain_metric_score), risk_score_map)
+                    per_domain_labels.append(risk_label or "")
+                attack_paths_risk_strings[f"{metric_key}_risk_string"] = "/".join(per_domain_labels)
+
+            existing_attack_paths_response = existing_responses.get("ad_attack_paths")
+            combined_attack_paths_response = (
+                dict(existing_attack_paths_response)
+                if isinstance(existing_attack_paths_response, dict)
+                else {}
+            )
+            combined_attack_paths_response.update(attack_paths_risk_strings)
+            existing_responses["ad_attack_paths"] = combined_attack_paths_response
 
         iam_option_scores: Dict[str, Any] = {}
         for option_key in ("ad", "ad_attack_paths", "password"):
