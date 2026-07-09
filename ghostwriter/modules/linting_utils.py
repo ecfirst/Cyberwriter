@@ -1,6 +1,7 @@
 """This contains utilities and values used by template linting."""
 
 from ghostwriter.reporting.models import RiskScoreRangeMapping
+from ghostwriter.rolodex.ad_attack_paths_scoring import ATTACK_PATHS_METRIC_KEYS
 from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
 
 # Example JSON reporting data for loading into templates for rendering tests
@@ -2272,6 +2273,36 @@ def _wrap_risk_rich_text_samples():
     data_responses = LINTER_CONTEXT.get("project", {}).get("data_responses")
     if isinstance(data_responses, dict):
         _wrap_risk_fields(data_responses)
+
+
+def _build_ad_attack_paths_sample():
+    """
+    Build a representative `data_responses.ad_attack_paths` sample so
+    templates referencing its keys (mirroring `ad`'s domains_str/*_string/
+    *_count_str/*_risk_string/*_risk_string_rt fields, plus AAP's own
+    total_*_count fields) get linter coverage.
+
+    Generated from `ATTACK_PATHS_METRIC_KEYS` rather than hand-written, so it
+    stays in sync with `build_workbook_ad_attack_paths_response`
+    (`rolodex/data_parsers.py`) and `_apply_data_responses_risk_rich_text`
+    (`custom_serializers.py`) if the metric list ever changes.
+    """
+
+    sample: dict = {
+        "entries": [],
+        "domains_str": "'corp.example.com'/'lab.example.com'",
+    }
+    for metric_key in ATTACK_PATHS_METRIC_KEYS:
+        sample[f"{metric_key}_string"] = "5 and 3"
+        sample[f"{metric_key}_count_str"] = "5/3"
+        sample[f"total_{metric_key}_count"] = 8
+        sample[f"{metric_key}_risk_string"] = "High/Low"
+        sample[f"{metric_key}_risk_string_rt"] = "High/Low"
+
+    return sample
+
+
+LINTER_CONTEXT["project"]["data_responses"]["ad_attack_paths"] = _build_ad_attack_paths_sample()
 
 
 _wrap_risk_rich_text_samples()
