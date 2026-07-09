@@ -8728,6 +8728,17 @@
       toggleScopeFollowup();
       toggleFirstCAFollowup();
       restoreProjectScrollPosition();
+
+      // Bootstrap 4 unconditionally strips `modal-open` from <body> whenever
+      // any modal finishes hiding, even if another modal (e.g. the AD Attack
+      // Paths rubric modal opened from within a workbook area modal) is still
+      // shown. That leaves the still-open modal unscrollable. Re-apply the
+      // class if a modal is still stacked underneath.
+      $(document).on('hidden.bs.modal', function() {
+        if ($('.modal.show').length) {
+          $('body').addClass('modal-open');
+        }
+      });
     });
 
     document.addEventListener('change', function(event) {
