@@ -6319,6 +6319,7 @@ def build_workbook_ad_attack_paths_response(
 
     domain_names: List[str] = []
     metric_counts: Dict[str, List[str]] = {metric: [] for metric in ATTACK_PATHS_METRIC_KEYS}
+    metric_totals: Dict[str, int] = {metric: 0 for metric in ATTACK_PATHS_METRIC_KEYS}
 
     for entry in domains:
         if isinstance(entry, dict):
@@ -6334,6 +6335,7 @@ def build_workbook_ad_attack_paths_response(
         for metric in ATTACK_PATHS_METRIC_KEYS:
             value = _coerce_int(entry.get(metric)) if isinstance(entry, dict) else None
             metric_counts[metric].append(_format_integer_value(value))
+            metric_totals[metric] += value or 0
 
     if not domain_names:
         return {}
@@ -6342,6 +6344,7 @@ def build_workbook_ad_attack_paths_response(
     for metric, formatted_counts in metric_counts.items():
         response[f"{metric}_string"] = _format_plain_list(formatted_counts)
         response[f"{metric}_count_str"] = "/".join(formatted_counts)
+        response[f"total_{metric}_count"] = metric_totals[metric]
 
     return response
 

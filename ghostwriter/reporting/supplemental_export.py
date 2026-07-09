@@ -496,7 +496,7 @@ class SupplementalDocumentBuilder:
 
             if sheets:
                 workbook_bytes = self._create_workbook(sheets)
-                files.append((f"{self.client_name} IAM - {label}.xlsx", workbook_bytes))
+                files.append((f"{self.client_name} AAP - {label}.xlsx", workbook_bytes))
 
     def _append_snmp_reports(self, files: List[Tuple[str, bytes]]) -> None:
         snmp_entries = self.artifacts.get("snmp")

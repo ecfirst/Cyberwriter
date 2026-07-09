@@ -2866,9 +2866,12 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(response.get("domains_str"), "'corp.example.com'/'child.example.com'")
         self.assertEqual(response.get("kerberoastable_string"), "5 and 3")
         self.assertEqual(response.get("kerberoastable_count_str"), "5/3")
+        self.assertEqual(response.get("total_kerberoastable_count"), 8)
         self.assertEqual(response.get("gpp_passwords_string"), "0 and 1")
         self.assertEqual(response.get("gpp_passwords_count_str"), "0/1")
-        # Every metric should produce both a *_string and *_count_str field.
+        self.assertEqual(response.get("total_gpp_passwords_count"), 1)
+        # Every metric should produce a *_string, *_count_str, and
+        # total_*_count field (the last mirroring AD's total_*_count fields).
         for metric in (
             "kerberoastable",
             "asrep_roastable",
@@ -2885,6 +2888,7 @@ class NexposeDataParserTests(TestCase):
         ):
             self.assertIn(f"{metric}_string", response)
             self.assertIn(f"{metric}_count_str", response)
+            self.assertIn(f"total_{metric}_count", response)
 
     def test_build_workbook_ad_attack_paths_response_empty_input(self):
         self.assertEqual(build_workbook_ad_attack_paths_response(None), {})

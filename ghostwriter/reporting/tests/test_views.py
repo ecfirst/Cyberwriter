@@ -2456,9 +2456,9 @@ class GenerateReportTests(TestCase):
         files = builder.build()
         filenames = [name for name, _ in files]
 
-        self.assertIn(f"{project.client.name} IAM - Kerberoastable Accounts.xlsx", filenames)
-        self.assertIn(f"{project.client.name} IAM - GPP Passwords.xlsx", filenames)
-        self.assertNotIn(f"{project.client.name} IAM - RBCD.xlsx", filenames)
+        self.assertIn(f"{project.client.name} AAP - Kerberoastable Accounts.xlsx", filenames)
+        self.assertIn(f"{project.client.name} AAP - GPP Passwords.xlsx", filenames)
+        self.assertNotIn(f"{project.client.name} AAP - RBCD.xlsx", filenames)
 
     def test_password_file_included_in_supplemental_zip_without_state(self):
         project = self.report.project
