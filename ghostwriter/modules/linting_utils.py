@@ -2305,6 +2305,159 @@ def _build_ad_attack_paths_sample():
 LINTER_CONTEXT["project"]["data_responses"]["ad_attack_paths"] = _build_ad_attack_paths_sample()
 
 
+def _build_ad_attack_paths_workbook_sample():
+    """
+    Build a representative `workbook_data.ad_attack_paths` sample -- the raw
+    per-domain counts/overrides -- mirroring the sibling `workbook_data["ad"]`
+    sample. Stays in sync with `ATTACK_PATHS_METRIC_KEYS` and the field names
+    normalized in `workbook_entry.py`
+    (`ATTACK_PATHS_DOMAIN_COUNT_FIELDS`/`ATTACK_PATHS_SCORE_OVERRIDE_FIELDS`).
+    """
+
+    def _domain(name: str, count: int) -> dict:
+        entry = {"domain": name}
+        for metric_key in ATTACK_PATHS_METRIC_KEYS:
+            entry[metric_key] = count
+            entry[f"{metric_key}_score_override"] = None
+        return entry
+
+    return {
+        "domains": [
+            _domain("corp.example.com", 5),
+            _domain("lab.example.com", 3),
+        ]
+    }
+
+
+LINTER_CONTEXT["project"]["workbook_data"]["ad_attack_paths"] = (
+    _build_ad_attack_paths_workbook_sample()
+)
+
+
+def _build_ad_attack_paths_grade_sample():
+    """
+    Build a representative `workbook_data.external_internal_grades.iam.ad_attack_paths`
+    sample, mirroring the sibling `iam["ad"]` sample's shape but with the
+    extra `metric_scores` map real code writes in `rolodex/models.py`
+    (`iam_grades["ad_attack_paths"] = {"score": ..., "risk": ..., "metric_scores": {...}}`).
+    """
+
+    return {
+        "risk": "High",
+        "risk_rt": "High",
+        "score": 4.0,
+        "metric_scores": {metric_key: 4 for metric_key in ATTACK_PATHS_METRIC_KEYS},
+    }
+
+
+LINTER_CONTEXT["project"]["workbook_data"]["external_internal_grades"]["iam"][
+    "ad_attack_paths"
+] = _build_ad_attack_paths_grade_sample()
+
+
+def _build_ad_attack_paths_data_artifacts_sample():
+    """
+    Build a representative `data_artifacts.ad_attack_paths` sample -- raw
+    per-check CSV rows keyed by (lowercased) domain then metric -- mirroring
+    sibling raw-finding samples like `data_artifacts["dns_findings"]`. Column
+    headers match what real CSV uploads use (see
+    `supplemental_export.py`'s `_append_attack_paths_reports`).
+    """
+
+    return {
+        "corp.example.com": {
+            "kerberoastable": [
+                {
+                    "Account": "svc-sql",
+                    "SPN": "MSSQLSvc/sql01.corp.example.com:1433",
+                    "Password Last Set": "2023-01-15",
+                    "Last Logon Date": "2025-01-10",
+                    "Days Since Pwd Set": "400",
+                    "Privileged": "Yes",
+                }
+            ],
+            "asrep_roastable": [
+                {
+                    "Account": "jdoe",
+                    "Password Last Set": "2024-03-01",
+                    "Last Logon Date": "2025-01-05",
+                    "Days Since Pwd Set": "120",
+                    "Privileged": "No",
+                }
+            ],
+            "unconstrained_delegation": [
+                {"Account": "SRV01$", "Type": "Computer", "OS": "Windows Server 2019"}
+            ],
+            "constrained_delegation": [
+                {
+                    "Account": "svc-web",
+                    "Type": "User",
+                    "DelegatesTo": "HTTP/app.corp.example.com",
+                    "ProtocolTransition": "Yes",
+                }
+            ],
+            "rbcd": [
+                {
+                    "Target": "DC01$",
+                    "Type": "Computer",
+                    "AllowedPrincipal": "SRV02$",
+                }
+            ],
+            "shadow_credentials": [
+                {
+                    "Account": "svc-backup",
+                    "Type": "User",
+                    "KeyCount": "1",
+                    "LastChanged": "2025-01-02",
+                }
+            ],
+            "privileged_not_protected": [{"Account": "svc-sql", "Role": "Domain Admins"}],
+            "laps_coverage": [
+                {
+                    "Computer": "WKS-042",
+                    "LegacyLAPS": "No",
+                    "WindowsLAPS": "No",
+                    "Expiration": "",
+                }
+            ],
+            "gpp_passwords": [
+                {
+                    "PolicyGUID": "{12345678-1234-1234-1234-123456789012}",
+                    "XMLFile": "Groups.xml",
+                    "UserName": "localadmin",
+                    "CPassword": "AQAAANCM...",
+                    "DecryptedPassword": "Winter2023!",
+                }
+            ],
+            "ldap_bind_test": [
+                {"DC": "DC01.corp.example.com", "AnonymousBind": "Yes", "UnsignedBind": "Yes"}
+            ],
+            "adcs_vulnerable_templates": [
+                {
+                    "Template": "WebServer",
+                    "ESCFindings": "ESC1",
+                    "EnrollmentPrincipals": "Domain Users",
+                    "CA": "corp-CA01",
+                    "PublishedTo": "corp-CA01",
+                    "EKUs": "Client Authentication",
+                }
+            ],
+            "adcs_ca_config": [
+                {
+                    "CA": "corp-CA01",
+                    "Findings": "ESC6",
+                    "Detail": "EDITF_ATTRIBUTESUBJECTALTNAME2 flag is enabled",
+                }
+            ],
+        }
+    }
+
+
+LINTER_CONTEXT["project"]["data_artifacts"]["ad_attack_paths"] = (
+    _build_ad_attack_paths_data_artifacts_sample()
+)
+
+
 _wrap_risk_rich_text_samples()
 
 LINTER_CONTEXT["project"]["data_artifacts"] = normalize_nexpose_artifacts_map(
