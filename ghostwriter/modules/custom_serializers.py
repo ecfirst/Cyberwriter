@@ -40,6 +40,7 @@ from ghostwriter.reporting.models import (
     RiskScoreRangeMapping,
     Severity,
 )
+from ghostwriter.rolodex.ad_attack_paths_scoring import ATTACK_PATHS_METRIC_KEYS
 from ghostwriter.rolodex.data_parsers import (
     build_ad_risk_contrib,
     build_password_cap_display_map,
@@ -1027,6 +1028,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 "ia_risk_string",
                 "ga_risk_string",
                 "gl_risk_string",
+            ),
+            "ad_attack_paths": tuple(
+                f"{metric_key}_risk_string" for metric_key in ATTACK_PATHS_METRIC_KEYS
             ),
             "password": ("cracked_risk_string",),
             "endpoint": ("ood_risk_string", "wifi_risk_string"),

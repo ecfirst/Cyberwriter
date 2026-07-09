@@ -766,8 +766,10 @@ class ProjectSerializerDataResponsesTests(TestCase):
                 "domains_str": "'corp.example.com'/'lab.example.com'",
                 "kerberoastable_string": "5 and 3",
                 "kerberoastable_count_str": "5/3",
+                "kerberoastable_risk_string": "High/Low",
                 "gpp_passwords_string": "0 and 1",
                 "gpp_passwords_count_str": "0/1",
+                "gpp_passwords_risk_string": "Low/Medium",
             }
         }
         self.project.workbook_data = {}
@@ -787,6 +789,17 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(attack_paths_summary.get("gpp_passwords_string"), "0 and 1")
         self.assertEqual(attack_paths_summary.get("gpp_passwords_count_str"), "0/1")
         self.assertEqual(attack_paths_summary.get("entries"), [])
+
+        # Same rich-text pass AD/password/endpoint risk strings get: a
+        # `{metric}_risk_string_rt` companion for report templates.
+        self.assertEqual(attack_paths_summary.get("kerberoastable_risk_string"), "High/Low")
+        self.assertEqual(
+            attack_paths_summary.get("kerberoastable_risk_string_rt"), "<p>High/Low</p>"
+        )
+        self.assertEqual(attack_paths_summary.get("gpp_passwords_risk_string"), "Low/Medium")
+        self.assertEqual(
+            attack_paths_summary.get("gpp_passwords_risk_string_rt"), "<p>Low/Medium</p>"
+        )
 
     def test_ad_attack_paths_summary_defaults_when_no_data(self):
         self.project.data_responses = {}
