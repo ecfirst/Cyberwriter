@@ -6881,6 +6881,23 @@
           const domains = attackPathsState.domains;
           target.innerHTML = '';
 
+          const rubricRow = document.createElement('div');
+          rubricRow.className = 'mb-3';
+          const rubricLink = document.createElement('a');
+          rubricLink.href = '#';
+          rubricLink.className = 'small';
+          rubricLink.setAttribute('role', 'button');
+          rubricLink.setAttribute('data-toggle', 'modal');
+          rubricLink.setAttribute('data-target', '#adAttackPathsRubricModal');
+          rubricLink.setAttribute('title', 'View the AD Attack Paths scoring rubric');
+          rubricLink.addEventListener('click', function(event) { event.preventDefault(); });
+          const rubricIcon = document.createElement('i');
+          rubricIcon.className = 'fas fa-info-circle text-primary mr-1';
+          rubricLink.appendChild(rubricIcon);
+          rubricLink.appendChild(document.createTextNode('View scoring rubric'));
+          rubricRow.appendChild(rubricLink);
+          target.appendChild(rubricRow);
+
           const domainsContainer = document.createElement('div');
           target.appendChild(domainsContainer);
 
@@ -8095,14 +8112,7 @@
           headerRow.className = 'mb-1';
           const headerLabel = document.createElement('span');
           headerLabel.className = 'font-weight-bold workbook-score-label';
-          headerLabel.textContent = 'AD Attack Paths ';
-          const infoIcon = document.createElement('i');
-          infoIcon.className = 'fas fa-info-circle text-primary';
-          infoIcon.setAttribute('role', 'button');
-          infoIcon.setAttribute('data-toggle', 'modal');
-          infoIcon.setAttribute('data-target', '#adAttackPathsRubricModal');
-          infoIcon.setAttribute('title', 'View the AD Attack Paths scoring rubric');
-          headerLabel.appendChild(infoIcon);
+          headerLabel.textContent = 'AD Attack Paths';
           headerRow.appendChild(headerLabel);
           wrapper.appendChild(headerRow);
 
