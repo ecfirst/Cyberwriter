@@ -68,6 +68,7 @@ LINTER_CONTEXT = {
             "iam": {
                 "selected": True,
                 "ad": True,
+                "ad_attack_paths": True,
                 "password": True,
             },
             "wireless": {
@@ -121,6 +122,8 @@ LINTER_CONTEXT = {
             "system_configuration_rt": "Low",
             "ad": "High",
             "ad_rt": "High",
+            "ad_attack_paths": "High",
+            "ad_attack_paths_rt": "High",
             "internal_nexpose": "High",
             "internal_nexpose_rt": "High",
             "endpoint": "Medium",
