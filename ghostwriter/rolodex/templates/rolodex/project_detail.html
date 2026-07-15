@@ -1898,10 +1898,36 @@
             adState.domains = [];
           }
 
-          adState.domains = (adState.domains || []).map(function(domain) {
-            const oldCounts = Object.assign({}, defaultOldPasswordCounts, (domain && domain.old_password_counts) || {});
-            const inactiveCounts = Object.assign({}, defaultInactiveAccountCounts, (domain && domain.inactive_account_counts) || {});
-            return Object.assign({
+          // Mutate the existing array and domain objects in place rather than
+          // rebuilding them via `.map()`. This function gets called multiple
+          // times per modal render (directly for the AD card, and again via
+          // ensureAttackPathsState() for the AD Attack Paths card) -- replacing
+          // array/object identity on every call orphans any closure (e.g. the
+          // "Add new Domain" button, or a field's input handler) that captured
+          // a reference from an earlier call, silently dropping its edits.
+          adState.domains.forEach(function(domain) {
+            if (!domain || typeof domain !== 'object') {
+              return;
+            }
+            if (!domain.old_password_counts || typeof domain.old_password_counts !== 'object') {
+              domain.old_password_counts = Object.assign({}, defaultOldPasswordCounts);
+            } else {
+              Object.keys(defaultOldPasswordCounts).forEach(function(key) {
+                if (!(key in domain.old_password_counts)) {
+                  domain.old_password_counts[key] = defaultOldPasswordCounts[key];
+                }
+              });
+            }
+            if (!domain.inactive_account_counts || typeof domain.inactive_account_counts !== 'object') {
+              domain.inactive_account_counts = Object.assign({}, defaultInactiveAccountCounts);
+            } else {
+              Object.keys(defaultInactiveAccountCounts).forEach(function(key) {
+                if (!(key in domain.inactive_account_counts)) {
+                  domain.inactive_account_counts[key] = defaultInactiveAccountCounts[key];
+                }
+              });
+            }
+            const domainDefaults = {
               domain: '',
               functionality_level: null,
               domain_admins: null,
@@ -1914,11 +1940,11 @@
               generic_logins: null,
               enabled_accounts: null,
               total_accounts: null,
-              old_password_counts: oldCounts,
-              inactive_account_counts: inactiveCounts,
-            }, domain || {}, {
-              old_password_counts: oldCounts,
-              inactive_account_counts: inactiveCounts,
+            };
+            Object.keys(domainDefaults).forEach(function(key) {
+              if (!(key in domain)) {
+                domain[key] = domainDefaults[key];
+              }
             });
           });
 
@@ -1954,22 +1980,34 @@
           const existingByDomain = {};
           attackPathsState.domains.forEach(function(entry) {
             const name = ((entry && (entry.domain || entry.name)) || '').toString().trim().toLowerCase();
-            if (name) {
+            if (name && !existingByDomain[name]) {
               existingByDomain[name] = entry;
             }
           });
 
-          attackPathsState.domains = adDomains.map(function(adDomain) {
+          // Reuse the existing entry object (and the existing array instance,
+          // mutated below) instead of rebuilding via `.map()` -- see the
+          // comment in ensureAdState() for why replacing identity here would
+          // silently orphan any closure holding a reference to a domain entry.
+          const nextDomains = adDomains.map(function(adDomain) {
             const name = ((adDomain && (adDomain.domain || adDomain.name)) || '').toString().trim();
             const lowerName = name.toLowerCase();
             const existing = lowerName ? existingByDomain[lowerName] : null;
-            const base = {domain: name};
+            const entry = existing || {domain: name};
+            entry.domain = name;
             ATTACK_PATHS_METRICS.forEach(function(metric) {
-              base[metric.key] = null;
-              base[metric.key + '_score_override'] = null;
+              if (!(metric.key in entry)) {
+                entry[metric.key] = null;
+              }
+              const overrideKey = metric.key + '_score_override';
+              if (!(overrideKey in entry)) {
+                entry[overrideKey] = null;
+              }
             });
-            return Object.assign(base, existing || {}, {domain: name});
+            return entry;
           });
+          attackPathsState.domains.length = 0;
+          Array.prototype.push.apply(attackPathsState.domains, nextDomains);
 
           workbookState.ad_attack_paths = attackPathsState;
           return attackPathsState;
@@ -6447,7 +6485,6 @@
         function renderAdDomains(target, areaKey, modalId) {
           const adState = ensureAdState();
           const domains = adState.domains;
-          console.log('[AD DEBUG] renderAdDomains() called. domains.length =', domains.length, 'target =', target);
           target.innerHTML = '';
 
           const refreshPasswordPlaceholderCard = function() {
@@ -6471,11 +6508,6 @@
           addButton.className = 'btn btn-outline-primary mb-3';
           addButton.textContent = 'Add new Domain';
           addButton.addEventListener('click', function() {
-            console.log(
-              '[AD DEBUG] Add new Domain clicked. target.isConnected =', target.isConnected,
-              'document.body.contains(target) =', document.body.contains(target),
-              'domains.length before push =', domains.length,
-            );
             domains.push({
               domain: '',
               functionality_level: null,
@@ -6492,13 +6524,7 @@
               old_password_counts: Object.assign({}, defaultOldPasswordCounts),
               inactive_account_counts: Object.assign({}, defaultInactiveAccountCounts),
             });
-            console.log('[AD DEBUG] Pushed new domain. domains.length after push =', domains.length, 'pushed =', domains[domains.length - 1]);
             renderAdDomains(target, areaKey, modalId);
-            console.log(
-              '[AD DEBUG] Re-render complete. target.children.length =', target.children.length,
-              'target.isConnected =', target.isConnected,
-              'target.getBoundingClientRect() =', target.getBoundingClientRect(),
-            );
             updateWorkbookCardProgress(areaKey);
             refreshPasswordPlaceholderCard();
             refreshAttackPathsCard();
