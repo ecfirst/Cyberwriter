@@ -5566,6 +5566,10 @@
             }
           });
 
+          const hasAnyPasswordDomain = function() {
+            return Array.isArray(passwordState.policies) && passwordState.policies.length > 0;
+          };
+
           const actionsRow = document.createElement('div');
           actionsRow.className = 'd-flex flex-wrap mb-3';
 
@@ -5573,6 +5577,7 @@
           uploadButton.type = 'button';
           uploadButton.className = 'btn btn-primary mb-2 mr-2';
           uploadButton.textContent = 'Upload Password CSV';
+          uploadButton.style.display = hasAnyPasswordDomain() ? '' : 'none';
           uploadButton.addEventListener('click', function() {
             const missingAdminDomains = getDomainsMissingAdminUsers();
             if (missingAdminDomains.length) {
@@ -5589,6 +5594,9 @@
           addDomainButton.className = 'btn btn-outline-primary mb-2';
           addDomainButton.textContent = 'Add new Domain';
           addDomainButton.addEventListener('click', function() {
+            if (!confirm('Are you sure you don\'t want to add the domain in AD first?')) {
+              return;
+            }
             passwordState.policies.push(createEmptyPasswordPolicy());
             renderPasswordPolicies(target, areaKey, modalId);
             updateWorkbookCardProgress(areaKey);
@@ -6439,7 +6447,7 @@
           target.innerHTML = '';
 
           const refreshPasswordPlaceholderCard = function() {
-            const passwordCardBody = document.getElementById(modalId + '-iam_password-body');
+            const passwordCardBody = document.getElementById(modalId + '-password-body');
             if (passwordCardBody) {
               ensurePasswordState();
               renderPasswordPolicies(passwordCardBody, areaKey, modalId);
@@ -8765,6 +8773,9 @@
     {% comment %} BloodHound fetch {% endcomment %}
     $(document).ready(() => {
       let bh_form = document.getElementById("bh-fetch-form");
+      if (!bh_form) {
+        return;
+      }
       bh_form.addEventListener("submit", e => {
         e.preventDefault();
 
