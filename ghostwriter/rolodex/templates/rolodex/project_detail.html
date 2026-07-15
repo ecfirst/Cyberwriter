@@ -6123,6 +6123,9 @@
           addButton.className = 'btn btn-outline-primary mb-3';
           addButton.textContent = 'Add new Domain';
           addButton.addEventListener('click', function() {
+            if (!confirm('Are you sure you don\'t want to add the domain in AD first?')) {
+              return;
+            }
             domains.push(createEmptyEndpointDomain('', {metricsOpened: true}));
             renderEndpointDomains(target, areaKey, modalId);
             updateWorkbookCardProgress(areaKey);
@@ -6444,6 +6447,7 @@
         function renderAdDomains(target, areaKey, modalId) {
           const adState = ensureAdState();
           const domains = adState.domains;
+          console.log('[AD DEBUG] renderAdDomains() called. domains.length =', domains.length, 'target =', target);
           target.innerHTML = '';
 
           const refreshPasswordPlaceholderCard = function() {
@@ -6467,6 +6471,11 @@
           addButton.className = 'btn btn-outline-primary mb-3';
           addButton.textContent = 'Add new Domain';
           addButton.addEventListener('click', function() {
+            console.log(
+              '[AD DEBUG] Add new Domain clicked. target.isConnected =', target.isConnected,
+              'document.body.contains(target) =', document.body.contains(target),
+              'domains.length before push =', domains.length,
+            );
             domains.push({
               domain: '',
               functionality_level: null,
@@ -6483,7 +6492,13 @@
               old_password_counts: Object.assign({}, defaultOldPasswordCounts),
               inactive_account_counts: Object.assign({}, defaultInactiveAccountCounts),
             });
+            console.log('[AD DEBUG] Pushed new domain. domains.length after push =', domains.length, 'pushed =', domains[domains.length - 1]);
             renderAdDomains(target, areaKey, modalId);
+            console.log(
+              '[AD DEBUG] Re-render complete. target.children.length =', target.children.length,
+              'target.isConnected =', target.isConnected,
+              'target.getBoundingClientRect() =', target.getBoundingClientRect(),
+            );
             updateWorkbookCardProgress(areaKey);
             refreshPasswordPlaceholderCard();
             refreshAttackPathsCard();
