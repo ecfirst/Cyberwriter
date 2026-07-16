@@ -811,7 +811,7 @@ ATTACK_PATHS_CSV_HEADER_MAP: dict[str, dict[str, str]] = {
     },
     "privileged_not_protected": {
         "account": "Account",
-        "role": "Role",
+        "role (da/ea/both)": "Role",
     },
     "laps_coverage": {
         "computer": "Computer",

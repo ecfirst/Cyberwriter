@@ -1823,6 +1823,41 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         workbook_domains = self.project.workbook_data.get("ad_attack_paths", {}).get("domains", [])
         self.assertEqual(workbook_domains[0].get("kerberoastable"), 2)
 
+    def test_upload_privileged_not_protected_csv_accepts_tool_header(self):
+        # The real tool exports this metric's second column as
+        # "Role (DA/EA/Both)", not plain "Role" -- confirms the header map
+        # matches what's actually produced, not a guessed/simplified name.
+        csv_file = SimpleUploadedFile(
+            "privileged_not_protected.csv",
+            b"Account,Role (DA/EA/Both)\n"
+            b"jdoe,DA\n"
+            b"asmith,EA\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "privileged_not_protected",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        domains = payload.get("workbook_data", {}).get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(len(domains), 1)
+        self.assertEqual(domains[0].get("domain"), "corp.example.com")
+        self.assertEqual(domains[0].get("privileged_not_protected"), 2)
+
+        self.project.refresh_from_db()
+        artifacts = self.project.data_artifacts or {}
+        domain_entry = artifacts.get("ad_attack_paths", {}).get("corp.example.com", {})
+        rows = domain_entry.get("privileged_not_protected", [])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].get("Role"), "DA")
+
     def test_upload_attack_paths_csv_generates_cap_entry(self):
         csv_file = SimpleUploadedFile(
             "kerberoastable.csv",
