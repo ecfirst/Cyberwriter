@@ -29,7 +29,8 @@ _ESC_PATTERN = re.compile(r"ESC\s*(\d+)", re.IGNORECASE)
 _HIGH_ESC_CLASSES = {"1", "3", "4", "8", "15"}
 _MEDIUM_ESC_CLASSES = {"2"}
 _LOW_ESC_CLASSES = {"9", "13"}
-_CA_CONFIG_ESC_CLASSES = {"6", "7", "8"}
+_CA_CONFIG_ESC_CLASSES = {"5", "6", "7", "8"}
+_CA_CONFIG_HARDENING_ESC_CLASSES = {"10", "11"}
 
 
 def _text(row: Mapping[str, Any], field: str) -> str:
@@ -251,15 +252,42 @@ def score_adcs_ca_config(rows: Sequence[Mapping[str, Any]]) -> int:
     if not rows:
         return 1
 
-    matching_rows = [
-        row
-        for row in rows
-        if _parse_esc_classes(_text(row, "Findings")) & _CA_CONFIG_ESC_CLASSES
-    ]
-    if len(matching_rows) >= 2:
+    per_row_classes = [_parse_esc_classes(_text(row, "Findings")) for row in rows]
+
+    # ESC5 write access to NTAuthCertificates lets an attacker publish a
+    # rogue CA whose issued certs are trusted for domain authentication -- a
+    # domain-compromise primitive on its own, so it scores 6 even alone.
+    ntauth_esc5_hit = any(
+        "5" in classes and "ntauthcertificates" in _text(row, "Detail").lower()
+        for row, classes in zip(rows, per_row_classes)
+    )
+    if ntauth_esc5_hit:
         return 6
-    if len(matching_rows) >= 1:
+
+    tier5_classes: set = set()
+    tier5_row_count = 0
+    for classes in per_row_classes:
+        matched = classes & _CA_CONFIG_ESC_CLASSES
+        if matched:
+            tier5_row_count += 1
+            tier5_classes |= matched
+
+    if tier5_row_count >= 2 or len(tier5_classes) >= 2:
+        return 6
+
+    # ESC10 is per-DC and doesn't replicate on its own, but a finding
+    # present on every DC/CA row indicates a domain-wide policy gap rather
+    # than a stray misconfiguration -- escalate it, absent any ESC5/6/7/8.
+    esc10_row_count = sum(1 for classes in per_row_classes if "10" in classes)
+    if esc10_row_count and esc10_row_count == len(rows) and not tier5_classes:
+        return 6
+
+    if tier5_row_count >= 1:
         return 5
+
+    if any(classes & _CA_CONFIG_HARDENING_ESC_CLASSES for classes in per_row_classes):
+        return 4
+
     return 1
 
 

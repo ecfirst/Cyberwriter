@@ -383,8 +383,10 @@
                       </tr>
                       <tr>
                         <td>ADCS CA Config</td>
-                        <td>0</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>
-                        <td>Any ESC6/7/8</td><td>Multiple ESC6/7/8</td>
+                        <td>0</td><td>&mdash;</td><td>&mdash;</td>
+                        <td>Any ESC10 (weak SCE or CMM bits) or ESC11 (IF_ENFORCEENCRYPTICERTREQUEST not enforced) on any DC/CA</td>
+                        <td>Any ESC5, ESC6, ESC7, or ESC8</td>
+                        <td>Multiple ESC5/6/7/8; or ESC5 on <code>NTAuthCertificates</code> alone; or ESC10 across all DCs with no ESC5/6/7/8 already present</td>
                       </tr>
                     </tbody>
                   </table>
@@ -416,6 +418,29 @@
                     a Shadow Credential matching a known WHfB enrollment) require context this tool doesn't have.
                     Those checks are auto-scored at the highest tier computable from the uploaded CSV data alone;
                     manual review may justify a higher score.
+                  </li>
+                  <li>
+                    <strong>ESC5 on <code>NTAuthCertificates</code></strong> is uniquely severe and scores 6 alone
+                    even if no other CA-level finding exists. Write access to that container lets an attacker
+                    publish a rogue CA whose issued certs will be trusted for domain authentication &mdash;
+                    effectively a domain compromise primitive with a single ACE flip. Other ESC5 findings (on
+                    Enrollment Services, per-CA objects, AIA, CDP, OID, the Templates container) start at 5 and
+                    can compound to 6 with multiple hits.
+                  </li>
+                  <li>
+                    <strong>ESC10</strong> findings are per-DC and don't replicate. A single weak DC scores 4, but
+                    if the finding is consistent across all DCs (indicating a domain-wide policy gap rather than a
+                    stray misconfiguration) the aggregate contribution rises via the compounding rule.
+                    StrongCertificateBindingEnforcement not being set explicitly is scored at 4 with a note that
+                    the effective value depends on installed patches &mdash; analysts should adjust up or down
+                    based on whether they can confirm the actual patch level.
+                  </li>
+                  <li>
+                    <strong>ESC11</strong> alone scores 4 because the finding is a hardening gap (unencrypted RPC
+                    to the CA enrollment interface), not a direct compromise. It escalates to 5 in combination with
+                    any credential-theft or NTLM-relay-adjacent finding elsewhere in the assessment (e.g.,
+                    anonymous / unsigned LDAP bind, weak Kerberos preauth) &mdash; the compounding rule already
+                    handles this.
                   </li>
                 </ul>
                 <h6 class="mt-3">Analyst override</h6>

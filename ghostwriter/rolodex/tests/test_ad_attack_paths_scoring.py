@@ -194,6 +194,41 @@ class AdcsCaConfigScoringTests(SimpleTestCase):
         # simply doesn't contribute, but isn't excluded/nulled either.
         self.assertEqual(score_adcs_ca_config([{"Findings": "no issues"}]), 1)
 
+    def test_esc5_on_ntauthcertificates_scores_6_alone(self):
+        self.assertEqual(
+            score_adcs_ca_config(
+                [{"Findings": "ESC5", "Detail": "Write access to NTAuthCertificates object"}]
+            ),
+            6,
+        )
+
+    def test_esc5_elsewhere_scores_5_alone(self):
+        self.assertEqual(
+            score_adcs_ca_config(
+                [{"Findings": "ESC5", "Detail": "Write access to the Enrollment Services container"}]
+            ),
+            5,
+        )
+
+    def test_esc10_on_every_row_with_no_tier5_finding_scores_6(self):
+        self.assertEqual(
+            score_adcs_ca_config(
+                [{"Findings": "ESC10"}, {"Findings": "ESC10"}]
+            ),
+            6,
+        )
+
+    def test_esc10_on_only_some_rows_scores_4(self):
+        self.assertEqual(
+            score_adcs_ca_config(
+                [{"Findings": "ESC10"}, {"Findings": "no issues"}]
+            ),
+            4,
+        )
+
+    def test_esc11_alone_scores_4(self):
+        self.assertEqual(score_adcs_ca_config([{"Findings": "ESC11"}]), 4)
+
 
 class AggregateScoringTests(SimpleTestCase):
     def test_empty_returns_none(self):
