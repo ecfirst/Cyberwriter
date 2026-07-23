@@ -442,7 +442,7 @@ class SupplementalDocumentBuilder:
                     "EKUs",
                 ],
             ),
-            ("adcs_ca_config", "ADCS CA Config", ["CA", "Findings", "Detail"]),
+            ("adcs_ca_config", "ADCS CA Config", ["CA", "CA Host", "Findings", "Detail"]),
         ]
 
         sort_strategies = {

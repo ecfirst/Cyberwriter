@@ -840,7 +840,8 @@ ATTACK_PATHS_CSV_HEADER_MAP: dict[str, dict[str, str]] = {
         "ekus": "EKUs",
     },
     "adcs_ca_config": {
-        "ca": "CA",
+        "ca name": "CA",
+        "ca host": "CA Host",
         "findings": "Findings",
         "detail": "Detail",
     },

@@ -2448,6 +2448,7 @@ def _build_ad_attack_paths_data_artifacts_sample():
             "adcs_ca_config": [
                 {
                     "CA": "corp-CA01",
+                    "CA Host": "corp-ca01.corp.example.com",
                     "Findings": "ESC6",
                     "Detail": "EDITF_ATTRIBUTESUBJECTALTNAME2 flag is enabled",
                 }

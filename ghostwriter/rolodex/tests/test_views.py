@@ -1858,6 +1858,44 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0].get("Role"), "DA")
 
+    def test_upload_adcs_ca_config_csv_accepts_tool_headers(self):
+        # The real tool exports this metric with a "CA Name"/"CA Host" pair
+        # of columns, not a single plain "CA" column -- confirms the header
+        # map matches what's actually produced, and that "CA Host" (newly
+        # tracked, display-only) gets captured too.
+        csv_file = SimpleUploadedFile(
+            "adcs_ca_config.csv",
+            b"CA Name,CA Host,Findings,Detail\n"
+            b"corp-CA01,corp-ca01.corp.example.com,ESC6,"
+            b"EDITF_ATTRIBUTESUBJECTALTNAME2 flag is enabled\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "adcs_ca_config",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        domains = payload.get("workbook_data", {}).get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(len(domains), 1)
+        self.assertEqual(domains[0].get("domain"), "corp.example.com")
+        self.assertEqual(domains[0].get("adcs_ca_config"), 1)
+
+        self.project.refresh_from_db()
+        artifacts = self.project.data_artifacts or {}
+        domain_entry = artifacts.get("ad_attack_paths", {}).get("corp.example.com", {})
+        rows = domain_entry.get("adcs_ca_config", [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("CA"), "corp-CA01")
+        self.assertEqual(rows[0].get("CA Host"), "corp-ca01.corp.example.com")
+        self.assertEqual(rows[0].get("Findings"), "ESC6")
+
     def test_upload_attack_paths_csv_generates_cap_entry(self):
         csv_file = SimpleUploadedFile(
             "kerberoastable.csv",
