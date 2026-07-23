@@ -178,6 +178,14 @@ def score_privileged_not_protected(
 _LAPS_SCHEMA_ABSENT_TEXT = "laps schema not found in ad"
 
 
+def count_laps_not_covered(rows: Sequence[Mapping[str, Any]]) -> int:
+    """Count rows where neither LegacyLAPS nor WindowsLAPS is 'Yes' (LAPS not deployed)."""
+
+    return sum(
+        1 for row in rows if not (_is_yes(row, "LegacyLAPS") or _is_yes(row, "WindowsLAPS"))
+    )
+
+
 def score_laps_coverage(rows: Sequence[Mapping[str, Any]]) -> int:
     if len(rows) == 1 and _text(rows[0], "Expiration").lower() == _LAPS_SCHEMA_ABSENT_TEXT:
         return 6
@@ -185,20 +193,15 @@ def score_laps_coverage(rows: Sequence[Mapping[str, Any]]) -> int:
     if not rows:
         return 1
 
-    covered = [
-        row for row in rows if _is_yes(row, "LegacyLAPS") or _is_yes(row, "WindowsLAPS")
-    ]
-    coverage = len(covered) / len(rows)
+    not_covered_ratio = count_laps_not_covered(rows) / len(rows)
 
-    if coverage <= 0:
-        return 5
-    if coverage >= 0.90:
+    if not_covered_ratio <= 0.10:
         return 1
-    if coverage >= 0.75:
+    if not_covered_ratio <= 0.25:
         return 2
-    if coverage >= 0.50:
+    if not_covered_ratio <= 0.50:
         return 3
-    if coverage >= 0.25:
+    if not_covered_ratio <= 0.75:
         return 4
     return 5
 

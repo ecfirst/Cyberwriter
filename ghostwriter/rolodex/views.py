@@ -105,6 +105,7 @@ from ghostwriter.rolodex.models import (
 from ghostwriter.shepherd.external.bloodhound.client import APIClient as BhAPIClient, Credentials as BhCredentials, APIException as BhAPIException
 
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
+from ghostwriter.rolodex.ad_attack_paths_scoring import count_laps_not_covered
 from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_METRICS_KEY_MAP,
     NEXPOSE_METRICS_LABELS,
@@ -5029,7 +5030,14 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             domain_records.append(match)
 
         match["domain"] = domain
-        match[metric] = len(rows or [])
+        if metric == "laps_coverage":
+            # This metric's CSV lists the full computer inventory (covered
+            # and not), unlike every other AAP metric's CSV, which only ever
+            # contains rows that are themselves findings -- so the count here
+            # needs to be "systems without LAPS", not "systems in the file".
+            match[metric] = count_laps_not_covered(rows or [])
+        else:
+            match[metric] = len(rows or [])
 
         attack_paths_state["domains"] = domain_records
 

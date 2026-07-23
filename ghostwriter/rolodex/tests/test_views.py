@@ -1896,6 +1896,73 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         self.assertEqual(rows[0].get("CA Host"), "corp-ca01.corp.example.com")
         self.assertEqual(rows[0].get("Findings"), "ESC6")
 
+    def test_upload_laps_coverage_csv_counts_not_covered_systems_only(self):
+        # The CSV lists the full computer inventory (2 covered, 3 not), so
+        # the displayed count should be 3 -- not len(rows) == 5.
+        csv_file = SimpleUploadedFile(
+            "laps_coverage.csv",
+            b"Computer,LegacyLAPS,WindowsLAPS,Expiration\n"
+            b"WKS-01,Yes,No,2025-01-01\n"
+            b"WKS-02,No,Yes,2025-01-01\n"
+            b"WKS-03,No,No,\n"
+            b"WKS-04,No,No,\n"
+            b"WKS-05,No,No,\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "laps_coverage",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        domains = payload.get("workbook_data", {}).get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(len(domains), 1)
+        self.assertEqual(domains[0].get("laps_coverage"), 3)
+
+        self.project.refresh_from_db()
+        artifacts = self.project.data_artifacts or {}
+        domain_entry = artifacts.get("ad_attack_paths", {}).get("corp.example.com", {})
+        # The raw artifact rows stay unfiltered (full inventory) for the
+        # supplemental export/audit trail -- only the summary count changes.
+        self.assertEqual(len(domain_entry.get("laps_coverage", [])), 5)
+
+    def test_upload_fully_covered_laps_coverage_csv_does_not_trigger_cap(self):
+        csv_file = SimpleUploadedFile(
+            "laps_coverage.csv",
+            b"Computer,LegacyLAPS,WindowsLAPS,Expiration\n"
+            b"WKS-01,Yes,No,2025-01-01\n"
+            b"WKS-02,No,Yes,2025-01-01\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "laps_coverage",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        domains = payload.get("workbook_data", {}).get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(domains[0].get("laps_coverage"), 0)
+
+        self.project.refresh_from_db()
+        attack_paths_cap = self.project.cap.get("ad_attack_paths", {})
+        cap_map = attack_paths_cap.get("ad_attack_paths_cap_map", {})
+        corp_issues = cap_map.get("corp.example.com", {})
+        self.assertNotIn(
+            "Local Administrator Password Rotation (LAPS) Not Fully Deployed", corp_issues
+        )
+
     def test_upload_attack_paths_csv_generates_cap_entry(self):
         csv_file = SimpleUploadedFile(
             "kerberoastable.csv",

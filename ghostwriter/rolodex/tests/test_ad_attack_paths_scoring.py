@@ -4,6 +4,7 @@ from django.test import SimpleTestCase
 
 from ghostwriter.rolodex.ad_attack_paths_scoring import (
     compute_aggregate,
+    count_laps_not_covered,
     score_adcs_ca_config,
     score_adcs_vulnerable_templates,
     score_attack_paths,
@@ -136,6 +137,29 @@ class LapsCoverageScoringTests(SimpleTestCase):
     def test_windows_laps_also_counts_as_covered(self):
         rows = _rows(10, LegacyLAPS="No", WindowsLAPS="Yes")
         self.assertEqual(score_laps_coverage(rows), 1)
+
+    def test_not_covered_boundary_scores_four(self):
+        # 3 covered + 9 not-covered = 75% not-covered, right at the <=0.75
+        # boundary for tier 4.
+        rows = _rows(3, LegacyLAPS="Yes") + _rows(9, LegacyLAPS="No")
+        self.assertEqual(count_laps_not_covered(rows), 9)
+        self.assertEqual(score_laps_coverage(rows), 4)
+
+    def test_just_over_not_covered_boundary_scores_five(self):
+        # 1 covered + 9 not-covered = 90% not-covered, just past the tier 4
+        # boundary.
+        rows = _rows(1, LegacyLAPS="Yes") + _rows(9, LegacyLAPS="No")
+        self.assertEqual(count_laps_not_covered(rows), 9)
+        self.assertEqual(score_laps_coverage(rows), 5)
+
+    def test_count_laps_not_covered_ignores_non_yes_values(self):
+        rows = [
+            {"LegacyLAPS": "Yes", "WindowsLAPS": "No"},
+            {"LegacyLAPS": "No", "WindowsLAPS": "Yes"},
+            {"LegacyLAPS": "No", "WindowsLAPS": "No"},
+            {"LegacyLAPS": "", "WindowsLAPS": ""},
+        ]
+        self.assertEqual(count_laps_not_covered(rows), 2)
 
 
 class GppPasswordsScoringTests(SimpleTestCase):
