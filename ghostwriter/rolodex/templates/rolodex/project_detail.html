@@ -7107,7 +7107,6 @@
                 overrideInput.min = '1';
                 overrideInput.max = '6';
                 overrideInput.step = '1';
-                overrideInput.setAttribute('data-area-field', areaKey);
                 overrideInput.value = typeof domain[overrideField] === 'number' ? domain[overrideField] : '';
                 overrideInput.addEventListener('input', function() {
                   const value = overrideInput.value === '' ? null : Number(overrideInput.value);
