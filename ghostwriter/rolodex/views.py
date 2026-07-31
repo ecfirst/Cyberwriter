@@ -920,6 +920,26 @@ def _count_pending_question_sections(
     return len(pending_sections)
 
 
+def _strip_xlsx_base64(value: Any) -> Any:
+    """Deep-copy ``value``, omitting any 'xlsx_base64' key at any nesting depth.
+
+    These base64-encoded workbook blobs can be many MB each and are only
+    needed by the dedicated download views (which re-read them from the
+    database), never by the client-side JS that consumes this JSON -- so
+    embedding them in the rendered page is pure waste, and for a project
+    with several large uploads, can be large enough to crash the render.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _strip_xlsx_base64(inner)
+            for key, inner in value.items()
+            if key != "xlsx_base64"
+        }
+    if isinstance(value, list):
+        return [_strip_xlsx_base64(item) for item in value]
+    return value
+
+
 def _build_processed_cards(
     project: Project,
     artifacts: Mapping[str, Any],
@@ -3212,7 +3232,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         artifacts = normalize_nexpose_artifacts_map(object.data_artifacts or {})
         artifacts_updated = False
         object.data_artifacts = artifacts
-        ctx["project_data_artifacts_json"] = artifacts
+        ctx["project_data_artifacts_json"] = _strip_xlsx_base64(artifacts)
         matrix_gap_summary = summarize_nexpose_matrix_gaps(artifacts)
         ctx["nexpose_matrix_gap_summary"] = matrix_gap_summary
         ctx["has_nexpose_matrix_gaps"] = bool(matrix_gap_summary)

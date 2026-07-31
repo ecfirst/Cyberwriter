@@ -1050,6 +1050,52 @@ class ProjectDetailViewTests(TestCase):
         self.assertContains(response, "Download Nexpose Data file")
         self.assertContains(response, "?artifact=external_nexpose_metrics")
 
+    def test_data_artifacts_json_strips_xlsx_base64_at_every_depth(self):
+        # xlsx_base64 blobs are only needed by the dedicated download views
+        # (which re-read them from the database); embedding them in the
+        # page's JSON caused a 502 for a project with several large uploads.
+        # Confirm they're stripped at both the shallow (one-level) and deep
+        # (endpoint's per-domain) nesting shapes actually used in production,
+        # while sibling data survives untouched.
+        workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
+        self.project.data_artifacts = {
+            "internal_nexpose_metrics": {
+                "summary": {"total": 4},
+                "xlsx_base64": workbook_b64,
+            },
+            "endpoint": {
+                "metrics": {
+                    "corp.example.com": {
+                        "domain": "corp.example.com",
+                        "summary": {"total_computers": 10},
+                        "xlsx_base64": workbook_b64,
+                    }
+                }
+            },
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.uri)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode("utf-8")
+        self.assertNotIn("xlsx_base64", content)
+        self.assertNotIn(workbook_b64, content)
+        # Sibling data at the same nesting depths must survive the strip.
+        self.assertIn('"total": 4', content)
+        self.assertIn('"total_computers": 10', content)
+        self.assertIn("corp.example.com", content)
+
+        # The database copy is untouched -- only the rendered JSON changes.
+        self.project.refresh_from_db()
+        self.assertEqual(
+            self.project.data_artifacts["internal_nexpose_metrics"]["xlsx_base64"],
+            workbook_b64,
+        )
+        self.assertEqual(
+            self.project.data_artifacts["endpoint"]["metrics"]["corp.example.com"]["xlsx_base64"],
+            workbook_b64,
+        )
+
     def test_processed_data_tab_handles_firewall_summary_without_legacy_totals(self):
         self.project.data_artifacts = {
             "firewall_metrics": {
