@@ -1,15 +1,21 @@
 # Standard Libraries
 import logging
+import os
+import tempfile
+import warnings
 from datetime import date, datetime, timedelta
 from io import StringIO
+from unittest import mock
 
 # Django Imports
 from django.conf import settings
 from django.core.management import call_command
 from django.db.models import Q
-from django.test import Client, TestCase
+from django.http import FileResponse, StreamingHttpResponse
+from django.test import Client, RequestFactory, TestCase
 from django.test.utils import override_settings
 from django.urls import reverse
+from django.utils.http import http_date
 
 # 3rd Party Libraries
 from allauth.mfa.totp.internal.auth import generate_totp_secret, TOTP
@@ -25,6 +31,7 @@ from ghostwriter.factories import (
     UserFactory,
 )
 from ghostwriter.home.templatetags import custom_tags
+from ghostwriter.home.views import protected_serve
 
 logging.disable(logging.CRITICAL)
 
@@ -520,6 +527,7 @@ class ProtectedServeTest(TestCase):
         self.client = Client()
         self.client_auth = Client()
         self.assertTrue(self.client_auth.login(username=self.user.username, password=PASSWORD))
+        self.factory = RequestFactory()
 
     @override_settings(DEBUG=True)
     def test_view_uri(self):
@@ -531,3 +539,79 @@ class ProtectedServeTest(TestCase):
     def test_view_uri_requires_login(self):
         response = self.client.get(self.uri)
         self.assertEqual(response.status_code, 302)
+
+    def test_view_serves_file_without_streaming_or_warning(self):
+        # Regression test: protected_serve() used to return
+        # django.views.static.serve()'s result untouched --
+        # FileResponse(file.open("rb"), ...), a StreamingHttpResponse
+        # wrapping a synchronous file object. Under ASGI, Django can only
+        # serve that by bridging it through a sync_to_async thread, logging
+        # "StreamingHttpResponse must consume synchronous iterators" on
+        # every media file request (client logos, evidence screenshots,
+        # templates, archives -- everything under MEDIA_ROOT). Confirm a
+        # normal-sized file is now returned as a plain, non-streaming
+        # HttpResponse instead, with no such warning.
+        #
+        # Called directly via RequestFactory (with an explicit document_root)
+        # rather than through the test client/URL routing: the URLconf binds
+        # `document_root=settings.MEDIA_ROOT` once, at import time, so
+        # override_settings(MEDIA_ROOT=...) wouldn't actually change what a
+        # URL-routed request resolves to.
+        with tempfile.TemporaryDirectory() as media_root:
+            file_path = os.path.join(media_root, "sample.txt")
+            file_content = b"sample media content"
+            with open(file_path, "wb") as fh:
+                fh.write(file_content)
+
+            request = self.factory.get("/media/sample.txt")
+            request.user = self.user
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                response = protected_serve(request, "sample.txt", document_root=media_root)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, file_content)
+        self.assertNotIsInstance(response, StreamingHttpResponse)
+        self.assertFalse(getattr(response, "streaming", False))
+        self.assertFalse(
+            any("synchronous iterators" in str(w.message) for w in caught),
+            "media file serving should not trigger the StreamingHttpResponse sync-iterator warning",
+        )
+
+    def test_view_still_returns_not_modified(self):
+        # If-Modified-Since / 304 handling is implemented entirely inside
+        # django.views.static.serve() and returns HttpResponseNotModified,
+        # which is not a FileResponse -- confirm the wrapper leaves this
+        # existing caching behavior untouched.
+        with tempfile.TemporaryDirectory() as media_root:
+            file_path = os.path.join(media_root, "cached.txt")
+            with open(file_path, "wb") as fh:
+                fh.write(b"cached content")
+            mtime = os.path.getmtime(file_path)
+
+            request = self.factory.get(
+                "/media/cached.txt", HTTP_IF_MODIFIED_SINCE=http_date(mtime + 10)
+            )
+            request.user = self.user
+            response = protected_serve(request, "cached.txt", document_root=media_root)
+
+        self.assertEqual(response.status_code, 304)
+
+    def test_view_falls_back_to_streaming_for_large_files(self):
+        # Files larger than the buffering threshold must fall back to the
+        # original streaming FileResponse rather than being read fully into
+        # memory -- protects against buffering something unexpectedly huge
+        # (e.g. a full project archive export) into memory.
+        with mock.patch("ghostwriter.home.views._MAX_BUFFERED_MEDIA_BYTES", 10):
+            with tempfile.TemporaryDirectory() as media_root:
+                file_path = os.path.join(media_root, "large.bin")
+                with open(file_path, "wb") as fh:
+                    fh.write(b"x" * 1000)  # far larger than the patched 10-byte threshold
+
+                request = self.factory.get("/media/large.bin")
+                request.user = self.user
+                response = protected_serve(request, "large.bin", document_root=media_root)
+                self.assertEqual(response.status_code, 200)
+                self.assertIsInstance(response, FileResponse)
+                self.assertTrue(response.streaming)
+                response.file_to_stream.close()
