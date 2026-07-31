@@ -973,6 +973,40 @@ class ProjectDetailViewTests(TestCase):
         response = self.client_auth.get(self.uri)
         self.assertEqual(response.status_code, 200)
 
+    def test_workbook_sections_skipped_when_no_legacy_workbook_file(self):
+        # build_workbook_sections() does a full recursive walk of the entire
+        # workbook_data tree, and its result is only ever rendered when the
+        # legacy `workbook_file` upload is set. No project uses that field
+        # anymore, so the expensive computation should be skipped entirely
+        # rather than paying its cost (which scales with workbook_data size)
+        # on every page load for a result nothing displays.
+        self.project.workbook_data = {"ad": {"domains": [{"domain": "corp.example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        with mock.patch(
+            "ghostwriter.rolodex.views.build_workbook_sections"
+        ) as mock_build_sections:
+            response = self.client_mgr.get(self.uri)
+
+        self.assertEqual(response.status_code, 200)
+        mock_build_sections.assert_not_called()
+        self.assertEqual(response.context["workbook_sections"], [])
+
+    def test_workbook_sections_computed_when_legacy_workbook_file_present(self):
+        self.project.workbook_file = SimpleUploadedFile(
+            "workbook.json", b"{}", content_type="application/json"
+        )
+        self.project.save(update_fields=["workbook_file"])
+
+        with mock.patch(
+            "ghostwriter.rolodex.views.build_workbook_sections", return_value=["fake-section"]
+        ) as mock_build_sections:
+            response = self.client_mgr.get(self.uri)
+
+        self.assertEqual(response.status_code, 200)
+        mock_build_sections.assert_called_once()
+        self.assertEqual(response.context["workbook_sections"], ["fake-section"])
+
     def test_detail_view_shows_nexpose_missing_warning_and_button(self):
         self.project.workbook_data = {"external_nexpose": {"total": 1}}
         self.project.data_artifacts = {

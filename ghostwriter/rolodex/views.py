@@ -3193,7 +3193,19 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         )
         ctx["workbook_form"] = ProjectWorkbookForm()
         normalized_workbook = normalize_workbook_payload(object.workbook_data)
-        ctx["workbook_sections"] = build_workbook_sections(normalized_workbook)
+        # build_workbook_sections() does a full recursive deep-walk of the
+        # entire workbook_data tree (see _normalise_workbook_value in
+        # workbook.py), and the result is only ever rendered when the legacy
+        # `workbook_file` upload is set (project_detail.html gates the
+        # {% include workbook_value.html %} loop behind `project.workbook_file`).
+        # No current project uses that legacy field -- every project now
+        # drives the Workbook UI from workbook_data/data_artifacts directly --
+        # so skip the computation entirely rather than paying its cost
+        # (which scales with workbook_data size) on every single page load
+        # for a result nothing ever displays.
+        ctx["workbook_sections"] = (
+            build_workbook_sections(normalized_workbook) if object.workbook_file else []
+        )
         ctx["data_file_form"] = ProjectDataFileForm()
         ctx["data_questions"] = questions
         normalized_responses = prepare_data_responses_initial(
