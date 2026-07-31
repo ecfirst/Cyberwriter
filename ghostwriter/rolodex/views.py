@@ -920,23 +920,33 @@ def _count_pending_question_sections(
     return len(pending_sections)
 
 
-def _strip_xlsx_base64(value: Any) -> Any:
-    """Deep-copy ``value``, omitting any 'xlsx_base64' key at any nesting depth.
+def _strip_large_unused_artifacts(value: Any, *, is_top_level: bool = True) -> Any:
+    """Deep-copy ``value``, omitting keys never read by the page's client-side JS.
 
-    These base64-encoded workbook blobs can be many MB each and are only
-    needed by the dedicated download views (which re-read them from the
-    database), never by the client-side JS that consumes this JSON -- so
-    embedding them in the rendered page is pure waste, and for a project
-    with several large uploads, can be large enough to crash the render.
+    Drops 'xlsx_base64' at any nesting depth (compact per-artifact blobs, only
+    needed by the dedicated download views, which re-read them from the
+    database) and, at the top level only, any key ending in '_findings' (raw
+    per-finding lists -- one entry per host/port/vulnerability triple, each
+    with several free-text fields -- that scale with finding count and are
+    never read by client-side JS; only their already-summarized
+    *_metrics/*_vulnerabilities siblings are).
+
+    Embedding either in the rendered page is pure waste: it inflates
+    ``json_script`` serialization and page size for no benefit, and for a
+    project with a large/messy upload, can hold the GIL long enough during a
+    single request that uvicorn's multiprocess worker-healthcheck supervisor
+    (see ``compose/production/django/start``) mistakes a merely-slow worker
+    for a hung one and kills it mid-response.
     """
     if isinstance(value, dict):
         return {
-            key: _strip_xlsx_base64(inner)
+            key: _strip_large_unused_artifacts(inner, is_top_level=False)
             for key, inner in value.items()
             if key != "xlsx_base64"
+            and not (is_top_level and isinstance(key, str) and key.endswith("_findings"))
         }
     if isinstance(value, list):
-        return [_strip_xlsx_base64(item) for item in value]
+        return [_strip_large_unused_artifacts(item, is_top_level=False) for item in value]
     return value
 
 
@@ -3232,7 +3242,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         artifacts = normalize_nexpose_artifacts_map(object.data_artifacts or {})
         artifacts_updated = False
         object.data_artifacts = artifacts
-        ctx["project_data_artifacts_json"] = _strip_xlsx_base64(artifacts)
+        ctx["project_data_artifacts_json"] = _strip_large_unused_artifacts(artifacts)
         matrix_gap_summary = summarize_nexpose_matrix_gaps(artifacts)
         ctx["nexpose_matrix_gap_summary"] = matrix_gap_summary
         ctx["has_nexpose_matrix_gaps"] = bool(matrix_gap_summary)

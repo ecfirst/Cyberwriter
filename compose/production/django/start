@@ -23,4 +23,11 @@ cp -u -p "$TEMPLATE_PATH_PPTX" "$TEMPLATE_DIR"
 python /app/manage.py collectstatic --noinput
 python /app/manage.py migrate
 # /usr/local/bin/daphne -b 0.0.0.0 -p 8000 config.asgi:application
-uvicorn config.asgi:application --host 0.0.0.0 --port 8000
+# With WEB_CONCURRENCY > 1, uvicorn's multiprocess supervisor pings each
+# worker over an internal pipe and SIGKILLs + respawns any worker that
+# doesn't answer within --timeout-worker-healthcheck (default: 5s) -- even
+# if the worker was never crashed/hung, just busy holding the GIL on a slow
+# synchronous view (e.g. rendering a project with a large data_artifacts
+# payload). Raise the timeout so legitimately-slow-but-healthy requests
+# aren't killed mid-response.
+uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --timeout-worker-healthcheck 33

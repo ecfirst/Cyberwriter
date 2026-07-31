@@ -1050,19 +1050,27 @@ class ProjectDetailViewTests(TestCase):
         self.assertContains(response, "Download Nexpose Data file")
         self.assertContains(response, "?artifact=external_nexpose_metrics")
 
-    def test_data_artifacts_json_strips_xlsx_base64_at_every_depth(self):
-        # xlsx_base64 blobs are only needed by the dedicated download views
-        # (which re-read them from the database); embedding them in the
-        # page's JSON caused a 502 for a project with several large uploads.
-        # Confirm they're stripped at both the shallow (one-level) and deep
-        # (endpoint's per-domain) nesting shapes actually used in production,
-        # while sibling data survives untouched.
+    def test_data_artifacts_json_strips_large_unused_artifacts_at_every_depth(self):
+        # xlsx_base64 blobs and raw *_findings lists are only needed by the
+        # dedicated download views / already-summarized *_metrics siblings,
+        # never by the client-side JS that consumes this JSON -- embedding
+        # them caused a 502 for a project with several large uploads (a big
+        # *_findings list scales with finding count, unlike xlsx_base64, and
+        # can hold the GIL long enough during rendering that uvicorn's
+        # worker-healthcheck supervisor kills the "unresponsive" worker
+        # mid-request). Confirm both are stripped at every shape actually
+        # used in production, while sibling data survives untouched.
         workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
         self.project.data_artifacts = {
             "internal_nexpose_metrics": {
                 "summary": {"total": 4},
                 "xlsx_base64": workbook_b64,
             },
+            "internal_nexpose_findings": {
+                "findings": [{"Vulnerability Title": "Some Missing Vuln", "Details": "x" * 200}],
+                "software": [{"System": "10.0.0.1", "Software": "OpenSSH", "Version": "8.0"}],
+            },
+            "web_findings": [{"Vulnerability": "Reflected XSS", "Impact": "y" * 200}],
             "endpoint": {
                 "metrics": {
                     "corp.example.com": {
@@ -1080,6 +1088,9 @@ class ProjectDetailViewTests(TestCase):
         content = response.content.decode("utf-8")
         self.assertNotIn("xlsx_base64", content)
         self.assertNotIn(workbook_b64, content)
+        self.assertNotIn("Some Missing Vuln", content)
+        self.assertNotIn("Reflected XSS", content)
+        self.assertNotIn('"findings"', content)
         # Sibling data at the same nesting depths must survive the strip.
         self.assertIn('"total": 4', content)
         self.assertIn('"total_computers": 10', content)
@@ -1094,6 +1105,15 @@ class ProjectDetailViewTests(TestCase):
         self.assertEqual(
             self.project.data_artifacts["endpoint"]["metrics"]["corp.example.com"]["xlsx_base64"],
             workbook_b64,
+        )
+        self.assertEqual(
+            self.project.data_artifacts["internal_nexpose_findings"]["findings"][0][
+                "Vulnerability Title"
+            ],
+            "Some Missing Vuln",
+        )
+        self.assertEqual(
+            self.project.data_artifacts["web_findings"][0]["Vulnerability"], "Reflected XSS"
         )
 
     def test_processed_data_tab_handles_firewall_summary_without_legacy_totals(self):
