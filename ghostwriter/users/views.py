@@ -2,13 +2,14 @@
 
 
 # Standard Libraries
+import mimetypes
 import os
 
 # Django Imports
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
-from django.http import FileResponse, JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views.generic import DetailView, RedirectView, UpdateView, View
@@ -239,11 +240,20 @@ class AvatarDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
         if not os.path.exists(file_path):
             file_path = os.path.join(settings.STATICFILES_DIRS[0], "images/default_avatar.png")
 
-        return FileResponse(
-            open(file_path, "rb"),
-            as_attachment=True,
-            filename=os.path.basename(file_path),
-        )
+        # Avatars are small, so read the whole file into memory and return a
+        # plain HttpResponse rather than FileResponse(open(file_path, "rb")).
+        # FileResponse is a StreamingHttpResponse wrapping a synchronous file
+        # object, which Django's ASGI handler can only serve by bridging it
+        # through a sync_to_async thread -- avoid that entirely here rather
+        # than pay the bridging cost (and the "must consume synchronous
+        # iterators" warning it logs) on every avatar request.
+        with open(file_path, "rb") as avatar_file:
+            content = avatar_file.read()
+        content_type, _ = mimetypes.guess_type(file_path)
+        response = HttpResponse(content, content_type=content_type or "application/octet-stream")
+        filename = os.path.basename(file_path)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 avatar_download = AvatarDownload.as_view()

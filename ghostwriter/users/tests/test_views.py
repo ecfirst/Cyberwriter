@@ -1,6 +1,7 @@
 # Standard Libraries
 import logging
 import os
+import warnings
 from base64 import b64decode
 from io import BytesIO
 
@@ -355,6 +356,26 @@ class AvatarDownloadTest(TestCase):
         response = self.client_auth.get(self.uri)
         self.assertEqual(response.status_code, 200)
         self.assertEquals(response.get("Content-Disposition"), 'attachment; filename="default_avatar.png"')
+
+    def test_view_does_not_stream_or_warn(self):
+        # Regression test: this view used to return
+        # FileResponse(open(file_path, "rb")), a StreamingHttpResponse
+        # wrapping a synchronous file object. Under ASGI, Django can only
+        # serve that by bridging it through a sync_to_async thread, which
+        # logs "StreamingHttpResponse must consume synchronous iterators in
+        # order to serve them asynchronously" on every request. Confirm the
+        # response is a plain, non-streaming HttpResponse instead, and that
+        # no such warning is raised.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            response = self.client_auth.get(self.uri)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(getattr(response, "streaming", False))
+        self.assertFalse(
+            any("synchronous iterators" in str(w.message) for w in caught),
+            "avatar download should not trigger the StreamingHttpResponse sync-iterator warning",
+        )
 
 
 class HideQuickStartViewTests(TestCase):
