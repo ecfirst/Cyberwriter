@@ -951,18 +951,55 @@ def _log_memory_checkpoint(label: str) -> None:
     )
 
 
-def _strip_large_unused_artifacts(value: Any, *, is_top_level: bool = True) -> Any:
+# AD Attack Paths keeps the raw uploaded CSV rows per domain/metric in
+# data_artifacts["ad_attack_paths"][domain][metric] as an audit trail (the
+# scores/counts client JS actually needs live in the much smaller
+# workbook_data instead -- confirmed via pg_column_size: 4KB vs 13.8MB for a
+# data-heavy project). Client JS only ever reads the sibling
+# f"{metric}_file_name" string (project_detail.html's getMetricFileName),
+# never these arrays directly -- see ATTACK_PATHS_CSV_HEADER_MAP for the
+# canonical metric list.
+_AD_ATTACK_PATHS_RAW_ROW_KEYS = frozenset(ATTACK_PATHS_CSV_HEADER_MAP.keys())
+
+# _build_nexpose_metrics_payload / _build_firewall_metrics_payload /
+# _build_web_metrics_payload (data_parsers.py) all build far more than a
+# "summary" despite their docstrings: each embeds the *entire* finding set
+# redundantly multiple times over (e.g. nexpose's all_issues + high/med/low
+# split; firewall additionally splits by rule/config/complexity/vuln type
+# too), every entry carrying full free-text fields (details/evidence/
+# remediation). Confirmed via pg_column_size on a real project:
+# internal_nexpose_metrics alone was 96.5MB (larger than the *_findings key
+# holding the same underlying data just once, at 52MB) -- and confirmed via
+# grep across project_detail.html and supplemental_export.py that nothing,
+# client-side or server-side, ever reads anything from these payloads beyond
+# "summary" (used by _build_processed_cards) and "xlsx_base64" (the download
+# views). Keep only those two for the rendered page; everything else here is
+# transient, only ever needed once, at upload time, to build the workbook
+# bytes that already got captured into xlsx_base64.
+_METRICS_KEYS_SUMMARY_ONLY = frozenset(NEXPOSE_METRICS_LABELS.keys()) | {
+    "firewall_metrics",
+    "web_metrics",
+}
+
+
+def _strip_large_unused_artifacts(
+    value: Any, *, depth: int = 0, top_level_key: Optional[str] = None
+) -> Any:
     """Deep-copy ``value``, omitting keys never read by the page's client-side JS.
 
     Drops 'xlsx_base64' at any nesting depth (compact per-artifact blobs, only
     needed by the dedicated download views, which re-read them from the
-    database) and, at the top level only, any key ending in '_findings' (raw
+    database); at the top level only, any key ending in '_findings' (raw
     per-finding lists -- one entry per host/port/vulnerability triple, each
     with several free-text fields -- that scale with finding count and are
     never read by client-side JS; only their already-summarized
-    *_metrics/*_vulnerabilities siblings are).
+    *_metrics/*_vulnerabilities siblings are); at the top level, every key in
+    _METRICS_KEYS_SUMMARY_ONLY is reduced to just its 'summary' field (see
+    that constant for why); and, specifically inside each domain entry of
+    the top-level 'ad_attack_paths' key, the raw CSV row arrays for each AAP
+    metric (see _AD_ATTACK_PATHS_RAW_ROW_KEYS above).
 
-    Embedding either in the rendered page is pure waste: it inflates
+    Embedding any of this in the rendered page is pure waste: it inflates
     ``json_script`` serialization and page size for no benefit, and for a
     project with a large/messy upload, can hold the GIL long enough during a
     single request that uvicorn's multiprocess worker-healthcheck supervisor
@@ -970,14 +1007,35 @@ def _strip_large_unused_artifacts(value: Any, *, is_top_level: bool = True) -> A
     for a hung one and kills it mid-response.
     """
     if isinstance(value, dict):
-        return {
-            key: _strip_large_unused_artifacts(inner, is_top_level=False)
-            for key, inner in value.items()
-            if key != "xlsx_base64"
-            and not (is_top_level and isinstance(key, str) and key.endswith("_findings"))
-        }
+        result = {}
+        for key, inner in value.items():
+            if key == "xlsx_base64":
+                continue
+            if depth == 0 and isinstance(key, str) and key.endswith("_findings"):
+                continue
+            if depth == 0 and key in _METRICS_KEYS_SUMMARY_ONLY and isinstance(inner, dict):
+                result[key] = {
+                    "summary": _strip_large_unused_artifacts(
+                        inner.get("summary"), depth=depth + 2, top_level_key=key
+                    )
+                }
+                continue
+            if (
+                depth == 2
+                and top_level_key == "ad_attack_paths"
+                and key in _AD_ATTACK_PATHS_RAW_ROW_KEYS
+            ):
+                continue
+            next_top_level_key = key if depth == 0 else top_level_key
+            result[key] = _strip_large_unused_artifacts(
+                inner, depth=depth + 1, top_level_key=next_top_level_key
+            )
+        return result
     if isinstance(value, list):
-        return [_strip_large_unused_artifacts(item, is_top_level=False) for item in value]
+        return [
+            _strip_large_unused_artifacts(item, depth=depth + 1, top_level_key=top_level_key)
+            for item in value
+        ]
     return value
 
 

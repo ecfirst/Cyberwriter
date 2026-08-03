@@ -1096,9 +1096,36 @@ class ProjectDetailViewTests(TestCase):
         # used in production, while sibling data survives untouched.
         workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
         self.project.data_artifacts = {
+            # _build_nexpose_metrics_payload/_build_firewall_metrics_payload/
+            # _build_web_metrics_payload (data_parsers.py) all embed the
+            # *entire* finding set redundantly multiple times over despite
+            # their "summary metrics" docstrings -- confirmed on a real
+            # project via pg_column_size that internal_nexpose_metrics alone
+            # was 96.5MB, larger than the *_findings key holding the same
+            # data just once. Nothing (client-side or server-side) reads
+            # anything from these beyond "summary" and "xlsx_base64".
             "internal_nexpose_metrics": {
                 "summary": {"total": 4},
+                "all_issues": [{"issue": "Some Vuln", "details": "d" * 200, "evidence": "e" * 200}],
+                "high_issues": [{"issue": "Some Vuln", "details": "d" * 200}],
+                "med_issues": [],
+                "low_issues": [],
+                "unique_issues": [{"issue": "Some Vuln"}],
+                "host_counts": [{"host": "10.0.0.1", "high": 1}],
+                "top_hosts": [{"host": "10.0.0.1", "score": 3}],
+                "top_impacts": [{"impact": "Data Loss", "count": 1}],
                 "xlsx_base64": workbook_b64,
+            },
+            "firewall_metrics": {
+                "summary": {"unique": 3},
+                "devices": [{"device": "fw1", "total_high": 1}],
+                "all_issues": [{"Impact": "f" * 200}],
+                "rule_issues": [{"Impact": "f" * 200}],
+            },
+            "web_metrics": {
+                "summary": {"unique": 2},
+                "all_issues": [{"Impact": "w" * 200}],
+                "unique_issues": [{"Impact": "w" * 200}],
             },
             "internal_nexpose_findings": {
                 "findings": [{"Vulnerability Title": "Some Missing Vuln", "Details": "x" * 200}],
@@ -1114,6 +1141,23 @@ class ProjectDetailViewTests(TestCase):
                     }
                 }
             },
+            # AD Attack Paths keeps raw uploaded CSV rows per domain/metric as
+            # an audit trail; client JS only ever reads the sibling
+            # f"{metric}_file_name" string, never these arrays (confirmed via
+            # project_detail.html's getMetricFileName). For a data-heavy
+            # project this dwarfed everything else stripped above (13.8MB
+            # data_artifacts vs 4KB workbook_data, confirmed via
+            # pg_column_size) and was the actual dominant cost behind the
+            # multi-hundred-MB per-view render growth this investigation
+            # tracked down.
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [{"Account": "svc-sql", "SPN": "MSSQLSvc/sql01"}],
+                    "kerberoastable_file_name": "kerberoastable.csv",
+                    "laps_coverage": [{"Computer": "WKS-01", "LegacyLAPS": "No"}],
+                    "laps_coverage_file_name": "laps.csv",
+                }
+            },
         }
         self.project.save(update_fields=["data_artifacts"])
 
@@ -1125,10 +1169,28 @@ class ProjectDetailViewTests(TestCase):
         self.assertNotIn("Some Missing Vuln", content)
         self.assertNotIn("Reflected XSS", content)
         self.assertNotIn('"findings"', content)
+        self.assertNotIn("svc-sql", content)
+        self.assertNotIn("MSSQLSvc", content)
+        self.assertNotIn("WKS-01", content)
+        # The redundant, multi-hundred-MB-in-production *_metrics bloat
+        # fields must be gone entirely, for all three metrics builders.
+        self.assertNotIn("d" * 200, content)
+        self.assertNotIn("e" * 200, content)
+        self.assertNotIn("f" * 200, content)
+        self.assertNotIn("w" * 200, content)
+        for bloat_field in (
+            "all_issues", "high_issues", "unique_issues", "host_counts",
+            "top_hosts", "top_impacts", "devices", "rule_issues",
+        ):
+            self.assertNotIn(f'"{bloat_field}"', content)
         # Sibling data at the same nesting depths must survive the strip.
         self.assertIn('"total": 4', content)
+        self.assertIn('"unique": 3', content)  # firewall_metrics.summary
+        self.assertIn('"unique": 2', content)  # web_metrics.summary
         self.assertIn('"total_computers": 10', content)
         self.assertIn("corp.example.com", content)
+        self.assertIn("kerberoastable.csv", content)
+        self.assertIn("laps.csv", content)
 
         # The database copy is untouched -- only the rendered JSON changes.
         self.project.refresh_from_db()
@@ -1148,6 +1210,18 @@ class ProjectDetailViewTests(TestCase):
         )
         self.assertEqual(
             self.project.data_artifacts["web_findings"][0]["Vulnerability"], "Reflected XSS"
+        )
+        self.assertEqual(
+            self.project.data_artifacts["ad_attack_paths"]["corp.example.com"]["kerberoastable"][
+                0
+            ]["Account"],
+            "svc-sql",
+        )
+        self.assertEqual(
+            self.project.data_artifacts["firewall_metrics"]["devices"][0]["device"], "fw1"
+        )
+        self.assertEqual(
+            len(self.project.data_artifacts["internal_nexpose_metrics"]["all_issues"]), 1
         )
 
     def test_processed_data_tab_handles_firewall_summary_without_legacy_totals(self):
