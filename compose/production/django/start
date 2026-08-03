@@ -31,16 +31,21 @@ python /app/manage.py migrate
 # payload). Raise the timeout so legitimately-slow-but-healthy requests
 # aren't killed mid-response.
 #
-# --limit-max-requests: rendering a project page reliably retains ~60MB of
-# RSS per view that Python's own reference counting frees correctly, but the
-# musl libc allocator (Alpine, this image's base) doesn't return to the OS --
-# a well-documented Python-on-Alpine memory-bloat pattern, confirmed this
-# session via per-request memory checkpoints showing worker RSS climb
-# monotonically, unboundedly, across a worker's lifetime. Recycling each
-# worker after a bounded number of requests (uvicorn detects the clean exit
-# and respawns automatically, same supervisor mechanism as the healthcheck
-# above) caps how much any single worker can accumulate before it's replaced
-# with a fresh, low-RSS process.
+# --limit-max-requests: rendering a project page retains some RSS per view
+# that Python's own reference counting frees correctly, but the musl libc
+# allocator (Alpine, this image's base) doesn't return to the OS as
+# aggressively as glibc -- a well-documented Python-on-Alpine memory-bloat
+# pattern, confirmed via per-request memory checkpoints showing worker RSS
+# climb across a worker's lifetime. Most of the per-view cost has since been
+# fixed at the source (stripping large, never-rendered data_artifacts
+# sub-structures -- see _strip_large_unused_artifacts in rolodex/views.py),
+# but some residual growth remains, mainly from template render execution
+# itself. Recycling each worker after a bounded number of requests (uvicorn
+# detects the clean exit and respawns automatically, same supervisor
+# mechanism as the healthcheck above) caps how much any single worker can
+# accumulate before it's replaced with a fresh, low-RSS process -- kept
+# tighter than strictly necessary post-fix as a hedge while running with
+# more concurrent workers again.
 #
 # jemalloc addresses the same root cause more directly (returning freed
 # memory to the OS instead of just recycling around it) -- discover the
@@ -55,4 +60,4 @@ else
   echo "WARNING: jemalloc .so not found -- continuing without LD_PRELOAD override"
 fi
 
-uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --timeout-worker-healthcheck 33 --limit-max-requests 100
+uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --timeout-worker-healthcheck 33 --limit-max-requests 50
