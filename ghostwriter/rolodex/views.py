@@ -3209,6 +3209,23 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         messages.error(self.request, "You do not have permission to access that.")
         return redirect("home:dashboard")
 
+    def get(self, request, *args, **kwargs):
+        response = super().get(request, *args, **kwargs)
+        # get_context_data() checkpoints stop at "end of get_context_data",
+        # but that's before the template is actually rendered (json_script
+        # re-serializes several already-large context vars to JSON strings,
+        # which could itself be a significant additional allocation).
+        # add_post_render_callback() is Django's own hook for running code
+        # right after rendering finalizes -- must return None, since a
+        # non-None return value replaces the response.
+        if hasattr(response, "add_post_render_callback"):
+            def _checkpoint_after_render(rendered_response):
+                _log_memory_checkpoint("after full template render")
+                return None
+
+            response.add_post_render_callback(_checkpoint_after_render)
+        return response
+
     def get_context_data(self, object: Project, **kwargs):
         _log_memory_checkpoint("start")
         ctx = super().get_context_data(object=object, **kwargs)
