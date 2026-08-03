@@ -30,4 +30,29 @@ python /app/manage.py migrate
 # synchronous view (e.g. rendering a project with a large data_artifacts
 # payload). Raise the timeout so legitimately-slow-but-healthy requests
 # aren't killed mid-response.
-uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --timeout-worker-healthcheck 33
+#
+# --limit-max-requests: rendering a project page reliably retains ~60MB of
+# RSS per view that Python's own reference counting frees correctly, but the
+# musl libc allocator (Alpine, this image's base) doesn't return to the OS --
+# a well-documented Python-on-Alpine memory-bloat pattern, confirmed this
+# session via per-request memory checkpoints showing worker RSS climb
+# monotonically, unboundedly, across a worker's lifetime. Recycling each
+# worker after a bounded number of requests (uvicorn detects the clean exit
+# and respawns automatically, same supervisor mechanism as the healthcheck
+# above) caps how much any single worker can accumulate before it's replaced
+# with a fresh, low-RSS process.
+#
+# jemalloc addresses the same root cause more directly (returning freed
+# memory to the OS instead of just recycling around it) -- discover the
+# installed .so path here rather than hardcoding one, since the exact
+# filename can vary by jemalloc/Alpine version and a wrong hardcoded path
+# would silently no-op instead of erroring.
+JEMALLOC_PATH=$(find /usr/lib /usr/local/lib -name 'libjemalloc.so*' 2>/dev/null | head -n 1)
+if [ -n "$JEMALLOC_PATH" ]; then
+  export LD_PRELOAD="$JEMALLOC_PATH"
+  echo "Using jemalloc ($LD_PRELOAD) to mitigate musl malloc memory retention"
+else
+  echo "WARNING: jemalloc .so not found -- continuing without LD_PRELOAD override"
+fi
+
+uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --timeout-worker-healthcheck 33 --limit-max-requests 100

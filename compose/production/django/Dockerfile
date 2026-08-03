@@ -22,6 +22,14 @@ RUN apk --no-cache add build-base curl \
     # Rust and Cargo required by the ``cryptography`` Python package
     && apk --no-cache add rust \
     && apk --no-cache add cargo \
+    # musl's malloc doesn't return freed memory to the OS as aggressively as
+    # glibc's does, causing long-running worker processes' RSS to ratchet
+    # upward over their lifetime even with no real Python-level leak
+    # (confirmed this session via per-request memory checkpoints). jemalloc
+    # is a well-known drop-in fix for this on Alpine; /start discovers and
+    # LD_PRELOADs the installed .so path at container startup, since the
+    # exact filename can vary by jemalloc/Alpine version.
+    && apk --no-cache add jemalloc \
     && addgroup -S django \
     && adduser -S -G django django \
     && pip install --no-cache-dir -U setuptools pip
