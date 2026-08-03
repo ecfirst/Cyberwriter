@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import re
+import resource
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from xml.etree import ElementTree
@@ -918,6 +919,36 @@ def _count_pending_question_sections(
             pending_sections.add(section)
 
     return len(pending_sections)
+
+
+def _log_memory_checkpoint(label: str) -> None:
+    """Log current and peak resident memory for this worker process.
+
+    Temporary diagnostic instrumentation for tracking down which step in
+    project-page rendering causes a worker's memory to balloon (some
+    projects have driven a single worker to 1-3GB+ RSS, exhausting a
+    memory-constrained host). ru_maxrss is the process's peak RSS so far
+    (monotonic, in KB on Linux) -- useful for spotting which checkpoint a
+    jump happens at. VmRSS from /proc/self/status is the CURRENT RSS,
+    useful for seeing whether memory is freed again afterward or stays
+    elevated. Remove this once the culprit is identified and fixed.
+    """
+    peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    current_kb = None
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    current_kb = int(line.split()[1])
+                    break
+    except OSError:
+        pass
+    logger.warning(
+        "MEMORY CHECKPOINT [%s]: current_rss=%sMB peak_rss=%sMB",
+        label,
+        f"{current_kb / 1024:.1f}" if current_kb is not None else "?",
+        f"{peak_kb / 1024:.1f}",
+    )
 
 
 def _strip_large_unused_artifacts(value: Any, *, is_top_level: bool = True) -> Any:
@@ -3179,6 +3210,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         return redirect("home:dashboard")
 
     def get_context_data(self, object: Project, **kwargs):
+        _log_memory_checkpoint("start")
         ctx = super().get_context_data(object=object, **kwargs)
         ctx["project_extra_fields_spec"] = ExtraFieldSpec.objects.filter(target_model=Project._meta.label)
         ctx["export_templates"] = ReportTemplate.objects.filter(
@@ -3191,8 +3223,10 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             data_artifacts=object.data_artifacts,
             project_risks=object.risks,
         )
+        _log_memory_checkpoint("after build_data_configuration")
         ctx["workbook_form"] = ProjectWorkbookForm()
         normalized_workbook = normalize_workbook_payload(object.workbook_data)
+        _log_memory_checkpoint("after normalize_workbook_payload")
         # build_workbook_sections() does a full recursive deep-walk of the
         # entire workbook_data tree (see _normalise_workbook_value in
         # workbook.py), and the result is only ever rendered when the legacy
@@ -3206,12 +3240,14 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["workbook_sections"] = (
             build_workbook_sections(normalized_workbook) if object.workbook_file else []
         )
+        _log_memory_checkpoint("after build_workbook_sections")
         ctx["data_file_form"] = ProjectDataFileForm()
         ctx["data_questions"] = questions
         normalized_responses = prepare_data_responses_initial(
             object.data_responses,
             project_type_name,
         )
+        _log_memory_checkpoint("after prepare_data_responses_initial")
         data_responses_form = ProjectDataResponsesForm(
             question_definitions=questions,
             initial=normalized_responses,
@@ -3231,6 +3267,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             for key, value in PROJECT_SCOPING_CONFIGURATION.items()
         }
         ctx["ai_review_sections"] = _build_ai_review_sections(scoping_state, getattr(object, "ai_review", {}))
+        _log_memory_checkpoint("after _build_ai_review_sections")
         ctx["risk_score_map_json"] = {
             risk: {"min": float(bounds[0]), "max": float(bounds[1])}
             for risk, bounds in RiskScoreRangeMapping.get_risk_score_map().items()
@@ -3243,6 +3280,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             for definition in questions
             if definition["key"] in data_responses_form.fields
         }
+        _log_memory_checkpoint("after workbook_data_json/threshold maps/data_responses_fields")
         data_files = object.data_files.all()
         ctx["data_files"] = data_files
         required_file_lookup = {
@@ -3252,9 +3290,11 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         }
         dns_issue_counts: Dict[str, int] = {}
         artifacts = normalize_nexpose_artifacts_map(object.data_artifacts or {})
+        _log_memory_checkpoint("after normalize_nexpose_artifacts_map")
         artifacts_updated = False
         object.data_artifacts = artifacts
         ctx["project_data_artifacts_json"] = _strip_large_unused_artifacts(artifacts)
+        _log_memory_checkpoint("after _strip_large_unused_artifacts")
         matrix_gap_summary = summarize_nexpose_matrix_gaps(artifacts)
         ctx["nexpose_matrix_gap_summary"] = matrix_gap_summary
         ctx["has_nexpose_matrix_gaps"] = bool(matrix_gap_summary)
@@ -3264,6 +3304,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         processed_cards, artifacts_updated = _build_processed_cards(
             object, artifacts, required_file_lookup
         )
+        _log_memory_checkpoint("after _build_processed_cards")
         if artifacts_updated:
             object.save(update_fields=["data_artifacts"])
         ctx["processed_data_cards"] = processed_cards
@@ -3357,11 +3398,13 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["required_data_files"] = required_files
         ctx["supplemental_cards"] = supplemental_cards
         ctx["ip_artifact_cards"] = ip_cards
+        _log_memory_checkpoint("after ip_cards/required_files/supplemental_cards")
         ctx.update(CollabModelUpdate.context_data(
             self.request.user,
             object.pk,
             None,
         ))
+        _log_memory_checkpoint("after CollabModelUpdate.context_data")
 
         bhc = BloodHoundConfiguration.get_solo()
         ctx["global_bloodhound_config"] = bhc
@@ -3373,6 +3416,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         else:
             ctx["bhc_api"] = None
 
+        _log_memory_checkpoint("end of get_context_data")
         return ctx
 
 
