@@ -993,11 +993,16 @@ def _strip_large_unused_artifacts(
     per-finding lists -- one entry per host/port/vulnerability triple, each
     with several free-text fields -- that scale with finding count and are
     never read by client-side JS; only their already-summarized
-    *_metrics/*_vulnerabilities siblings are); at the top level, every key in
-    _METRICS_KEYS_SUMMARY_ONLY is reduced to just its 'summary' field (see
-    that constant for why); and, specifically inside each domain entry of
-    the top-level 'ad_attack_paths' key, the raw CSV row arrays for each AAP
-    metric (see _AD_ATTACK_PATHS_RAW_ROW_KEYS above).
+    *_metrics/*_vulnerabilities siblings are); the top-level '_file_parse_cache'
+    key entirely (build_project_artifacts' cache of raw per-file parse
+    results, used only by the *next* rebuild_data_artifacts call to skip
+    re-parsing unchanged files -- never needed by anything else, and holds
+    the same kind of large raw finding data as the '_findings' keys above);
+    at the top level, every key in _METRICS_KEYS_SUMMARY_ONLY is reduced to
+    just its 'summary' field (see that constant for why); and, specifically
+    inside each domain entry of the top-level 'ad_attack_paths' key, the raw
+    CSV row arrays for each AAP metric (see _AD_ATTACK_PATHS_RAW_ROW_KEYS
+    above).
 
     Embedding any of this in the rendered page is pure waste: it inflates
     ``json_script`` serialization and page size for no benefit, and for a
@@ -1010,6 +1015,8 @@ def _strip_large_unused_artifacts(
         result = {}
         for key, inner in value.items():
             if key == "xlsx_base64":
+                continue
+            if depth == 0 and key == "_file_parse_cache":
                 continue
             if depth == 0 and isinstance(key, str) and key.endswith("_findings"):
                 continue

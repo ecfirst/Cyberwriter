@@ -5848,10 +5848,75 @@ def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Counter[Tuple[str, s
     return results
 
 
+def _resolve_cached_or_fresh_parse(
+    data_file: "ProjectDataFile",
+    cache_key: str,
+    previous_data_artifacts: Any,
+    parse_fn: Callable[[], Any],
+) -> Tuple[Any, Optional[str], bool]:
+    """Reuse ``data_file``'s cached parse result if the file hasn't changed.
+
+    ``build_project_artifacts`` runs on *every* workbook save (via
+    ``Project.rebuild_data_artifacts``), regardless of which area was
+    edited -- so saving an unrelated area still re-read and re-parsed every
+    uploaded file (Nexpose XML, firewall XML, etc.) from scratch every time,
+    which is where the actual cost lives for a project with a large upload
+    (confirmed: an 8-second parse of a 69MB firewall XML, paid again on
+    every unrelated save). That always-reparse behavior is deliberate for
+    *non-file* workbook fields (so concurrent users see each other's edits
+    immediately) -- but a given file's own bytes only change when someone
+    re-uploads through that file's own slot, so re-parsing an *unchanged*
+    file adds no freshness, just cost.
+
+    Cache key is the storage backend's reported modification time (not
+    ``ProjectDataFile.uploaded_at``, which is ``auto_now_add`` and doesn't
+    update when an existing slot's file is replaced in place -- the
+    established `data_file.file.save(name, upload); data_file.save()`
+    pattern used throughout views.py). Caching is per-*file* (via
+    ``cache_key``, not per merged-artifact), so branches that combine
+    multiple files into one artifact (e.g. several Internal Nexpose XML
+    uploads merged into one findings list) still merge correctly: this
+    only swaps out the expensive parse call per file, leaving whatever
+    accumulation logic the caller does with the result completely
+    untouched.
+
+    Returns ``(result, current_mtime, was_cached)``. ``current_mtime`` is
+    ``None`` if the storage backend couldn't report one (e.g. an unusual
+    custom storage) -- callers should treat that as "don't cache this one,"
+    matching today's always-reparse behavior as a safe fallback.
+    """
+    try:
+        current_mtime = data_file.file.storage.get_modified_time(data_file.file.name).isoformat()
+    except Exception:
+        return parse_fn(), None, False
+
+    cache = (
+        previous_data_artifacts.get("_file_parse_cache")
+        if isinstance(previous_data_artifacts, dict)
+        else None
+    )
+    cached_entry = cache.get(cache_key) if isinstance(cache, dict) else None
+    if (
+        isinstance(cached_entry, dict)
+        and cached_entry.get("mtime") == current_mtime
+        and "result" in cached_entry
+    ):
+        return cached_entry["result"], current_mtime, True
+
+    return parse_fn(), current_mtime, False
+
+
 def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     """Aggregate parsed artifacts for the provided project."""
 
     artifacts: Dict[str, Any] = {}
+    # Cache of per-file parse results, keyed by a stable per-file identifier
+    # (see _resolve_cached_or_fresh_parse) -- lets a save that doesn't touch
+    # a given file's own upload slot skip re-parsing it. previous_data_artifacts
+    # is where the *last* run's cache lives; file_parse_cache accumulates
+    # this run's (fresh-or-reused) entries to be stored back below.
+    previous_data_artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+    file_parse_cache: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
     dns_findings: Dict[str, List[Dict[str, str]]] = {}
     ip_results: Dict[str, List[str]] = {
@@ -5963,17 +6028,33 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 if issue_name:
                     missing_web_issue_matrix.add(issue_name)
         elif label == "firewall_xml.xml":
-            logger.info(
-                "Processing firewall XML upload '%s' for project ID=%s", file_label, getattr(project, "id", "?")
+            firewall_cache_key = f"firewall_xml:{data_file.pk}"
+            parsed_firewall_xml, firewall_mtime, firewall_was_cached = _resolve_cached_or_fresh_parse(
+                data_file,
+                firewall_cache_key,
+                previous_data_artifacts,
+                lambda: parse_nipper_firewall_report(data_file.file, project_type_value),
             )
+            if firewall_was_cached:
+                logger.info(
+                    "Reusing cached firewall XML parse for '%s' (project ID=%s, unchanged since last save)",
+                    file_label,
+                    getattr(project, "id", "?"),
+                )
+            else:
+                logger.info(
+                    "Processing firewall XML upload '%s' for project ID=%s", file_label, getattr(project, "id", "?")
+                )
+                logger.info(
+                    "Firewall XML parsing completed with %s findings",
+                    len(parsed_firewall_xml) if parsed_firewall_xml is not None else "no",
+                )
+            if firewall_mtime is not None:
+                file_parse_cache[firewall_cache_key] = {
+                    "mtime": firewall_mtime,
+                    "result": parsed_firewall_xml,
+                }
             artifacts[FIREWALL_XML_FILE_NAME_KEY] = data_file.filename
-            parsed_firewall_xml = parse_nipper_firewall_report(
-                data_file.file, project_type_value
-            )
-            logger.info(
-                "Firewall XML parsing completed with %s findings",
-                len(parsed_firewall_xml) if parsed_firewall_xml is not None else "no",
-            )
             if parsed_firewall_xml is not None:
                 artifacts["firewall_findings"] = parsed_firewall_xml
         elif label in NEXPOSE_ARTIFACT_DEFINITIONS:
@@ -5991,9 +6072,28 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             file_name_key = NEXPOSE_FILENAME_KEY_MAP.get(xml_artifact_key)
             if file_name_key:
                 artifacts[file_name_key] = data_file.filename
-            parsed_xml = parse_nexpose_xml_report(
-                data_file.file, vulnerability_matrix=vulnerability_matrix
+            nexpose_xml_cache_key = f"nexpose_xml:{xml_artifact_key}:{data_file.pk}"
+            parsed_xml, nexpose_xml_mtime, nexpose_xml_was_cached = _resolve_cached_or_fresh_parse(
+                data_file,
+                nexpose_xml_cache_key,
+                previous_data_artifacts,
+                lambda: parse_nexpose_xml_report(data_file.file, vulnerability_matrix=vulnerability_matrix),
             )
+            if nexpose_xml_was_cached:
+                logger.info(
+                    "Reusing cached Nexpose XML parse for '%s' (project ID=%s, unchanged since last save)",
+                    file_label,
+                    getattr(project, "id", "?"),
+                )
+            if nexpose_xml_mtime is not None:
+                file_parse_cache[nexpose_xml_cache_key] = {
+                    "mtime": nexpose_xml_mtime,
+                    "result": parsed_xml,
+                }
+            # Caching is per-file (keyed above by data_file.pk), so this
+            # merge with any other file already processed under the same
+            # xml_artifact_key in this same call is unaffected -- parsed_xml
+            # is just this one file's own result, fresh or reused.
             existing_entry = artifacts.get(xml_artifact_key)
             combined_findings: List[Dict[str, str]] = []
             combined_software: List[Dict[str, str]] = []
@@ -6160,6 +6260,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             artifacts["nexpose_matrix_gaps"] = {
                 "missing_by_artifact": missing_by_artifact
             }
+
+    if file_parse_cache:
+        artifacts["_file_parse_cache"] = file_parse_cache
 
     return artifacts
 

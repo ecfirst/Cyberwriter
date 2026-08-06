@@ -13,6 +13,7 @@ from django.test import TestCase
 
 # Ghostwriter Libraries
 from ghostwriter.factories import GenerateMockProject, OpenAIConfigurationFactory
+from ghostwriter.rolodex import data_parsers
 from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_ARTIFACT_DEFINITIONS,
     _build_nexpose_metrics_payload,
@@ -1357,6 +1358,88 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(security_entry["Risk"], "Low")
         self.assertEqual(security_entry["Score"], 1)
         self.assertTrue(security_entry["Details"].startswith("Rule item one"))
+
+    def test_firewall_xml_is_not_reparsed_when_unchanged(self):
+        # rebuild_data_artifacts() runs on every workbook save regardless of
+        # which area was edited (so concurrent users' non-file edits are
+        # reflected immediately) -- but re-reading and re-parsing a file
+        # that hasn't actually changed since the last rebuild adds no
+        # freshness, just cost (confirmed: an 8-second parse of a 69MB
+        # firewall XML, paid again on every unrelated save). Confirm an
+        # unchanged file's parse is skipped on the second rebuild, and that
+        # re-uploading through the same slot correctly triggers a fresh
+        # parse again.
+        xml_content = b"""
+<root>
+  <document>
+    <information>
+      <devices>
+        <device><name>FW-EDGE</name></device>
+      </devices>
+    </information>
+  </document>
+  <section ref=\"VULNAUDIT\">
+    <section ref=\"VULNAUDIT.CVE-2017-3134\" title=\"CVE-2017-3134\">
+      <infobox title=\"Overall Rating: High\" dataformat=\"dual\">
+        <infodata label=\"CVSSv2 Score\">9.0</infodata>
+        <infodata label=\"CVSSv2 Base\">AV:N/AC:L/Au:S/C:C/I:C/A:C (9.0)</infodata>
+      </infobox>
+      <section title=\"Summary\"><text>Issue summary content</text></section>
+    </section>
+  </section>
+</root>
+        """
+
+        upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "firewall_xml.xml", xml_content, content_type="application/xml"
+            ),
+            requirement_label="firewall_xml.xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=upload.pk).delete())
+        setattr(self.project, "type", "titanium")
+
+        with mock.patch(
+            "ghostwriter.rolodex.data_parsers.parse_nipper_firewall_report",
+            wraps=data_parsers.parse_nipper_firewall_report,
+        ) as spy:
+            # First rebuild: no cache yet, must parse.
+            self.project.rebuild_data_artifacts()
+            self.project.refresh_from_db()
+            self.assertEqual(spy.call_count, 1)
+            first_findings = self.project.data_artifacts.get("firewall_findings")
+            self.assertIsInstance(first_findings, list)
+            self.assertEqual(len(first_findings), 1)
+
+            # Second rebuild, same file, nothing re-uploaded: must reuse the
+            # cached result instead of re-parsing.
+            self.project.rebuild_data_artifacts()
+            self.project.refresh_from_db()
+            self.assertEqual(
+                spy.call_count, 1, "unchanged firewall XML should not be re-parsed"
+            )
+            self.assertEqual(
+                self.project.data_artifacts.get("firewall_findings"), first_findings
+            )
+
+            # Re-upload through the same slot: must trigger a fresh parse.
+            upload.file.save(
+                "firewall_xml.xml",
+                SimpleUploadedFile(
+                    "firewall_xml.xml", xml_content, content_type="application/xml"
+                ),
+            )
+            upload.save()
+            self.project.rebuild_data_artifacts()
+            self.project.refresh_from_db()
+            self.assertEqual(
+                spy.call_count, 2, "re-uploading through the same slot should trigger a fresh parse"
+            )
+
+        # The internal parse cache itself must never leak into the rendered
+        # page's JSON (see _strip_large_unused_artifacts in views.py).
+        self.assertIn("_file_parse_cache", self.project.data_artifacts)
 
     def test_complexity_table_rows_and_devices_are_parsed(self):
         xml_content = b"""
