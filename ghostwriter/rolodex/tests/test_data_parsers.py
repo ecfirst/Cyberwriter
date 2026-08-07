@@ -560,6 +560,89 @@ class NexposeDataParserTests(TestCase):
         self.assertTrue(top_hosts)
         self.assertEqual(len(top_hosts), 2)
 
+    def test_nexpose_metrics_bloat_fields_are_trimmed_before_storage(self):
+        # _build_nexpose_metrics_payload deliberately returns the *full*
+        # payload (majority_type/top_hosts/unique_issues/all_issues/etc.) --
+        # Project.rebuild_data_artifacts() needs all of that to derive
+        # workbook_data (see the assertions above and in
+        # test_nexpose_metrics_top_hosts_totals_are_summed), so trimming it
+        # at the source broke that derivation entirely on an earlier attempt
+        # at this fix. The trim has to happen in rebuild_data_artifacts()
+        # itself, *after* it has read what it needs and *before* the result
+        # is persisted -- confirm that's actually what ends up in the
+        # database: the bloat fields are gone, but summary/xlsx_base64/
+        # xlsx_filename (the only fields anything reads back out of a
+        # *stored* data_artifacts) survive.
+        findings = [
+            {
+                "Asset IP Address": "10.0.0.1",
+                "Vulnerability Title": "Old Patch",
+                "Vulnerability Severity Level": 9,
+                "Category": "OOD",
+            },
+        ]
+        metrics_payload = _build_nexpose_metrics_payload(findings)
+        self.assertIn("all_issues", metrics_payload)
+        self.assertIn("unique_issues", metrics_payload)
+        self.assertIn("top_hosts", metrics_payload)
+        self.assertIn("majority_type", metrics_payload)
+
+        with mock.patch(
+            "ghostwriter.rolodex.models.build_project_artifacts",
+            return_value={"external_nexpose_metrics": metrics_payload},
+        ):
+            self.project.rebuild_data_artifacts()
+            self.project.refresh_from_db()
+
+        stored_metrics = self.project.data_artifacts.get("external_nexpose_metrics")
+        self.assertIsInstance(stored_metrics, dict)
+        self.assertEqual(
+            set(stored_metrics.keys()), {"summary", "xlsx_base64", "xlsx_filename"}
+        )
+        self.assertEqual(stored_metrics.get("summary"), metrics_payload.get("summary"))
+
+        # workbook_data derivation must still have happened correctly from
+        # the full payload before the trim ran.
+        external = (self.project.workbook_data or {}).get("external_nexpose") or {}
+        self.assertEqual(external.get("majority_type"), "OOD Software or Missing Patches")
+
+    def test_firewall_metrics_bloat_fields_are_trimmed_before_storage(self):
+        findings = [
+            {
+                "Risk": "High",
+                "Issue": "Open management interface",
+                "Devices": "FW-EDGE",
+                "Solution": "Restrict access",
+                "Impact": "Allows remote compromise.",
+                "Details": "Management interface exposed",
+                "Reference": "http://example.com/high-1",
+                "Accepted": "No",
+                "Type": "Rule",
+                "Score": "8.0",
+            },
+        ]
+        metrics_payload = data_parsers._build_firewall_metrics_payload(findings)
+        self.assertIn("all_issues", metrics_payload)
+        self.assertIn("rule_issues", metrics_payload)
+
+        with mock.patch(
+            "ghostwriter.rolodex.models.build_project_artifacts",
+            return_value={"firewall_metrics": metrics_payload},
+        ):
+            self.project.rebuild_data_artifacts()
+            self.project.refresh_from_db()
+
+        stored_metrics = self.project.data_artifacts.get("firewall_metrics")
+        self.assertIsInstance(stored_metrics, dict)
+        self.assertEqual(
+            set(stored_metrics.keys()),
+            {"summary", "devices", "xlsx_base64", "xlsx_filename"},
+        )
+        self.assertEqual(stored_metrics.get("devices"), metrics_payload.get("devices"))
+
+        firewall = (self.project.workbook_data or {}).get("firewall") or {}
+        self.assertEqual(firewall.get("unique_high"), 1)
+
     def test_nexpose_xml_uses_vulnerability_lookup_details(self):
         xml_payload = """
 <NexposeReport version='1.0'>
@@ -1369,6 +1452,17 @@ class NexposeDataParserTests(TestCase):
         # unchanged file's parse is skipped on the second rebuild, and that
         # re-uploading through the same slot correctly triggers a fresh
         # parse again.
+        #
+        # The cache is process-local (module-level dict in data_parsers.py),
+        # not persisted to data_artifacts -- an earlier version stored full
+        # parse results there, which duplicated data already stored under
+        # the file's real artifact key (confirmed: a ~57MB cache entry for a
+        # project whose "internal_nexpose_findings" was already ~55MB of
+        # the same data). Clear it here so this test isn't affected by
+        # cache entries left over from other tests/PK reuse across Django's
+        # per-test transaction rollback.
+        data_parsers._process_local_file_parse_cache.clear()
+
         xml_content = b"""
 <root>
   <document>
@@ -1437,9 +1531,9 @@ class NexposeDataParserTests(TestCase):
                 spy.call_count, 2, "re-uploading through the same slot should trigger a fresh parse"
             )
 
-        # The internal parse cache itself must never leak into the rendered
-        # page's JSON (see _strip_large_unused_artifacts in views.py).
-        self.assertIn("_file_parse_cache", self.project.data_artifacts)
+        # The cache must never be persisted into data_artifacts at all --
+        # it's process-local now, so there's nothing here to strip.
+        self.assertNotIn("_file_parse_cache", self.project.data_artifacts)
 
     def test_complexity_table_rows_and_devices_are_parsed(self):
         xml_content = b"""

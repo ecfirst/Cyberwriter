@@ -9,6 +9,7 @@ import io
 import logging
 import os
 import re
+import threading
 import unicodedata
 from base64 import b64decode
 from collections import Counter, OrderedDict
@@ -2594,6 +2595,16 @@ def _build_firewall_metrics_payload(
     if workbook_bytes:
         metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
 
+    # Deliberately return the full payload, not just what a *stored*
+    # data_artifacts needs -- Project.rebuild_data_artifacts() (models.py)
+    # reads "summary"/"devices" back out of this same dict (via
+    # _apply_firewall_metrics) to derive workbook_data immediately after
+    # build_project_artifacts() returns it. The fields that are genuinely
+    # transient-only (all_issues/high_issues/med_issues/low_issues/
+    # rule_issues/config_issues/complexity_issues/vuln_issues/top_impacts --
+    # needed only to build the xlsx_base64 workbook above) get dropped in
+    # rebuild_data_artifacts() itself, after it has finished reading
+    # everything it needs and just before the result is persisted.
     return metrics_payload
 
 
@@ -4631,6 +4642,19 @@ def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, 
     if workbook_bytes:
         metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
 
+    # Deliberately return the full payload here, not just what a *stored*
+    # data_artifacts needs -- Project.rebuild_data_artifacts() (models.py)
+    # reads "majority_type"/"minority_type"/"host_counts"/"top_hosts"/
+    # "top_hosts_*"/"unique_issues" back out of this same dict (via
+    # _apply_nexpose_metrics and _build_nexpose_cap_entries_from_metrics) to
+    # derive workbook_data immediately after build_project_artifacts()
+    # returns it. The fields that are genuinely transient-only (all_issues/
+    # high_issues/med_issues/low_issues/majority_unique/majority_subset/
+    # top_impacts/tab_index_entries -- needed only to build the xlsx_base64
+    # workbook above) get dropped in rebuild_data_artifacts() itself, after
+    # it has finished reading everything it needs and just before the
+    # result is persisted -- that one key alone was 134MB for a data-heavy
+    # project (confirmed via pg_column_size) before this was trimmed there.
     return metrics_payload
 
 
@@ -5022,7 +5046,17 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
     if workbook_bytes:
         metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
 
-    return metrics_payload
+    # Everything above (unique_issues/all_issues/high_issues/med_issues/
+    # low_issues/top_impacts/tab_index_entries) is needed only transiently,
+    # to build the workbook bytes just captured into xlsx_base64 --
+    # _build_processed_cards only reads "summary"/"xlsx_base64" back out of
+    # a *stored* data_artifacts, and the download views only read
+    # "xlsx_filename". Drop everything else before this gets persisted.
+    return {
+        "summary": metrics_payload.get("summary"),
+        "xlsx_base64": metrics_payload.get("xlsx_base64"),
+        "xlsx_filename": metrics_payload.get("xlsx_filename"),
+    }
 
 
 def _render_firewall_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
@@ -5848,12 +5882,27 @@ def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Counter[Tuple[str, s
     return results
 
 
+# Process-local (not persisted to data_artifacts/Postgres) cache for
+# _resolve_cached_or_fresh_parse. An earlier version of this cache stored
+# each file's full parse result inside data_artifacts["_file_parse_cache"]
+# -- which duplicated data already stored under the file's real artifact
+# key (confirmed via pg_column_size: a ~57MB "_file_parse_cache" for a
+# project whose "internal_nexpose_findings" was already ~55MB of the same
+# underlying data), making every GET/save read, hold, and copy *more* data
+# than before the cache existed. Keeping the cache in-process instead adds
+# zero storage cost, at the price of a smaller cache scope (only benefits
+# repeated saves handled by the *same* worker before it recycles, via
+# --limit-max-requests, rather than persisting across requests/workers/
+# deployments) -- a deliberate, safer trade-off given the regression above.
+_file_parse_cache_lock = threading.Lock()
+_process_local_file_parse_cache: Dict[str, Dict[str, Any]] = {}
+
+
 def _resolve_cached_or_fresh_parse(
     data_file: "ProjectDataFile",
     cache_key: str,
-    previous_data_artifacts: Any,
     parse_fn: Callable[[], Any],
-) -> Tuple[Any, Optional[str], bool]:
+) -> Tuple[Any, bool]:
     """Reuse ``data_file``'s cached parse result if the file hasn't changed.
 
     ``build_project_artifacts`` runs on *every* workbook save (via
@@ -5880,43 +5929,35 @@ def _resolve_cached_or_fresh_parse(
     accumulation logic the caller does with the result completely
     untouched.
 
-    Returns ``(result, current_mtime, was_cached)``. ``current_mtime`` is
-    ``None`` if the storage backend couldn't report one (e.g. an unusual
-    custom storage) -- callers should treat that as "don't cache this one,"
-    matching today's always-reparse behavior as a safe fallback.
+    Returns ``(result, was_cached)``. If the storage backend can't report a
+    modification time (e.g. an unusual custom storage), always reparses and
+    never caches -- a safe fallback matching pre-cache behavior exactly.
     """
     try:
         current_mtime = data_file.file.storage.get_modified_time(data_file.file.name).isoformat()
     except Exception:
-        return parse_fn(), None, False
+        return parse_fn(), False
 
-    cache = (
-        previous_data_artifacts.get("_file_parse_cache")
-        if isinstance(previous_data_artifacts, dict)
-        else None
-    )
-    cached_entry = cache.get(cache_key) if isinstance(cache, dict) else None
+    with _file_parse_cache_lock:
+        cached_entry = _process_local_file_parse_cache.get(cache_key)
+
     if (
         isinstance(cached_entry, dict)
         and cached_entry.get("mtime") == current_mtime
         and "result" in cached_entry
     ):
-        return cached_entry["result"], current_mtime, True
+        return cached_entry["result"], True
 
-    return parse_fn(), current_mtime, False
+    result = parse_fn()
+    with _file_parse_cache_lock:
+        _process_local_file_parse_cache[cache_key] = {"mtime": current_mtime, "result": result}
+    return result, False
 
 
 def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     """Aggregate parsed artifacts for the provided project."""
 
     artifacts: Dict[str, Any] = {}
-    # Cache of per-file parse results, keyed by a stable per-file identifier
-    # (see _resolve_cached_or_fresh_parse) -- lets a save that doesn't touch
-    # a given file's own upload slot skip re-parsing it. previous_data_artifacts
-    # is where the *last* run's cache lives; file_parse_cache accumulates
-    # this run's (fresh-or-reused) entries to be stored back below.
-    previous_data_artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
-    file_parse_cache: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
     dns_findings: Dict[str, List[Dict[str, str]]] = {}
     ip_results: Dict[str, List[str]] = {
@@ -6029,10 +6070,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     missing_web_issue_matrix.add(issue_name)
         elif label == "firewall_xml.xml":
             firewall_cache_key = f"firewall_xml:{data_file.pk}"
-            parsed_firewall_xml, firewall_mtime, firewall_was_cached = _resolve_cached_or_fresh_parse(
+            parsed_firewall_xml, firewall_was_cached = _resolve_cached_or_fresh_parse(
                 data_file,
                 firewall_cache_key,
-                previous_data_artifacts,
                 lambda: parse_nipper_firewall_report(data_file.file, project_type_value),
             )
             if firewall_was_cached:
@@ -6049,11 +6089,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     "Firewall XML parsing completed with %s findings",
                     len(parsed_firewall_xml) if parsed_firewall_xml is not None else "no",
                 )
-            if firewall_mtime is not None:
-                file_parse_cache[firewall_cache_key] = {
-                    "mtime": firewall_mtime,
-                    "result": parsed_firewall_xml,
-                }
             artifacts[FIREWALL_XML_FILE_NAME_KEY] = data_file.filename
             if parsed_firewall_xml is not None:
                 artifacts["firewall_findings"] = parsed_firewall_xml
@@ -6073,10 +6108,9 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             if file_name_key:
                 artifacts[file_name_key] = data_file.filename
             nexpose_xml_cache_key = f"nexpose_xml:{xml_artifact_key}:{data_file.pk}"
-            parsed_xml, nexpose_xml_mtime, nexpose_xml_was_cached = _resolve_cached_or_fresh_parse(
+            parsed_xml, nexpose_xml_was_cached = _resolve_cached_or_fresh_parse(
                 data_file,
                 nexpose_xml_cache_key,
-                previous_data_artifacts,
                 lambda: parse_nexpose_xml_report(data_file.file, vulnerability_matrix=vulnerability_matrix),
             )
             if nexpose_xml_was_cached:
@@ -6085,11 +6119,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     file_label,
                     getattr(project, "id", "?"),
                 )
-            if nexpose_xml_mtime is not None:
-                file_parse_cache[nexpose_xml_cache_key] = {
-                    "mtime": nexpose_xml_mtime,
-                    "result": parsed_xml,
-                }
             # Caching is per-file (keyed above by data_file.pk), so this
             # merge with any other file already processed under the same
             # xml_artifact_key in this same call is unaffected -- parsed_xml
@@ -6260,9 +6289,6 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             artifacts["nexpose_matrix_gaps"] = {
                 "missing_by_artifact": missing_by_artifact
             }
-
-    if file_parse_cache:
-        artifacts["_file_parse_cache"] = file_parse_cache
 
     return artifacts
 

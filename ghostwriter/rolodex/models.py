@@ -1432,6 +1432,39 @@ class Project(models.Model):
         _apply_web_metrics()
         _apply_firewall_metrics()
 
+        # Everything _build_nexpose_cap_entries_from_metrics() and
+        # _apply_nexpose_metrics()/_apply_firewall_metrics() read off the
+        # nexpose/firewall metrics payloads above (majority_type/
+        # minority_type/host_counts/top_hosts*/unique_issues/all_issues/
+        # high_issues/med_issues/low_issues/rule_issues/config_issues/
+        # complexity_issues/vuln_issues/top_impacts/etc.) has now been
+        # consumed into workbook_data/cap above -- none of it is read again
+        # from a *stored* data_artifacts (_build_processed_cards in
+        # rolodex/views.py reads only "summary"/"devices"/"xlsx_base64";
+        # the download views read only "xlsx_filename"; supplemental report
+        # exports in reporting/supplemental_export.py read only
+        # "xlsx_base64"). Persisting the full payloads made
+        # internal_nexpose_metrics alone 134MB for a data-heavy project
+        # (confirmed via pg_column_size) for no benefit -- trim down to
+        # just what's actually read back before this gets stored.
+        for metrics_key in NEXPOSE_METRICS_KEY_MAP.values():
+            metrics_payload = artifacts.get(metrics_key)
+            if isinstance(metrics_payload, dict):
+                artifacts[metrics_key] = {
+                    "summary": metrics_payload.get("summary"),
+                    "xlsx_base64": metrics_payload.get("xlsx_base64"),
+                    "xlsx_filename": metrics_payload.get("xlsx_filename"),
+                }
+
+        firewall_metrics_payload = artifacts.get("firewall_metrics")
+        if isinstance(firewall_metrics_payload, dict):
+            artifacts["firewall_metrics"] = {
+                "summary": firewall_metrics_payload.get("summary"),
+                "devices": firewall_metrics_payload.get("devices"),
+                "xlsx_base64": firewall_metrics_payload.get("xlsx_base64"),
+                "xlsx_filename": firewall_metrics_payload.get("xlsx_filename"),
+            }
+
         def _is_explicit_no(value: Any) -> bool:
             if isinstance(value, bool):
                 return value is False
