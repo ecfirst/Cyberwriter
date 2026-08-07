@@ -38,14 +38,25 @@ python /app/manage.py migrate
 # pattern, confirmed via per-request memory checkpoints showing worker RSS
 # climb across a worker's lifetime. Most of the per-view cost has since been
 # fixed at the source (stripping large, never-rendered data_artifacts
-# sub-structures -- see _strip_large_unused_artifacts in rolodex/views.py),
-# but some residual growth remains, mainly from template render execution
+# sub-structures -- see _strip_large_unused_artifacts in rolodex/views.py;
+# skipping redundant file re-parsing on every save -- see
+# _resolve_cached_or_fresh_parse in rolodex/data_parsers.py), but some
+# residual per-request growth remains, mainly from template render execution
 # itself. Recycling each worker after a bounded number of requests (uvicorn
 # detects the clean exit and respawns automatically, same supervisor
 # mechanism as the healthcheck above) caps how much any single worker can
-# accumulate before it's replaced with a fresh, low-RSS process -- kept
-# tighter than strictly necessary post-fix as a hedge while running with
-# more concurrent workers again.
+# accumulate before it's replaced with a fresh, low-RSS process.
+#
+# Lowered from 50: with WEB_CONCURRENCY workers running concurrently, a
+# per-worker ceiling alone doesn't bound the *aggregate* RSS across all of
+# them -- confirmed a single worker sitting at ~3.8GB RSS (on a 7.5GB-RAM
+# host) well before it would have hit the old 50-request limit, plausibly
+# driving the host into swap and causing host-wide slowness (login and
+# unrelated pages affected, not just data-heavy ones). A tighter limit here
+# is the direct lever on that per-worker ceiling; it should be paired with a
+# correspondingly modest WEB_CONCURRENCY (set via the env var, not this
+# file) so the *aggregate* ceiling across all workers stays within the
+# host's actual RAM+swap capacity.
 #
 # jemalloc addresses the same root cause more directly (returning freed
 # memory to the OS instead of just recycling around it) -- discover the
@@ -60,4 +71,4 @@ else
   echo "WARNING: jemalloc .so not found -- continuing without LD_PRELOAD override"
 fi
 
-uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --timeout-worker-healthcheck 33 --limit-max-requests 50
+uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --timeout-worker-healthcheck 33 --limit-max-requests 15
