@@ -33,6 +33,7 @@ _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relati
 _RELATIONSHIP_PREFIX = f"{{{_RELATIONSHIP_NS}}}"
 _WORDPROCESSING_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _WORD2010_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
+_WORD2012_NS = "http://schemas.microsoft.com/office/word/2012/wordml"
 _HYPERLINK_RELTYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 )
@@ -1139,13 +1140,20 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         word_ns = self._get_word_namespace(root)
         comment_tag = f"{{{word_ns}}}comment"
+        paragraph_tag = f"{{{word_ns}}}p"
         id_attr = f"{{{word_ns}}}id"
+        para_id_attr = f"{{{_WORD2010_NS}}}paraId"
         updated = False
+        orphaned_para_ids: set[str] = set()
 
         for comment in list(root.findall(comment_tag)):
             comment_id = comment.get(id_attr)
             if comment_id is None or str(comment_id) in referenced:
                 continue
+            for paragraph in comment.iter(paragraph_tag):
+                para_id = paragraph.get(para_id_attr)
+                if para_id:
+                    orphaned_para_ids.add(para_id)
             self._remove_element(comment)
             updated = True
 
@@ -1167,6 +1175,80 @@ class GhostwriterDocxTemplate(DocxTemplate):
             comments_part._element = element
         if hasattr(comments_part, "_blob"):
             comments_part._blob = blob
+
+        if orphaned_para_ids:
+            self._remove_orphaned_comments_extended_entries(orphaned_para_ids)
+
+    def _remove_orphaned_comments_extended_entries(self, orphaned_para_ids: set[str]) -> None:
+        """Remove ``commentsExtended.xml`` entries for comments deleted above.
+
+        ``_cleanup_comments_part`` removes ``<w:comment>`` elements from
+        ``comments.xml`` whose anchor was rendered away, but
+        ``word/commentsExtended.xml`` tracks each comment's
+        resolved/threading state in a *sibling* part, keyed by the deleted
+        comment's own paragraph ``w14:paraId`` -- not by the comment id --
+        via ``<w15:commentEx w15:paraId="...">``. Leaving that entry behind
+        points Word at a paragraph that no longer exists anywhere in the
+        package, which is a real "found unreadable content" corruption
+        trigger (confirmed by extracting and inspecting an affected
+        generated report: 6 commentEx entries for 5 surviving comments).
+
+        Note: ``word/commentsIds.xml`` (``w16cid:commentId``, used for
+        @mention tracking in newer Word comment features) is a related,
+        structurally identical gap this doesn't cover -- not reproduced in
+        any template seen so far, so left for whoever hits it next.
+        """
+
+        comments_extended_part = None
+        for part in self._iter_package_parts():
+            try:
+                if self._normalise_partname(part) == _COMMENTS_EXTENDED_PART:
+                    comments_extended_part = part
+                    break
+            except Exception:
+                continue
+
+        if comments_extended_part is None:
+            return
+
+        try:
+            xml = self.get_part_xml(comments_extended_part)
+        except Exception:
+            return
+
+        root = self._ensure_xml_root(xml)
+        if root is None:
+            return
+
+        comment_ex_tag = f"{{{_WORD2012_NS}}}commentEx"
+        para_id_attr = f"{{{_WORD2012_NS}}}paraId"
+        updated = False
+
+        for comment_ex in list(root.findall(comment_ex_tag)):
+            para_id = comment_ex.get(para_id_attr)
+            if para_id is None or para_id not in orphaned_para_ids:
+                continue
+            self._remove_element(comment_ex)
+            updated = True
+
+        if not updated:
+            return
+
+        cleaned = self._coerce_cleaned_xml(xml, root)
+
+        if isinstance(cleaned, bytes):
+            blob = cleaned
+        elif isinstance(cleaned, str):
+            blob = cleaned.encode("utf-8")
+        else:
+            blob = etree.tostring(cleaned)
+
+        element = parse_xml(blob)
+
+        if hasattr(comments_extended_part, "_element"):
+            comments_extended_part._element = element
+        if hasattr(comments_extended_part, "_blob"):
+            comments_extended_part._blob = blob
 
     def _cleanup_part_relationships(self, part, xml) -> None:
         """Remove relationships not referenced in the rendered ``xml``."""

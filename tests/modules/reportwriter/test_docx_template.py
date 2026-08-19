@@ -999,6 +999,84 @@ def test_cleanup_comments_part_removes_orphan_entries():
     assert 'w:id="2"' not in updated_xml
 
 
+def test_cleanup_comments_part_removes_orphan_comments_extended_entries():
+    # Comment #2's own paragraph carries a w14:paraId, matching how real
+    # Word-authored comments are structured (confirmed by extracting and
+    # inspecting an actual corrupt generated report). commentsExtended.xml
+    # tracks that same paraId in a sibling <w15:commentEx> entry -- deleting
+    # comment #2 from comments.xml without also removing its commentEx
+    # entry is exactly the mismatch that made a real report unreadable.
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    template._referenced_comment_ids = {"1", "3"}
+
+    comments_xml = (
+        '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">'
+        '<w:comment w:id="1"><w:p w14:paraId="AAAAAAAA"/></w:comment>'
+        '<w:comment w:id="2"><w:p w14:paraId="BBBBBBBB"/></w:comment>'
+        '<w:comment w:id="3"><w:p w14:paraId="CCCCCCCC"/></w:comment>'
+        "</w:comments>"
+    )
+    comments_part = FakeXmlPart("/word/comments.xml", comments_xml)
+
+    comments_extended_xml = (
+        '<w15:commentsEx xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml">'
+        '<w15:commentEx w15:paraId="AAAAAAAA" w15:done="0"/>'
+        '<w15:commentEx w15:paraId="BBBBBBBB" w15:done="0"/>'
+        '<w15:commentEx w15:paraId="CCCCCCCC" w15:done="0"/>'
+        "</w15:commentsEx>"
+    )
+    comments_extended_part = FakeXmlPart("/word/commentsExtended.xml", comments_extended_xml)
+
+    def part_related_by(reltype):
+        if reltype == f"{docx_template._RELATIONSHIP_NS}/comments":
+            return comments_part
+        raise KeyError(reltype)
+
+    template.docx = SimpleNamespace(_part=SimpleNamespace(part_related_by=part_related_by))
+    template.get_part_xml = lambda part: part._blob.decode("utf-8")
+    template._iter_package_parts = lambda: [comments_part, comments_extended_part]
+
+    template._cleanup_comments_part()
+
+    updated_comments_xml = comments_part._blob.decode("utf-8")
+    assert 'w:id="2"' not in updated_comments_xml
+
+    updated_extended_xml = comments_extended_part._blob.decode("utf-8")
+    assert 'w15:paraId="AAAAAAAA"' in updated_extended_xml
+    assert 'w15:paraId="CCCCCCCC"' in updated_extended_xml
+    assert 'w15:paraId="BBBBBBBB"' not in updated_extended_xml
+
+
+def test_cleanup_comments_part_leaves_comments_extended_alone_when_absent():
+    # Templates without any comments at all (e.g. the stock template.docx)
+    # have no commentsExtended.xml part -- confirm the new cleanup step is a
+    # clean no-op rather than raising.
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    template._referenced_comment_ids = set()
+
+    comments_xml = (
+        '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">'
+        '<w:comment w:id="1"><w:p w14:paraId="AAAAAAAA"/></w:comment>'
+        "</w:comments>"
+    )
+    comments_part = FakeXmlPart("/word/comments.xml", comments_xml)
+
+    def part_related_by(reltype):
+        if reltype == f"{docx_template._RELATIONSHIP_NS}/comments":
+            return comments_part
+        raise KeyError(reltype)
+
+    template.docx = SimpleNamespace(_part=SimpleNamespace(part_related_by=part_related_by))
+    template.get_part_xml = lambda part: part._blob.decode("utf-8")
+    template._iter_package_parts = lambda: [comments_part]
+
+    template._cleanup_comments_part()
+
+    assert 'w:id="1"' not in comments_part._blob.decode("utf-8")
+
+
 def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
