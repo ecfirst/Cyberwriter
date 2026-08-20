@@ -568,6 +568,27 @@ TABLE_TC_NARROW_XML = (
     '</table>'
 )
 
+# Confirmed real-world shape: a "Firewall Vulnerability Totals" chart's
+# embedded workbook table had a duplicate column id (two columns both
+# id="3") -- Excel table columns require unique ids, and Word refused to
+# open the file for editing ("The linked file isn't available") even
+# though the chart itself rendered correctly, since that validation only
+# happens when Word tries to load the linked table. Only charts backed by
+# a variable-width {%tc for %} column loop (like Firewall's per-device
+# breakdown) go through this table-resize code path at all, which is why
+# every other chart in the same report was unaffected.
+TABLE_TC_NARROW_DUPLICATE_ID_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'id="1" name="Table1" displayName="Table1" ref="A1:B4" headerRowCount="1">'
+    '<tableColumns count="2">'
+    '<tableColumn id="1" name="Metric"/>'
+    '<tableColumn id="1" name="Placeholder"/>'
+    '</tableColumns>'
+    '<autoFilter ref="A1:B4"/>'
+    '</table>'
+)
+
 SHEET_TABLE_RELS_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
@@ -1713,16 +1734,23 @@ def test_render_additional_parts_updates_chart_cache(monkeypatch):
     )
 
     chart_xml = etree.tostring(chart._element, encoding="unicode")
+    # numCache/strCache (children of the numRef/strRef actually in use) get
+    # the real, newly-resolved values.
     assert "<c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt>" in chart_xml
-    assert "<c:numLit><c:ptCount val=\"2\"/>" in chart_xml
-    assert "<c:numLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
-    assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt></c:numLit>" in chart_xml
     assert "<c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt>" in chart_xml
-    assert "<c:strLit><c:ptCount val=\"2\"/>" in chart_xml
-    assert "<c:strLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
-    assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt></c:strLit>" in chart_xml
+    # CHART_XML's fixture has a pre-existing numLit/strLit *sibling* of
+    # numRef/strRef -- a shape that should never occur in a real chart
+    # (CT_NumDataSource/category data source is an xsd:choice between ref
+    # and lit, never both). Confirmed via a real generated report:
+    # writing into that sibling produced exactly this invalid shape and
+    # Word refused to open the file. The fix must never touch it -- it
+    # stays exactly as it was in the source XML.
+    assert "<c:numLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>3</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>4</c:v></c:pt></c:numLit>" in chart_xml
+    assert "<c:strLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>Old</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>Values</c:v></c:pt></c:strLit>" in chart_xml
     assert "<c:autoUpdate val=\"0\"/>" in chart_xml
     assert "{{" not in chart_xml
 
@@ -2171,6 +2199,46 @@ def test_render_additional_parts_updates_table_columns_for_tc(monkeypatch):
     assert tree.get("ref") == "A1:C4"
     columns = tree.findall(f"{prefix}tableColumns/{prefix}tableColumn")
     assert len(columns) == 3
+    assert [column.get("name") for column in columns] == [
+        "Metric",
+        "Edge-FW01",
+        "Edge-FW02",
+    ]
+
+
+def test_render_additional_parts_dedupes_table_column_ids(monkeypatch):
+    # Regression test for a real bug found immediately after the chart
+    # resync fix above first shipped: growing a {%tc for %} column loop's
+    # table from a template whose starting tableColumns already had a
+    # duplicate "id" (this exact shape was found in an actual generated
+    # report's Firewall chart) must not let that duplicate survive.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TC_RENDERED_COLUMNS_XML,
+        content_types_xml=CONTENT_TYPES_WITH_TABLE_XML,
+        extra_files={
+            "xl/worksheets/_rels/sheet1.xml.rels": SHEET_TABLE_RELS_XML,
+            "xl/tables/table1.xml": TABLE_TC_NARROW_DUPLICATE_ID_XML,
+        },
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    template._render_additional_parts({}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        table_xml = archive.read("xl/tables/table1.xml").decode("utf-8")
+
+    tree = etree.fromstring(table_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    columns = tree.findall(f"{prefix}tableColumns/{prefix}tableColumn")
+    ids = [column.get("id") for column in columns]
+    assert len(ids) == len(set(ids)), f"table column ids must be unique, got {ids}"
     assert [column.get("name") for column in columns] == [
         "Metric",
         "Edge-FW01",

@@ -3224,6 +3224,27 @@ class GhostwriterDocxTemplate(DocxTemplate):
             column.set("name", f"Column{max_id}")
             existing_columns.append(column)
 
+        # Excel table columns require unique "id" attributes (confirmed via
+        # a real generated report: a duplicated id produced a table Word
+        # couldn't open for editing -- "The linked file isn't available" --
+        # even though the chart itself rendered fine, since that error only
+        # surfaces once Word tries to load the linked workbook's table).
+        # Guard defensively rather than assume the source template's ids
+        # were already unique: reassign any duplicate/missing id to a fresh
+        # value continuing from the current max, leaving already-unique ids
+        # untouched.
+        seen_ids: set[str] = set()
+        for column in existing_columns:
+            column_id = column.get("id")
+            if column_id and column_id not in seen_ids:
+                seen_ids.add(column_id)
+                continue
+            max_id += 1
+            while str(max_id) in seen_ids:
+                max_id += 1
+            column.set("id", str(max_id))
+            seen_ids.add(str(max_id))
+
         column_names: list[str] = []
         for offset, column in enumerate(existing_columns):
             column_index = start_col + offset
