@@ -1126,6 +1126,188 @@ def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
     assert "Valid complex" in cleaned_xml
 
 
+def test_cleanup_word_markup_repairs_runs_nested_inside_text():
+    # Confirmed real-world shape (extracted from an actual corrupt generated
+    # report): a template run's <w:t> ends up wrapping three <w:r> children
+    # -- a plain-text run, a colored/bold risk word, and another plain-text
+    # run -- because the template referenced a rich-text field (an inline
+    # risk narrative, via docxtpl.RichText) with a plain {{ field }} tag
+    # instead of the required {{r field }} prefix. <w:t> is text-only
+    # (CT_Text); nesting runs inside it is well-formed XML but schema-invalid
+    # and a real Word "found unreadable content" trigger.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>"
+        "<w:p><w:pPr><w:rPr/></w:pPr>"
+        '<w:r><w:rPr><w:lang w:eastAsia="en-GB"/></w:rPr><w:t xml:space="preserve">'
+        '<w:r><w:t xml:space="preserve">create a </w:t></w:r>'
+        '<w:r><w:rPr><w:color w:val="e03e2d"/><w:b/></w:rPr>'
+        '<w:t xml:space="preserve">High</w:t></w:r>'
+        '<w:r><w:t xml:space="preserve"> risk of domain compromise.</w:t></w:r>'
+        "</w:t></w:r>"
+        "</w:p>"
+        "</w:body></w:document>"
+    )
+
+    part = FakeRelPart("/word/document.xml", xml, {})
+    tree = parse_xml(xml.encode("utf-8"))
+
+    cleaned = template._cleanup_word_markup(part, tree)
+    cleaned_xml = etree.tostring(cleaned, encoding="unicode")
+
+    # No <w:t> may have any element children left anywhere in the result.
+    for text_el in cleaned.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"):
+        assert list(text_el) == [], f"<w:t> still has child elements: {etree.tostring(text_el)}"
+
+    # The three runs must survive as siblings, in order, with their own
+    # formatting intact, and the outer wrapper run's generic <w:rPr> gone.
+    assert cleaned_xml.count("<w:r>") + cleaned_xml.count("<w:r ") == 3
+    assert "create a " in cleaned_xml
+    assert '<w:color w:val="e03e2d"/>' in cleaned_xml
+    assert ">High<" in cleaned_xml
+    assert " risk of domain compromise." in cleaned_xml
+    assert cleaned_xml.index("create a") < cleaned_xml.index("High") < cleaned_xml.index(
+        "risk of domain compromise"
+    )
+    assert 'eastAsia="en-GB"' not in cleaned_xml
+
+
+def test_repair_nested_text_runs_preserves_leading_text_before_nested_run():
+    # Also confirmed in the real corrupt file: the Jinja tag can sit
+    # mid-sentence within a run that already has its own plain text before
+    # the nested markup starts (not only as the run's sole content). That
+    # leading text must be kept, not silently dropped.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:body><w:r><w:t xml:space="preserve"> identified create a '
+        '<w:r><w:rPr><w:color w:val="e03e2d"/><w:b/></w:rPr>'
+        '<w:t xml:space="preserve">High</w:t></w:r>'
+        "</w:t></w:r></w:body></w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_text_runs(root, "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+
+    for text_el in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"):
+        assert list(text_el) == []
+
+    result_xml = etree.tostring(root, encoding="unicode")
+    assert " identified create a " in result_xml
+    assert ">High<" in result_xml
+    assert result_xml.index("identified create a") < result_xml.index("High")
+
+
+def test_repair_nested_text_runs_leaves_normal_text_untouched():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body><w:p><w:r><w:t>Perfectly normal text</w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_text_runs(root, "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+
+    assert etree.tostring(root, encoding="unicode") == xml
+
+
+def test_repair_nested_text_runs_ignores_unrecognized_shapes():
+    # A <w:t> with a non-<w:r> child is an invalid shape this repair doesn't
+    # claim to understand -- leave it alone rather than risk mangling it.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body><w:p><w:r><w:t><w:tab/></w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_text_runs(root, "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+
+    assert etree.tostring(root, encoding="unicode") == xml
+
+
+WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def test_repair_nested_paragraphs_replaces_whole_paragraph():
+    # A correctly {{p field }}-tagged paragraph is documented to contain
+    # nothing else -- confirm that documented-correct shape (paragraph's
+    # only content is the run wrapping the malformed <w:t>) results in the
+    # whole paragraph being replaced by the promoted ones, with no leftover
+    # empty paragraph (this exact case was a real bug caught during
+    # development: <w:pPr> was initially miscounted as "before" content).
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        f'<w:document xmlns:w="{WORD_NS}">'
+        "<w:body>"
+        '<w:p><w:pPr><w:jc w:val="center"/></w:pPr>'
+        '<w:r><w:t xml:space="preserve">'
+        "<w:p><w:r><w:t>First subdoc paragraph.</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>Second subdoc paragraph.</w:t></w:r></w:p>"
+        "</w:t></w:r></w:p>"
+        "</w:body></w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_paragraphs(root, WORD_NS)
+
+    body = root.find(f"{{{WORD_NS}}}body")
+    assert len(body) == 2, etree.tostring(root, encoding="unicode")
+    result_xml = etree.tostring(root, encoding="unicode")
+    assert "First subdoc paragraph." in result_xml
+    assert "Second subdoc paragraph." in result_xml
+    assert "w:jc" not in result_xml  # original paragraph's formatting discarded, as intended
+
+
+def test_repair_nested_paragraphs_splits_before_and_after_content():
+    # A narrative sentence with intro/outro text around the substitution
+    # ("Intro: {{ field }} outro.") must split into three paragraphs, with
+    # the before/after paragraphs both keeping the original formatting.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        f'<w:document xmlns:w="{WORD_NS}">'
+        "<w:body>"
+        '<w:p><w:pPr><w:jc w:val="center"/></w:pPr>'
+        '<w:r><w:t xml:space="preserve">Intro: </w:t></w:r>'
+        '<w:r><w:t xml:space="preserve">'
+        "<w:p><w:r><w:t>Subdoc paragraph.</w:t></w:r></w:p>"
+        "</w:t></w:r>"
+        '<w:r><w:t xml:space="preserve"> outro.</w:t></w:r>'
+        "</w:p>"
+        "</w:body></w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_paragraphs(root, WORD_NS)
+
+    body = root.find(f"{{{WORD_NS}}}body")
+    assert len(body) == 3, etree.tostring(root, encoding="unicode")
+    result_xml = etree.tostring(root, encoding="unicode")
+    assert result_xml.index("Intro:") < result_xml.index("Subdoc paragraph") < result_xml.index("outro")
+    assert result_xml.count('w:jc w:val="center"') == 2
+
+
+def test_repair_nested_paragraphs_leaves_mixed_shapes_untouched():
+    # A <w:t> mixing <w:r> and <w:p> children is a shape neither repair
+    # claims to understand -- left alone rather than mangled.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        f'<w:document xmlns:w="{WORD_NS}">'
+        "<w:body><w:p><w:r><w:t>"
+        "<w:r><w:t>a run</w:t></w:r>"
+        "<w:p><w:r><w:t>a paragraph</w:t></w:r></w:p>"
+        "</w:t></w:r></w:p></w:body></w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_paragraphs(root, WORD_NS)
+
+    assert etree.tostring(root, encoding="unicode") == xml
+
+
 def test_cleanup_word_markup_strips_paragraph_ids():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
