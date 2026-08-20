@@ -732,7 +732,7 @@ class FakeRelationship:
     def __init__(self, target_part=None, *, reltype: str | None = None):
         self.reltype = (
             reltype
-            or "http://schemas.openxmlformats.org/officeDocument/2006/relationships/embeddedPackage"
+            or "http://schemas.openxmlformats.org/officeDocument/2006/relationships/package"
         )
         self._reltype = self.reltype
         self.target_part = target_part
@@ -1905,6 +1905,62 @@ def test_sync_chart_cache_reindexes_series():
     series = tree.findall(".//{*}ser")
     assert [ser.find("{*}idx").get("val") for ser in series] == ["0", "1"]
     assert [ser.find("{*}order").get("val") for ser in series] == ["0", "1"]
+
+
+def test_sync_chart_cache_resolves_workbook_via_real_package_reltype():
+    # Regression test for a real bug: _resolve_chart_workbook matched a
+    # chart's relationship to its embedded workbook against the fabricated
+    # string ".../relationships/embeddedPackage", which never appears in a
+    # real OOXML package -- the actual relationship type charts use is
+    # ".../relationships/package" (confirmed against python-docx's own
+    # RELATIONSHIP_TYPE.PACKAGE constant, and against a real generated
+    # report's chart .rels files). That meant _resolve_chart_workbook
+    # ALWAYS returned None, so a chart whose numeric values depend on this
+    # resync (a variable-width, formula-driven range like
+    # Sheet1!$B$2:$B$4, rather than a fixed value baked in at template-
+    # render time) kept its stale placeholder cache values -- exactly what
+    # a real "Firewall Vulnerability Totals" chart showed (correct
+    # category labels, all-zero data points, and Word's "The linked file
+    # isn't available" error on Edit Data). This test uses excel_values
+    # with real data (unlike the other _sync_chart_cache tests above,
+    # which pass excel_values={} and only exercise the cache-repair/
+    # reindex steps that run independently of workbook resolution) so it
+    # would have caught the bug: with the fabricated reltype, the stale
+    # "0" placeholder survives; with the real one, it's replaced.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    workbook = FakeWorkbookPart("/word/embeddings/Microsoft_Excel_Worksheet1.xlsx")
+    chart_xml = (
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<c:chart><c:plotArea><c:barChart><c:ser>"
+        "<c:val><c:numRef><c:f>Sheet1!$B$2:$B$4</c:f>"
+        "<c:numCache><c:ptCount val=\"3\"/>"
+        "<c:pt idx=\"0\"><c:v>0</c:v></c:pt>"
+        "<c:pt idx=\"1\"><c:v>0</c:v></c:pt>"
+        "<c:pt idx=\"2\"><c:v>0</c:v></c:pt>"
+        "</c:numCache></c:numRef></c:val>"
+        "</c:ser></c:barChart></c:plotArea>"
+        "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"0\"/></c:externalData>"
+        "</c:chart></c:chartSpace>"
+    )
+    chart = FakeChartPart("/word/charts/chart8.xml", chart_xml, workbook)
+
+    excel_values = {
+        "word/embeddings/Microsoft_Excel_Worksheet1.xlsx": {
+            "Sheet1": {"B2": "5", "B3": "3", "B4": "2"},
+        }
+    }
+
+    synced_xml = template._sync_chart_cache(chart_xml, chart, excel_values)
+
+    tree = etree.fromstring(synced_xml.encode("utf-8"))
+    num_cache = tree.find(".//{*}numCache")
+    values = [pt.findtext("{*}v") for pt in num_cache.findall("{*}pt")]
+    assert values == ["5", "3", "2"], (
+        f"expected the real workbook values to replace the stale placeholders, got {values}"
+    )
 
 
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):

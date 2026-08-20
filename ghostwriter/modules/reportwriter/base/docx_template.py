@@ -37,6 +37,7 @@ _WORD2012_NS = "http://schemas.microsoft.com/office/word/2012/wordml"
 _HYPERLINK_RELTYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 )
+_CHART_PACKAGE_RELTYPE = f"{_RELATIONSHIP_NS}/package"
 _COMMENTS_EXTENDED_PART = "word/commentsExtended.xml"
 _COMMENTS_EXTENDED_RELTYPE_2011 = (
     "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
@@ -3501,7 +3502,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         for rel in rels.values():
             reltype = getattr(rel, "reltype", "")
-            if not reltype or "embeddedPackage" not in reltype:
+            if reltype != _CHART_PACKAGE_RELTYPE:
                 continue
             target = getattr(rel, "target_part", None)
             if target is None:
