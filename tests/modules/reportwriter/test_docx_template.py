@@ -1956,6 +1956,20 @@ def test_sync_chart_cache_resolves_workbook_via_real_package_reltype():
     synced_xml = template._sync_chart_cache(chart_xml, chart, excel_values)
 
     tree = etree.fromstring(synced_xml.encode("utf-8"))
+    val = tree.find(".//{*}val")
+    # <c:val> (CT_NumDataSource) allows EITHER numRef OR numLit, never both --
+    # it's an xsd:choice, not a sequence. A second real-file regression
+    # (found immediately after this fix first shipped: the report went from
+    # "chart shows stale zeros" to "Word can't open the file at all") was
+    # _write_literal_cache unconditionally creating a sibling numLit/strLit
+    # next to the existing numRef/strRef, which is exactly this schema
+    # violation. Confirmed by extracting the actual corrupt report: every
+    # <c:val>/<c:tx>/<c:cat> in the Firewall chart had grown a second,
+    # illegitimate Lit sibling. Assert it can never come back.
+    children = [etree.QName(c).localname for c in val]
+    assert "numLit" not in children, f"numLit must never appear alongside numRef, got children={children}"
+    assert children == ["numRef"], f"<c:val> must contain only numRef, got {children}"
+
     num_cache = tree.find(".//{*}numCache")
     values = [pt.findtext("{*}v") for pt in num_cache.findall("{*}pt")]
     assert values == ["5", "3", "2"], (

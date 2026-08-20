@@ -3461,7 +3461,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     self._set_chart_formula(num_ref, resolved_formula)
                 cache = self._find_or_create_cache(num_ref, "numCache")
                 self._write_cache(cache, values)
-                self._write_literal_cache(num_ref, "numLit", values)
                 updated = True
 
             for str_ref in tree.findall(".//{*}strRef"):
@@ -3478,7 +3477,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     self._set_chart_formula(str_ref, resolved_formula)
                 cache = self._find_or_create_cache(str_ref, "strCache")
                 self._write_cache(cache, values)
-                self._write_literal_cache(str_ref, "strLit", values)
                 updated = True
 
         if self._reindex_chart_series(tree):
@@ -3555,24 +3553,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
         namespace = etree.QName(ref_node).namespace
         tag = f"{{{namespace}}}{local_name}" if namespace else local_name
         return etree.SubElement(ref_node, tag)
-
-    def _write_literal_cache(self, ref_node, local_name: str, values: list[str]) -> None:
-        parent = ref_node.getparent()
-        if parent is None:
-            return
-
-        literal = None
-        for child in parent:
-            if etree.QName(child).localname == local_name:
-                literal = child
-                break
-
-        if literal is None:
-            namespace = etree.QName(ref_node).namespace
-            tag = f"{{{namespace}}}{local_name}" if namespace else local_name
-            literal = etree.SubElement(parent, tag)
-
-        self._write_cache(literal, values)
 
     def _reindex_chart_series(self, tree: etree._Element) -> bool:
         updated = False
