@@ -4265,6 +4265,50 @@ class DNSDataParserTests(TestCase):
             },
         )
 
+    def test_parse_dns_report_title_stops_at_first_semicolon(self):
+        # A first line with an appended explanatory clause after a ';'
+        # should title as just the clause before it, matching the short,
+        # single-clause key format used throughout DEFAULT_DNS_*_MAP.
+        info_value = (
+            "The domain does not have any CAA records; any public "
+            "Certificate Authority may issue a certificate for this domain"
+        )
+
+        upload = SimpleUploadedFile(
+            "dns_report.csv",
+            f"Status,Info\nFAIL,{info_value}\n".encode("utf-8"),
+            content_type="text/csv",
+        )
+
+        issues = parse_dns_report(upload)
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(
+            issues[0]["issue"], "The domain does not have any CAA records"
+        )
+
+    def test_parse_dns_report_title_semicolon_on_later_line_is_ignored(self):
+        # The line break must win over a ';' that only appears on a *later*
+        # physical line -- the title is cut off by the line break before
+        # that ';' is ever reached.
+        info_value = (
+            "The domain does not have any CAA records\n"
+            "Some later line; with a semicolon that must not affect the title"
+        )
+
+        upload = SimpleUploadedFile(
+            "dns_report.csv",
+            f'Status,Info\nFAIL,"{info_value}"\n'.encode("utf-8"),
+            content_type="text/csv",
+        )
+
+        issues = parse_dns_report(upload)
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(
+            issues[0]["issue"], "The domain does not have any CAA records"
+        )
+
     def test_parse_dns_report_falls_back_to_default_impact_mappings(self):
         issue_text = "The domain does not have an SPF record"
         DNSImpactMapping.objects.all().delete()

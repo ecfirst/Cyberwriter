@@ -3611,7 +3611,14 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
         if not info_lines:
             continue
 
-        issue_text = info_lines[0]
+        # The title is everything up to whichever comes first: the first
+        # line break (already isolated by info_lines[0] above) or the first
+        # ';' within that line -- e.g. "The domain does not have any CAA
+        # records; any public Certificate Authority may issue a certificate
+        # for this domain" should title as just "The domain does not have
+        # any CAA records", matching the short, single-clause key format
+        # used throughout DEFAULT_DNS_*_MAP/the DB-backed mapping models.
+        issue_text = info_lines[0].split(";", 1)[0].strip()
         if not issue_text:
             continue
 
