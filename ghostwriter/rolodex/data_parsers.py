@@ -5053,17 +5053,21 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
     if workbook_bytes:
         metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
 
-    # Everything above (unique_issues/all_issues/high_issues/med_issues/
-    # low_issues/top_impacts/tab_index_entries) is needed only transiently,
-    # to build the workbook bytes just captured into xlsx_base64 --
-    # _build_processed_cards only reads "summary"/"xlsx_base64" back out of
-    # a *stored* data_artifacts, and the download views only read
-    # "xlsx_filename". Drop everything else before this gets persisted.
-    return {
-        "summary": metrics_payload.get("summary"),
-        "xlsx_base64": metrics_payload.get("xlsx_base64"),
-        "xlsx_filename": metrics_payload.get("xlsx_filename"),
-    }
+    # Deliberately return the full payload here, not just what a *stored*
+    # data_artifacts needs -- ProjectSerializer.to_representation
+    # (custom_serializers.py) runs data_artifacts through
+    # normalize_nexpose_artifacts_map for the report-generation Jinja
+    # context, and a template can reference "unique_issues"/"top_impacts"/
+    # "tab_index_entries" directly (the linter's sample context advertises
+    # them, linting_utils.py). Trimming them here unconditionally silently
+    # emptied that context for any template that used them -- the same
+    # failure class as the ad_attack_paths bug from a few rounds ago. The
+    # fields that are genuinely transient-and-duplicative (all_issues/
+    # high_issues/med_issues/low_issues -- all findings, then the same
+    # entries again split by severity) get dropped in
+    # rebuild_data_artifacts() (models.py) itself, after it has finished
+    # reading everything it needs and just before the result is persisted.
+    return metrics_payload
 
 
 def _render_firewall_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:

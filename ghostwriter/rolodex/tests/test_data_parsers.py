@@ -569,10 +569,20 @@ class NexposeDataParserTests(TestCase):
         # at the source broke that derivation entirely on an earlier attempt
         # at this fix. The trim has to happen in rebuild_data_artifacts()
         # itself, *after* it has read what it needs and *before* the result
-        # is persisted -- confirm that's actually what ends up in the
-        # database: the bloat fields are gone, but summary/xlsx_base64/
-        # xlsx_filename (the only fields anything reads back out of a
-        # *stored* data_artifacts) survive.
+        # is persisted.
+        #
+        # Only all_issues/high_issues/med_issues/low_issues actually get
+        # dropped -- confirmed via pg_column_size to be a full second copy
+        # of the finding set on top of the first (all_issues whole, then the
+        # same entries again split by severity). Everything else survives:
+        # a report template can reference
+        # project.data_artifacts.*_nexpose_metrics.{host_counts,top_hosts,
+        # majority_type,unique_issues,...} directly (the linter's sample
+        # context advertises this shape, ghostwriter/modules/
+        # linting_utils.py), and trimming those unconditionally on an
+        # earlier attempt at this fix silently emptied that context for any
+        # template that used them -- the same failure class as the
+        # ad_attack_paths bug from a few rounds ago.
         findings = [
             {
                 "Asset IP Address": "10.0.0.1",
@@ -596,15 +606,79 @@ class NexposeDataParserTests(TestCase):
 
         stored_metrics = self.project.data_artifacts.get("external_nexpose_metrics")
         self.assertIsInstance(stored_metrics, dict)
-        self.assertEqual(
-            set(stored_metrics.keys()), {"summary", "xlsx_base64", "xlsx_filename"}
-        )
+        for dropped_key in ("all_issues", "high_issues", "med_issues", "low_issues"):
+            self.assertNotIn(dropped_key, stored_metrics)
+        for kept_key in (
+            "summary",
+            "xlsx_base64",
+            "xlsx_filename",
+            "host_counts",
+            "top_hosts",
+            "top_hosts_high",
+            "top_hosts_med",
+            "top_hosts_low",
+            "top_hosts_total",
+            "top_impacts",
+            "tab_index_entries",
+            "unique_issues",
+            "majority_type",
+            "minority_type",
+            "majority_unique",
+            "majority_subset",
+        ):
+            self.assertIn(kept_key, stored_metrics)
         self.assertEqual(stored_metrics.get("summary"), metrics_payload.get("summary"))
+        self.assertEqual(stored_metrics.get("top_hosts"), metrics_payload.get("top_hosts"))
+        self.assertEqual(stored_metrics.get("unique_issues"), metrics_payload.get("unique_issues"))
 
         # workbook_data derivation must still have happened correctly from
         # the full payload before the trim ran.
         external = (self.project.workbook_data or {}).get("external_nexpose") or {}
         self.assertEqual(external.get("majority_type"), "OOD Software or Missing Patches")
+
+    def test_web_metrics_bloat_fields_are_trimmed_before_storage(self):
+        # Same pattern as the nexpose case above: _build_web_metrics_payload
+        # returns the full payload, and only the confirmed-duplicative
+        # all_issues/high_issues/med_issues/low_issues get dropped in
+        # rebuild_data_artifacts() -- unique_issues/top_impacts/
+        # tab_index_entries survive, since a report template can reference
+        # them directly (linting_utils.py's web_metrics sample advertises
+        # this shape) and _apply_web_metrics() only ever needed "summary".
+        findings = [
+            {
+                "Issue": "Reflected Cross-Site Scripting",
+                "Impact": "Session theft",
+                "Risk": "High",
+                "Host": "portal.example.com",
+                "Score": "8.6",
+            },
+        ]
+        metrics_payload = data_parsers._build_web_metrics_payload(findings)
+        self.assertIn("all_issues", metrics_payload)
+        self.assertIn("unique_issues", metrics_payload)
+        self.assertIn("top_impacts", metrics_payload)
+
+        with mock.patch(
+            "ghostwriter.rolodex.models.build_project_artifacts",
+            return_value={"web_metrics": metrics_payload},
+        ):
+            self.project.rebuild_data_artifacts()
+            self.project.refresh_from_db()
+
+        stored_metrics = self.project.data_artifacts.get("web_metrics")
+        self.assertIsInstance(stored_metrics, dict)
+        for dropped_key in ("all_issues", "high_issues", "med_issues", "low_issues"):
+            self.assertNotIn(dropped_key, stored_metrics)
+        for kept_key in (
+            "summary",
+            "xlsx_base64",
+            "xlsx_filename",
+            "unique_issues",
+            "top_impacts",
+            "tab_index_entries",
+        ):
+            self.assertIn(kept_key, stored_metrics)
+        self.assertEqual(stored_metrics.get("unique_issues"), metrics_payload.get("unique_issues"))
 
     def test_firewall_metrics_bloat_fields_are_trimmed_before_storage(self):
         findings = [

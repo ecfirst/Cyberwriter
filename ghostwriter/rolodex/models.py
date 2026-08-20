@@ -1432,29 +1432,51 @@ class Project(models.Model):
         _apply_web_metrics()
         _apply_firewall_metrics()
 
-        # Everything _build_nexpose_cap_entries_from_metrics() and
-        # _apply_nexpose_metrics()/_apply_firewall_metrics() read off the
-        # nexpose/firewall metrics payloads above (majority_type/
-        # minority_type/host_counts/top_hosts*/unique_issues/all_issues/
-        # high_issues/med_issues/low_issues/rule_issues/config_issues/
-        # complexity_issues/vuln_issues/top_impacts/etc.) has now been
-        # consumed into workbook_data/cap above -- none of it is read again
-        # from a *stored* data_artifacts (_build_processed_cards in
-        # rolodex/views.py reads only "summary"/"devices"/"xlsx_base64";
-        # the download views read only "xlsx_filename"; supplemental report
-        # exports in reporting/supplemental_export.py read only
-        # "xlsx_base64"). Persisting the full payloads made
-        # internal_nexpose_metrics alone 134MB for a data-heavy project
-        # (confirmed via pg_column_size) for no benefit -- trim down to
-        # just what's actually read back before this gets stored.
+        # all_issues/high_issues/med_issues/low_issues are the confirmed
+        # source of the bloat here: all_issues is every finding (with full
+        # free-text details/evidence/remediation per entry), and high/med/
+        # low_issues are the *same* entries again, just re-partitioned by
+        # severity -- together a second full copy of the finding set on top
+        # of the first, on top of what's already stored once under
+        # *_nexpose_findings/web_findings. That pairing alone made
+        # internal_nexpose_metrics 134MB for a data-heavy project (confirmed
+        # via pg_column_size).
+        #
+        # Everything else in these payloads (summary/host_counts/top_hosts*/
+        # top_impacts/tab_index_entries/unique_issues/majority_*) is bounded
+        # (capped at 10, a fixed constant, a scalar, or sized by unique-
+        # issue/host count rather than raw finding count) and IS read back
+        # out of a *stored* data_artifacts: ProjectSerializer.to_representation
+        # (custom_serializers.py) runs data_artifacts through
+        # normalize_nexpose_artifacts_map for the report-generation Jinja
+        # context, and a template can reference any of these fields
+        # directly (the linter's sample context advertises the full shape,
+        # linting_utils.py) -- trimming them unconditionally silently
+        # emptied that context for any template that used them, exactly the
+        # ad_attack_paths bug from a few rounds ago. Drop only the confirmed
+        # duplicative pair; the still-large all_issues/high/med/low_issues
+        # data remains one click away via xlsx_base64 (which already has a
+        # full "All Issues"/"High Risk Issues"/etc. tab per
+        # tab_index_entries' own descriptions) and the raw *_nexpose_findings
+        # artifact.
+        _DROP_DUPLICATE_ISSUE_LISTS = ("all_issues", "high_issues", "med_issues", "low_issues")
+
         for metrics_key in NEXPOSE_METRICS_KEY_MAP.values():
             metrics_payload = artifacts.get(metrics_key)
             if isinstance(metrics_payload, dict):
                 artifacts[metrics_key] = {
-                    "summary": metrics_payload.get("summary"),
-                    "xlsx_base64": metrics_payload.get("xlsx_base64"),
-                    "xlsx_filename": metrics_payload.get("xlsx_filename"),
+                    key: value
+                    for key, value in metrics_payload.items()
+                    if key not in _DROP_DUPLICATE_ISSUE_LISTS
                 }
+
+        web_metrics_payload = artifacts.get("web_metrics")
+        if isinstance(web_metrics_payload, dict):
+            artifacts["web_metrics"] = {
+                key: value
+                for key, value in web_metrics_payload.items()
+                if key not in _DROP_DUPLICATE_ISSUE_LISTS
+            }
 
         firewall_metrics_payload = artifacts.get("firewall_metrics")
         if isinstance(firewall_metrics_payload, dict):
