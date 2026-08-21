@@ -24,6 +24,9 @@ _WORKBOOK_RISK_PATHS: Dict[str, Sequence[Sequence[str]]] = {
     "sql": (("external_internal_grades", "internal", "sql", "risk"),),
     "iam": (("external_internal_grades", "internal", "iam", "risk"),),
     "ad": (("external_internal_grades", "iam", "ad", "risk"),),
+    "ad_attack_paths": (
+        ("external_internal_grades", "iam", "ad_attack_paths", "risk"),
+    ),
     "password": (
         ("external_internal_grades", "iam", "password", "risk"),
         ("external_internal_grades", "internal", "password", "risk"),

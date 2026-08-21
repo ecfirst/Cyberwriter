@@ -9,6 +9,7 @@ import math
 from typing import Any, Dict, Mapping, MutableMapping, Optional
 
 from ghostwriter.reporting.models import RiskScoreRangeMapping
+from ghostwriter.rolodex.ad_attack_paths_scoring import ATTACK_PATHS_SCORE_OVERRIDE_FIELDS
 from ghostwriter.rolodex.models import normalize_project_scoping
 from ghostwriter.rolodex.workbook_defaults import normalize_workbook_payload
 
@@ -71,6 +72,21 @@ AD_DOMAIN_COUNT_FIELDS = {
     "generic_logins",
     "enabled_accounts",
     "total_accounts",
+}
+
+ATTACK_PATHS_DOMAIN_COUNT_FIELDS = {
+    "kerberoastable",
+    "asrep_roastable",
+    "unconstrained_delegation",
+    "constrained_delegation",
+    "rbcd",
+    "shadow_credentials",
+    "privileged_not_protected",
+    "laps_coverage",
+    "gpp_passwords",
+    "ldap_bind_test",
+    "adcs_vulnerable_templates",
+    "adcs_ca_config",
 }
 
 AD_OLD_PASSWORD_COUNT_FIELDS = {
@@ -282,6 +298,38 @@ def _normalize_area_payload(area: str, payload: Optional[Mapping[str, Any]]) -> 
                                 raw_inactive_counts.get(field)
                             )
                     domain_entry["inactive_account_counts"] = inactive_counts
+
+                if domain_entry:
+                    normalized_domains.append(domain_entry)
+            normalized["domains"] = normalized_domains
+        return normalized
+    if area == "ad_attack_paths" and isinstance(payload, Mapping):
+        raw_domains = payload.get("domains")
+        normalized_domains: list[dict[str, Any]] = []
+        if isinstance(raw_domains, list):
+            for domain_payload in raw_domains:
+                if not isinstance(domain_payload, Mapping):
+                    continue
+                domain_entry: dict[str, Any] = {}
+                domain_value = (
+                    domain_payload.get("domain")
+                    or domain_payload.get("name")
+                    or ""
+                )
+                domain_text = str(domain_value).strip()
+                if domain_text:
+                    domain_entry["domain"] = domain_text
+                for field in ATTACK_PATHS_DOMAIN_COUNT_FIELDS:
+                    if field in domain_payload:
+                        domain_entry[field] = _as_int(domain_payload.get(field))
+                for field in ATTACK_PATHS_SCORE_OVERRIDE_FIELDS:
+                    if field in domain_payload:
+                        override_value = _as_int(domain_payload.get(field))
+                        domain_entry[field] = (
+                            override_value
+                            if isinstance(override_value, int) and 1 <= override_value <= 6
+                            else None
+                        )
 
                 if domain_entry:
                     normalized_domains.append(domain_entry)
@@ -741,6 +789,23 @@ def _normalize_area_updates(
     return normalized
 
 
+def compute_category_score_summary(
+    *,
+    scores: Mapping[str, Optional[Decimal]],
+    weights: Mapping[str, Decimal],
+    risk_score_map: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Return a scoring category's weighted total (Decimal) and derived risk/grade label.
+
+    Shared by ``build_workbook_entry_payload`` (analyst-typed scores) and
+    ``Project.rebuild_data_artifacts`` (auto-computed scores, e.g. AD Attack Paths),
+    so both paths recompute a category's total/grade identically.
+    """
+
+    total = _calculate_category_total(scores=scores, weights=weights)
+    return {"total": total, "grade": _score_to_risk(total, risk_score_map)}
+
+
 def _calculate_category_total(
     *, scores: Mapping[str, Optional[Decimal]], weights: Mapping[str, Decimal]
 ) -> Optional[Decimal]:
@@ -1005,10 +1070,13 @@ def build_workbook_entry_payload(
                         "risk": _score_to_risk(score_value, risk_score_map),
                     }
             weights = scoping_weights.get(category, {}) or {}
-            total = _calculate_category_total(scores=option_scores, weights=weights)
+            summary = compute_category_score_summary(
+                scores=option_scores, weights=weights, risk_score_map=risk_score_map
+            )
+            total = summary["total"]
             category_scores[category] = total
             category_entry["total"] = None if total is None else float(total)
-            category_entry["grade"] = _score_to_risk(total, risk_score_map)
+            category_entry["grade"] = summary["grade"]
         normalized_workbook["external_internal_grades"] = score_updates
 
     grade_updates: Dict[str, Any] = {}

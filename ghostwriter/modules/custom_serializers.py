@@ -40,6 +40,7 @@ from ghostwriter.reporting.models import (
     RiskScoreRangeMapping,
     Severity,
 )
+from ghostwriter.rolodex.ad_attack_paths_scoring import ATTACK_PATHS_METRIC_KEYS
 from ghostwriter.rolodex.data_parsers import (
     build_ad_risk_contrib,
     build_password_cap_display_map,
@@ -864,6 +865,25 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             result["wireless"] = ProjectSerializer._strip_internal_metadata(wireless_entries)
         source.pop("wireless", None)
 
+        # No _collect_ad_attack_paths_responses is needed here, unlike ad/
+        # password/etc. above -- build_workbook_ad_attack_paths_response and
+        # the risk-string step in Project.rebuild_data_artifacts (models.py)
+        # already fully compute this section (domains_str, {metric}_string,
+        # {metric}_count_str, total_{metric}_count, {metric}_risk_string)
+        # before it's persisted, so it's a pure pass-through. But it MUST be
+        # popped out of `source` here, before the legacy_prefixes filter
+        # below -- "ad_attack_paths" also starts with "ad_", so without this
+        # the filter drops the whole section (it exists to strip legacy flat
+        # keys like "ad_corp-example-com_domain_admins", not this one), and
+        # every {metric}_count_str/{metric}_string/{metric}_risk_string_rt
+        # lookup in a report template then warns "'dict object' has no
+        # attribute ...".
+        attack_paths_section_raw = source.pop("ad_attack_paths", None)
+        if isinstance(attack_paths_section_raw, dict) and attack_paths_section_raw:
+            result["ad_attack_paths"] = ProjectSerializer._strip_internal_metadata(
+                attack_paths_section_raw
+            )
+
         legacy_prefixes = ("ad_", "password_", "endpoint_", "wireless_")
         keys_to_remove = [
             key
@@ -901,6 +921,14 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
             result["ad"] = ad_section
         else:
             ad_section.setdefault("entries", [])
+
+        attack_paths_section = result.get("ad_attack_paths")
+        if not isinstance(attack_paths_section, dict):
+            attack_paths_section = {"entries": [], "domains_str": None}
+            result["ad_attack_paths"] = attack_paths_section
+        else:
+            attack_paths_section.setdefault("entries", [])
+            attack_paths_section.setdefault("domains_str", None)
 
         password_section = result.get("password")
         if not isinstance(password_section, dict):
@@ -1019,6 +1047,9 @@ class ProjectSerializer(TaggitSerializer, CustomModelSerializer):
                 "ia_risk_string",
                 "ga_risk_string",
                 "gl_risk_string",
+            ),
+            "ad_attack_paths": tuple(
+                f"{metric_key}_risk_string" for metric_key in ATTACK_PATHS_METRIC_KEYS
             ),
             "password": ("cracked_risk_string",),
             "endpoint": ("ood_risk_string", "wifi_risk_string"),

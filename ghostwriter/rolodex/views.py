@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import re
+import resource
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from xml.etree import ElementTree
@@ -105,6 +106,7 @@ from ghostwriter.rolodex.models import (
 from ghostwriter.shepherd.external.bloodhound.client import APIClient as BhAPIClient, Credentials as BhCredentials, APIException as BhAPIException
 
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
+from ghostwriter.rolodex.ad_attack_paths_scoring import count_laps_not_covered
 from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_METRICS_KEY_MAP,
     NEXPOSE_METRICS_LABELS,
@@ -166,6 +168,7 @@ AI_REVIEW_SECTIONS = (
     ("external_nexpose_rt", "External Nexpose", "external", "nexpose"),
     ("web_rt", "Web", "external", "web"),
     ("ad_rt", "AD", "iam", "ad"),
+    ("ad_attack_paths_rt", "AD Attack Paths", "iam", "ad_attack_paths"),
     ("password_rt", "Password", "iam", "password"),
     ("internal_nexpose_rt", "Internal Nexpose", "internal", "nexpose"),
     ("iot_iomt_nexpose_rt", "IoT/IoMT Nexpose", "internal", "iot_iomt"),
@@ -230,6 +233,7 @@ def _normalize_ai_review_payload(ai_review_payload: Any) -> Dict[str, Any]:
         "wireless": "wireless_rt",
         "web": "web_rt",
         "ad": "ad_rt",
+        "ad_attack_paths": "ad_attack_paths_rt",
         "password": "password_rt",
         "cloud_management": "cloud_management_rt",
         "iam_management": "iam_management_rt",
@@ -309,6 +313,10 @@ def _build_ai_review_prompt(
         "wireless": "Review of the Wireless networks accessible at a location, a comparison to 'approved' SSIDs, a review of the wireless security and wireless-to-internal network segmentation testing (when applicable)",
         "web": "Web application vulnerability scan results",
         "ad": "Active Directory metrics covering privileged groups and user account hygiene",
+        "ad_attack_paths": (
+            "Active Directory attack path findings covering Kerberoasting, delegation abuse, "
+            "ADCS misconfiguration, and related identity attack surface"
+        ),
         "password": "Password policy effectiveness, cracked credentials, and related controls",
         "iam_management": "Review of the M365 configuration settings as compared to the CIS Benchmark recommendations",
         "cloud_management": "Review of the applicable cloud provider configuration settings as compared to the CIS Benchmark recommendations",
@@ -321,6 +329,7 @@ def _build_ai_review_prompt(
         "external_nexpose": "Based on the vulnerabilities discovered, ecfirst rates the overall risk of the external network and systems as a {risk} risk.",
         "web": "ecfirst has determined these issues represent a {risk} risk for web sites/applications.",
         "ad": "ecfirst has determined that the deviations from best practice identified create a {risk} risk to IAM.",
+        "ad_attack_paths": "ecfirst has determined that the identified AD attack paths create a {risk} risk of domain compromise.",
         "password": "ecfirst has determined that, based on the defined and implemented password policy, along with the number of accounts using weak passwords, the risk of account compromise is {risk}.",
         "internal_nexpose": "Based on the vulnerabilities discovered, ecfirst rates the overall risk of the internal network and systems as a {risk} risk.",
         "iot_iomt_nexpose": "Based on the vulnerabilities discovered, ecfirst rates the overall risk of the IoT/IoMT systems as a {risk} risk.",
@@ -601,6 +610,58 @@ def _build_ai_review_prompt(
         }
         payload = details_map if domain_metrics or ad_entries else {"note": "No Active Directory metrics or entries provided."}
         details = json.dumps(_attach_risk(payload), indent=2, default=str)
+    elif normalized_key == "ad_attack_paths":
+        attack_paths_data = workbook.get("ad_attack_paths") if isinstance(workbook, Mapping) else {}
+        attack_paths_domains = (
+            attack_paths_data.get("domains") if isinstance(attack_paths_data, Mapping) else []
+        )
+        attack_paths_metric_labels = (
+            ("kerberoastable", "Kerberoastable Accounts"),
+            ("asrep_roastable", "ASREP Roastable"),
+            ("unconstrained_delegation", "Unconstrained Delegation"),
+            ("constrained_delegation", "Constrained Delegation"),
+            ("rbcd", "RBCD"),
+            ("shadow_credentials", "Shadow Credentials"),
+            ("privileged_not_protected", "Privileged Not Protected"),
+            ("laps_coverage", "LAPS Coverage"),
+            ("gpp_passwords", "GPP Passwords"),
+            ("ldap_bind_test", "LDAP Bind Test"),
+            ("adcs_vulnerable_templates", "ADCS Vulnerable Templates"),
+            ("adcs_ca_config", "ADCS CA Config"),
+        )
+        attack_paths_domain_metrics: list[dict[str, Any]] = []
+        if isinstance(attack_paths_domains, list):
+            for entry in attack_paths_domains:
+                if not isinstance(entry, Mapping):
+                    continue
+                domain_name = (entry.get("domain") or entry.get("name") or "").strip() or "Unknown Domain"
+                labeled_entry: dict[str, Any] = {"Domain": domain_name}
+                for field, label in attack_paths_metric_labels:
+                    value = entry.get(field)
+                    if value not in (None, ""):
+                        labeled_entry[label] = value
+                attack_paths_domain_metrics.append(labeled_entry)
+
+        grades_section = workbook.get("external_internal_grades") if isinstance(workbook, Mapping) else {}
+        iam_grades = grades_section.get("iam") if isinstance(grades_section, Mapping) else {}
+        attack_paths_grades = iam_grades.get("ad_attack_paths") if isinstance(iam_grades, Mapping) else {}
+        metric_scores = (
+            attack_paths_grades.get("metric_scores")
+            if isinstance(attack_paths_grades, Mapping)
+            else {}
+        )
+        metric_scores = metric_scores if isinstance(metric_scores, Mapping) else {}
+
+        details_map = {
+            "domains": attack_paths_domain_metrics,
+            "rubric_scores": metric_scores,
+        }
+        payload = (
+            details_map
+            if attack_paths_domain_metrics or metric_scores
+            else {"note": "No AD Attack Paths metrics provided."}
+        )
+        details = json.dumps(_attach_risk(payload), indent=2, default=str)
     elif normalized_key == "password":
         password_data = workbook.get("password") if isinstance(workbook, Mapping) else {}
         policies = password_data.get("policies") if isinstance(password_data, Mapping) else []
@@ -712,6 +773,82 @@ AD_CSV_HEADER_MAP: dict[str, dict[str, str]] = {
     "generic_logins": {"computer": "Computer", "username": "Username"},
 }
 
+ATTACK_PATHS_CSV_HEADER_MAP: dict[str, dict[str, str]] = {
+    "kerberoastable": {
+        "account": "Account",
+        "spn": "SPN",
+        "passwordlastset": "Password Last Set",
+        "lastlogondate": "Last Logon Date",
+        "dayssincepwdset": "Days Since Pwd Set",
+        "privileged": "Privileged",
+    },
+    "asrep_roastable": {
+        "account": "Account",
+        "passwordlastset": "Password Last Set",
+        "lastlogondate": "Last Logon Date",
+        "dayssincepwdset": "Days Since Pwd Set",
+        "privileged": "Privileged",
+    },
+    "unconstrained_delegation": {
+        "account": "Account",
+        "type": "Type",
+        "os": "OS",
+    },
+    "constrained_delegation": {
+        "account": "Account",
+        "type": "Type",
+        "delegatesto": "DelegatesTo",
+        "protocoltransition": "ProtocolTransition",
+    },
+    "rbcd": {
+        "target": "Target",
+        "type": "Type",
+        "allowedprincipal": "AllowedPrincipal",
+    },
+    "shadow_credentials": {
+        "account": "Account",
+        "type": "Type",
+        "keycount": "KeyCount",
+        "lastchanged": "LastChanged",
+    },
+    "privileged_not_protected": {
+        "account": "Account",
+        "role (da/ea/both)": "Role",
+    },
+    "laps_coverage": {
+        "computer": "Computer",
+        "legacylaps": "LegacyLAPS",
+        "windowslaps": "WindowsLAPS",
+        "expiration": "Expiration",
+    },
+    "gpp_passwords": {
+        "policyguid": "PolicyGUID",
+        "xmlfile": "XMLFile",
+        "username": "UserName",
+        "cpassword": "CPassword",
+        "decryptedpassword": "DecryptedPassword",
+    },
+    "ldap_bind_test": {
+        "dc": "DC",
+        "anonymousbind": "AnonymousBind",
+        "unsignedbind": "UnsignedBind",
+    },
+    "adcs_vulnerable_templates": {
+        "template": "Template",
+        "escfindings": "ESCFindings",
+        "enrollmentprincipals": "EnrollmentPrincipals",
+        "ca": "CA",
+        "publishedto": "PublishedTo",
+        "ekus": "EKUs",
+    },
+    "adcs_ca_config": {
+        "ca name": "CA",
+        "ca host": "CA Host",
+        "findings": "Findings",
+        "detail": "Detail",
+    },
+}
+
 
 def _is_empty_response(value: Any) -> bool:
     if value in (None, "", (), []):
@@ -782,6 +919,131 @@ def _count_pending_question_sections(
             pending_sections.add(section)
 
     return len(pending_sections)
+
+
+def _log_memory_checkpoint(label: str) -> None:
+    """Log current and peak resident memory for this worker process.
+
+    Temporary diagnostic instrumentation for tracking down which step in
+    project-page rendering causes a worker's memory to balloon (some
+    projects have driven a single worker to 1-3GB+ RSS, exhausting a
+    memory-constrained host). ru_maxrss is the process's peak RSS so far
+    (monotonic, in KB on Linux) -- useful for spotting which checkpoint a
+    jump happens at. VmRSS from /proc/self/status is the CURRENT RSS,
+    useful for seeing whether memory is freed again afterward or stays
+    elevated. Remove this once the culprit is identified and fixed.
+    """
+    peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    current_kb = None
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    current_kb = int(line.split()[1])
+                    break
+    except OSError:
+        pass
+    logger.warning(
+        "MEMORY CHECKPOINT [%s]: current_rss=%sMB peak_rss=%sMB",
+        label,
+        f"{current_kb / 1024:.1f}" if current_kb is not None else "?",
+        f"{peak_kb / 1024:.1f}",
+    )
+
+
+# AD Attack Paths keeps the raw uploaded CSV rows per domain/metric in
+# data_artifacts["ad_attack_paths"][domain][metric] as an audit trail (the
+# scores/counts client JS actually needs live in the much smaller
+# workbook_data instead -- confirmed via pg_column_size: 4KB vs 13.8MB for a
+# data-heavy project). Client JS only ever reads the sibling
+# f"{metric}_file_name" string (project_detail.html's getMetricFileName),
+# never these arrays directly -- see ATTACK_PATHS_CSV_HEADER_MAP for the
+# canonical metric list.
+_AD_ATTACK_PATHS_RAW_ROW_KEYS = frozenset(ATTACK_PATHS_CSV_HEADER_MAP.keys())
+
+# _build_nexpose_metrics_payload / _build_firewall_metrics_payload /
+# _build_web_metrics_payload (data_parsers.py) all build far more than a
+# "summary" despite their docstrings: each embeds the *entire* finding set
+# redundantly multiple times over (e.g. nexpose's all_issues + high/med/low
+# split; firewall additionally splits by rule/config/complexity/vuln type
+# too), every entry carrying full free-text fields (details/evidence/
+# remediation). Confirmed via pg_column_size on a real project:
+# internal_nexpose_metrics alone was 96.5MB (larger than the *_findings key
+# holding the same underlying data just once, at 52MB) -- and confirmed via
+# grep across project_detail.html and supplemental_export.py that nothing,
+# client-side or server-side, ever reads anything from these payloads beyond
+# "summary" (used by _build_processed_cards) and "xlsx_base64" (the download
+# views). Keep only those two for the rendered page; everything else here is
+# transient, only ever needed once, at upload time, to build the workbook
+# bytes that already got captured into xlsx_base64.
+_METRICS_KEYS_SUMMARY_ONLY = frozenset(NEXPOSE_METRICS_LABELS.keys()) | {
+    "firewall_metrics",
+    "web_metrics",
+}
+
+
+def _strip_large_unused_artifacts(
+    value: Any, *, depth: int = 0, top_level_key: Optional[str] = None
+) -> Any:
+    """Deep-copy ``value``, omitting keys never read by the page's client-side JS.
+
+    Drops 'xlsx_base64' at any nesting depth (compact per-artifact blobs, only
+    needed by the dedicated download views, which re-read them from the
+    database); at the top level only, any key ending in '_findings' (raw
+    per-finding lists -- one entry per host/port/vulnerability triple, each
+    with several free-text fields -- that scale with finding count and are
+    never read by client-side JS; only their already-summarized
+    *_metrics/*_vulnerabilities siblings are); the top-level '_file_parse_cache'
+    key entirely (build_project_artifacts' cache of raw per-file parse
+    results, used only by the *next* rebuild_data_artifacts call to skip
+    re-parsing unchanged files -- never needed by anything else, and holds
+    the same kind of large raw finding data as the '_findings' keys above);
+    at the top level, every key in _METRICS_KEYS_SUMMARY_ONLY is reduced to
+    just its 'summary' field (see that constant for why); and, specifically
+    inside each domain entry of the top-level 'ad_attack_paths' key, the raw
+    CSV row arrays for each AAP metric (see _AD_ATTACK_PATHS_RAW_ROW_KEYS
+    above).
+
+    Embedding any of this in the rendered page is pure waste: it inflates
+    ``json_script`` serialization and page size for no benefit, and for a
+    project with a large/messy upload, can hold the GIL long enough during a
+    single request that uvicorn's multiprocess worker-healthcheck supervisor
+    (see ``compose/production/django/start``) mistakes a merely-slow worker
+    for a hung one and kills it mid-response.
+    """
+    if isinstance(value, dict):
+        result = {}
+        for key, inner in value.items():
+            if key == "xlsx_base64":
+                continue
+            if depth == 0 and key == "_file_parse_cache":
+                continue
+            if depth == 0 and isinstance(key, str) and key.endswith("_findings"):
+                continue
+            if depth == 0 and key in _METRICS_KEYS_SUMMARY_ONLY and isinstance(inner, dict):
+                result[key] = {
+                    "summary": _strip_large_unused_artifacts(
+                        inner.get("summary"), depth=depth + 2, top_level_key=key
+                    )
+                }
+                continue
+            if (
+                depth == 2
+                and top_level_key == "ad_attack_paths"
+                and key in _AD_ATTACK_PATHS_RAW_ROW_KEYS
+            ):
+                continue
+            next_top_level_key = key if depth == 0 else top_level_key
+            result[key] = _strip_large_unused_artifacts(
+                inner, depth=depth + 1, top_level_key=next_top_level_key
+            )
+        return result
+    if isinstance(value, list):
+        return [
+            _strip_large_unused_artifacts(item, depth=depth + 1, top_level_key=top_level_key)
+            for item in value
+        ]
+    return value
 
 
 def _build_processed_cards(
@@ -3012,7 +3274,25 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         messages.error(self.request, "You do not have permission to access that.")
         return redirect("home:dashboard")
 
+    def get(self, request, *args, **kwargs):
+        response = super().get(request, *args, **kwargs)
+        # get_context_data() checkpoints stop at "end of get_context_data",
+        # but that's before the template is actually rendered (json_script
+        # re-serializes several already-large context vars to JSON strings,
+        # which could itself be a significant additional allocation).
+        # add_post_render_callback() is Django's own hook for running code
+        # right after rendering finalizes -- must return None, since a
+        # non-None return value replaces the response.
+        if hasattr(response, "add_post_render_callback"):
+            def _checkpoint_after_render(rendered_response):
+                _log_memory_checkpoint("after full template render")
+                return None
+
+            response.add_post_render_callback(_checkpoint_after_render)
+        return response
+
     def get_context_data(self, object: Project, **kwargs):
+        _log_memory_checkpoint("start")
         ctx = super().get_context_data(object=object, **kwargs)
         ctx["project_extra_fields_spec"] = ExtraFieldSpec.objects.filter(target_model=Project._meta.label)
         ctx["export_templates"] = ReportTemplate.objects.filter(
@@ -3025,15 +3305,31 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             data_artifacts=object.data_artifacts,
             project_risks=object.risks,
         )
+        _log_memory_checkpoint("after build_data_configuration")
         ctx["workbook_form"] = ProjectWorkbookForm()
         normalized_workbook = normalize_workbook_payload(object.workbook_data)
-        ctx["workbook_sections"] = build_workbook_sections(normalized_workbook)
+        _log_memory_checkpoint("after normalize_workbook_payload")
+        # build_workbook_sections() does a full recursive deep-walk of the
+        # entire workbook_data tree (see _normalise_workbook_value in
+        # workbook.py), and the result is only ever rendered when the legacy
+        # `workbook_file` upload is set (project_detail.html gates the
+        # {% include workbook_value.html %} loop behind `project.workbook_file`).
+        # No current project uses that legacy field -- every project now
+        # drives the Workbook UI from workbook_data/data_artifacts directly --
+        # so skip the computation entirely rather than paying its cost
+        # (which scales with workbook_data size) on every single page load
+        # for a result nothing ever displays.
+        ctx["workbook_sections"] = (
+            build_workbook_sections(normalized_workbook) if object.workbook_file else []
+        )
+        _log_memory_checkpoint("after build_workbook_sections")
         ctx["data_file_form"] = ProjectDataFileForm()
         ctx["data_questions"] = questions
         normalized_responses = prepare_data_responses_initial(
             object.data_responses,
             project_type_name,
         )
+        _log_memory_checkpoint("after prepare_data_responses_initial")
         data_responses_form = ProjectDataResponsesForm(
             question_definitions=questions,
             initial=normalized_responses,
@@ -3053,6 +3349,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             for key, value in PROJECT_SCOPING_CONFIGURATION.items()
         }
         ctx["ai_review_sections"] = _build_ai_review_sections(scoping_state, getattr(object, "ai_review", {}))
+        _log_memory_checkpoint("after _build_ai_review_sections")
         ctx["risk_score_map_json"] = {
             risk: {"min": float(bounds[0]), "max": float(bounds[1])}
             for risk, bounds in RiskScoreRangeMapping.get_risk_score_map().items()
@@ -3065,6 +3362,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             for definition in questions
             if definition["key"] in data_responses_form.fields
         }
+        _log_memory_checkpoint("after workbook_data_json/threshold maps/data_responses_fields")
         data_files = object.data_files.all()
         ctx["data_files"] = data_files
         required_file_lookup = {
@@ -3074,9 +3372,11 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         }
         dns_issue_counts: Dict[str, int] = {}
         artifacts = normalize_nexpose_artifacts_map(object.data_artifacts or {})
+        _log_memory_checkpoint("after normalize_nexpose_artifacts_map")
         artifacts_updated = False
         object.data_artifacts = artifacts
-        ctx["project_data_artifacts_json"] = artifacts
+        ctx["project_data_artifacts_json"] = _strip_large_unused_artifacts(artifacts)
+        _log_memory_checkpoint("after _strip_large_unused_artifacts")
         matrix_gap_summary = summarize_nexpose_matrix_gaps(artifacts)
         ctx["nexpose_matrix_gap_summary"] = matrix_gap_summary
         ctx["has_nexpose_matrix_gaps"] = bool(matrix_gap_summary)
@@ -3086,6 +3386,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         processed_cards, artifacts_updated = _build_processed_cards(
             object, artifacts, required_file_lookup
         )
+        _log_memory_checkpoint("after _build_processed_cards")
         if artifacts_updated:
             object.save(update_fields=["data_artifacts"])
         ctx["processed_data_cards"] = processed_cards
@@ -3179,11 +3480,13 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["required_data_files"] = required_files
         ctx["supplemental_cards"] = supplemental_cards
         ctx["ip_artifact_cards"] = ip_cards
+        _log_memory_checkpoint("after ip_cards/required_files/supplemental_cards")
         ctx.update(CollabModelUpdate.context_data(
             self.request.user,
             object.pk,
             None,
         ))
+        _log_memory_checkpoint("after CollabModelUpdate.context_data")
 
         bhc = BloodHoundConfiguration.get_solo()
         ctx["global_bloodhound_config"] = bhc
@@ -3195,6 +3498,7 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         else:
             ctx["bhc_api"] = None
 
+        _log_memory_checkpoint("end of get_context_data")
         return ctx
 
 
@@ -4812,9 +5116,110 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         workbook_payload = build_workbook_entry_payload(project=project, areas={"ad": ad_state})
         project.workbook_data = workbook_payload
         project.data_artifacts = artifacts
-        project.save(update_fields=["workbook_data", "data_artifacts"])
+        project.rebuild_data_artifacts()
+        project.refresh_from_db(
+            fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+        )
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+        )
+
+    def _handle_attack_paths_csv_upload(self, request, project):
+        upload = request.FILES.get("attack_paths_csv")
+        if not upload:
+            return JsonResponse({"error": "No AD Attack Paths CSV provided."}, status=400)
+
+        domain = (request.POST.get("domain") or "").strip()
+        if not domain:
+            return JsonResponse(
+                {"error": "A domain name is required for this upload."}, status=400
+            )
+
+        metric = (request.POST.get("attack_paths_metric") or "").strip()
+
+        if metric not in ATTACK_PATHS_CSV_HEADER_MAP:
+            return JsonResponse(
+                {"error": "Invalid AD Attack Paths metric provided."}, status=400
+            )
+
+        rows, error_message = self._parse_ad_csv(upload, ATTACK_PATHS_CSV_HEADER_MAP[metric])
+        if error_message:
+            return JsonResponse({"error": error_message}, status=400)
+
+        artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+        artifacts = dict(artifacts)
+        attack_paths_artifacts = (
+            artifacts.get("ad_attack_paths")
+            if isinstance(artifacts.get("ad_attack_paths"), dict)
+            else {}
+        )
+        if not isinstance(attack_paths_artifacts, dict):
+            attack_paths_artifacts = {}
+        domain_key = domain.lower()
+        domain_entry = (
+            attack_paths_artifacts.get(domain_key)
+            if isinstance(attack_paths_artifacts, dict)
+            else {}
+        )
+        if not isinstance(domain_entry, dict):
+            domain_entry = {}
+        domain_entry[metric] = rows or []
+        domain_entry[f"{metric}_file_name"] = upload.name
+        attack_paths_artifacts[domain_key] = domain_entry
+        artifacts["ad_attack_paths"] = attack_paths_artifacts
+
+        normalized_workbook = normalize_workbook_payload(project.workbook_data)
+        attack_paths_state = (
+            normalized_workbook.get("ad_attack_paths")
+            if isinstance(normalized_workbook.get("ad_attack_paths"), dict)
+            else {}
+        )
+        if not isinstance(attack_paths_state, dict):
+            attack_paths_state = {}
+        domain_records = (
+            attack_paths_state.get("domains")
+            if isinstance(attack_paths_state.get("domains"), list)
+            else []
+        )
+        if not isinstance(domain_records, list):
+            domain_records = []
+
+        match = None
+        for record in domain_records:
+            if not isinstance(record, dict):
+                continue
+            domain_value = (record.get("domain") or record.get("name") or "").strip()
+            if domain_value.lower() == domain_key:
+                match = record
+                break
+
+        if match is None:
+            match = {"domain": domain}
+            domain_records.append(match)
+
+        match["domain"] = domain
+        if metric == "laps_coverage":
+            # This metric's CSV lists the full computer inventory (covered
+            # and not), unlike every other AAP metric's CSV, which only ever
+            # contains rows that are themselves findings -- so the count here
+            # needs to be "systems without LAPS", not "systems in the file".
+            match[metric] = count_laps_not_covered(rows or [])
+        else:
+            match[metric] = len(rows or [])
+
+        attack_paths_state["domains"] = domain_records
+
+        workbook_payload = build_workbook_entry_payload(
+            project=project, areas={"ad_attack_paths": attack_paths_state}
+        )
+        project.workbook_data = workbook_payload
+        project.data_artifacts = artifacts
+        project.rebuild_data_artifacts()
+        project.refresh_from_db(
+            fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+        )
+        return JsonResponse(
+            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
         )
 
     def _handle_ad_log_upload(self, request, project):
@@ -4909,10 +5314,13 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         workbook_payload = build_workbook_entry_payload(project=project, areas={"ad": ad_state})
         project.workbook_data = workbook_payload
         project.data_artifacts = artifacts
-        project.save(update_fields=["workbook_data", "data_artifacts"])
+        project.rebuild_data_artifacts()
+        project.refresh_from_db(
+            fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+        )
 
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
         )
 
     def _handle_ad_admin_users_upload(self, request, project):
@@ -5601,6 +6009,9 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             if "ad_log" in request.FILES:
                 return self._handle_ad_log_upload(request, project)
 
+            if "attack_paths_csv" in request.FILES:
+                return self._handle_attack_paths_csv_upload(request, project)
+
             if "password_csv" in request.FILES:
                 return self._handle_password_csv_upload(request, project)
 
@@ -5799,9 +6210,105 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             )
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.save(update_fields=["workbook_data", "data_artifacts"])
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
             return JsonResponse(
-                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+            )
+
+        attack_paths_removal = payload.get("remove_attack_paths_metric")
+        if isinstance(attack_paths_removal, dict):
+            domain = (attack_paths_removal.get("domain") or "").strip()
+            metric = (attack_paths_removal.get("metric") or "").strip()
+
+            if not domain or metric not in ATTACK_PATHS_CSV_HEADER_MAP:
+                return JsonResponse(
+                    {"error": "Invalid AD Attack Paths removal request."}, status=400
+                )
+
+            artifacts = (
+                project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+            )
+            artifacts = dict(artifacts)
+            attack_paths_artifacts = (
+                artifacts.get("ad_attack_paths")
+                if isinstance(artifacts.get("ad_attack_paths"), dict)
+                else {}
+            )
+            if not isinstance(attack_paths_artifacts, dict):
+                attack_paths_artifacts = {}
+
+            domain_key = domain.lower()
+            domain_artifact = (
+                attack_paths_artifacts.get(domain_key)
+                if isinstance(attack_paths_artifacts, dict)
+                else {}
+            )
+            if not isinstance(domain_artifact, dict):
+                domain_artifact = {}
+            domain_artifact.pop(metric, None)
+            domain_artifact.pop(f"{metric}_file_name", None)
+
+            if domain_artifact:
+                attack_paths_artifacts[domain_key] = domain_artifact
+            else:
+                attack_paths_artifacts.pop(domain_key, None)
+
+            if attack_paths_artifacts:
+                artifacts["ad_attack_paths"] = attack_paths_artifacts
+            else:
+                artifacts.pop("ad_attack_paths", None)
+
+            normalized_workbook = normalize_workbook_payload(project.workbook_data)
+            attack_paths_state = (
+                normalized_workbook.get("ad_attack_paths")
+                if isinstance(normalized_workbook.get("ad_attack_paths"), dict)
+                else {}
+            )
+            if not isinstance(attack_paths_state, dict):
+                attack_paths_state = {}
+            domain_records = (
+                attack_paths_state.get("domains")
+                if isinstance(attack_paths_state.get("domains"), list)
+                else []
+            )
+            if not isinstance(domain_records, list):
+                domain_records = []
+
+            match = None
+            for record in domain_records:
+                if not isinstance(record, dict):
+                    continue
+                domain_value = (record.get("domain") or record.get("name") or "").strip()
+                if domain_value.lower() == domain_key:
+                    match = record
+                    break
+
+            if match is None and domain:
+                match = {"domain": domain}
+                domain_records.append(match)
+
+            if match is not None:
+                match[metric] = None
+
+            attack_paths_state["domains"] = domain_records
+
+            workbook_payload = build_workbook_entry_payload(
+                project=project, areas={"ad_attack_paths": attack_paths_state}
+            )
+            project.workbook_data = workbook_payload
+            project.data_artifacts = artifacts
+            project.rebuild_data_artifacts()
+            project.refresh_from_db(
+                fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
+            )
+            return JsonResponse(
+                {
+                    "workbook_data": project.workbook_data,
+                    "data_artifacts": project.data_artifacts,
+                }
             )
 
         ad_domain_removal = payload.get("remove_ad_domain")
@@ -5826,6 +6333,19 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             else:
                 artifacts.pop("ad", None)
 
+            attack_paths_artifacts = (
+                artifacts.get("ad_attack_paths")
+                if isinstance(artifacts.get("ad_attack_paths"), dict)
+                else {}
+            )
+            if not isinstance(attack_paths_artifacts, dict):
+                attack_paths_artifacts = {}
+            attack_paths_artifacts.pop(domain.lower(), None)
+            if attack_paths_artifacts:
+                artifacts["ad_attack_paths"] = attack_paths_artifacts
+            else:
+                artifacts.pop("ad_attack_paths", None)
+
             normalized_workbook = normalize_workbook_payload(project.workbook_data)
             ad_state = (
                 normalized_workbook.get("ad")
@@ -5848,6 +6368,29 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 or (record.get("domain") or record.get("name") or "").strip().lower()
                 != domain_lower
             ]
+
+            attack_paths_state = (
+                normalized_workbook.get("ad_attack_paths")
+                if isinstance(normalized_workbook.get("ad_attack_paths"), dict)
+                else {}
+            )
+            if not isinstance(attack_paths_state, dict):
+                attack_paths_state = {}
+            attack_paths_domain_records = (
+                attack_paths_state.get("domains")
+                if isinstance(attack_paths_state.get("domains"), list)
+                else []
+            )
+            if not isinstance(attack_paths_domain_records, list):
+                attack_paths_domain_records = []
+            attack_paths_domain_records = [
+                record
+                for record in attack_paths_domain_records
+                if not isinstance(record, dict)
+                or (record.get("domain") or record.get("name") or "").strip().lower()
+                != domain_lower
+            ]
+            attack_paths_state["domains"] = attack_paths_domain_records
 
             password_state = (
                 normalized_workbook.get("password")
@@ -5881,7 +6424,12 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             ad_state["domains"] = domain_records
 
             workbook_payload = build_workbook_entry_payload(
-                project=project, areas={"ad": ad_state, "password": password_state}
+                project=project,
+                areas={
+                    "ad": ad_state,
+                    "ad_attack_paths": attack_paths_state,
+                    "password": password_state,
+                },
             )
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts

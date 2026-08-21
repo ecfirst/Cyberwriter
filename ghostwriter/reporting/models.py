@@ -1177,7 +1177,13 @@ class ScopingWeightCategory(models.Model):
             ),
             (
                 "iam",
-                OrderedDict((("ad", Decimal("0.6")), ("password", Decimal("0.4")))),
+                OrderedDict(
+                    (
+                        ("ad", Decimal("0.375")),
+                        ("ad_attack_paths", Decimal("0.375")),
+                        ("password", Decimal("0.25")),
+                    )
+                ),
             ),
             (
                 "wireless",

@@ -20,7 +20,11 @@ from taggit.managers import TaggableManager
 from timezone_field import TimeZoneField
 
 # Ghostwriter Libraries
-from ghostwriter.reporting.models import ReportFindingLink, ScopingWeightCategory
+from ghostwriter.reporting.models import (
+    ReportFindingLink,
+    RiskScoreRangeMapping,
+    ScopingWeightCategory,
+)
 from ghostwriter.commandcenter.models import validate_endpoint
 from ghostwriter.rolodex.validators import validate_ip_range
 from ghostwriter.rolodex.constants import (
@@ -80,6 +84,7 @@ PROJECT_SCOPING_CONFIGURATION: "OrderedDict[str, Dict[str, Any]]" = OrderedDict(
                 "options": OrderedDict(
                     [
                         ("ad", "AD"),
+                        ("ad_attack_paths", "AD Attack Paths"),
                         ("password", "Password"),
                     ]
                 ),
@@ -930,10 +935,12 @@ class Project(models.Model):
         """Rebuild supporting data artifacts derived from uploaded files."""
 
         from ghostwriter.rolodex.data_parsers import (
+            ATTACK_PATHS_CAP_ISSUES,
             NEXPOSE_ARTIFACT_KEYS,
             NEXPOSE_METRICS_KEY_MAP,
             build_ad_risk_contrib,
             build_project_artifacts,
+            build_workbook_ad_attack_paths_response,
             build_workbook_ad_response,
             build_workbook_dns_response,
             build_workbook_firewall_response,
@@ -943,12 +950,27 @@ class Project(models.Model):
             load_ad_threshold_map,
             load_general_cap_map,
         )
+        from ghostwriter.rolodex.ad_attack_paths_scoring import (
+            ATTACK_PATHS_METRIC_KEYS,
+            score_attack_paths,
+        )
+        from ghostwriter.rolodex.workbook_entry import (
+            _as_decimal,
+            _normalize_score_map,
+            _score_to_risk,
+            compute_category_score_summary,
+        )
 
         existing_artifacts = dict(self.data_artifacts or {})
         artifacts = build_project_artifacts(self)
 
         ad_artifacts = (
             existing_artifacts.get("ad") if isinstance(existing_artifacts.get("ad"), Mapping) else None
+        )
+        attack_paths_artifacts = (
+            existing_artifacts.get("ad_attack_paths")
+            if isinstance(existing_artifacts.get("ad_attack_paths"), Mapping)
+            else None
         )
 
         for preserved_key in ("dns_records", "password"):
@@ -974,6 +996,9 @@ class Project(models.Model):
 
         if ad_artifacts and "ad" not in artifacts:
             artifacts["ad"] = dict(ad_artifacts)
+
+        if attack_paths_artifacts and "ad_attack_paths" not in artifacts:
+            artifacts["ad_attack_paths"] = dict(attack_paths_artifacts)
 
         endpoint_artifact = existing_artifacts.get("endpoint")
         if isinstance(endpoint_artifact, dict):
@@ -1407,6 +1432,61 @@ class Project(models.Model):
         _apply_web_metrics()
         _apply_firewall_metrics()
 
+        # all_issues/high_issues/med_issues/low_issues are the confirmed
+        # source of the bloat here: all_issues is every finding (with full
+        # free-text details/evidence/remediation per entry), and high/med/
+        # low_issues are the *same* entries again, just re-partitioned by
+        # severity -- together a second full copy of the finding set on top
+        # of the first, on top of what's already stored once under
+        # *_nexpose_findings/web_findings. That pairing alone made
+        # internal_nexpose_metrics 134MB for a data-heavy project (confirmed
+        # via pg_column_size).
+        #
+        # Everything else in these payloads (summary/host_counts/top_hosts*/
+        # top_impacts/tab_index_entries/unique_issues/majority_*) is bounded
+        # (capped at 10, a fixed constant, a scalar, or sized by unique-
+        # issue/host count rather than raw finding count) and IS read back
+        # out of a *stored* data_artifacts: ProjectSerializer.to_representation
+        # (custom_serializers.py) runs data_artifacts through
+        # normalize_nexpose_artifacts_map for the report-generation Jinja
+        # context, and a template can reference any of these fields
+        # directly (the linter's sample context advertises the full shape,
+        # linting_utils.py) -- trimming them unconditionally silently
+        # emptied that context for any template that used them, exactly the
+        # ad_attack_paths bug from a few rounds ago. Drop only the confirmed
+        # duplicative pair; the still-large all_issues/high/med/low_issues
+        # data remains one click away via xlsx_base64 (which already has a
+        # full "All Issues"/"High Risk Issues"/etc. tab per
+        # tab_index_entries' own descriptions) and the raw *_nexpose_findings
+        # artifact.
+        _DROP_DUPLICATE_ISSUE_LISTS = ("all_issues", "high_issues", "med_issues", "low_issues")
+
+        for metrics_key in NEXPOSE_METRICS_KEY_MAP.values():
+            metrics_payload = artifacts.get(metrics_key)
+            if isinstance(metrics_payload, dict):
+                artifacts[metrics_key] = {
+                    key: value
+                    for key, value in metrics_payload.items()
+                    if key not in _DROP_DUPLICATE_ISSUE_LISTS
+                }
+
+        web_metrics_payload = artifacts.get("web_metrics")
+        if isinstance(web_metrics_payload, dict):
+            artifacts["web_metrics"] = {
+                key: value
+                for key, value in web_metrics_payload.items()
+                if key not in _DROP_DUPLICATE_ISSUE_LISTS
+            }
+
+        firewall_metrics_payload = artifacts.get("firewall_metrics")
+        if isinstance(firewall_metrics_payload, dict):
+            artifacts["firewall_metrics"] = {
+                "summary": firewall_metrics_payload.get("summary"),
+                "devices": firewall_metrics_payload.get("devices"),
+                "xlsx_base64": firewall_metrics_payload.get("xlsx_base64"),
+                "xlsx_filename": firewall_metrics_payload.get("xlsx_filename"),
+            }
+
         def _is_explicit_no(value: Any) -> bool:
             if isinstance(value, bool):
                 return value is False
@@ -1588,6 +1668,144 @@ class Project(models.Model):
             existing_cap["ad"] = ad_cap_section
         else:
             existing_cap.pop("ad", None)
+
+        workbook_attack_paths_response = build_workbook_ad_attack_paths_response(
+            workbook_payload
+        )
+        if workbook_attack_paths_response:
+            existing_attack_paths_section = existing_responses.get("ad_attack_paths")
+            combined_attack_paths_section = (
+                dict(existing_attack_paths_section)
+                if isinstance(existing_attack_paths_section, dict)
+                else {}
+            )
+            combined_attack_paths_section.update(workbook_attack_paths_response)
+            existing_responses["ad_attack_paths"] = combined_attack_paths_section
+
+        attack_paths_cap_section = existing_cap.get("ad_attack_paths")
+        if isinstance(attack_paths_cap_section, dict):
+            attack_paths_cap_section = dict(attack_paths_cap_section)
+        else:
+            attack_paths_cap_section = {}
+
+        attack_paths_cap_map: Dict[str, Dict[str, Any]] = {}
+
+        workbook_attack_paths_data = (
+            workbook_payload.get("ad_attack_paths")
+            if isinstance(workbook_payload, dict)
+            else None
+        )
+        workbook_attack_paths_domains = (
+            workbook_attack_paths_data.get("domains")
+            if isinstance(workbook_attack_paths_data, dict)
+            else None
+        )
+        if isinstance(workbook_attack_paths_domains, list):
+            for domain_entry in workbook_attack_paths_domains:
+                if not isinstance(domain_entry, dict):
+                    continue
+
+                domain_value = domain_entry.get("domain") or domain_entry.get("name")
+                domain = str(domain_value).strip() if domain_value else ""
+                if not domain:
+                    continue
+
+                def _record_attack_paths_issue(metric_key: str, issue: str) -> None:
+                    if _safe_int(domain_entry.get(metric_key)) <= 0:
+                        return
+                    entry = _clone_cap_entry(issue)
+                    if entry:
+                        domain_issues = attack_paths_cap_map.setdefault(domain, {})
+                        domain_issues[issue] = entry
+
+                for metric_key, issue in ATTACK_PATHS_CAP_ISSUES.items():
+                    _record_attack_paths_issue(metric_key, issue)
+
+        if attack_paths_cap_map:
+            attack_paths_cap_section["ad_attack_paths_cap_map"] = attack_paths_cap_map
+        else:
+            attack_paths_cap_section.pop("ad_attack_paths_cap_map", None)
+
+        if attack_paths_cap_section:
+            existing_cap["ad_attack_paths"] = attack_paths_cap_section
+        else:
+            existing_cap.pop("ad_attack_paths", None)
+
+        risk_score_map = _normalize_score_map(RiskScoreRangeMapping.get_risk_score_map())
+
+        attack_paths_data_artifacts = (
+            artifacts.get("ad_attack_paths")
+            if isinstance(artifacts.get("ad_attack_paths"), dict)
+            else {}
+        )
+        ad_domains_for_scoring = (
+            workbook_payload.get("ad", {}).get("domains")
+            if isinstance(workbook_payload.get("ad"), dict)
+            else None
+        )
+        attack_paths_domains_for_scoring = (
+            workbook_payload.get("ad_attack_paths", {}).get("domains")
+            if isinstance(workbook_payload.get("ad_attack_paths"), dict)
+            else None
+        )
+        attack_paths_score_result = score_attack_paths(
+            attack_paths_data_artifacts,
+            attack_paths_domains_for_scoring,
+            ad_domains_for_scoring,
+        )
+
+        grades_section = workbook_payload.get("external_internal_grades")
+        if not isinstance(grades_section, dict):
+            grades_section = {}
+        iam_grades = grades_section.get("iam")
+        if not isinstance(iam_grades, dict):
+            iam_grades = {}
+
+        aap_score_decimal = _as_decimal(attack_paths_score_result.get("aggregate"))
+        iam_grades["ad_attack_paths"] = {
+            "score": None if aap_score_decimal is None else float(aap_score_decimal),
+            "risk": _score_to_risk(aap_score_decimal, risk_score_map),
+            "metric_scores": attack_paths_score_result.get("metric_scores", {}),
+        }
+
+        attack_paths_domain_results = attack_paths_score_result.get("domains", {})
+        if attack_paths_domain_results:
+            attack_paths_risk_strings: Dict[str, Any] = {}
+            for metric_key in ATTACK_PATHS_METRIC_KEYS:
+                per_domain_labels = []
+                for domain_result in attack_paths_domain_results.values():
+                    domain_metric_score = domain_result.get("metric_scores", {}).get(metric_key)
+                    risk_label = _score_to_risk(_as_decimal(domain_metric_score), risk_score_map)
+                    per_domain_labels.append(risk_label or "")
+                attack_paths_risk_strings[f"{metric_key}_risk_string"] = "/".join(per_domain_labels)
+
+            existing_attack_paths_response = existing_responses.get("ad_attack_paths")
+            combined_attack_paths_response = (
+                dict(existing_attack_paths_response)
+                if isinstance(existing_attack_paths_response, dict)
+                else {}
+            )
+            combined_attack_paths_response.update(attack_paths_risk_strings)
+            existing_responses["ad_attack_paths"] = combined_attack_paths_response
+
+        iam_option_scores: Dict[str, Any] = {}
+        for option_key in ("ad", "ad_attack_paths", "password"):
+            existing_option = iam_grades.get(option_key)
+            if isinstance(existing_option, dict):
+                option_score = _as_decimal(existing_option.get("score"))
+                if option_score is not None:
+                    iam_option_scores[option_key] = option_score
+
+        iam_weights = (self.scoping_weights or {}).get("iam", {})
+        iam_summary = compute_category_score_summary(
+            scores=iam_option_scores, weights=iam_weights, risk_score_map=risk_score_map
+        )
+        iam_total = iam_summary["total"]
+        iam_grades["total"] = None if iam_total is None else float(iam_total)
+        iam_grades["grade"] = iam_summary["grade"]
+
+        grades_section["iam"] = iam_grades
+        workbook_payload["external_internal_grades"] = grades_section
 
         (
             workbook_password_response,

@@ -85,6 +85,7 @@ WORKBOOK_DEFAULTS: Dict[str, Any] = {
         },
         "iam": {
             "ad": {"score": None, "risk": None},
+            "ad_attack_paths": {"score": None, "risk": None, "metric_scores": {}},
             "password": {"score": None, "risk": None},
             "total": None,
             "grade": None,
@@ -171,6 +172,7 @@ WORKBOOK_DEFAULTS: Dict[str, Any] = {
         "complexity_count": None,
     },
     "ad": {"domains": []},
+    "ad_attack_paths": {"domains": []},
     "password": {"policies": []},
     "internal_nexpose": {
         "total": None,
@@ -268,6 +270,7 @@ DATA_RESPONSES_DEFAULTS: Dict[str, Any] = {
         "ood_name_list": "",
     },
     "ad": {"entries": [], "old_domains_str": None},
+    "ad_attack_paths": {"entries": [], "domains_str": None},
     "password": {
         "password_additional_controls": None,
         "password_enforce_mfa_all_accounts": None,

@@ -1,6 +1,7 @@
 """This contains utilities and values used by template linting."""
 
 from ghostwriter.reporting.models import RiskScoreRangeMapping
+from ghostwriter.rolodex.ad_attack_paths_scoring import ATTACK_PATHS_METRIC_KEYS
 from ghostwriter.rolodex.data_parsers import normalize_nexpose_artifacts_map
 
 # Example JSON reporting data for loading into templates for rendering tests
@@ -67,6 +68,7 @@ LINTER_CONTEXT = {
             "iam": {
                 "selected": True,
                 "ad": True,
+                "ad_attack_paths": True,
                 "password": True,
             },
             "wireless": {
@@ -120,6 +122,8 @@ LINTER_CONTEXT = {
             "system_configuration_rt": "Low",
             "ad": "High",
             "ad_rt": "High",
+            "ad_attack_paths": "High",
+            "ad_attack_paths_rt": "High",
             "internal_nexpose": "High",
             "internal_nexpose_rt": "High",
             "endpoint": "Medium",
@@ -2272,6 +2276,190 @@ def _wrap_risk_rich_text_samples():
     data_responses = LINTER_CONTEXT.get("project", {}).get("data_responses")
     if isinstance(data_responses, dict):
         _wrap_risk_fields(data_responses)
+
+
+def _build_ad_attack_paths_sample():
+    """
+    Build a representative `data_responses.ad_attack_paths` sample so
+    templates referencing its keys (mirroring `ad`'s domains_str/*_string/
+    *_count_str/*_risk_string/*_risk_string_rt fields, plus AAP's own
+    total_*_count fields) get linter coverage.
+
+    Generated from `ATTACK_PATHS_METRIC_KEYS` rather than hand-written, so it
+    stays in sync with `build_workbook_ad_attack_paths_response`
+    (`rolodex/data_parsers.py`) and `_apply_data_responses_risk_rich_text`
+    (`custom_serializers.py`) if the metric list ever changes.
+    """
+
+    sample: dict = {
+        "entries": [],
+        "domains_str": "'corp.example.com'/'lab.example.com'",
+    }
+    for metric_key in ATTACK_PATHS_METRIC_KEYS:
+        sample[f"{metric_key}_string"] = "5 and 3"
+        sample[f"{metric_key}_count_str"] = "5/3"
+        sample[f"total_{metric_key}_count"] = 8
+        sample[f"{metric_key}_risk_string"] = "High/Low"
+        sample[f"{metric_key}_risk_string_rt"] = "High/Low"
+
+    return sample
+
+
+LINTER_CONTEXT["project"]["data_responses"]["ad_attack_paths"] = _build_ad_attack_paths_sample()
+
+
+def _build_ad_attack_paths_workbook_sample():
+    """
+    Build a representative `workbook_data.ad_attack_paths` sample -- the raw
+    per-domain counts/overrides -- mirroring the sibling `workbook_data["ad"]`
+    sample. Stays in sync with `ATTACK_PATHS_METRIC_KEYS` and the field names
+    normalized in `workbook_entry.py`
+    (`ATTACK_PATHS_DOMAIN_COUNT_FIELDS`/`ATTACK_PATHS_SCORE_OVERRIDE_FIELDS`).
+    """
+
+    def _domain(name: str, count: int) -> dict:
+        entry = {"domain": name}
+        for metric_key in ATTACK_PATHS_METRIC_KEYS:
+            entry[metric_key] = count
+            entry[f"{metric_key}_score_override"] = None
+        return entry
+
+    return {
+        "domains": [
+            _domain("corp.example.com", 5),
+            _domain("lab.example.com", 3),
+        ]
+    }
+
+
+LINTER_CONTEXT["project"]["workbook_data"]["ad_attack_paths"] = (
+    _build_ad_attack_paths_workbook_sample()
+)
+
+
+def _build_ad_attack_paths_grade_sample():
+    """
+    Build a representative `workbook_data.external_internal_grades.iam.ad_attack_paths`
+    sample, mirroring the sibling `iam["ad"]` sample's shape but with the
+    extra `metric_scores` map real code writes in `rolodex/models.py`
+    (`iam_grades["ad_attack_paths"] = {"score": ..., "risk": ..., "metric_scores": {...}}`).
+    """
+
+    return {
+        "risk": "High",
+        "risk_rt": "High",
+        "score": 4.0,
+        "metric_scores": {metric_key: 4 for metric_key in ATTACK_PATHS_METRIC_KEYS},
+    }
+
+
+LINTER_CONTEXT["project"]["workbook_data"]["external_internal_grades"]["iam"][
+    "ad_attack_paths"
+] = _build_ad_attack_paths_grade_sample()
+
+
+def _build_ad_attack_paths_data_artifacts_sample():
+    """
+    Build a representative `data_artifacts.ad_attack_paths` sample -- raw
+    per-check CSV rows keyed by (lowercased) domain then metric -- mirroring
+    sibling raw-finding samples like `data_artifacts["dns_findings"]`. Column
+    headers match what real CSV uploads use (see
+    `supplemental_export.py`'s `_append_attack_paths_reports`).
+    """
+
+    return {
+        "corp.example.com": {
+            "kerberoastable": [
+                {
+                    "Account": "svc-sql",
+                    "SPN": "MSSQLSvc/sql01.corp.example.com:1433",
+                    "Password Last Set": "2023-01-15",
+                    "Last Logon Date": "2025-01-10",
+                    "Days Since Pwd Set": "400",
+                    "Privileged": "Yes",
+                }
+            ],
+            "asrep_roastable": [
+                {
+                    "Account": "jdoe",
+                    "Password Last Set": "2024-03-01",
+                    "Last Logon Date": "2025-01-05",
+                    "Days Since Pwd Set": "120",
+                    "Privileged": "No",
+                }
+            ],
+            "unconstrained_delegation": [
+                {"Account": "SRV01$", "Type": "Computer", "OS": "Windows Server 2019"}
+            ],
+            "constrained_delegation": [
+                {
+                    "Account": "svc-web",
+                    "Type": "User",
+                    "DelegatesTo": "HTTP/app.corp.example.com",
+                    "ProtocolTransition": "Yes",
+                }
+            ],
+            "rbcd": [
+                {
+                    "Target": "DC01$",
+                    "Type": "Computer",
+                    "AllowedPrincipal": "SRV02$",
+                }
+            ],
+            "shadow_credentials": [
+                {
+                    "Account": "svc-backup",
+                    "Type": "User",
+                    "KeyCount": "1",
+                    "LastChanged": "2025-01-02",
+                }
+            ],
+            "privileged_not_protected": [{"Account": "svc-sql", "Role": "Domain Admins"}],
+            "laps_coverage": [
+                {
+                    "Computer": "WKS-042",
+                    "LegacyLAPS": "No",
+                    "WindowsLAPS": "No",
+                    "Expiration": "",
+                }
+            ],
+            "gpp_passwords": [
+                {
+                    "PolicyGUID": "{12345678-1234-1234-1234-123456789012}",
+                    "XMLFile": "Groups.xml",
+                    "UserName": "localadmin",
+                    "CPassword": "AQAAANCM...",
+                    "DecryptedPassword": "Winter2023!",
+                }
+            ],
+            "ldap_bind_test": [
+                {"DC": "DC01.corp.example.com", "AnonymousBind": "Yes", "UnsignedBind": "Yes"}
+            ],
+            "adcs_vulnerable_templates": [
+                {
+                    "Template": "WebServer",
+                    "ESCFindings": "ESC1",
+                    "EnrollmentPrincipals": "Domain Users",
+                    "CA": "corp-CA01",
+                    "PublishedTo": "corp-CA01",
+                    "EKUs": "Client Authentication",
+                }
+            ],
+            "adcs_ca_config": [
+                {
+                    "CA": "corp-CA01",
+                    "CA Host": "corp-ca01.corp.example.com",
+                    "Findings": "ESC6",
+                    "Detail": "EDITF_ATTRIBUTESUBJECTALTNAME2 flag is enabled",
+                }
+            ],
+        }
+    }
+
+
+LINTER_CONTEXT["project"]["data_artifacts"]["ad_attack_paths"] = (
+    _build_ad_attack_paths_data_artifacts_sample()
+)
 
 
 _wrap_risk_rich_text_samples()

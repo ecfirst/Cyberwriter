@@ -35,3 +35,20 @@ class BuildProjectRiskSummaryTests(TestCase):
         summary = build_project_risk_summary(workbook_payload)
 
         self.assertNotIn("overall_risk", summary)
+
+    def test_surfaces_ad_attack_paths_risk_like_ad_and_password(self):
+        workbook_payload = {
+            "external_internal_grades": {
+                "iam": {
+                    "ad": {"score": 3.0, "risk": "Medium"},
+                    "ad_attack_paths": {"score": 6.0, "risk": "High"},
+                    "password": {"score": 2.0, "risk": "Low-->Medium"},
+                }
+            }
+        }
+
+        summary = build_project_risk_summary(workbook_payload)
+
+        self.assertEqual(summary.get("ad"), "Medium")
+        self.assertEqual(summary.get("ad_attack_paths"), "High")
+        self.assertEqual(summary.get("password"), "Low-->Medium")

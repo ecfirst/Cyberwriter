@@ -133,6 +133,7 @@ class ExportReportXlsx(ExportXlsxBase, ExportReportBase):
         self._append_snmp_rows(cap_data, rows)
         self._append_password_rows(cap_data, rows)
         self._append_ad_rows(cap_data, rows)
+        self._append_ad_attack_paths_rows(cap_data, rows)
         self._append_endpoint_rows(cap_data, rows)
         self._append_wireless_rows(cap_data, rows)
         self._append_nexpose_rows(cap_data, rows)
@@ -236,6 +237,14 @@ class ExportReportXlsx(ExportXlsxBase, ExportReportBase):
         if not isinstance(ad_section, dict):
             return
         self._append_domain_issue_map(rows, "ad", ad_section.get("ad_cap_map"))
+
+    def _append_ad_attack_paths_rows(self, cap_data: Dict[str, Any], rows):
+        attack_paths_section = cap_data.get("ad_attack_paths")
+        if not isinstance(attack_paths_section, dict):
+            return
+        self._append_domain_issue_map(
+            rows, "ad_attack_paths", attack_paths_section.get("ad_attack_paths_cap_map")
+        )
 
     def _append_endpoint_rows(self, cap_data: Dict[str, Any], rows):
         endpoint_section = cap_data.get("endpoint")

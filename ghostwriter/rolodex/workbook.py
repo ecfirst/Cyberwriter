@@ -30,6 +30,7 @@ SECTION_DISPLAY_ORDER = [
     "web",
     "firewall",
     "ad",
+    "ad_attack_paths",
     "password",
     "internal_nexpose",
     "iot-iomt_nexpose",

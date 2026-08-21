@@ -33,9 +33,11 @@ _RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relati
 _RELATIONSHIP_PREFIX = f"{{{_RELATIONSHIP_NS}}}"
 _WORDPROCESSING_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _WORD2010_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
+_WORD2012_NS = "http://schemas.microsoft.com/office/word/2012/wordml"
 _HYPERLINK_RELTYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 )
+_CHART_PACKAGE_RELTYPE = f"{_RELATIONSHIP_NS}/package"
 _COMMENTS_EXTENDED_PART = "word/commentsExtended.xml"
 _COMMENTS_EXTENDED_RELTYPE_2011 = (
     "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
@@ -1139,13 +1141,20 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         word_ns = self._get_word_namespace(root)
         comment_tag = f"{{{word_ns}}}comment"
+        paragraph_tag = f"{{{word_ns}}}p"
         id_attr = f"{{{word_ns}}}id"
+        para_id_attr = f"{{{_WORD2010_NS}}}paraId"
         updated = False
+        orphaned_para_ids: set[str] = set()
 
         for comment in list(root.findall(comment_tag)):
             comment_id = comment.get(id_attr)
             if comment_id is None or str(comment_id) in referenced:
                 continue
+            for paragraph in comment.iter(paragraph_tag):
+                para_id = paragraph.get(para_id_attr)
+                if para_id:
+                    orphaned_para_ids.add(para_id)
             self._remove_element(comment)
             updated = True
 
@@ -1167,6 +1176,80 @@ class GhostwriterDocxTemplate(DocxTemplate):
             comments_part._element = element
         if hasattr(comments_part, "_blob"):
             comments_part._blob = blob
+
+        if orphaned_para_ids:
+            self._remove_orphaned_comments_extended_entries(orphaned_para_ids)
+
+    def _remove_orphaned_comments_extended_entries(self, orphaned_para_ids: set[str]) -> None:
+        """Remove ``commentsExtended.xml`` entries for comments deleted above.
+
+        ``_cleanup_comments_part`` removes ``<w:comment>`` elements from
+        ``comments.xml`` whose anchor was rendered away, but
+        ``word/commentsExtended.xml`` tracks each comment's
+        resolved/threading state in a *sibling* part, keyed by the deleted
+        comment's own paragraph ``w14:paraId`` -- not by the comment id --
+        via ``<w15:commentEx w15:paraId="...">``. Leaving that entry behind
+        points Word at a paragraph that no longer exists anywhere in the
+        package, which is a real "found unreadable content" corruption
+        trigger (confirmed by extracting and inspecting an affected
+        generated report: 6 commentEx entries for 5 surviving comments).
+
+        Note: ``word/commentsIds.xml`` (``w16cid:commentId``, used for
+        @mention tracking in newer Word comment features) is a related,
+        structurally identical gap this doesn't cover -- not reproduced in
+        any template seen so far, so left for whoever hits it next.
+        """
+
+        comments_extended_part = None
+        for part in self._iter_package_parts():
+            try:
+                if self._normalise_partname(part) == _COMMENTS_EXTENDED_PART:
+                    comments_extended_part = part
+                    break
+            except Exception:
+                continue
+
+        if comments_extended_part is None:
+            return
+
+        try:
+            xml = self.get_part_xml(comments_extended_part)
+        except Exception:
+            return
+
+        root = self._ensure_xml_root(xml)
+        if root is None:
+            return
+
+        comment_ex_tag = f"{{{_WORD2012_NS}}}commentEx"
+        para_id_attr = f"{{{_WORD2012_NS}}}paraId"
+        updated = False
+
+        for comment_ex in list(root.findall(comment_ex_tag)):
+            para_id = comment_ex.get(para_id_attr)
+            if para_id is None or para_id not in orphaned_para_ids:
+                continue
+            self._remove_element(comment_ex)
+            updated = True
+
+        if not updated:
+            return
+
+        cleaned = self._coerce_cleaned_xml(xml, root)
+
+        if isinstance(cleaned, bytes):
+            blob = cleaned
+        elif isinstance(cleaned, str):
+            blob = cleaned.encode("utf-8")
+        else:
+            blob = etree.tostring(cleaned)
+
+        element = parse_xml(blob)
+
+        if hasattr(comments_extended_part, "_element"):
+            comments_extended_part._element = element
+        if hasattr(comments_extended_part, "_blob"):
+            comments_extended_part._blob = blob
 
     def _cleanup_part_relationships(self, part, xml) -> None:
         """Remove relationships not referenced in the rendered ``xml``."""
@@ -1706,6 +1789,8 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         word_ns = self._get_word_namespace(root)
 
+        self._repair_nested_text_runs(root, word_ns)
+        self._repair_nested_paragraphs(root, word_ns)
         self._remove_unbalanced_bookmarks(root, word_ns)
         self._remove_unbalanced_range_elements(
             root,
@@ -1736,6 +1821,179 @@ class GhostwriterDocxTemplate(DocxTemplate):
         self._record_comment_references(root, word_ns)
 
         return self._coerce_cleaned_xml(xml, root)
+
+    def _repair_nested_text_runs(self, root, word_ns: str) -> None:
+        """Un-nest ``<w:r>`` runs that ended up inside a ``<w:t>`` element.
+
+        ``<w:t>`` (``CT_Text``) is text-only -- it can never legally contain
+        child elements. This shape appears when a template references a
+        rich-text field (an inline colored/bold risk word or narrative,
+        built via ``docxtpl.RichText`` -- see ``render_rich_text_docx``/
+        ``_render_inline_rich_text`` in ``reportwriter/base/docx.py``) with
+        a plain ``{{ field }}`` tag instead of the ``{{r field }}`` prefix
+        docxtpl requires for inline rich text. docxtpl inserts RichText's
+        own raw ``<w:r><w:t>...</w:t></w:r>`` XML verbatim wherever the tag
+        sat -- for a plain tag, that's inside the template run's own
+        ``<w:t>``. Well-formed XML, but schema-invalid, and a confirmed
+        real-world Word "found unreadable content" trigger (confirmed by
+        extracting and inspecting an affected generated report: 91 malformed
+        ``<w:t>`` elements, spanning nearly every narrative section that uses
+        an inline risk label or AI-review narrative, not any one section in
+        particular).
+
+        Repair by hoisting the ``<w:t>``'s child runs up to replace the run
+        that wrapped them -- exactly what a correctly ``{{r }}``-prefixed
+        tag would have produced in the first place (docxtpl splits the
+        surrounding run and inserts the RichText's own runs as siblings;
+        this is the same operation performed after the fact). The outer
+        run's own formatting is discarded, since in every observed instance
+        it's just generic template formatting -- the inner runs already
+        carry their own complete formatting. If the wrapping ``<w:t>`` had
+        its own leading text before the first nested run (confirmed to
+        happen -- the Jinja tag can sit mid-sentence within an otherwise
+        normal run, not only as the run's sole content), that text is kept
+        in place in the original run rather than discarded, with the
+        hoisted runs inserted immediately after it. Only handles the
+        confirmed, reproduced shape (all of a ``<w:t>``'s children being
+        ``<w:r>`` elements); anything else is left alone rather than risk
+        mangling an unrecognized structure.
+        """
+        text_tag = f"{{{word_ns}}}t"
+        run_tag = f"{{{word_ns}}}r"
+
+        for text_el in list(root.iter(text_tag)):
+            children = list(text_el)
+            if not children or any(child.tag != run_tag for child in children):
+                continue
+
+            run_el = text_el.getparent()
+            if run_el is None or run_el.tag != run_tag:
+                continue
+            container = run_el.getparent()
+            if container is None:
+                continue
+
+            index = container.index(run_el)
+            tail = run_el.tail
+            if tail:
+                children[-1].tail = (children[-1].tail or "") + tail
+
+            leading_text = text_el.text
+            for child in children:
+                text_el.remove(child)
+
+            if leading_text:
+                insert_at = index + 1
+            else:
+                container.remove(run_el)
+                insert_at = index
+
+            for offset, child in enumerate(children):
+                container.insert(insert_at + offset, child)
+
+    def _repair_nested_paragraphs(self, root, word_ns: str) -> None:
+        """Promote ``<w:p>`` elements nested inside a ``<w:t>`` to paragraph level.
+
+        Same root cause and mechanism as ``_repair_nested_text_runs``, for
+        the sibling failure mode: docxtpl's ``Subdoc``/``LazySubdocRender``
+        (used for multi-paragraph rich text -- e.g. an AI-review narrative
+        spanning more than one paragraph) also returns raw XML from
+        ``__html__()``, just a sequence of ``<w:p>`` elements instead of
+        ``<w:r>`` elements. A plain ``{{ field }}`` tag (instead of the
+        required ``{{p field }}`` prefix) drops that XML wherever the tag
+        sat -- inside the template run's own ``<w:t>`` -- producing ``<w:p>``
+        nested inside ``<w:t>`` nested inside ``<w:r>`` nested inside the
+        *original* ``<w:p>``, which is doubly invalid (a paragraph can no
+        more contain another paragraph than ``<w:t>`` can contain a run).
+        Not yet observed in an actual generated report (only the run-
+        nesting shape has been), but confirmed reachable via the identical
+        mechanism by reading ``Subdoc.__html__`` directly -- handled here
+        defensively, before it surfaces in the wild.
+
+        A correctly ``{{p field }}``-tagged paragraph is documented to
+        contain nothing else (see
+        ``DOCS/features/reporting/templating-and-rich-text-fields.mdx``),
+        so the expected case is a paragraph whose only content is the run
+        wrapping the malformed ``<w:t>`` -- handled by replacing the whole
+        paragraph with the promoted ``<w:p>`` elements. If the paragraph
+        has other content before and/or after that run (as has been
+        observed for the run-nesting case), split it: keep a paragraph for
+        the "before" content and add a new one, with the same paragraph
+        properties, for the "after" content, sandwiching the promoted
+        paragraphs between them -- mirroring how a correctly-tagged subdoc
+        gets merged in by docxtpl itself.
+        """
+        text_tag = f"{{{word_ns}}}t"
+        run_tag = f"{{{word_ns}}}r"
+        para_tag = f"{{{word_ns}}}p"
+        para_props_tag = f"{{{word_ns}}}pPr"
+
+        for text_el in list(root.iter(text_tag)):
+            nested_paragraphs = list(text_el)
+            if not nested_paragraphs or any(child.tag != para_tag for child in nested_paragraphs):
+                continue
+
+            run_el = text_el.getparent()
+            if run_el is None or run_el.tag != run_tag:
+                continue
+            orig_para = run_el.getparent()
+            if orig_para is None or orig_para.tag != para_tag:
+                continue
+            para_container = orig_para.getparent()
+            if para_container is None:
+                continue
+
+            para_index = para_container.index(orig_para)
+            run_index = list(orig_para).index(run_el)
+            # <w:pPr> is paragraph-level formatting metadata, not paragraph
+            # *content* -- exclude it here so a paragraph containing only
+            # the tag-bearing run (plus its own <w:pPr>) is correctly
+            # treated as having no "before" content to preserve.
+            before = [
+                el for el in list(orig_para)[:run_index] if el.tag != para_props_tag
+            ]
+            after = list(orig_para)[run_index + 1 :]
+
+            leading_text = text_el.text
+            run_tail = run_el.tail
+            para_tail = orig_para.tail
+            original_pPr = orig_para.find(para_props_tag)
+
+            for paragraph in nested_paragraphs:
+                text_el.remove(paragraph)
+
+            keep_run = bool(leading_text)
+            if before or keep_run:
+                for sibling in list(orig_para)[run_index:]:
+                    orig_para.remove(sibling)
+                if keep_run:
+                    orig_para.append(run_el)
+                elif run_tail:
+                    before[-1].tail = (before[-1].tail or "") + run_tail
+                kept_before_para = orig_para
+            else:
+                para_container.remove(orig_para)
+                kept_before_para = None
+                if run_tail:
+                    nested_paragraphs[-1].tail = (nested_paragraphs[-1].tail or "") + run_tail
+
+            after_para = None
+            if after:
+                after_para = etree.Element(para_tag)
+                if original_pPr is not None:
+                    after_para.append(deepcopy(original_pPr))
+                for sibling in after:
+                    after_para.append(sibling)
+
+            insertion_items = list(nested_paragraphs)
+            if after_para is not None:
+                insertion_items.append(after_para)
+            if para_tail:
+                insertion_items[-1].tail = (insertion_items[-1].tail or "") + para_tail
+
+            insert_at = para_index + 1 if kept_before_para is not None else para_index
+            for offset, item in enumerate(insertion_items):
+                para_container.insert(insert_at + offset, item)
 
     def _get_namespace(self, root, prefix: str, default: str | None = None) -> str | None:
         if hasattr(root, "nsmap") and root.nsmap:
@@ -2966,6 +3224,27 @@ class GhostwriterDocxTemplate(DocxTemplate):
             column.set("name", f"Column{max_id}")
             existing_columns.append(column)
 
+        # Excel table columns require unique "id" attributes (confirmed via
+        # a real generated report: a duplicated id produced a table Word
+        # couldn't open for editing -- "The linked file isn't available" --
+        # even though the chart itself rendered fine, since that error only
+        # surfaces once Word tries to load the linked workbook's table).
+        # Guard defensively rather than assume the source template's ids
+        # were already unique: reassign any duplicate/missing id to a fresh
+        # value continuing from the current max, leaving already-unique ids
+        # untouched.
+        seen_ids: set[str] = set()
+        for column in existing_columns:
+            column_id = column.get("id")
+            if column_id and column_id not in seen_ids:
+                seen_ids.add(column_id)
+                continue
+            max_id += 1
+            while str(max_id) in seen_ids:
+                max_id += 1
+            column.set("id", str(max_id))
+            seen_ids.add(str(max_id))
+
         column_names: list[str] = []
         for offset, column in enumerate(existing_columns):
             column_index = start_col + offset
@@ -3203,7 +3482,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     self._set_chart_formula(num_ref, resolved_formula)
                 cache = self._find_or_create_cache(num_ref, "numCache")
                 self._write_cache(cache, values)
-                self._write_literal_cache(num_ref, "numLit", values)
                 updated = True
 
             for str_ref in tree.findall(".//{*}strRef"):
@@ -3220,7 +3498,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
                     self._set_chart_formula(str_ref, resolved_formula)
                 cache = self._find_or_create_cache(str_ref, "strCache")
                 self._write_cache(cache, values)
-                self._write_literal_cache(str_ref, "strLit", values)
                 updated = True
 
         if self._reindex_chart_series(tree):
@@ -3244,7 +3521,7 @@ class GhostwriterDocxTemplate(DocxTemplate):
 
         for rel in rels.values():
             reltype = getattr(rel, "reltype", "")
-            if not reltype or "embeddedPackage" not in reltype:
+            if reltype != _CHART_PACKAGE_RELTYPE:
                 continue
             target = getattr(rel, "target_part", None)
             if target is None:
@@ -3297,24 +3574,6 @@ class GhostwriterDocxTemplate(DocxTemplate):
         namespace = etree.QName(ref_node).namespace
         tag = f"{{{namespace}}}{local_name}" if namespace else local_name
         return etree.SubElement(ref_node, tag)
-
-    def _write_literal_cache(self, ref_node, local_name: str, values: list[str]) -> None:
-        parent = ref_node.getparent()
-        if parent is None:
-            return
-
-        literal = None
-        for child in parent:
-            if etree.QName(child).localname == local_name:
-                literal = child
-                break
-
-        if literal is None:
-            namespace = etree.QName(ref_node).namespace
-            tag = f"{{{namespace}}}{local_name}" if namespace else local_name
-            literal = etree.SubElement(parent, tag)
-
-        self._write_cache(literal, values)
 
     def _reindex_chart_series(self, tree: etree._Element) -> bool:
         updated = False

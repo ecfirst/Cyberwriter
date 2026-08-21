@@ -9,7 +9,7 @@ from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.db.models import Q
-from django.http import HttpResponseNotAllowed, JsonResponse
+from django.http import FileResponse, HttpResponse, HttpResponseNotAllowed, JsonResponse
 from django.shortcuts import redirect, render
 from django.views.generic.edit import View
 from django.views.static import serve
@@ -63,10 +63,44 @@ def update_session(request):
     return HttpResponseNotAllowed(["POST"])
 
 
+# Media files this large fall back to the original streaming response
+# rather than being buffered fully into memory (protects against an
+# unexpectedly huge file, e.g. a full project archive export).
+_MAX_BUFFERED_MEDIA_BYTES = 25 * 1024 * 1024  # 25 MB
+
+
 @login_required
 def protected_serve(request, path, document_root=None, show_indexes=False):
     """Serve static files from ``MEDIA_ROOT`` for authenticated requests."""
-    return serve(request, path, document_root, show_indexes)
+    response = serve(request, path, document_root, show_indexes)
+
+    # django.views.static.serve() returns FileResponse(file.open("rb"), ...)
+    # for a normal successful file load -- a StreamingHttpResponse wrapping a
+    # synchronous file object. Django's own docs say this view is "only to be
+    # used during development" for exactly this reason: under ASGI it can
+    # only be served by bridging the sync iterator through a worker thread,
+    # tying up that worker's single request-handling thread for the entire
+    # file transfer. Every media file in the app (client logos, evidence
+    # screenshots, templates, archives) goes through this view, so buffer
+    # small/medium files into a plain HttpResponse instead, copying over the
+    # headers serve() already set correctly (Content-Type, Last-Modified,
+    # Content-Encoding, Content-Length). 404s and 304s aren't FileResponse
+    # instances and pass through unchanged.
+    if isinstance(response, FileResponse):
+        content_length = response.headers.get("Content-Length")
+        try:
+            size = int(content_length) if content_length is not None else None
+        except (TypeError, ValueError):
+            size = None
+        if size is None or size <= _MAX_BUFFERED_MEDIA_BYTES:
+            file_to_stream = response.file_to_stream
+            content = file_to_stream.read()
+            file_to_stream.close()
+            buffered = HttpResponse(content)
+            for key, value in response.headers.items():
+                buffered.headers[key] = value
+            return buffered
+    return response
 
 
 class Dashboard(RoleBasedAccessControlMixin, View):

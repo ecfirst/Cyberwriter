@@ -68,6 +68,7 @@ from ghostwriter.rolodex.workbook_defaults import (
     ensure_data_responses_defaults,
 )
 from ghostwriter.rolodex.templatetags import determine_primary
+from ghostwriter.rolodex.views import _build_ai_review_prompt, _build_ai_review_sections
 
 logging.disable(logging.CRITICAL)
 
@@ -972,6 +973,40 @@ class ProjectDetailViewTests(TestCase):
         response = self.client_auth.get(self.uri)
         self.assertEqual(response.status_code, 200)
 
+    def test_workbook_sections_skipped_when_no_legacy_workbook_file(self):
+        # build_workbook_sections() does a full recursive walk of the entire
+        # workbook_data tree, and its result is only ever rendered when the
+        # legacy `workbook_file` upload is set. No project uses that field
+        # anymore, so the expensive computation should be skipped entirely
+        # rather than paying its cost (which scales with workbook_data size)
+        # on every page load for a result nothing displays.
+        self.project.workbook_data = {"ad": {"domains": [{"domain": "corp.example.com"}]}}
+        self.project.save(update_fields=["workbook_data"])
+
+        with mock.patch(
+            "ghostwriter.rolodex.views.build_workbook_sections"
+        ) as mock_build_sections:
+            response = self.client_mgr.get(self.uri)
+
+        self.assertEqual(response.status_code, 200)
+        mock_build_sections.assert_not_called()
+        self.assertEqual(response.context["workbook_sections"], [])
+
+    def test_workbook_sections_computed_when_legacy_workbook_file_present(self):
+        self.project.workbook_file = SimpleUploadedFile(
+            "workbook.json", b"{}", content_type="application/json"
+        )
+        self.project.save(update_fields=["workbook_file"])
+
+        with mock.patch(
+            "ghostwriter.rolodex.views.build_workbook_sections", return_value=["fake-section"]
+        ) as mock_build_sections:
+            response = self.client_mgr.get(self.uri)
+
+        self.assertEqual(response.status_code, 200)
+        mock_build_sections.assert_called_once()
+        self.assertEqual(response.context["workbook_sections"], ["fake-section"])
+
     def test_detail_view_shows_nexpose_missing_warning_and_button(self):
         self.project.workbook_data = {"external_nexpose": {"total": 1}}
         self.project.data_artifacts = {
@@ -1048,6 +1083,146 @@ class ProjectDetailViewTests(TestCase):
         self.assertContains(response, 'Processed Data <span class="badge badge-pill badge-light">1</span>')
         self.assertContains(response, "Download Nexpose Data file")
         self.assertContains(response, "?artifact=external_nexpose_metrics")
+
+    def test_data_artifacts_json_strips_large_unused_artifacts_at_every_depth(self):
+        # xlsx_base64 blobs and raw *_findings lists are only needed by the
+        # dedicated download views / already-summarized *_metrics siblings,
+        # never by the client-side JS that consumes this JSON -- embedding
+        # them caused a 502 for a project with several large uploads (a big
+        # *_findings list scales with finding count, unlike xlsx_base64, and
+        # can hold the GIL long enough during rendering that uvicorn's
+        # worker-healthcheck supervisor kills the "unresponsive" worker
+        # mid-request). Confirm both are stripped at every shape actually
+        # used in production, while sibling data survives untouched.
+        workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
+        self.project.data_artifacts = {
+            # _build_nexpose_metrics_payload/_build_firewall_metrics_payload/
+            # _build_web_metrics_payload (data_parsers.py) all embed the
+            # *entire* finding set redundantly multiple times over despite
+            # their "summary metrics" docstrings -- confirmed on a real
+            # project via pg_column_size that internal_nexpose_metrics alone
+            # was 96.5MB, larger than the *_findings key holding the same
+            # data just once. Nothing (client-side or server-side) reads
+            # anything from these beyond "summary" and "xlsx_base64".
+            "internal_nexpose_metrics": {
+                "summary": {"total": 4},
+                "all_issues": [{"issue": "Some Vuln", "details": "d" * 200, "evidence": "e" * 200}],
+                "high_issues": [{"issue": "Some Vuln", "details": "d" * 200}],
+                "med_issues": [],
+                "low_issues": [],
+                "unique_issues": [{"issue": "Some Vuln"}],
+                "host_counts": [{"host": "10.0.0.1", "high": 1}],
+                "top_hosts": [{"host": "10.0.0.1", "score": 3}],
+                "top_impacts": [{"impact": "Data Loss", "count": 1}],
+                "xlsx_base64": workbook_b64,
+            },
+            "firewall_metrics": {
+                "summary": {"unique": 3},
+                "devices": [{"device": "fw1", "total_high": 1}],
+                "all_issues": [{"Impact": "f" * 200}],
+                "rule_issues": [{"Impact": "f" * 200}],
+            },
+            "web_metrics": {
+                "summary": {"unique": 2},
+                "all_issues": [{"Impact": "w" * 200}],
+                "unique_issues": [{"Impact": "w" * 200}],
+            },
+            "internal_nexpose_findings": {
+                "findings": [{"Vulnerability Title": "Some Missing Vuln", "Details": "x" * 200}],
+                "software": [{"System": "10.0.0.1", "Software": "OpenSSH", "Version": "8.0"}],
+            },
+            "web_findings": [{"Vulnerability": "Reflected XSS", "Impact": "y" * 200}],
+            "endpoint": {
+                "metrics": {
+                    "corp.example.com": {
+                        "domain": "corp.example.com",
+                        "summary": {"total_computers": 10},
+                        "xlsx_base64": workbook_b64,
+                    }
+                }
+            },
+            # AD Attack Paths keeps raw uploaded CSV rows per domain/metric as
+            # an audit trail; client JS only ever reads the sibling
+            # f"{metric}_file_name" string, never these arrays (confirmed via
+            # project_detail.html's getMetricFileName). For a data-heavy
+            # project this dwarfed everything else stripped above (13.8MB
+            # data_artifacts vs 4KB workbook_data, confirmed via
+            # pg_column_size) and was the actual dominant cost behind the
+            # multi-hundred-MB per-view render growth this investigation
+            # tracked down.
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [{"Account": "svc-sql", "SPN": "MSSQLSvc/sql01"}],
+                    "kerberoastable_file_name": "kerberoastable.csv",
+                    "laps_coverage": [{"Computer": "WKS-01", "LegacyLAPS": "No"}],
+                    "laps_coverage_file_name": "laps.csv",
+                }
+            },
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.uri)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode("utf-8")
+        self.assertNotIn("xlsx_base64", content)
+        self.assertNotIn(workbook_b64, content)
+        self.assertNotIn("Some Missing Vuln", content)
+        self.assertNotIn("Reflected XSS", content)
+        self.assertNotIn('"findings"', content)
+        self.assertNotIn("svc-sql", content)
+        self.assertNotIn("MSSQLSvc", content)
+        self.assertNotIn("WKS-01", content)
+        # The redundant, multi-hundred-MB-in-production *_metrics bloat
+        # fields must be gone entirely, for all three metrics builders.
+        self.assertNotIn("d" * 200, content)
+        self.assertNotIn("e" * 200, content)
+        self.assertNotIn("f" * 200, content)
+        self.assertNotIn("w" * 200, content)
+        for bloat_field in (
+            "all_issues", "high_issues", "unique_issues", "host_counts",
+            "top_hosts", "top_impacts", "devices", "rule_issues",
+        ):
+            self.assertNotIn(f'"{bloat_field}"', content)
+        # Sibling data at the same nesting depths must survive the strip.
+        self.assertIn('"total": 4', content)
+        self.assertIn('"unique": 3', content)  # firewall_metrics.summary
+        self.assertIn('"unique": 2', content)  # web_metrics.summary
+        self.assertIn('"total_computers": 10', content)
+        self.assertIn("corp.example.com", content)
+        self.assertIn("kerberoastable.csv", content)
+        self.assertIn("laps.csv", content)
+
+        # The database copy is untouched -- only the rendered JSON changes.
+        self.project.refresh_from_db()
+        self.assertEqual(
+            self.project.data_artifacts["internal_nexpose_metrics"]["xlsx_base64"],
+            workbook_b64,
+        )
+        self.assertEqual(
+            self.project.data_artifacts["endpoint"]["metrics"]["corp.example.com"]["xlsx_base64"],
+            workbook_b64,
+        )
+        self.assertEqual(
+            self.project.data_artifacts["internal_nexpose_findings"]["findings"][0][
+                "Vulnerability Title"
+            ],
+            "Some Missing Vuln",
+        )
+        self.assertEqual(
+            self.project.data_artifacts["web_findings"][0]["Vulnerability"], "Reflected XSS"
+        )
+        self.assertEqual(
+            self.project.data_artifacts["ad_attack_paths"]["corp.example.com"]["kerberoastable"][
+                0
+            ]["Account"],
+            "svc-sql",
+        )
+        self.assertEqual(
+            self.project.data_artifacts["firewall_metrics"]["devices"][0]["device"], "fw1"
+        )
+        self.assertEqual(
+            len(self.project.data_artifacts["internal_nexpose_metrics"]["all_issues"]), 1
+        )
 
     def test_processed_data_tab_handles_firewall_summary_without_legacy_totals(self):
         self.project.data_artifacts = {
@@ -1653,6 +1828,77 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
             )
         )
 
+    def test_upload_ad_csv_generates_cap_entry(self):
+        csv_file = SimpleUploadedFile(
+            "ent_admins.csv",
+            b"Account,Password Last Set\n"
+            b"admin1,2023-01-01\n"
+            b"admin2,2023-06-01\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "ad_csv": csv_file,
+                "domain": "corp.example.com",
+                "ad_metric": "ent_admins",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.project.refresh_from_db()
+        ad_cap = self.project.cap.get("ad", {})
+        cap_map = ad_cap.get("ad_cap_map", {})
+        corp_issues = cap_map.get("corp.example.com", {})
+        issue = "Number of Enterprise Admins"
+        self.assertIn(issue, corp_issues)
+        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[issue]
+        self.assertEqual(
+            corp_issues[issue],
+            {"recommendation": expected_recommendation, "score": expected_score},
+        )
+
+    def test_remove_ad_metric_clears_cap_entry(self):
+        issue = "Number of Enterprise Admins"
+        recommendation, score = DEFAULT_GENERAL_CAP_MAP[issue]
+        self.project.workbook_data = {
+            "ad": {"domains": [{"domain": "corp.example.com", "ent_admins": 2}]},
+        }
+        self.project.data_artifacts = {
+            "ad": {
+                "corp.example.com": {
+                    "ent_admins": [{"Account": "admin1"}, {"Account": "admin2"}],
+                    "ent_admins_file_name": "ent_admins.csv",
+                }
+            }
+        }
+        self.project.cap = {
+            "ad": {
+                "ad_cap_map": {
+                    "corp.example.com": {
+                        issue: {"recommendation": recommendation, "score": score}
+                    }
+                }
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts", "cap"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {"remove_ad_metric": {"domain": "corp.example.com", "metric": "ent_admins"}}
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+        ad_cap = self.project.cap.get("ad", {})
+        cap_map = ad_cap.get("ad_cap_map", {})
+        self.assertNotIn("corp.example.com", cap_map)
+
     def test_password_entries_removed_when_ad_domain_deleted(self):
         self.project.workbook_data = {
             "ad": {"domains": [{"domain": "corp.example.com"}, {"domain": "old.example.com"}]},
@@ -1716,6 +1962,425 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         self.assertIsInstance(cap_entries, list)
         self.assertListEqual(
             [entry.get("domain") for entry in cap_entries], ["corp.example.com"]
+        )
+
+    def test_upload_attack_paths_csv_updates_metrics_and_artifacts(self):
+        csv_file = SimpleUploadedFile(
+            "kerberoastable.csv",
+            b"Account,SPN,PasswordLastSet,LastLogonDate,DaysSincePwdSet,Privileged\n"
+            b"svc-sql,MSSQLSvc/sql01,2023-01-01,2024-01-01,400,Yes\n"
+            b"svc-web,HTTP/web01,2023-06-01,2024-01-01,200,No\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "kerberoastable",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        domains = payload.get("workbook_data", {}).get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(len(domains), 1)
+        self.assertEqual(domains[0].get("domain"), "corp.example.com")
+        self.assertEqual(domains[0].get("kerberoastable"), 2)
+
+        self.project.refresh_from_db()
+        artifacts = self.project.data_artifacts or {}
+        domain_entry = artifacts.get("ad_attack_paths", {}).get("corp.example.com", {})
+        self.assertEqual(len(domain_entry.get("kerberoastable", [])), 2)
+        self.assertEqual(domain_entry.get("kerberoastable_file_name"), "kerberoastable.csv")
+        workbook_domains = self.project.workbook_data.get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(workbook_domains[0].get("kerberoastable"), 2)
+
+    def test_upload_privileged_not_protected_csv_accepts_tool_header(self):
+        # The real tool exports this metric's second column as
+        # "Role (DA/EA/Both)", not plain "Role" -- confirms the header map
+        # matches what's actually produced, not a guessed/simplified name.
+        csv_file = SimpleUploadedFile(
+            "privileged_not_protected.csv",
+            b"Account,Role (DA/EA/Both)\n"
+            b"jdoe,DA\n"
+            b"asmith,EA\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "privileged_not_protected",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        domains = payload.get("workbook_data", {}).get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(len(domains), 1)
+        self.assertEqual(domains[0].get("domain"), "corp.example.com")
+        self.assertEqual(domains[0].get("privileged_not_protected"), 2)
+
+        self.project.refresh_from_db()
+        artifacts = self.project.data_artifacts or {}
+        domain_entry = artifacts.get("ad_attack_paths", {}).get("corp.example.com", {})
+        rows = domain_entry.get("privileged_not_protected", [])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].get("Role"), "DA")
+
+    def test_upload_adcs_ca_config_csv_accepts_tool_headers(self):
+        # The real tool exports this metric with a "CA Name"/"CA Host" pair
+        # of columns, not a single plain "CA" column -- confirms the header
+        # map matches what's actually produced, and that "CA Host" (newly
+        # tracked, display-only) gets captured too.
+        csv_file = SimpleUploadedFile(
+            "adcs_ca_config.csv",
+            b"CA Name,CA Host,Findings,Detail\n"
+            b"corp-CA01,corp-ca01.corp.example.com,ESC6,"
+            b"EDITF_ATTRIBUTESUBJECTALTNAME2 flag is enabled\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "adcs_ca_config",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        domains = payload.get("workbook_data", {}).get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(len(domains), 1)
+        self.assertEqual(domains[0].get("domain"), "corp.example.com")
+        self.assertEqual(domains[0].get("adcs_ca_config"), 1)
+
+        self.project.refresh_from_db()
+        artifacts = self.project.data_artifacts or {}
+        domain_entry = artifacts.get("ad_attack_paths", {}).get("corp.example.com", {})
+        rows = domain_entry.get("adcs_ca_config", [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("CA"), "corp-CA01")
+        self.assertEqual(rows[0].get("CA Host"), "corp-ca01.corp.example.com")
+        self.assertEqual(rows[0].get("Findings"), "ESC6")
+
+    def test_upload_laps_coverage_csv_counts_not_covered_systems_only(self):
+        # The CSV lists the full computer inventory (2 covered, 3 not), so
+        # the displayed count should be 3 -- not len(rows) == 5.
+        csv_file = SimpleUploadedFile(
+            "laps_coverage.csv",
+            b"Computer,LegacyLAPS,WindowsLAPS,Expiration\n"
+            b"WKS-01,Yes,No,2025-01-01\n"
+            b"WKS-02,No,Yes,2025-01-01\n"
+            b"WKS-03,No,No,\n"
+            b"WKS-04,No,No,\n"
+            b"WKS-05,No,No,\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "laps_coverage",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        domains = payload.get("workbook_data", {}).get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(len(domains), 1)
+        self.assertEqual(domains[0].get("laps_coverage"), 3)
+
+        self.project.refresh_from_db()
+        artifacts = self.project.data_artifacts or {}
+        domain_entry = artifacts.get("ad_attack_paths", {}).get("corp.example.com", {})
+        # The raw artifact rows stay unfiltered (full inventory) for the
+        # supplemental export/audit trail -- only the summary count changes.
+        self.assertEqual(len(domain_entry.get("laps_coverage", [])), 5)
+
+    def test_upload_fully_covered_laps_coverage_csv_does_not_trigger_cap(self):
+        csv_file = SimpleUploadedFile(
+            "laps_coverage.csv",
+            b"Computer,LegacyLAPS,WindowsLAPS,Expiration\n"
+            b"WKS-01,Yes,No,2025-01-01\n"
+            b"WKS-02,No,Yes,2025-01-01\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "laps_coverage",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        domains = payload.get("workbook_data", {}).get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(domains[0].get("laps_coverage"), 0)
+
+        self.project.refresh_from_db()
+        attack_paths_cap = self.project.cap.get("ad_attack_paths", {})
+        cap_map = attack_paths_cap.get("ad_attack_paths_cap_map", {})
+        corp_issues = cap_map.get("corp.example.com", {})
+        self.assertNotIn(
+            "Local Administrator Password Rotation (LAPS) Not Fully Deployed", corp_issues
+        )
+
+    def test_upload_attack_paths_csv_generates_cap_entry(self):
+        csv_file = SimpleUploadedFile(
+            "kerberoastable.csv",
+            b"Account,SPN,PasswordLastSet,LastLogonDate,DaysSincePwdSet,Privileged\n"
+            b"svc-sql,MSSQLSvc/sql01,2023-01-01,2024-01-01,400,Yes\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "kerberoastable",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.project.refresh_from_db()
+        attack_paths_cap = self.project.cap.get("ad_attack_paths", {})
+        cap_map = attack_paths_cap.get("ad_attack_paths_cap_map", {})
+        corp_issues = cap_map.get("corp.example.com", {})
+        issue = "Enabled User Accounts Allow Kerberoasting"
+        self.assertIn(issue, corp_issues)
+        expected_recommendation, expected_score = DEFAULT_GENERAL_CAP_MAP[issue]
+        self.assertEqual(
+            corp_issues[issue],
+            {"recommendation": expected_recommendation, "score": expected_score},
+        )
+
+    def test_upload_attack_paths_csv_refreshes_rubric_score(self):
+        csv_file = SimpleUploadedFile(
+            "kerberoastable.csv",
+            b"Account,SPN,PasswordLastSet,LastLogonDate,DaysSincePwdSet,Privileged\n"
+            b"svc-sql,MSSQLSvc/sql01,2023-01-01,2024-01-01,400,Yes\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": csv_file,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "kerberoastable",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.project.refresh_from_db()
+        iam_grades = self.project.workbook_data.get("external_internal_grades", {}).get("iam", {})
+        attack_paths_grades = iam_grades.get("ad_attack_paths", {})
+        # A privileged account with a password >365 days old scores 6 per the
+        # rubric; it's the only populated check, so the aggregate is 6.0.
+        self.assertEqual(attack_paths_grades.get("score"), 6.0)
+        self.assertEqual(attack_paths_grades.get("risk"), "High")
+        self.assertEqual(attack_paths_grades.get("metric_scores", {}).get("kerberoastable"), 6)
+
+    def test_attack_paths_score_override_wins_over_computed_score(self):
+        self.project.workbook_data = {
+            "ad_attack_paths": {
+                "domains": [{"domain": "corp.example.com", "kerberoastable": 1}]
+            }
+        }
+        self.project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [
+                        {"Account": "svc-sql", "Privileged": "Yes", "Days Since Pwd Set": "400"}
+                    ],
+                }
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {
+                    "areas": {
+                        "ad_attack_paths": {
+                            "domains": [
+                                {
+                                    "domain": "corp.example.com",
+                                    "kerberoastable": 1,
+                                    "kerberoastable_score_override": 2,
+                                }
+                            ]
+                        }
+                    }
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        workbook_domains = self.project.workbook_data.get("ad_attack_paths", {}).get("domains", [])
+        self.assertEqual(workbook_domains[0].get("kerberoastable_score_override"), 2)
+
+        iam_grades = self.project.workbook_data.get("external_internal_grades", {}).get("iam", {})
+        attack_paths_grades = iam_grades.get("ad_attack_paths", {})
+        # Without the override, this row would score 6 (Privileged + stale
+        # password); the override of 2 should win instead.
+        self.assertEqual(attack_paths_grades.get("metric_scores", {}).get("kerberoastable"), 2)
+        self.assertEqual(attack_paths_grades.get("score"), 2.0)
+
+    def test_upload_attack_paths_csv_validates_headers(self):
+        bad_csv = SimpleUploadedFile(
+            "bad_kerberoastable.csv",
+            b"User,SPN\nsvc-sql,MSSQLSvc/sql01\n",
+            content_type="text/csv",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {
+                "attack_paths_csv": bad_csv,
+                "domain": "corp.example.com",
+                "attack_paths_metric": "kerberoastable",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self.assertIn("Missing required headers", payload.get("error", ""))
+
+        self.project.refresh_from_db()
+        self.assertNotIn("ad_attack_paths", self.project.data_artifacts or {})
+
+    def test_remove_attack_paths_metric_clears_artifact_and_count(self):
+        self.project.workbook_data = {
+            "ad_attack_paths": {"domains": [{"domain": "corp.example.com", "kerberoastable": 2}]},
+        }
+        self.project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [{"Account": "svc-sql"}, {"Account": "svc-web"}],
+                    "kerberoastable_file_name": "kerberoastable.csv",
+                }
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {
+                    "remove_attack_paths_metric": {
+                        "domain": "corp.example.com",
+                        "metric": "kerberoastable",
+                    }
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+        self.assertNotIn("ad_attack_paths", self.project.data_artifacts or {})
+        domains = self.project.workbook_data.get("ad_attack_paths", {}).get("domains", [])
+        self.assertIsNone(domains[0].get("kerberoastable"))
+
+    def test_remove_attack_paths_metric_clears_cap_entry(self):
+        issue = "Enabled User Accounts Allow Kerberoasting"
+        recommendation, score = DEFAULT_GENERAL_CAP_MAP[issue]
+        self.project.workbook_data = {
+            "ad_attack_paths": {"domains": [{"domain": "corp.example.com", "kerberoastable": 2}]},
+        }
+        self.project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {
+                    "kerberoastable": [{"Account": "svc-sql"}, {"Account": "svc-web"}],
+                    "kerberoastable_file_name": "kerberoastable.csv",
+                }
+            }
+        }
+        self.project.cap = {
+            "ad_attack_paths": {
+                "ad_attack_paths_cap_map": {
+                    "corp.example.com": {
+                        issue: {"recommendation": recommendation, "score": score}
+                    }
+                }
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts", "cap"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps(
+                {
+                    "remove_attack_paths_metric": {
+                        "domain": "corp.example.com",
+                        "metric": "kerberoastable",
+                    }
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+        attack_paths_cap = self.project.cap.get("ad_attack_paths", {})
+        cap_map = attack_paths_cap.get("ad_attack_paths_cap_map", {})
+        self.assertNotIn("corp.example.com", cap_map)
+
+    def test_attack_paths_entries_removed_when_ad_domain_deleted(self):
+        self.project.workbook_data = {
+            "ad": {"domains": [{"domain": "corp.example.com"}, {"domain": "old.example.com"}]},
+            "ad_attack_paths": {
+                "domains": [
+                    {"domain": "corp.example.com", "kerberoastable": 2},
+                    {"domain": "old.example.com", "kerberoastable": 1},
+                ]
+            },
+        }
+        self.project.data_artifacts = {
+            "ad_attack_paths": {
+                "corp.example.com": {"kerberoastable": [{"Account": "a"}, {"Account": "b"}]},
+                "old.example.com": {"kerberoastable": [{"Account": "c"}]},
+            }
+        }
+        self.project.save(update_fields=["workbook_data", "data_artifacts"])
+
+        response = self.client_auth.post(
+            self.update_url,
+            data=json.dumps({"remove_ad_domain": "old.example.com"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.project.refresh_from_db()
+
+        attack_paths_state = self.project.workbook_data.get("ad_attack_paths", {})
+        attack_paths_domains = attack_paths_state.get("domains", [])
+        self.assertListEqual(
+            [entry.get("domain") for entry in attack_paths_domains if isinstance(entry, dict)],
+            ["corp.example.com"],
+        )
+        self.assertNotIn(
+            "old.example.com", self.project.data_artifacts.get("ad_attack_paths", {})
         )
 
     def test_password_entries_removed_when_password_domain_deleted(self):
@@ -3537,3 +4202,52 @@ class MatrixViewTests(TestCase):
         response = self.client.get(reverse("rolodex:web_issue_matrix") + "?q=Missing")
         self.assertContains(response, "Missing CSP")
         self.assertNotContains(response, "Cross-Site Scripting")
+
+
+class AiReviewAttackPathsParityTests(TestCase):
+    """Confirm AD Attack Paths reaches AI Review parity with AD/Password."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.project = ProjectFactory()
+
+    def test_section_appears_when_scoped(self):
+        scoping_state = {
+            "iam": {"selected": True, "ad": True, "ad_attack_paths": True, "password": True},
+        }
+        sections = _build_ai_review_sections(scoping_state, {})
+        section_keys = {section["key"] for section in sections}
+        self.assertIn("ad_attack_paths_rt", section_keys)
+        attack_paths_section = next(s for s in sections if s["key"] == "ad_attack_paths_rt")
+        self.assertEqual(attack_paths_section["label"], "AD Attack Paths")
+
+    def test_section_omitted_when_not_scoped(self):
+        scoping_state = {
+            "iam": {"selected": True, "ad": True, "ad_attack_paths": False, "password": True},
+        }
+        sections = _build_ai_review_sections(scoping_state, {})
+        section_keys = {section["key"] for section in sections}
+        self.assertNotIn("ad_attack_paths_rt", section_keys)
+
+    def test_prompt_includes_domain_metrics_and_risk(self):
+        workbook = {
+            "ad_attack_paths": {
+                "domains": [
+                    {"domain": "corp.example.com", "kerberoastable": 2, "gpp_passwords": 1},
+                ]
+            },
+            "external_internal_grades": {
+                "iam": {
+                    "ad_attack_paths": {
+                        "score": 6.0,
+                        "risk": "High",
+                        "metric_scores": {"kerberoastable": 6, "gpp_passwords": 5},
+                    }
+                }
+            },
+        }
+        prompt = _build_ai_review_prompt("ad_attack_paths_rt", self.project, workbook, {})
+        self.assertIn("Active Directory attack path findings", prompt)
+        self.assertIn("corp.example.com", prompt)
+        self.assertIn("Kerberoastable Accounts", prompt)
+        self.assertIn("High", prompt)

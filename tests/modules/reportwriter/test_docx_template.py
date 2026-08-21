@@ -568,6 +568,27 @@ TABLE_TC_NARROW_XML = (
     '</table>'
 )
 
+# Confirmed real-world shape: a "Firewall Vulnerability Totals" chart's
+# embedded workbook table had a duplicate column id (two columns both
+# id="3") -- Excel table columns require unique ids, and Word refused to
+# open the file for editing ("The linked file isn't available") even
+# though the chart itself rendered correctly, since that validation only
+# happens when Word tries to load the linked table. Only charts backed by
+# a variable-width {%tc for %} column loop (like Firewall's per-device
+# breakdown) go through this table-resize code path at all, which is why
+# every other chart in the same report was unaffected.
+TABLE_TC_NARROW_DUPLICATE_ID_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    'id="1" name="Table1" displayName="Table1" ref="A1:B4" headerRowCount="1">'
+    '<tableColumns count="2">'
+    '<tableColumn id="1" name="Metric"/>'
+    '<tableColumn id="1" name="Placeholder"/>'
+    '</tableColumns>'
+    '<autoFilter ref="A1:B4"/>'
+    '</table>'
+)
+
 SHEET_TABLE_RELS_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>'
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
@@ -732,7 +753,7 @@ class FakeRelationship:
     def __init__(self, target_part=None, *, reltype: str | None = None):
         self.reltype = (
             reltype
-            or "http://schemas.openxmlformats.org/officeDocument/2006/relationships/embeddedPackage"
+            or "http://schemas.openxmlformats.org/officeDocument/2006/relationships/package"
         )
         self._reltype = self.reltype
         self.target_part = target_part
@@ -999,6 +1020,84 @@ def test_cleanup_comments_part_removes_orphan_entries():
     assert 'w:id="2"' not in updated_xml
 
 
+def test_cleanup_comments_part_removes_orphan_comments_extended_entries():
+    # Comment #2's own paragraph carries a w14:paraId, matching how real
+    # Word-authored comments are structured (confirmed by extracting and
+    # inspecting an actual corrupt generated report). commentsExtended.xml
+    # tracks that same paraId in a sibling <w15:commentEx> entry -- deleting
+    # comment #2 from comments.xml without also removing its commentEx
+    # entry is exactly the mismatch that made a real report unreadable.
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    template._referenced_comment_ids = {"1", "3"}
+
+    comments_xml = (
+        '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">'
+        '<w:comment w:id="1"><w:p w14:paraId="AAAAAAAA"/></w:comment>'
+        '<w:comment w:id="2"><w:p w14:paraId="BBBBBBBB"/></w:comment>'
+        '<w:comment w:id="3"><w:p w14:paraId="CCCCCCCC"/></w:comment>'
+        "</w:comments>"
+    )
+    comments_part = FakeXmlPart("/word/comments.xml", comments_xml)
+
+    comments_extended_xml = (
+        '<w15:commentsEx xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml">'
+        '<w15:commentEx w15:paraId="AAAAAAAA" w15:done="0"/>'
+        '<w15:commentEx w15:paraId="BBBBBBBB" w15:done="0"/>'
+        '<w15:commentEx w15:paraId="CCCCCCCC" w15:done="0"/>'
+        "</w15:commentsEx>"
+    )
+    comments_extended_part = FakeXmlPart("/word/commentsExtended.xml", comments_extended_xml)
+
+    def part_related_by(reltype):
+        if reltype == f"{docx_template._RELATIONSHIP_NS}/comments":
+            return comments_part
+        raise KeyError(reltype)
+
+    template.docx = SimpleNamespace(_part=SimpleNamespace(part_related_by=part_related_by))
+    template.get_part_xml = lambda part: part._blob.decode("utf-8")
+    template._iter_package_parts = lambda: [comments_part, comments_extended_part]
+
+    template._cleanup_comments_part()
+
+    updated_comments_xml = comments_part._blob.decode("utf-8")
+    assert 'w:id="2"' not in updated_comments_xml
+
+    updated_extended_xml = comments_extended_part._blob.decode("utf-8")
+    assert 'w15:paraId="AAAAAAAA"' in updated_extended_xml
+    assert 'w15:paraId="CCCCCCCC"' in updated_extended_xml
+    assert 'w15:paraId="BBBBBBBB"' not in updated_extended_xml
+
+
+def test_cleanup_comments_part_leaves_comments_extended_alone_when_absent():
+    # Templates without any comments at all (e.g. the stock template.docx)
+    # have no commentsExtended.xml part -- confirm the new cleanup step is a
+    # clean no-op rather than raising.
+    template = GhostwriterDocxTemplate.__new__(GhostwriterDocxTemplate)
+    template._referenced_comment_ids = set()
+
+    comments_xml = (
+        '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">'
+        '<w:comment w:id="1"><w:p w14:paraId="AAAAAAAA"/></w:comment>'
+        "</w:comments>"
+    )
+    comments_part = FakeXmlPart("/word/comments.xml", comments_xml)
+
+    def part_related_by(reltype):
+        if reltype == f"{docx_template._RELATIONSHIP_NS}/comments":
+            return comments_part
+        raise KeyError(reltype)
+
+    template.docx = SimpleNamespace(_part=SimpleNamespace(part_related_by=part_related_by))
+    template.get_part_xml = lambda part: part._blob.decode("utf-8")
+    template._iter_package_parts = lambda: [comments_part]
+
+    template._cleanup_comments_part()
+
+    assert 'w:id="1"' not in comments_part._blob.decode("utf-8")
+
+
 def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
     template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
     xml = (
@@ -1046,6 +1145,188 @@ def test_cleanup_word_markup_removes_duplicate_bookmarks_and_missing_fields():
     assert "Broken complex" not in cleaned_xml
     assert "Valid simple" in cleaned_xml
     assert "Valid complex" in cleaned_xml
+
+
+def test_cleanup_word_markup_repairs_runs_nested_inside_text():
+    # Confirmed real-world shape (extracted from an actual corrupt generated
+    # report): a template run's <w:t> ends up wrapping three <w:r> children
+    # -- a plain-text run, a colored/bold risk word, and another plain-text
+    # run -- because the template referenced a rich-text field (an inline
+    # risk narrative, via docxtpl.RichText) with a plain {{ field }} tag
+    # instead of the required {{r field }} prefix. <w:t> is text-only
+    # (CT_Text); nesting runs inside it is well-formed XML but schema-invalid
+    # and a real Word "found unreadable content" trigger.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>"
+        "<w:p><w:pPr><w:rPr/></w:pPr>"
+        '<w:r><w:rPr><w:lang w:eastAsia="en-GB"/></w:rPr><w:t xml:space="preserve">'
+        '<w:r><w:t xml:space="preserve">create a </w:t></w:r>'
+        '<w:r><w:rPr><w:color w:val="e03e2d"/><w:b/></w:rPr>'
+        '<w:t xml:space="preserve">High</w:t></w:r>'
+        '<w:r><w:t xml:space="preserve"> risk of domain compromise.</w:t></w:r>'
+        "</w:t></w:r>"
+        "</w:p>"
+        "</w:body></w:document>"
+    )
+
+    part = FakeRelPart("/word/document.xml", xml, {})
+    tree = parse_xml(xml.encode("utf-8"))
+
+    cleaned = template._cleanup_word_markup(part, tree)
+    cleaned_xml = etree.tostring(cleaned, encoding="unicode")
+
+    # No <w:t> may have any element children left anywhere in the result.
+    for text_el in cleaned.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"):
+        assert list(text_el) == [], f"<w:t> still has child elements: {etree.tostring(text_el)}"
+
+    # The three runs must survive as siblings, in order, with their own
+    # formatting intact, and the outer wrapper run's generic <w:rPr> gone.
+    assert cleaned_xml.count("<w:r>") + cleaned_xml.count("<w:r ") == 3
+    assert "create a " in cleaned_xml
+    assert '<w:color w:val="e03e2d"/>' in cleaned_xml
+    assert ">High<" in cleaned_xml
+    assert " risk of domain compromise." in cleaned_xml
+    assert cleaned_xml.index("create a") < cleaned_xml.index("High") < cleaned_xml.index(
+        "risk of domain compromise"
+    )
+    assert 'eastAsia="en-GB"' not in cleaned_xml
+
+
+def test_repair_nested_text_runs_preserves_leading_text_before_nested_run():
+    # Also confirmed in the real corrupt file: the Jinja tag can sit
+    # mid-sentence within a run that already has its own plain text before
+    # the nested markup starts (not only as the run's sole content). That
+    # leading text must be kept, not silently dropped.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:body><w:r><w:t xml:space="preserve"> identified create a '
+        '<w:r><w:rPr><w:color w:val="e03e2d"/><w:b/></w:rPr>'
+        '<w:t xml:space="preserve">High</w:t></w:r>'
+        "</w:t></w:r></w:body></w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_text_runs(root, "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+
+    for text_el in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"):
+        assert list(text_el) == []
+
+    result_xml = etree.tostring(root, encoding="unicode")
+    assert " identified create a " in result_xml
+    assert ">High<" in result_xml
+    assert result_xml.index("identified create a") < result_xml.index("High")
+
+
+def test_repair_nested_text_runs_leaves_normal_text_untouched():
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body><w:p><w:r><w:t>Perfectly normal text</w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_text_runs(root, "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+
+    assert etree.tostring(root, encoding="unicode") == xml
+
+
+def test_repair_nested_text_runs_ignores_unrecognized_shapes():
+    # A <w:t> with a non-<w:r> child is an invalid shape this repair doesn't
+    # claim to understand -- leave it alone rather than risk mangling it.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body><w:p><w:r><w:t><w:tab/></w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_text_runs(root, "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+
+    assert etree.tostring(root, encoding="unicode") == xml
+
+
+WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def test_repair_nested_paragraphs_replaces_whole_paragraph():
+    # A correctly {{p field }}-tagged paragraph is documented to contain
+    # nothing else -- confirm that documented-correct shape (paragraph's
+    # only content is the run wrapping the malformed <w:t>) results in the
+    # whole paragraph being replaced by the promoted ones, with no leftover
+    # empty paragraph (this exact case was a real bug caught during
+    # development: <w:pPr> was initially miscounted as "before" content).
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        f'<w:document xmlns:w="{WORD_NS}">'
+        "<w:body>"
+        '<w:p><w:pPr><w:jc w:val="center"/></w:pPr>'
+        '<w:r><w:t xml:space="preserve">'
+        "<w:p><w:r><w:t>First subdoc paragraph.</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>Second subdoc paragraph.</w:t></w:r></w:p>"
+        "</w:t></w:r></w:p>"
+        "</w:body></w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_paragraphs(root, WORD_NS)
+
+    body = root.find(f"{{{WORD_NS}}}body")
+    assert len(body) == 2, etree.tostring(root, encoding="unicode")
+    result_xml = etree.tostring(root, encoding="unicode")
+    assert "First subdoc paragraph." in result_xml
+    assert "Second subdoc paragraph." in result_xml
+    assert "w:jc" not in result_xml  # original paragraph's formatting discarded, as intended
+
+
+def test_repair_nested_paragraphs_splits_before_and_after_content():
+    # A narrative sentence with intro/outro text around the substitution
+    # ("Intro: {{ field }} outro.") must split into three paragraphs, with
+    # the before/after paragraphs both keeping the original formatting.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        f'<w:document xmlns:w="{WORD_NS}">'
+        "<w:body>"
+        '<w:p><w:pPr><w:jc w:val="center"/></w:pPr>'
+        '<w:r><w:t xml:space="preserve">Intro: </w:t></w:r>'
+        '<w:r><w:t xml:space="preserve">'
+        "<w:p><w:r><w:t>Subdoc paragraph.</w:t></w:r></w:p>"
+        "</w:t></w:r>"
+        '<w:r><w:t xml:space="preserve"> outro.</w:t></w:r>'
+        "</w:p>"
+        "</w:body></w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_paragraphs(root, WORD_NS)
+
+    body = root.find(f"{{{WORD_NS}}}body")
+    assert len(body) == 3, etree.tostring(root, encoding="unicode")
+    result_xml = etree.tostring(root, encoding="unicode")
+    assert result_xml.index("Intro:") < result_xml.index("Subdoc paragraph") < result_xml.index("outro")
+    assert result_xml.count('w:jc w:val="center"') == 2
+
+
+def test_repair_nested_paragraphs_leaves_mixed_shapes_untouched():
+    # A <w:t> mixing <w:r> and <w:p> children is a shape neither repair
+    # claims to understand -- left alone rather than mangled.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    xml = (
+        f'<w:document xmlns:w="{WORD_NS}">'
+        "<w:body><w:p><w:r><w:t>"
+        "<w:r><w:t>a run</w:t></w:r>"
+        "<w:p><w:r><w:t>a paragraph</w:t></w:r></w:p>"
+        "</w:t></w:r></w:p></w:body></w:document>"
+    )
+    root = parse_xml(xml.encode("utf-8"))
+
+    template._repair_nested_paragraphs(root, WORD_NS)
+
+    assert etree.tostring(root, encoding="unicode") == xml
 
 
 def test_cleanup_word_markup_strips_paragraph_ids():
@@ -1453,16 +1734,23 @@ def test_render_additional_parts_updates_chart_cache(monkeypatch):
     )
 
     chart_xml = etree.tostring(chart._element, encoding="unicode")
+    # numCache/strCache (children of the numRef/strRef actually in use) get
+    # the real, newly-resolved values.
     assert "<c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt>" in chart_xml
-    assert "<c:numLit><c:ptCount val=\"2\"/>" in chart_xml
-    assert "<c:numLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>10</c:v></c:pt>" in chart_xml
-    assert "<c:pt idx=\"1\"><c:v>20</c:v></c:pt></c:numLit>" in chart_xml
     assert "<c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
     assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt>" in chart_xml
-    assert "<c:strLit><c:ptCount val=\"2\"/>" in chart_xml
-    assert "<c:strLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>Alpha</c:v></c:pt>" in chart_xml
-    assert "<c:pt idx=\"1\"><c:v>Beta</c:v></c:pt></c:strLit>" in chart_xml
+    # CHART_XML's fixture has a pre-existing numLit/strLit *sibling* of
+    # numRef/strRef -- a shape that should never occur in a real chart
+    # (CT_NumDataSource/category data source is an xsd:choice between ref
+    # and lit, never both). Confirmed via a real generated report:
+    # writing into that sibling produced exactly this invalid shape and
+    # Word refused to open the file. The fix must never touch it -- it
+    # stays exactly as it was in the source XML.
+    assert "<c:numLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>3</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>4</c:v></c:pt></c:numLit>" in chart_xml
+    assert "<c:strLit><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>Old</c:v></c:pt>" in chart_xml
+    assert "<c:pt idx=\"1\"><c:v>Values</c:v></c:pt></c:strLit>" in chart_xml
     assert "<c:autoUpdate val=\"0\"/>" in chart_xml
     assert "{{" not in chart_xml
 
@@ -1645,6 +1933,76 @@ def test_sync_chart_cache_reindexes_series():
     series = tree.findall(".//{*}ser")
     assert [ser.find("{*}idx").get("val") for ser in series] == ["0", "1"]
     assert [ser.find("{*}order").get("val") for ser in series] == ["0", "1"]
+
+
+def test_sync_chart_cache_resolves_workbook_via_real_package_reltype():
+    # Regression test for a real bug: _resolve_chart_workbook matched a
+    # chart's relationship to its embedded workbook against the fabricated
+    # string ".../relationships/embeddedPackage", which never appears in a
+    # real OOXML package -- the actual relationship type charts use is
+    # ".../relationships/package" (confirmed against python-docx's own
+    # RELATIONSHIP_TYPE.PACKAGE constant, and against a real generated
+    # report's chart .rels files). That meant _resolve_chart_workbook
+    # ALWAYS returned None, so a chart whose numeric values depend on this
+    # resync (a variable-width, formula-driven range like
+    # Sheet1!$B$2:$B$4, rather than a fixed value baked in at template-
+    # render time) kept its stale placeholder cache values -- exactly what
+    # a real "Firewall Vulnerability Totals" chart showed (correct
+    # category labels, all-zero data points, and Word's "The linked file
+    # isn't available" error on Edit Data). This test uses excel_values
+    # with real data (unlike the other _sync_chart_cache tests above,
+    # which pass excel_values={} and only exercise the cache-repair/
+    # reindex steps that run independently of workbook resolution) so it
+    # would have caught the bug: with the fabricated reltype, the stale
+    # "0" placeholder survives; with the real one, it's replaced.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    workbook = FakeWorkbookPart("/word/embeddings/Microsoft_Excel_Worksheet1.xlsx")
+    chart_xml = (
+        '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<c:chart><c:plotArea><c:barChart><c:ser>"
+        "<c:val><c:numRef><c:f>Sheet1!$B$2:$B$4</c:f>"
+        "<c:numCache><c:ptCount val=\"3\"/>"
+        "<c:pt idx=\"0\"><c:v>0</c:v></c:pt>"
+        "<c:pt idx=\"1\"><c:v>0</c:v></c:pt>"
+        "<c:pt idx=\"2\"><c:v>0</c:v></c:pt>"
+        "</c:numCache></c:numRef></c:val>"
+        "</c:ser></c:barChart></c:plotArea>"
+        "<c:externalData r:id=\"rId1\"><c:autoUpdate val=\"0\"/></c:externalData>"
+        "</c:chart></c:chartSpace>"
+    )
+    chart = FakeChartPart("/word/charts/chart8.xml", chart_xml, workbook)
+
+    excel_values = {
+        "word/embeddings/Microsoft_Excel_Worksheet1.xlsx": {
+            "Sheet1": {"B2": "5", "B3": "3", "B4": "2"},
+        }
+    }
+
+    synced_xml = template._sync_chart_cache(chart_xml, chart, excel_values)
+
+    tree = etree.fromstring(synced_xml.encode("utf-8"))
+    val = tree.find(".//{*}val")
+    # <c:val> (CT_NumDataSource) allows EITHER numRef OR numLit, never both --
+    # it's an xsd:choice, not a sequence. A second real-file regression
+    # (found immediately after this fix first shipped: the report went from
+    # "chart shows stale zeros" to "Word can't open the file at all") was
+    # _write_literal_cache unconditionally creating a sibling numLit/strLit
+    # next to the existing numRef/strRef, which is exactly this schema
+    # violation. Confirmed by extracting the actual corrupt report: every
+    # <c:val>/<c:tx>/<c:cat> in the Firewall chart had grown a second,
+    # illegitimate Lit sibling. Assert it can never come back.
+    children = [etree.QName(c).localname for c in val]
+    assert "numLit" not in children, f"numLit must never appear alongside numRef, got children={children}"
+    assert children == ["numRef"], f"<c:val> must contain only numRef, got {children}"
+
+    num_cache = tree.find(".//{*}numCache")
+    values = [pt.findtext("{*}v") for pt in num_cache.findall("{*}pt")]
+    assert values == ["5", "3", "2"], (
+        f"expected the real workbook values to replace the stale placeholders, got {values}"
+    )
 
 
 def test_get_undeclared_variables_includes_diagram_parts(monkeypatch):
@@ -1841,6 +2199,46 @@ def test_render_additional_parts_updates_table_columns_for_tc(monkeypatch):
     assert tree.get("ref") == "A1:C4"
     columns = tree.findall(f"{prefix}tableColumns/{prefix}tableColumn")
     assert len(columns) == 3
+    assert [column.get("name") for column in columns] == [
+        "Metric",
+        "Edge-FW01",
+        "Edge-FW02",
+    ]
+
+
+def test_render_additional_parts_dedupes_table_column_ids(monkeypatch):
+    # Regression test for a real bug found immediately after the chart
+    # resync fix above first shipped: growing a {%tc for %} column loop's
+    # table from a template whose starting tableColumns already had a
+    # duplicate "id" (this exact shape was found in an actual generated
+    # report's Firewall chart) must not let that duplicate survive.
+    template = GhostwriterDocxTemplate("DOCS/sample_reports/template.docx")
+    template.init_docx()
+
+    excel = FakeXlsxPart(
+        "/word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+        WORKSHEET_TC_RENDERED_COLUMNS_XML,
+        content_types_xml=CONTENT_TYPES_WITH_TABLE_XML,
+        extra_files={
+            "xl/worksheets/_rels/sheet1.xml.rels": SHEET_TABLE_RELS_XML,
+            "xl/tables/table1.xml": TABLE_TC_NARROW_DUPLICATE_ID_XML,
+        },
+    )
+
+    monkeypatch.setattr(template, "_iter_additional_parts", lambda: iter([excel]))
+
+    template._render_additional_parts({}, None)
+
+    with zipfile.ZipFile(io.BytesIO(excel._blob)) as archive:
+        table_xml = archive.read("xl/tables/table1.xml").decode("utf-8")
+
+    tree = etree.fromstring(table_xml.encode("utf-8"))
+    ns = tree.nsmap.get(None)
+    prefix = f"{{{ns}}}" if ns else ""
+
+    columns = tree.findall(f"{prefix}tableColumns/{prefix}tableColumn")
+    ids = [column.get("id") for column in columns]
+    assert len(ids) == len(set(ids)), f"table column ids must be unique, got {ids}"
     assert [column.get("name") for column in columns] == [
         "Metric",
         "Edge-FW01",

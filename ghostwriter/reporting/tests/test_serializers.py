@@ -755,6 +755,64 @@ class ProjectSerializerDataResponsesTests(TestCase):
         self.assertEqual(ad_summary.get("total_gl_count"), 0)
         self.assertEqual(ad_summary.get("total_op_count"), 10)
 
+    def test_ad_attack_paths_summary_surfaces_via_generic_pass_through(self):
+        # Simulate what rebuild_data_artifacts (tested separately in
+        # test_data_parsers.py) persists into data_responses, and confirm the
+        # serializer's generic pass-through (custom_serializers.py has no
+        # dedicated _collect_ad_attack_paths_responses, unlike ad/password)
+        # surfaces it unchanged, plus the entries default.
+        self.project.data_responses = {
+            "ad_attack_paths": {
+                "domains_str": "'corp.example.com'/'lab.example.com'",
+                "kerberoastable_string": "5 and 3",
+                "kerberoastable_count_str": "5/3",
+                "kerberoastable_risk_string": "High/Low",
+                "gpp_passwords_string": "0 and 1",
+                "gpp_passwords_count_str": "0/1",
+                "gpp_passwords_risk_string": "Low/Medium",
+            }
+        }
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+        self.project.refresh_from_db()
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+        attack_paths_summary = responses.get("ad_attack_paths")
+
+        self.assertIsInstance(attack_paths_summary, dict)
+        self.assertEqual(
+            attack_paths_summary.get("domains_str"), "'corp.example.com'/'lab.example.com'"
+        )
+        self.assertEqual(attack_paths_summary.get("kerberoastable_string"), "5 and 3")
+        self.assertEqual(attack_paths_summary.get("kerberoastable_count_str"), "5/3")
+        self.assertEqual(attack_paths_summary.get("gpp_passwords_string"), "0 and 1")
+        self.assertEqual(attack_paths_summary.get("gpp_passwords_count_str"), "0/1")
+        self.assertEqual(attack_paths_summary.get("entries"), [])
+
+        # Same rich-text pass AD/password/endpoint risk strings get: a
+        # `{metric}_risk_string_rt` companion for report templates.
+        self.assertEqual(attack_paths_summary.get("kerberoastable_risk_string"), "High/Low")
+        self.assertEqual(
+            attack_paths_summary.get("kerberoastable_risk_string_rt"), "<p>High/Low</p>"
+        )
+        self.assertEqual(attack_paths_summary.get("gpp_passwords_risk_string"), "Low/Medium")
+        self.assertEqual(
+            attack_paths_summary.get("gpp_passwords_risk_string_rt"), "<p>Low/Medium</p>"
+        )
+
+    def test_ad_attack_paths_summary_defaults_when_no_data(self):
+        self.project.data_responses = {}
+        self.project.workbook_data = {}
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+        self.project.refresh_from_db()
+
+        serializer = FullProjectSerializer(self.project)
+        responses = serializer.data["project"]["data_responses"]
+        attack_paths_summary = responses.get("ad_attack_paths")
+
+        self.assertEqual(attack_paths_summary, {"entries": [], "domains_str": None})
+
     def test_ad_summary_populates_risk_contrib_from_entries(self):
         workbook_payload = {
             "external_internal_grades": {

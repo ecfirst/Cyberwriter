@@ -57,6 +57,7 @@ class SupplementalDocumentBuilder:
         self._append_dns_records(files)
         self._append_internal_software(files)
         self._append_ad_reports(files)
+        self._append_attack_paths_reports(files)
         self._append_snmp_reports(files)
         self._append_processed_metrics(files)
         self._append_cloud_management_upload(files)
@@ -371,6 +372,131 @@ class SupplementalDocumentBuilder:
             if sheets:
                 workbook_bytes = self._create_workbook(sheets)
                 files.append((f"{self.client_name} {label}.xlsx", workbook_bytes))
+
+    def _append_attack_paths_reports(self, files: List[Tuple[str, bytes]]) -> None:
+        attack_paths_artifacts = self.artifacts.get("ad_attack_paths")
+        if not isinstance(attack_paths_artifacts, dict):
+            return
+
+        report_configs = [
+            (
+                "kerberoastable",
+                "Kerberoastable Accounts",
+                [
+                    "Account",
+                    "SPN",
+                    "Password Last Set",
+                    "Last Logon Date",
+                    "Days Since Pwd Set",
+                    "Privileged",
+                ],
+            ),
+            (
+                "asrep_roastable",
+                "ASREP Roastable",
+                [
+                    "Account",
+                    "Password Last Set",
+                    "Last Logon Date",
+                    "Days Since Pwd Set",
+                    "Privileged",
+                ],
+            ),
+            (
+                "unconstrained_delegation",
+                "Unconstrained Delegation",
+                ["Account", "Type", "OS"],
+            ),
+            (
+                "constrained_delegation",
+                "Constrained Delegation",
+                ["Account", "Type", "DelegatesTo", "ProtocolTransition"],
+            ),
+            ("rbcd", "RBCD", ["Target", "Type", "AllowedPrincipal"]),
+            (
+                "shadow_credentials",
+                "Shadow Credentials",
+                ["Account", "Type", "KeyCount", "LastChanged"],
+            ),
+            ("privileged_not_protected", "Privileged Not Protected", ["Account", "Role"]),
+            (
+                "laps_coverage",
+                "LAPS Coverage",
+                ["Computer", "LegacyLAPS", "WindowsLAPS", "Expiration"],
+            ),
+            (
+                "gpp_passwords",
+                "GPP Passwords",
+                ["PolicyGUID", "XMLFile", "UserName", "CPassword", "DecryptedPassword"],
+            ),
+            ("ldap_bind_test", "LDAP Bind Test", ["DC", "AnonymousBind", "UnsignedBind"]),
+            (
+                "adcs_vulnerable_templates",
+                "ADCS Vulnerable Templates",
+                [
+                    "Template",
+                    "ESCFindings",
+                    "EnrollmentPrincipals",
+                    "CA",
+                    "PublishedTo",
+                    "EKUs",
+                ],
+            ),
+            ("adcs_ca_config", "ADCS CA Config", ["CA", "CA Host", "Findings", "Detail"]),
+        ]
+
+        sort_strategies = {
+            "kerberoastable": lambda r: (
+                self._numeric_sort_key_desc(self._string_value(r, "Days Since Pwd Set")),
+                self._string_value(r, "Account").lower(),
+            ),
+            "asrep_roastable": lambda r: (
+                self._numeric_sort_key_desc(self._string_value(r, "Days Since Pwd Set")),
+                self._string_value(r, "Account").lower(),
+            ),
+            "shadow_credentials": lambda r: (
+                self._date_sort_key(self._string_value(r, "LastChanged")),
+                self._string_value(r, "Account").lower(),
+            ),
+            "rbcd": lambda r: (
+                self._string_value(r, "Target").lower(),
+                self._string_value(r, "AllowedPrincipal").lower(),
+            ),
+            "laps_coverage": lambda r: self._string_value(r, "Computer").lower(),
+            "gpp_passwords": lambda r: self._string_value(r, "UserName").lower(),
+            "ldap_bind_test": lambda r: self._string_value(r, "DC").lower(),
+            "adcs_vulnerable_templates": lambda r: self._string_value(
+                r, "Template"
+            ).lower(),
+            "adcs_ca_config": lambda r: self._string_value(r, "CA").lower(),
+        }
+
+        for key, label, headers in report_configs:
+            sheets = []
+            for domain, entries in attack_paths_artifacts.items():
+                if not isinstance(entries, dict):
+                    continue
+                domain_entries = entries.get(key)
+                if not isinstance(domain_entries, list) or not domain_entries:
+                    continue
+
+                sorter = sort_strategies.get(key) or (
+                    lambda r, first_header=headers[0]: self._string_value(
+                        r, first_header
+                    ).lower()
+                )
+                sorted_rows = sorted(domain_entries, key=sorter)
+                sheets.append(
+                    {
+                        "name": str(domain) if domain else label,
+                        "headers": headers,
+                        "rows": sorted_rows,
+                    }
+                )
+
+            if sheets:
+                workbook_bytes = self._create_workbook(sheets)
+                files.append((f"{self.client_name} AAP - {label}.xlsx", workbook_bytes))
 
     def _append_snmp_reports(self, files: List[Tuple[str, bytes]]) -> None:
         snmp_entries = self.artifacts.get("snmp")

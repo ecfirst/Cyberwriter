@@ -9,6 +9,7 @@ import io
 import logging
 import os
 import re
+import threading
 import unicodedata
 from base64 import b64decode
 from collections import Counter, OrderedDict
@@ -262,6 +263,96 @@ DEFAULT_GENERAL_CAP_MAP: Dict[str, Tuple[str, int]] = {
         "Review all firewall rules to ensure there is a valid business justification; document the business justification and "
         "network access requirements",
         5,
+    ),
+    "Active Directory Certificate Services Templates Enable Privilege Escalation": (
+        "Restrict enrollment on client-authentication templates to privileged groups, remove "
+        "`ENROLLEE_SUPPLIES_SUBJECT` from any template granting client auth EKUs, and require manager "
+        "approval on high-privilege templates.",
+        10,
+    ),
+    "Plaintext Credentials Recoverable from Group Policy Preferences on SYSVOL": (
+        "Remove every Group Policy Preferences XML file containing `cpassword` from SYSVOL and treat "
+        "every exposed account as compromised — rotate all referenced credentials immediately.",
+        9,
+    ),
+    "Non-Domain-Controller Principals Configured for Unconstrained Delegation": (
+        "Convert non-DC unconstrained delegation to constrained delegation with protocol transition "
+        "only where required, and remove `TRUSTED_FOR_DELEGATION` from user accounts entirely.",
+        9,
+    ),
+    "Active Directory Certificate Authority Configuration Enables Privilege Escalation": (
+        "Disable `EDITF_ATTRIBUTESUBJECTALTNAME2` on all Certificate Authorities, restrict ManageCA "
+        "and ManageCertificates rights to tier-0 administrators, and disable HTTP CA web enrollment.",
+        8,
+    ),
+    "User Accounts Do Not Require Kerberos Pre-Authentication": (
+        'Remove the "Do not require Kerberos preauthentication" flag from all user accounts and '
+        "verify no privileged account carries it.",
+        8,
+    ),
+    "Alternate Certificate-Based Credentials Present on Domain Accounts (Shadow Credentials)": (
+        "Triage each `msDS-KeyCredentialLink` entry against the client's Windows Hello for Business "
+        "enrollment inventory and remove any credential not tied to an authorized enrollment.",
+        8,
+    ),
+    "Enabled User Accounts Allow Kerberoasting": (
+        "Migrate SPN-bearing user accounts to group Managed Service Accounts where possible, and "
+        "enforce 25+ character random passwords on any that must remain.",
+        8,
+    ),
+    "Local Administrator Password Rotation (LAPS) Not Fully Deployed": (
+        "Deploy Windows LAPS to 100% of domain-joined workstations and member servers, retire legacy "
+        "LAPS on any remaining endpoints, and confirm rotation is occurring on schedule.",
+        7,
+    ),
+    "Objects Grant Resource-Based Constrained Delegation to Other Principals": (
+        "Audit `msDS-AllowedToActOnBehalfOfOtherIdentity` values across the domain and remove any not "
+        "tied to a documented delegation requirement.",
+        7,
+    ),
+    "Domain Controllers Accept Anonymous or Unsigned LDAP Binds": (
+        "Disable anonymous LDAP bind on all Domain Controllers and enforce LDAP signing and channel "
+        "binding (`LdapEnforceChannelBinding=2`).",
+        7,
+    ),
+    "Accounts Configured for Kerberos Constrained Delegation with Protocol Transition": (
+        "Remove `TrustedToAuthForDelegation` (T2A4D) from any account whose workflow does not require "
+        "protocol transition, and document the remaining legitimate use cases.",
+        7,
+    ),
+    "Privileged Accounts Are Not Members of the Protected Users Group": (
+        "Add all Domain Admins and Enterprise Admins to the Protected Users group after validating no "
+        "service dependency will break under its protocol restrictions.",
+        6,
+    ),
+}
+
+ATTACK_PATHS_CAP_ISSUES: Dict[str, str] = {
+    "adcs_vulnerable_templates": (
+        "Active Directory Certificate Services Templates Enable Privilege Escalation"
+    ),
+    "gpp_passwords": (
+        "Plaintext Credentials Recoverable from Group Policy Preferences on SYSVOL"
+    ),
+    "unconstrained_delegation": (
+        "Non-Domain-Controller Principals Configured for Unconstrained Delegation"
+    ),
+    "adcs_ca_config": (
+        "Active Directory Certificate Authority Configuration Enables Privilege Escalation"
+    ),
+    "asrep_roastable": "User Accounts Do Not Require Kerberos Pre-Authentication",
+    "shadow_credentials": (
+        "Alternate Certificate-Based Credentials Present on Domain Accounts (Shadow Credentials)"
+    ),
+    "kerberoastable": "Enabled User Accounts Allow Kerberoasting",
+    "laps_coverage": "Local Administrator Password Rotation (LAPS) Not Fully Deployed",
+    "rbcd": "Objects Grant Resource-Based Constrained Delegation to Other Principals",
+    "ldap_bind_test": "Domain Controllers Accept Anonymous or Unsigned LDAP Binds",
+    "constrained_delegation": (
+        "Accounts Configured for Kerberos Constrained Delegation with Protocol Transition"
+    ),
+    "privileged_not_protected": (
+        "Privileged Accounts Are Not Members of the Protected Users Group"
     ),
 }
 
@@ -2504,6 +2595,16 @@ def _build_firewall_metrics_payload(
     if workbook_bytes:
         metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
 
+    # Deliberately return the full payload, not just what a *stored*
+    # data_artifacts needs -- Project.rebuild_data_artifacts() (models.py)
+    # reads "summary"/"devices" back out of this same dict (via
+    # _apply_firewall_metrics) to derive workbook_data immediately after
+    # build_project_artifacts() returns it. The fields that are genuinely
+    # transient-only (all_issues/high_issues/med_issues/low_issues/
+    # rule_issues/config_issues/complexity_issues/vuln_issues/top_impacts --
+    # needed only to build the xlsx_base64 workbook above) get dropped in
+    # rebuild_data_artifacts() itself, after it has finished reading
+    # everything it needs and just before the result is persisted.
     return metrics_payload
 
 
@@ -3510,7 +3611,14 @@ def parse_dns_report(file_obj: File) -> List[Dict[str, str]]:
         if not info_lines:
             continue
 
-        issue_text = info_lines[0]
+        # The title is everything up to whichever comes first: the first
+        # line break (already isolated by info_lines[0] above) or the first
+        # ';' within that line -- e.g. "The domain does not have any CAA
+        # records; any public Certificate Authority may issue a certificate
+        # for this domain" should title as just "The domain does not have
+        # any CAA records", matching the short, single-clause key format
+        # used throughout DEFAULT_DNS_*_MAP/the DB-backed mapping models.
+        issue_text = info_lines[0].split(";", 1)[0].strip()
         if not issue_text:
             continue
 
@@ -4541,6 +4649,19 @@ def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, 
     if workbook_bytes:
         metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
 
+    # Deliberately return the full payload here, not just what a *stored*
+    # data_artifacts needs -- Project.rebuild_data_artifacts() (models.py)
+    # reads "majority_type"/"minority_type"/"host_counts"/"top_hosts"/
+    # "top_hosts_*"/"unique_issues" back out of this same dict (via
+    # _apply_nexpose_metrics and _build_nexpose_cap_entries_from_metrics) to
+    # derive workbook_data immediately after build_project_artifacts()
+    # returns it. The fields that are genuinely transient-only (all_issues/
+    # high_issues/med_issues/low_issues/majority_unique/majority_subset/
+    # top_impacts/tab_index_entries -- needed only to build the xlsx_base64
+    # workbook above) get dropped in rebuild_data_artifacts() itself, after
+    # it has finished reading everything it needs and just before the
+    # result is persisted -- that one key alone was 134MB for a data-heavy
+    # project (confirmed via pg_column_size) before this was trimmed there.
     return metrics_payload
 
 
@@ -4932,6 +5053,20 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
     if workbook_bytes:
         metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
 
+    # Deliberately return the full payload here, not just what a *stored*
+    # data_artifacts needs -- ProjectSerializer.to_representation
+    # (custom_serializers.py) runs data_artifacts through
+    # normalize_nexpose_artifacts_map for the report-generation Jinja
+    # context, and a template can reference "unique_issues"/"top_impacts"/
+    # "tab_index_entries" directly (the linter's sample context advertises
+    # them, linting_utils.py). Trimming them here unconditionally silently
+    # emptied that context for any template that used them -- the same
+    # failure class as the ad_attack_paths bug from a few rounds ago. The
+    # fields that are genuinely transient-and-duplicative (all_issues/
+    # high_issues/med_issues/low_issues -- all findings, then the same
+    # entries again split by severity) get dropped in
+    # rebuild_data_artifacts() (models.py) itself, after it has finished
+    # reading everything it needs and just before the result is persisted.
     return metrics_payload
 
 
@@ -5758,6 +5893,78 @@ def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Counter[Tuple[str, s
     return results
 
 
+# Process-local (not persisted to data_artifacts/Postgres) cache for
+# _resolve_cached_or_fresh_parse. An earlier version of this cache stored
+# each file's full parse result inside data_artifacts["_file_parse_cache"]
+# -- which duplicated data already stored under the file's real artifact
+# key (confirmed via pg_column_size: a ~57MB "_file_parse_cache" for a
+# project whose "internal_nexpose_findings" was already ~55MB of the same
+# underlying data), making every GET/save read, hold, and copy *more* data
+# than before the cache existed. Keeping the cache in-process instead adds
+# zero storage cost, at the price of a smaller cache scope (only benefits
+# repeated saves handled by the *same* worker before it recycles, via
+# --limit-max-requests, rather than persisting across requests/workers/
+# deployments) -- a deliberate, safer trade-off given the regression above.
+_file_parse_cache_lock = threading.Lock()
+_process_local_file_parse_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def _resolve_cached_or_fresh_parse(
+    data_file: "ProjectDataFile",
+    cache_key: str,
+    parse_fn: Callable[[], Any],
+) -> Tuple[Any, bool]:
+    """Reuse ``data_file``'s cached parse result if the file hasn't changed.
+
+    ``build_project_artifacts`` runs on *every* workbook save (via
+    ``Project.rebuild_data_artifacts``), regardless of which area was
+    edited -- so saving an unrelated area still re-read and re-parsed every
+    uploaded file (Nexpose XML, firewall XML, etc.) from scratch every time,
+    which is where the actual cost lives for a project with a large upload
+    (confirmed: an 8-second parse of a 69MB firewall XML, paid again on
+    every unrelated save). That always-reparse behavior is deliberate for
+    *non-file* workbook fields (so concurrent users see each other's edits
+    immediately) -- but a given file's own bytes only change when someone
+    re-uploads through that file's own slot, so re-parsing an *unchanged*
+    file adds no freshness, just cost.
+
+    Cache key is the storage backend's reported modification time (not
+    ``ProjectDataFile.uploaded_at``, which is ``auto_now_add`` and doesn't
+    update when an existing slot's file is replaced in place -- the
+    established `data_file.file.save(name, upload); data_file.save()`
+    pattern used throughout views.py). Caching is per-*file* (via
+    ``cache_key``, not per merged-artifact), so branches that combine
+    multiple files into one artifact (e.g. several Internal Nexpose XML
+    uploads merged into one findings list) still merge correctly: this
+    only swaps out the expensive parse call per file, leaving whatever
+    accumulation logic the caller does with the result completely
+    untouched.
+
+    Returns ``(result, was_cached)``. If the storage backend can't report a
+    modification time (e.g. an unusual custom storage), always reparses and
+    never caches -- a safe fallback matching pre-cache behavior exactly.
+    """
+    try:
+        current_mtime = data_file.file.storage.get_modified_time(data_file.file.name).isoformat()
+    except Exception:
+        return parse_fn(), False
+
+    with _file_parse_cache_lock:
+        cached_entry = _process_local_file_parse_cache.get(cache_key)
+
+    if (
+        isinstance(cached_entry, dict)
+        and cached_entry.get("mtime") == current_mtime
+        and "result" in cached_entry
+    ):
+        return cached_entry["result"], True
+
+    result = parse_fn()
+    with _file_parse_cache_lock:
+        _process_local_file_parse_cache[cache_key] = {"mtime": current_mtime, "result": result}
+    return result, False
+
+
 def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     """Aggregate parsed artifacts for the provided project."""
 
@@ -5873,17 +6080,27 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                 if issue_name:
                     missing_web_issue_matrix.add(issue_name)
         elif label == "firewall_xml.xml":
-            logger.info(
-                "Processing firewall XML upload '%s' for project ID=%s", file_label, getattr(project, "id", "?")
+            firewall_cache_key = f"firewall_xml:{data_file.pk}"
+            parsed_firewall_xml, firewall_was_cached = _resolve_cached_or_fresh_parse(
+                data_file,
+                firewall_cache_key,
+                lambda: parse_nipper_firewall_report(data_file.file, project_type_value),
             )
+            if firewall_was_cached:
+                logger.info(
+                    "Reusing cached firewall XML parse for '%s' (project ID=%s, unchanged since last save)",
+                    file_label,
+                    getattr(project, "id", "?"),
+                )
+            else:
+                logger.info(
+                    "Processing firewall XML upload '%s' for project ID=%s", file_label, getattr(project, "id", "?")
+                )
+                logger.info(
+                    "Firewall XML parsing completed with %s findings",
+                    len(parsed_firewall_xml) if parsed_firewall_xml is not None else "no",
+                )
             artifacts[FIREWALL_XML_FILE_NAME_KEY] = data_file.filename
-            parsed_firewall_xml = parse_nipper_firewall_report(
-                data_file.file, project_type_value
-            )
-            logger.info(
-                "Firewall XML parsing completed with %s findings",
-                len(parsed_firewall_xml) if parsed_firewall_xml is not None else "no",
-            )
             if parsed_firewall_xml is not None:
                 artifacts["firewall_findings"] = parsed_firewall_xml
         elif label in NEXPOSE_ARTIFACT_DEFINITIONS:
@@ -5901,9 +6118,22 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             file_name_key = NEXPOSE_FILENAME_KEY_MAP.get(xml_artifact_key)
             if file_name_key:
                 artifacts[file_name_key] = data_file.filename
-            parsed_xml = parse_nexpose_xml_report(
-                data_file.file, vulnerability_matrix=vulnerability_matrix
+            nexpose_xml_cache_key = f"nexpose_xml:{xml_artifact_key}:{data_file.pk}"
+            parsed_xml, nexpose_xml_was_cached = _resolve_cached_or_fresh_parse(
+                data_file,
+                nexpose_xml_cache_key,
+                lambda: parse_nexpose_xml_report(data_file.file, vulnerability_matrix=vulnerability_matrix),
             )
+            if nexpose_xml_was_cached:
+                logger.info(
+                    "Reusing cached Nexpose XML parse for '%s' (project ID=%s, unchanged since last save)",
+                    file_label,
+                    getattr(project, "id", "?"),
+                )
+            # Caching is per-file (keyed above by data_file.pk), so this
+            # merge with any other file already processed under the same
+            # xml_artifact_key in this same call is unaffected -- parsed_xml
+            # is just this one file's own result, fresh or reused.
             existing_entry = artifacts.get(xml_artifact_key)
             combined_findings: List[Dict[str, str]] = []
             combined_software: List[Dict[str, str]] = []
@@ -6206,6 +6436,55 @@ def build_workbook_ad_response(workbook_data: Optional[Dict[str, Any]]) -> Dict[
                 "generic_logins_string": _format_plain_list(generic_login_counts),
             }
         )
+
+    return response
+
+
+def build_workbook_ad_attack_paths_response(
+    workbook_data: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Generate AD Attack Paths response data sourced from workbook details."""
+
+    from ghostwriter.rolodex.ad_attack_paths_scoring import ATTACK_PATHS_METRIC_KEYS
+
+    if not isinstance(workbook_data, dict):
+        return {}
+
+    attack_paths_data = workbook_data.get("ad_attack_paths", {})
+    domains = (
+        attack_paths_data.get("domains", []) if isinstance(attack_paths_data, dict) else []
+    )
+    if not isinstance(domains, list):
+        return {}
+
+    domain_names: List[str] = []
+    metric_counts: Dict[str, List[str]] = {metric: [] for metric in ATTACK_PATHS_METRIC_KEYS}
+    metric_totals: Dict[str, int] = {metric: 0 for metric in ATTACK_PATHS_METRIC_KEYS}
+
+    for entry in domains:
+        if isinstance(entry, dict):
+            domain_value = entry.get("domain") or entry.get("name") or ""
+        else:
+            domain_value = entry
+
+        domain_text = str(domain_value).strip() if domain_value else ""
+        if not domain_text:
+            continue
+
+        domain_names.append(domain_text)
+        for metric in ATTACK_PATHS_METRIC_KEYS:
+            value = _coerce_int(entry.get(metric)) if isinstance(entry, dict) else None
+            metric_counts[metric].append(_format_integer_value(value))
+            metric_totals[metric] += value or 0
+
+    if not domain_names:
+        return {}
+
+    response: Dict[str, Any] = {"domains_str": _format_slash_separated_string(domain_names)}
+    for metric, formatted_counts in metric_counts.items():
+        response[f"{metric}_string"] = _format_plain_list(formatted_counts)
+        response[f"{metric}_count_str"] = "/".join(formatted_counts)
+        response[f"total_{metric}_count"] = metric_totals[metric]
 
     return response
 
