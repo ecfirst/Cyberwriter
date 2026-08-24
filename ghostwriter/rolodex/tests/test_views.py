@@ -4068,7 +4068,7 @@ class MatrixViewTests(TestCase):
                 "vulnerability": "Cross-Site Scripting",
                 "action_required": "Sanitize all user-supplied output.",
                 "remediation_impact": "Medium",
-                "vulnerability_threat": "Account takeover",
+                "vulnerability_threat": "Attackers <EC> achieve account takeover.",
                 "category": "Injection",
             },
         )
@@ -4202,6 +4202,90 @@ class MatrixViewTests(TestCase):
         response = self.client.get(reverse("rolodex:web_issue_matrix") + "?q=Missing")
         self.assertContains(response, "Missing CSP")
         self.assertNotContains(response, "Cross-Site Scripting")
+
+    def test_editing_vulnerability_entry_strips_wysiwyg_html(self):
+        # Regression test: manually editing a matrix entry used to save
+        # "<p>...</p>" wrapping (and other WYSIWYG markup) into every field
+        # on the form, even fields the user didn't touch, because the
+        # global TinyMCE bundle auto-attached to the form's textareas. The
+        # editor is now opted out, and the form also normalizes any HTML
+        # that still arrives back to plain text.
+        entry = VulnerabilityMatrixEntry.objects.create(
+            vulnerability="Outdated TLS Configuration",
+            action_required="Disable weak cipher suites.",
+            remediation_impact="Low",
+            vulnerability_threat="Attackers <EC> intercept traffic.",
+            category="OOD",
+        )
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        response = self.client.post(
+            reverse("rolodex:vulnerability_matrix_edit", args=[entry.pk]),
+            {
+                "vulnerability": "<p>Outdated TLS Configuration</p>",
+                "action_required": "<p>Disable weak cipher suites.</p>",
+                "remediation_impact": "<p>Low</p>",
+                "vulnerability_threat": "<p>Attackers &lt;EC&gt; intercept traffic.</p>",
+                "category": "OOD",
+            },
+        )
+        self.assertRedirects(response, reverse("rolodex:vulnerability_matrix"))
+        entry.refresh_from_db()
+        self.assertEqual(entry.vulnerability, "Outdated TLS Configuration")
+        self.assertEqual(entry.action_required, "Disable weak cipher suites.")
+        self.assertEqual(entry.remediation_impact, "Low")
+        self.assertEqual(entry.vulnerability_threat, "Attackers <EC> intercept traffic.")
+        for field_value in (
+            entry.vulnerability,
+            entry.action_required,
+            entry.remediation_impact,
+            entry.vulnerability_threat,
+        ):
+            self.assertNotIn("<p>", field_value)
+            self.assertNotIn("</p>", field_value)
+
+    def test_editing_vulnerability_entry_rejects_missing_ec_marker(self):
+        entry = VulnerabilityMatrixEntry.objects.create(
+            vulnerability="Outdated TLS Configuration",
+            action_required="Disable weak cipher suites.",
+            remediation_impact="Low",
+            vulnerability_threat="Attackers <EC> intercept traffic.",
+            category="OOD",
+        )
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        response = self.client.post(
+            reverse("rolodex:vulnerability_matrix_edit", args=[entry.pk]),
+            {
+                "vulnerability": entry.vulnerability,
+                "action_required": entry.action_required,
+                "remediation_impact": entry.remediation_impact,
+                "vulnerability_threat": "<p>Attackers intercept traffic.</p>",
+                "category": "OOD",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        entry.refresh_from_db()
+        self.assertEqual(entry.vulnerability_threat, "Attackers <EC> intercept traffic.")
+
+    def test_editing_web_issue_entry_strips_wysiwyg_html(self):
+        entry = WebIssueMatrixEntry.objects.create(
+            title="Missing CSP",
+            impact="Attackers can inject scripts.",
+            fix="Add a Content-Security-Policy header.",
+        )
+        self.client.login(username=self.manager.username, password=PASSWORD)
+        response = self.client.post(
+            reverse("rolodex:web_issue_matrix_edit", args=[entry.pk]),
+            {
+                "title": "<p>Missing CSP</p>",
+                "impact": "<p>Attackers can inject scripts.</p>",
+                "fix": "<p>Add a Content-Security-Policy header.</p>",
+            },
+        )
+        self.assertRedirects(response, reverse("rolodex:web_issue_matrix"))
+        entry.refresh_from_db()
+        self.assertEqual(entry.title, "Missing CSP")
+        self.assertEqual(entry.impact, "Attackers can inject scripts.")
+        self.assertEqual(entry.fix, "Add a Content-Security-Policy header.")
 
 
 class AiReviewAttackPathsParityTests(TestCase):
