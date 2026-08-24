@@ -16,11 +16,21 @@ def _normalize_model(model, unique_field, text_fields):
 
     ``unique_field`` is normalized like everywhere else via
     ``_normalize_matrix_key`` in data_parsers.py (lowercased, whitespace
-    collapsed), so a row is only updated if doing so won't collide with
-    another row's normalized key -- including another row that would land on
-    the same key as part of this same pass. Colliding rows are left
-    untouched and logged, since a migration must not raise IntegrityError on
-    a customer database.
+    collapsed), so a row's unique field is only updated if doing so won't
+    collide with another row's normalized key -- including another row that
+    would land on the same key as part of this same pass, and including a
+    row whose unique field doesn't need any changes of its own. Colliding
+    rows are left untouched and logged, since a migration must not raise
+    IntegrityError on a customer database.
+
+    The collision check is unconditional (it does not compare the row's old
+    and new ``_key()`` first): ``_key()`` collapses whitespace and case, so
+    two literal values can differ (e.g. a trailing space) while producing
+    the same ``_key()`` on both sides. Gating the check on "did the key
+    change" would then skip it entirely for a row whose literal value is
+    changing into something byte-for-byte identical to another row that was
+    already in the table -- exactly the collision this function exists to
+    catch.
     """
 
     entries = list(model.objects.all())
@@ -32,16 +42,15 @@ def _normalize_model(model, unique_field, text_fields):
     final_keys = {}
     for entry in entries:
         normalized_values = {field_name: normalize_matrix_text(getattr(entry, field_name)) for field_name in text_fields}
-        original_key = _key(getattr(entry, unique_field))
         new_key = _key(normalized_values[unique_field])
-        plans.append((entry, normalized_values, original_key, new_key))
+        plans.append((entry, normalized_values, new_key))
         final_keys.setdefault(new_key, []).append(entry.pk)
 
     to_update = []
     skipped = []
     missing_ec = []
 
-    for entry, normalized_values, original_key, new_key in plans:
+    for entry, normalized_values, new_key in plans:
         changed_fields = {
             field_name: value
             for field_name, value in normalized_values.items()
@@ -50,7 +59,11 @@ def _normalize_model(model, unique_field, text_fields):
         if not changed_fields:
             continue
 
-        if new_key != original_key and len(final_keys[new_key]) > 1:
+        # Only the unique field itself can trigger a uniqueness collision.
+        # If it's not among this row's changes, there's nothing to guard
+        # against here, regardless of what _key() bucket it happens to
+        # share with another row (e.g. a case-only variant).
+        if unique_field in changed_fields and len(final_keys[new_key]) > 1:
             skipped.append((entry.pk, getattr(entry, unique_field)))
             continue
 
