@@ -2801,6 +2801,63 @@ class NexposeDataParserTests(TestCase):
             password_responses.get("password_enforce_mfa_all_accounts"), "yes"
         )
 
+    def test_password_questionnaire_responses_preserved_without_domain_data(self):
+        """Regression test for the two general password answers being lost.
+
+        ``rebuild_data_artifacts()`` used to unconditionally discard the
+        stored "password" response section and only restore it inside the
+        branch that runs when workbook-derived password *domain* data
+        exists. With no domain data at all (e.g. Password is in scope but no
+        password CSV has been uploaded yet), that branch never ran, so the
+        two general answers below were silently destroyed on every save.
+        """
+        general_cap_map = {
+            issue: {"recommendation": recommendation, "score": score}
+            for issue, (recommendation, score) in DEFAULT_GENERAL_CAP_MAP.items()
+        }
+
+        self.project.data_responses = {
+            "password": {
+                "password_additional_controls": "no",
+                "password_enforce_mfa_all_accounts": "yes",
+            }
+        }
+        self.project.workbook_data = {}
+        self.project.cap = {}
+        self.project.save(update_fields=["data_responses", "workbook_data", "cap"])
+
+        with mock.patch("ghostwriter.rolodex.models.build_project_artifacts", return_value={}):
+            with mock.patch("ghostwriter.rolodex.models.build_workbook_ad_response", return_value={}):
+                with mock.patch(
+                    "ghostwriter.rolodex.models.build_workbook_dns_response",
+                    return_value={},
+                ):
+                    with mock.patch(
+                        "ghostwriter.rolodex.models.build_workbook_firewall_response",
+                        return_value={},
+                    ):
+                        with mock.patch(
+                            "ghostwriter.rolodex.models.build_workbook_password_response",
+                            return_value=({}, {}, []),
+                        ):
+                            with mock.patch(
+                                "ghostwriter.rolodex.models.load_general_cap_map",
+                                return_value=general_cap_map,
+                            ):
+                                self.project.rebuild_data_artifacts()
+
+        self.project.refresh_from_db()
+
+        password_responses = self.project.data_responses.get("password")
+        self.assertIsInstance(password_responses, dict)
+        self.assertEqual(
+            password_responses.get("password_additional_controls"), "no"
+        )
+        self.assertEqual(
+            password_responses.get("password_enforce_mfa_all_accounts"), "yes"
+        )
+        self.assertNotIn("entries", password_responses)
+
     def test_rebuild_populates_ad_cap_map(self):
         workbook_payload = {
             "ad": {

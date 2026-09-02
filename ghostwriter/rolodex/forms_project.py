@@ -47,6 +47,7 @@ from ghostwriter.rolodex.models import (
     default_project_scoping,
     normalize_project_scoping,
 )
+from ghostwriter.rolodex.workbook import has_any_scoping_selection
 
 # Number of "extra" formsets created by default
 # Higher numbers can increase page load times with WYSIWYG editors
@@ -1477,15 +1478,7 @@ class ProjectForm(forms.ModelForm):
 
     @staticmethod
     def _has_scoping_selection(scoping_payload):
-        for category_data in scoping_payload.values():
-            if category_data.get("selected"):
-                return True
-            for option_key, option_value in category_data.items():
-                if option_key == "selected":
-                    continue
-                if option_value:
-                    return True
-        return False
+        return has_any_scoping_selection(scoping_payload)
 
     def clean_scoping(self):
         scoping_value = self.cleaned_data.get("scoping")

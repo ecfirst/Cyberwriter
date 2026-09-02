@@ -1543,11 +1543,13 @@ def update_project_badges(request, pk):
     project_type_name = getattr(
         getattr(project_instance, "project_type", None), "project_type", None
     )
+    scoping_state = normalize_project_scoping(project_instance.scoping)
     questions, _ = build_data_configuration(
         project_instance.workbook_data,
         project_type_name,
         data_artifacts=project_instance.data_artifacts,
         project_risks=project_instance.risks,
+        scoping=scoping_state,
     )
     normalized_responses = prepare_data_responses_initial(
         project_instance.data_responses,
@@ -3299,11 +3301,13 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
             Q(doc_type__doc_type__iexact="project_docx") | Q(doc_type__doc_type__iexact="pptx")
         ).filter(Q(client=object.client) | Q(client__isnull=True))
         project_type_name = getattr(getattr(object, "project_type", None), "project_type", None)
+        scoping_state = normalize_project_scoping(object.scoping)
         questions, required_files = build_data_configuration(
             object.workbook_data,
             project_type_name,
             data_artifacts=object.data_artifacts,
             project_risks=object.risks,
+            scoping=scoping_state,
         )
         _log_memory_checkpoint("after build_data_configuration")
         ctx["workbook_form"] = ProjectWorkbookForm()
@@ -3338,7 +3342,6 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["pending_question_sections_count"] = _count_pending_question_sections(
             questions, normalized_responses
         )
-        scoping_state = normalize_project_scoping(object.scoping)
         ctx["project_scoping_json"] = scoping_state
         ctx["project_scoping_weights_json"] = {
             category: {option: float(weight) for option, weight in weights.items()}
@@ -6695,6 +6698,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project_type_name,
                 data_artifacts=project.data_artifacts,
                 project_risks=project.risks,
+                scoping=normalize_project_scoping(project.scoping),
             )
             existing_grouped = ensure_data_responses_defaults(
                 project.data_responses if isinstance(project.data_responses, dict) else {}
@@ -6895,6 +6899,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             project_type_name,
             data_artifacts=project.data_artifacts,
             project_risks=project.risks,
+            scoping=normalize_project_scoping(project.scoping),
         )
         existing_grouped = ensure_data_responses_defaults(
             project.data_responses if isinstance(project.data_responses, dict) else {}
@@ -7679,16 +7684,17 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
     def post(self, request, *args, **kwargs):
         project = self.get_object()
         project_type_name = getattr(getattr(project, "project_type", None), "project_type", None)
+        scoping_state = normalize_project_scoping(getattr(project, "scoping", {}))
         questions, _ = build_data_configuration(
             project.workbook_data,
             project_type_name,
             data_artifacts=project.data_artifacts,
             project_risks=project.risks,
+            scoping=scoping_state,
         )
         form = ProjectDataResponsesForm(request.POST, question_definitions=questions)
         if form.is_valid():
             responses = dict(form.cleaned_data)
-            scoping_state = normalize_project_scoping(getattr(project, "scoping", {}))
             selected_scope = [
                 key for key in SCOPE_OPTION_ORDER if scoping_state.get(key, {}).get("selected")
             ]

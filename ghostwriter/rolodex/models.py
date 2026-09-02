@@ -2040,6 +2040,26 @@ class Project(models.Model):
                 existing_cap["password"] = password_cap_section
             else:
                 existing_cap.pop("password", None)
+        else:
+            # No workbook-derived password domain data (e.g. no password CSV
+            # has been uploaded yet, or Password is out of scope). The block
+            # above only re-populates existing_responses["password"] when it
+            # has domain data to work with, so without this branch the
+            # operator-entered answers to the two general password
+            # questions -- which aren't derived from the workbook -- would
+            # be silently discarded by the existing_responses.pop("password",
+            # None) above on every save.
+            preserved_password_section: Dict[str, Any] = {}
+            for key in (
+                "password_additional_controls",
+                "password_enforce_mfa_all_accounts",
+                "hashes_obtained",
+            ):
+                value = existing_password_section.get(key)
+                if value not in (None, ""):
+                    preserved_password_section[key] = value
+            if preserved_password_section:
+                existing_responses["password"] = preserved_password_section
 
         workbook_firewall_response = build_workbook_firewall_response(workbook_payload)
         if workbook_firewall_response:
