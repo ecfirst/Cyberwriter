@@ -6,6 +6,7 @@ from django.test import SimpleTestCase
 
 # Ghostwriter Libraries
 from ghostwriter.rolodex.forms_workbook import ProjectDataResponsesForm, SummaryMultipleChoiceField
+from ghostwriter.rolodex.models import default_project_scoping
 from ghostwriter.rolodex.views import _build_grouped_data_responses
 from ghostwriter.rolodex.workbook import (
     DNS_SOA_FIELD_CHOICES,
@@ -13,6 +14,7 @@ from ghostwriter.rolodex.workbook import (
     build_data_configuration,
     build_scope_summary,
     build_workbook_sections,
+    has_any_scoping_selection,
     prepare_data_responses_initial,
 )
 from ghostwriter.rolodex.workbook_entry import build_workbook_entry_payload
@@ -316,6 +318,110 @@ class WorkbookHelpersTests(SimpleTestCase):
         weak_reason = next(q for q in questions if q["key"] == "wireless_psk_weak_reasons")
         self.assertIs(weak_reason["field_class"], SummaryMultipleChoiceField)
         self.assertEqual(weak_reason["field_kwargs"].get("summary_map"), WEAK_PSK_SUMMARY_MAP)
+
+
+class QuestionnaireScopeGatingTests(SimpleTestCase):
+    """Validate that questionnaire sections are gated on ``Project.scoping``.
+
+    Regression coverage for the "Password Policies" card appearing even when
+    Password is not in scope, which permanently stuck the Questionnaire tab
+    badge at "1 section missing" and made responses impossible to clear.
+    """
+
+    PASSWORD_WORKBOOK_DATA = {"password": {"policies": [{"domain_name": "corp.example.com"}]}}
+
+    def test_password_section_hidden_when_out_of_scope(self):
+        scoping = default_project_scoping()
+        scoping["iam"]["selected"] = True
+        scoping["iam"]["ad"] = True
+        # "password" left unselected -- Password is not in scope.
+
+        questions, _ = build_data_configuration(self.PASSWORD_WORKBOOK_DATA, scoping=scoping)
+        sections = {question["section"] for question in questions}
+
+        self.assertNotIn("Password Policies", sections)
+
+    def test_password_section_shown_when_in_scope(self):
+        scoping = default_project_scoping()
+        scoping["iam"]["selected"] = True
+        scoping["iam"]["password"] = True
+
+        questions, _ = build_data_configuration(self.PASSWORD_WORKBOOK_DATA, scoping=scoping)
+        sections = {question["section"] for question in questions}
+
+        self.assertIn("Password Policies", sections)
+
+    def test_password_section_hidden_when_iam_category_not_selected(self):
+        # "password" option is True but the parent "iam" category is not
+        # selected -- mirrors how the JS/Python scoping check elsewhere
+        # requires both the category and the option (views.py's
+        # ``_build_ai_review_sections``: ``category_scope.get("selected")
+        # and category_scope.get(scoping_key)``).
+        scoping = default_project_scoping()
+        scoping["iam"]["password"] = True
+
+        questions, _ = build_data_configuration(self.PASSWORD_WORKBOOK_DATA, scoping=scoping)
+        sections = {question["section"] for question in questions}
+
+        self.assertNotIn("Password Policies", sections)
+
+    def test_firewall_and_wireless_gate_on_category_selected(self):
+        workbook_data = {
+            "firewall": {"unique": 0},
+            "wireless": {"weak_psks": "yes"},
+        }
+        scoping = default_project_scoping()
+        # Neither "firewall" nor "wireless" is selected.
+
+        questions, _ = build_data_configuration(workbook_data, scoping=scoping)
+        sections = {question["section"] for question in questions}
+
+        self.assertNotIn("Firewall", sections)
+        self.assertNotIn("Wireless", sections)
+
+        scoping["firewall"]["selected"] = True
+        scoping["wireless"]["selected"] = True
+
+        questions, _ = build_data_configuration(workbook_data, scoping=scoping)
+        sections = {question["section"] for question in questions}
+
+        self.assertIn("Firewall", sections)
+        self.assertIn("Wireless", sections)
+
+    def test_empty_scoping_does_not_hide_sections(self):
+        """A project with no scoping selections at all keeps today's behavior.
+
+        Prevents a project created before the scoping feature (or one where
+        scoping was simply never filled in) from having its entire
+        Questionnaire tab hidden by the new scope gate.
+        """
+        scoping = default_project_scoping()
+        self.assertFalse(has_any_scoping_selection(scoping))
+
+        questions, _ = build_data_configuration(self.PASSWORD_WORKBOOK_DATA, scoping=scoping)
+        sections = {question["section"] for question in questions}
+
+        self.assertIn("Password Policies", sections)
+
+    def test_scoping_none_preserves_current_behavior(self):
+        questions, _ = build_data_configuration(self.PASSWORD_WORKBOOK_DATA, scoping=None)
+        sections = {question["section"] for question in questions}
+
+        self.assertIn("Password Policies", sections)
+
+    def test_unmapped_sections_are_never_scope_gated(self):
+        # "Active Directory" (workbook key "ad") IS mapped, but "Intelligence"
+        # (workbook key "osint") is also mapped -- pick a workbook section
+        # with no scoping equivalent to confirm the map lookup fails open.
+        workbook_data = {"general": {"external_start": "2025-01-10"}}
+        scoping = default_project_scoping()
+        scoping["iam"]["selected"] = True
+        scoping["iam"]["password"] = True
+
+        questions, _ = build_data_configuration(workbook_data, scoping=scoping)
+        sections = {question["section"] for question in questions}
+
+        self.assertIn("General", sections)
 
     def test_scope_summary_generation(self):
         summary = build_scope_summary(["external", "internal", "firewall"])

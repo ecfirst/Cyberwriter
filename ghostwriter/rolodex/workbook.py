@@ -315,8 +315,17 @@ def build_data_configuration(
     project_type: Optional[str] = None,
     data_artifacts: Optional[Dict[str, Any]] = None,
     project_risks: Optional[Dict[str, Any]] = None,
+    scoping: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
-    """Return dynamic questions and file requirements derived from workbook data."""
+    """Return dynamic questions and file requirements derived from workbook data.
+
+    ``scoping`` should be an already-normalized ``Project.scoping`` payload
+    (see ``normalize_project_scoping`` in ``ghostwriter.rolodex.models``) --
+    this module does not import ``models`` to avoid a circular import.
+    Sections mapped in ``QUESTION_SECTION_SCOPE_MAP`` only appear when both
+    the workbook supplied data for them *and* the corresponding area is
+    selected in scoping.
+    """
 
     data = workbook_data or {}
     uploaded_sections = get_uploaded_sections(workbook_data)
@@ -327,7 +336,9 @@ def build_data_configuration(
     required_file_index: Set[Tuple[str, Optional[str]]] = set()
 
     def has_workbook_section(key: str) -> bool:
-        return key in uploaded_sections
+        if key not in uploaded_sections:
+            return False
+        return _section_in_scope(key, scoping)
 
     def add_required(label: str, context: Optional[str] = None) -> None:
         key = (label, context)
@@ -810,6 +821,66 @@ SECTION_ENTRY_FIELD_MAP = {
     "dns": "domain",
     "firewall": "name",
 }
+
+# Maps a workbook/questionnaire section key to the (scoping category, scoping
+# option) that gates it in ``Project.scoping``. Mirrors ``AI_REVIEW_SECTIONS``
+# in ``ghostwriter.rolodex.views``, which is the same mapping for the AI
+# Review cards. ``firewall`` and ``wireless`` have no meaningful sub-option,
+# so they gate on the category's own ``selected`` flag. A section key absent
+# from this map is left ungated (e.g. no scoping equivalent exists for it).
+QUESTION_SECTION_SCOPE_MAP: Dict[str, Tuple[str, str]] = {
+    "osint": ("external", "osint"),
+    "dns": ("external", "dns"),
+    "ad": ("iam", "ad"),
+    "password": ("iam", "password"),
+    "endpoint": ("internal", "endpoint"),
+    "firewall": ("firewall", "selected"),
+    "wireless": ("wireless", "selected"),
+    "cloud_config": ("cloud", "cloud_management"),
+    "system_config": ("cloud", "system_configuration"),
+}
+
+
+def has_any_scoping_selection(scoping: Optional[Mapping[str, Any]]) -> bool:
+    """Return ``True`` if any scoping category or option has been selected.
+
+    Used as a safety valve: a project created before the scoping feature (or
+    one where scoping was never filled in) has every flag ``False``. Gating
+    the questionnaire on scope in that case would hide every section, so
+    scope gating is skipped entirely unless something has actually been
+    selected.
+    """
+
+    if not isinstance(scoping, Mapping):
+        return False
+    for category_data in scoping.values():
+        if not isinstance(category_data, Mapping):
+            continue
+        for option_key, option_value in category_data.items():
+            if option_value:
+                return True
+    return False
+
+
+def _section_in_scope(key: str, scoping: Optional[Mapping[str, Any]]) -> bool:
+    """Return ``True`` if the questionnaire section ``key`` is in scope.
+
+    Sections with no entry in ``QUESTION_SECTION_SCOPE_MAP`` are always
+    considered in scope. When ``scoping`` is ``None`` or has no selection at
+    all, scope gating is skipped (see ``has_any_scoping_selection``).
+    """
+
+    mapping = QUESTION_SECTION_SCOPE_MAP.get(key)
+    if mapping is None:
+        return True
+    if not has_any_scoping_selection(scoping):
+        return True
+    category_key, option_key = mapping
+    category = scoping.get(category_key) if isinstance(scoping, Mapping) else None
+    if not isinstance(category, Mapping):
+        return False
+    return bool(category.get("selected") and category.get(option_key))
+
 
 DNS_SOA_FIELD_CHOICES = (
     ("serial", "serial"),

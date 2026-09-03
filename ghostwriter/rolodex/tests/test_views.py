@@ -1432,6 +1432,36 @@ class UpdateProjectBadgesTests(TestCase):
             'Questionnaire <span class="badge badge-pill badge-light">1</span>',
         )
 
+    def test_questionnaire_badge_ignores_out_of_scope_password_section(self):
+        # Regression test: an out-of-scope "Password Policies" card used to
+        # render (and count as pending) purely because the workbook had
+        # password data, regardless of ``Project.scoping``. That permanently
+        # stuck the badge at "1 section missing" for any project where
+        # Password isn't in scope. ``Project.scoping`` defaults to every
+        # flag unselected, so leaving ``self.project.scoping`` untouched
+        # here means Password is out of scope.
+        self.project.workbook_data = {
+            "password": {"policies": [{"domain_name": "corp.example.com"}]}
+        }
+        self.project.data_responses = ensure_data_responses_defaults(
+            {
+                "general": {
+                    "general_first_ca": "yes",
+                    "general_anonymous_ephi": "no",
+                },
+                "overall_risk": {"major_issues": ["None"]},
+            }
+        )
+        self.project.save(update_fields=["workbook_data", "data_responses"])
+
+        response = self.client_mgr.get(self.uri)
+
+        self.assertEqual(response.context["pending_question_sections_count"], 0)
+        self.assertContains(
+            response,
+            'Questionnaire <span class="badge badge-pill badge-light">0</span>',
+        )
+
 
 class ProjectNexposeMissingMatrixDownloadTests(TestCase):
     """Tests for downloading missing Nexpose matrix entries."""
