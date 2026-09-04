@@ -277,6 +277,24 @@ def _summarize_dns_findings(findings: Mapping[str, Any]) -> Dict[str, Any]:
     return summary
 
 
+PASSWORD_NIST_PROMPT_GUIDANCE = (
+    " Frame all findings and recommendations according to current NIST SP 800-63B"
+    " digital identity guidance, which has moved away from the legacy password"
+    " controls many organizations still enforce. Specifically:"
+    " (1) Do not recommend periodic or forced password expiration. A 'Maximum Age'"
+    " of 0 (passwords do not expire on a schedule) is the desired end state;"
+    " credential changes should be forced only on evidence of compromise."
+    " (2) Do not recommend enabling character-composition or complexity"
+    " requirements. 'Complexity Required' set to FALSE is the desired end state."
+    " (3) Treat minimum length, screening candidate passwords against blocklists of"
+    " known-breached and commonly used passwords, and multi-factor authentication"
+    " as the primary controls that reduce credential-compromise risk."
+    " Where the assessed policy already disables expiration or complexity, describe"
+    " that as alignment with current guidance rather than as a weakness, and do not"
+    " recommend re-enabling either control."
+)
+
+
 def _build_ai_review_prompt(
     section_key: str, project: Project, workbook: Mapping[str, Any], artifacts: Mapping[str, Any]
 ) -> str:
@@ -744,6 +762,7 @@ def _build_ai_review_prompt(
         f"{description}. Use the following project data as context and keep the response concise."
         + (
             " Prioritize cracked password results and administrator credentials when present; address policy and FGPP settings as supporting details."
+            + PASSWORD_NIST_PROMPT_GUIDANCE
             if normalized_key == "password"
             else ""
         )
