@@ -6169,7 +6169,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 for domain in removed_domains:
                     slug = _slugify_identifier("required", "dns_report.csv", domain)
                     project.data_files.filter(requirement_slug=slug).delete()
-                project.rebuild_data_artifacts()
+                project.rebuild_data_artifacts(changed_file_ids=set())
                 artifacts = (
                     project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
                 )
@@ -6603,7 +6603,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "cap", "data_responses"]
             )
@@ -6636,7 +6636,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "cap", "data_responses"]
             )
@@ -6669,7 +6669,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "cap", "data_responses"]
             )
@@ -6818,7 +6818,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
             )
@@ -6856,7 +6856,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
             )
@@ -6934,7 +6934,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 workbook_payload.pop(nexpose_removal_key, None)
 
             project.workbook_data = workbook_payload
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
             )

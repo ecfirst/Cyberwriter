@@ -8481,6 +8481,25 @@
         // Only react to ones about *this* project's upload completing;
         // anything else (a different page's notification, or a message
         // from an unrelated feature) is left for the generic toast alone.
+        // handleWorkbookUpdateResponse (and refreshWorkbookUi's own
+        // immediate path) mutate workbookState/dataArtifactsState
+        // synchronously -- fine for a user-initiated save, but a
+        // notification can land at any time, including while a modal has
+        // an open closure over the *current* workbookState (e.g. a
+        // "Remove Domain" button capturing `workbookState.dns.records`
+        // when the modal opened). refreshWorkbookUi already defers the DOM
+        // re-render until an open modal closes; this defers the state
+        // mutation itself the same way, so an open modal's captured
+        // references never go stale out from under it.
+        const runAfterAnyOpenModalCloses = function(callback) {
+          const activeModal = document.querySelector('.modal.show');
+          if (activeModal) {
+            $(activeModal).one('hidden.bs.modal', callback);
+            return;
+          }
+          callback();
+        };
+
         const projectIdForNotifications = workbookTab ? workbookTab.getAttribute('data-project-id') : null;
         document.addEventListener('ghostwriter:notification', function(event) {
           const detail = event.detail || {};
@@ -8495,7 +8514,9 @@
             delete uploadProcessingState[fieldName];
           }
           if (detail.status !== 'success' || !workbookUpdateUrl) {
-            refreshWorkbookUi({afterRender: function() { updateWorkbookCardProgress(detail.area_key); }});
+            runAfterAnyOpenModalCloses(function() {
+              refreshWorkbookUi({afterRender: function() { updateWorkbookCardProgress(detail.area_key); }});
+            });
             return;
           }
           fetch(workbookUpdateUrl, {
@@ -8504,15 +8525,19 @@
           }).then(function(response) {
             return parseWorkbookJsonResponse(response, 'Unable to refresh workbook data');
           }).then(function(data) {
-            handleWorkbookUpdateResponse(data, {
-              afterRender: function() { updateWorkbookCardProgress(detail.area_key); },
+            runAfterAnyOpenModalCloses(function() {
+              handleWorkbookUpdateResponse(data, {
+                afterRender: function() { updateWorkbookCardProgress(detail.area_key); },
+              });
             });
           }).catch(function(error) {
             console.error(error);
             // The task already succeeded server-side (that's why we're
             // here) -- a failed refetch just leaves stale data on screen
             // until the next save/reload, not a data-loss risk.
-            refreshWorkbookUi({afterRender: function() { updateWorkbookCardProgress(detail.area_key); }});
+            runAfterAnyOpenModalCloses(function() {
+              refreshWorkbookUi({afterRender: function() { updateWorkbookCardProgress(detail.area_key); }});
+            });
           });
         });
 

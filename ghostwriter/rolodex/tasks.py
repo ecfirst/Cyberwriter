@@ -128,6 +128,20 @@ def process_project_data_upload(
         return {"status": "error", "reason": "data_file_missing"}
 
     try:
+        # project was fetched when this task started, which for a large
+        # scan can be a while before we get here (queue backlog, then the
+        # parse itself) -- refresh first so rebuild_data_artifacts()'s
+        # closing save() (models.py, self.save(update_fields=["data_artifacts",
+        # "data_responses", "cap", "workbook_data"])) doesn't clobber a
+        # concurrent edit made through the web UI while this task was
+        # queued/running with a stale in-memory copy of those four fields.
+        # This narrows the race window to the duration of the rebuild call
+        # itself -- the same exposure any other synchronous save already
+        # has -- rather than eliminating it outright (a save landing in the
+        # middle of the rebuild call can still be lost; closing that
+        # completely would need row-level locking around the whole
+        # read-modify-write).
+        project.refresh_from_db()
         project.rebuild_data_artifacts(changed_file_ids={data_file.pk})
         project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
     except Exception:
