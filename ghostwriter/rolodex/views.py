@@ -983,13 +983,20 @@ _METRICS_KEYS_SUMMARY_ONLY = frozenset(NEXPOSE_METRICS_LABELS.keys()) | {
 
 
 def _strip_large_unused_artifacts(
-    value: Any, *, depth: int = 0, top_level_key: Optional[str] = None
+    value: Any,
+    *,
+    depth: int = 0,
+    top_level_key: Optional[str] = None,
+    strip_xlsx_base64: bool = True,
 ) -> Any:
     """Deep-copy ``value``, omitting keys never read by the page's client-side JS.
 
-    Drops 'xlsx_base64' at any nesting depth (compact per-artifact blobs, only
-    needed by the dedicated download views, which re-read them from the
-    database); at the top level only, any key ending in '_findings' (raw
+    Drops 'xlsx_base64' at any nesting depth, when ``strip_xlsx_base64`` is
+    true (compact per-artifact blobs, only needed by the dedicated download
+    views, which re-read them from the database -- pass ``False`` for a
+    single upload's JSON response, where a handful of these blobs is not the
+    payload-size problem and some callers/tests expect the just-uploaded
+    artifact's blob to be present); at the top level only, any key ending in '_findings' (raw
     per-finding lists -- one entry per host/port/vulnerability triple, each
     with several free-text fields -- that scale with finding count and are
     never read by client-side JS; only their already-summarized
@@ -1014,7 +1021,7 @@ def _strip_large_unused_artifacts(
     if isinstance(value, dict):
         result = {}
         for key, inner in value.items():
-            if key == "xlsx_base64":
+            if strip_xlsx_base64 and key == "xlsx_base64":
                 continue
             if depth == 0 and key == "_file_parse_cache":
                 continue
@@ -1023,7 +1030,10 @@ def _strip_large_unused_artifacts(
             if depth == 0 and key in _METRICS_KEYS_SUMMARY_ONLY and isinstance(inner, dict):
                 result[key] = {
                     "summary": _strip_large_unused_artifacts(
-                        inner.get("summary"), depth=depth + 2, top_level_key=key
+                        inner.get("summary"),
+                        depth=depth + 2,
+                        top_level_key=key,
+                        strip_xlsx_base64=strip_xlsx_base64,
                     )
                 }
                 continue
@@ -1035,12 +1045,17 @@ def _strip_large_unused_artifacts(
                 continue
             next_top_level_key = key if depth == 0 else top_level_key
             result[key] = _strip_large_unused_artifacts(
-                inner, depth=depth + 1, top_level_key=next_top_level_key
+                inner,
+                depth=depth + 1,
+                top_level_key=next_top_level_key,
+                strip_xlsx_base64=strip_xlsx_base64,
             )
         return result
     if isinstance(value, list):
         return [
-            _strip_large_unused_artifacts(item, depth=depth + 1, top_level_key=top_level_key)
+            _strip_large_unused_artifacts(
+                item, depth=depth + 1, top_level_key=top_level_key, strip_xlsx_base64=strip_xlsx_base64
+            )
             for item in value
         ]
     return value
@@ -4995,7 +5010,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.data_artifacts = artifacts
         project.save(update_fields=["workbook_data", "data_artifacts"])
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_dns_xml_upload(self, request, project):
@@ -5053,7 +5068,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.data_artifacts = artifacts
         project.save(update_fields=["workbook_data", "data_artifacts"])
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_ad_csv_upload(self, request, project):
@@ -5124,7 +5139,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
         )
         return JsonResponse(
-            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_attack_paths_csv_upload(self, request, project):
@@ -5222,7 +5237,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
         )
         return JsonResponse(
-            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_ad_log_upload(self, request, project):
@@ -5323,7 +5338,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         )
 
         return JsonResponse(
-            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_ad_admin_users_upload(self, request, project):
@@ -5395,7 +5410,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.save(update_fields=["workbook_data", "data_artifacts"])
 
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_password_csv_upload(self, request, project):
@@ -5514,7 +5529,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.save(update_fields=["workbook_data", "data_artifacts"])
 
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def test_func(self):
@@ -5564,7 +5579,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                     return JsonResponse(
                         {
                             "workbook_data": project.workbook_data,
-                            "data_artifacts": project.data_artifacts,
+                            "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                         }
                     )
 
@@ -5587,7 +5602,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "burp_xml" in request.FILES:
@@ -5611,7 +5626,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 return JsonResponse(
                     {
                         "workbook_data": project.workbook_data,
-                        "data_artifacts": project.data_artifacts,
+                        "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                     }
                 )
 
@@ -5689,7 +5704,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "iam_management_xlsx" in request.FILES:
@@ -5764,7 +5779,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "system_configuration_xlsx" in request.FILES:
@@ -5840,7 +5855,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "wireless_xlsx" in request.FILES:
@@ -5950,7 +5965,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "sql_xlsx" in request.FILES:
@@ -6000,7 +6015,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "ad_csv" in request.FILES:
@@ -6044,7 +6059,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.save(update_fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "snmp_csv" in request.FILES:
@@ -6072,7 +6087,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.save(update_fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             return JsonResponse({"error": "Unsupported upload type."}, status=400)
@@ -6218,7 +6233,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
             )
             return JsonResponse(
-                {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
             )
 
         attack_paths_removal = payload.get("remove_attack_paths_metric")
@@ -6310,7 +6325,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6443,7 +6458,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6458,7 +6473,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             project.data_artifacts = artifacts
             project.save(update_fields=["workbook_data", "data_artifacts"])
             return JsonResponse(
-                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
             )
 
         if payload.get("remove_snmp"):
@@ -6481,7 +6496,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             project.refresh_from_db(fields=["workbook_data", "data_artifacts", "cap"])
 
             return JsonResponse(
-                {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
             )
 
         if payload.get("remove_sql"):
@@ -6510,7 +6525,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                     "cap": project.cap,
                 }
             )
@@ -6544,7 +6559,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6577,7 +6592,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6610,7 +6625,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6648,7 +6663,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                     "cap": project.cap,
                     "data_responses": project.data_responses,
                 }
@@ -6716,7 +6731,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                     "cap": project.cap,
                     "data_responses": project.data_responses,
                 }
@@ -6759,7 +6774,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6797,7 +6812,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6868,7 +6883,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6913,7 +6928,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.data_responses = ensure_data_responses_defaults(refreshed_responses)
         project.save(update_fields=["data_responses"])
 
-        return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts})
+        return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)})
 
     def _handle_endpoint_csv_upload(self, request, project):
         upload = request.FILES.get("endpoint_csv")

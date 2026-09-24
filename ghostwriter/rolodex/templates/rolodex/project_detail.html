@@ -1507,6 +1507,34 @@
 
         const workbookTab = document.getElementById('workbook');
         const workbookUpdateUrl = workbookTab ? workbookTab.getAttribute('data-workbook-update-url') : null;
+        const parseWorkbookJsonResponse = function(response, fallbackMessage) {
+          return response.text().then(function(text) {
+            let data = null;
+            if (text) {
+              try {
+                data = JSON.parse(text);
+              } catch (parseError) {
+                data = null;
+              }
+            }
+            if (!response.ok || data === null) {
+              let message = (data && data.error) ? data.error : fallbackMessage;
+              if (!response.ok && (!data || !data.error)) {
+                if (response.status === 413) {
+                  message = 'That file is too large to upload.';
+                } else if (response.status === 504 || response.status === 502 || response.status === 503) {
+                  message = 'The server took too long to process that file. It may be too large.';
+                } else {
+                  message = fallbackMessage + ' (server returned status ' + response.status + ').';
+                }
+              } else if (response.ok && data === null) {
+                message = 'The server returned an unexpected response while saving workbook data.';
+              }
+              throw new Error(message);
+            }
+            return data;
+          });
+        };
         const parseJsonScript = function(id) {
           const node = document.getElementById(id);
           if (!node) {
@@ -4650,13 +4678,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4689,13 +4711,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4743,13 +4759,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4777,13 +4787,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update password data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update password data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4817,13 +4821,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4904,13 +4902,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to upload the endpoint CSV';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to upload the endpoint CSV');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4950,13 +4942,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4982,13 +4968,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5014,13 +4994,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to upload the cloud management XLSX';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to upload the cloud management XLSX');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5046,13 +5020,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to upload the IAM management XLSX';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to upload the IAM management XLSX');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5078,13 +5046,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to upload the system configuration XLSX';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to upload the system configuration XLSX');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5117,13 +5079,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to save workbook data.';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to save workbook data.');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5149,13 +5105,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5187,13 +5137,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5219,13 +5163,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5251,13 +5189,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -7163,13 +7095,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -7198,13 +7124,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
