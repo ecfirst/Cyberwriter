@@ -1106,21 +1106,12 @@ LINTER_CONTEXT = {
                 },
             },
             "external_nexpose_findings": {
-                "findings": [
-                    {
-                        "Asset IP Address": "203.0.113.10",
-                        "Hostname(s)": "edge.example.com",
-                        "Service Port": "443",
-                        "Protocol": "tcp",
-                        "Vulnerability Title": "OpenSSL Padding Oracle (CVE-2016-2107)",
-                        "Impact": "Allows attackers to decrypt TLS traffic and impersonate the server.",
-                        "Solution": "Update OpenSSL to a supported release.",
-                        "Category": "OOD",
-                        "Details": "Server negotiates vulnerable OpenSSL build.",
-                        "Evidence": "Observed server certificate during scan.",
-                        "Detailed Remediation": "Upgrade to OpenSSL 1.1.1 or later.",
-                    }
-                ],
+                # Raw per-finding rows aren't stored (see
+                # NEXPOSE_AGGREGATE_SCHEMA_VERSION in data_parsers.py) -- the
+                # per-vulnerability detail a template needs lives in the
+                # sibling "external_nexpose_metrics" key's "unique_issues"
+                # and "cap_systems" instead.
+                "schema_version": 2,
                 "software": [
                     {"Software": "OpenSSL", "Version": "1.0.2", "Instances": 3},
                     {"Software": "Apache HTTPD", "Version": "2.4.38", "Instances": 2},
@@ -1173,6 +1164,14 @@ LINTER_CONTEXT = {
                         "remediation": "Upgrade OpenSSL library.",
                         "category": "OOD",
                         "severity": 9,
+                        "count": 4,
+                    }
+                ],
+                "cap_systems": [
+                    {
+                        "key": "openssl padding oracle (cve-2016-2107)",
+                        "title": "OpenSSL Padding Oracle (CVE-2016-2107)",
+                        "systems": ["203.0.113.10 [edge.example.com]"],
                     }
                 ],
                 "majority_type": "ISC",
@@ -1200,7 +1199,7 @@ LINTER_CONTEXT = {
                     }
                 ],
                 "xlsx_filename": "external_nexpose.xlsx",
-                "xlsx_base64": "UEsDBBQAAgAIACJFeGFtTmV4cG9zZQ",
+                "xlsx": {"artifact_file_id": 1, "filename": "external_nexpose.xlsx", "byte_size": 24576},
             },
             "internal_nexpose_vulnerabilities": {
                 "label": "Internal Nexpose Vulnerabilities",
@@ -1274,21 +1273,12 @@ LINTER_CONTEXT = {
                 },
             },
             "internal_nexpose_findings": {
-                "findings": [
-                    {
-                        "Asset IP Address": "10.20.30.40",
-                        "Hostname(s)": "file01.corp.example.com",
-                        "Service Port": "445",
-                        "Protocol": "tcp",
-                        "Vulnerability Title": "SMB Signing Not Required",
-                        "Impact": "Permits attackers to relay SMB authentication.",
-                        "Solution": "Require SMB signing on all systems.",
-                        "Category": "ISC",
-                        "Details": "Signing disabled on host.",
-                        "Evidence": "SMB negotiation captured.",
-                        "Detailed Remediation": "Apply GPO to enforce SMB signing.",
-                    }
-                ],
+                # Raw per-finding rows aren't stored (see
+                # NEXPOSE_AGGREGATE_SCHEMA_VERSION in data_parsers.py) -- the
+                # per-vulnerability detail a template needs lives in the
+                # sibling "internal_nexpose_metrics" key's "unique_issues"
+                # and "cap_systems" instead.
+                "schema_version": 2,
                 "software": [
                     {"Software": "Windows Server 2012 R2", "Version": "6.3.9600", "Instances": 4}
                 ],
@@ -1340,6 +1330,14 @@ LINTER_CONTEXT = {
                         "remediation": "Upgrade to a supported Windows Server release.",
                         "category": "OOD",
                         "severity": 9,
+                        "count": 5,
+                    }
+                ],
+                "cap_systems": [
+                    {
+                        "key": "unsupported windows server",
+                        "title": "Unsupported Windows Server",
+                        "systems": ["10.20.30.40 [file01.corp.example.com]"],
                     }
                 ],
                 "majority_type": "ISC",
@@ -1367,24 +1365,15 @@ LINTER_CONTEXT = {
                     }
                 ],
                 "xlsx_filename": "internal_nexpose.xlsx",
-                "xlsx_base64": "UEsDBBQAAgAIACJJbnRlcm5hbE5leHBvc2U",
+                "xlsx": {"artifact_file_id": 2, "filename": "internal_nexpose.xlsx", "byte_size": 24576},
             },
             "iot_iomt_nexpose_findings": {
-                "findings": [
-                    {
-                        "Asset IP Address": "10.55.88.23",
-                        "Hostname(s)": "mri01.med.example.com",
-                        "Service Port": "80",
-                        "Protocol": "tcp",
-                        "Vulnerability Title": "Default Credentials Enabled",
-                        "Impact": "Shared vendor passwords allow unauthorized access to device management.",
-                        "Solution": "Change default credentials and enforce MFA on management portals.",
-                        "Category": "ISC",
-                        "Details": "Device uses manufacturer default password.",
-                        "Evidence": "Successful login via vendor defaults.",
-                        "Detailed Remediation": "Rotate credentials and integrate with PAM tooling.",
-                    }
-                ],
+                # Raw per-finding rows aren't stored (see
+                # NEXPOSE_AGGREGATE_SCHEMA_VERSION in data_parsers.py) -- the
+                # per-vulnerability detail a template needs lives in the
+                # sibling "iot_iomt_nexpose_metrics" key's "unique_issues"
+                # and "cap_systems" instead.
+                "schema_version": 2,
                 "software": [
                     {"Software": "MedTech Controller", "Version": "3.2.1", "Instances": 5}
                 ],
@@ -1435,6 +1424,14 @@ LINTER_CONTEXT = {
                         "remediation": "Coordinate firmware upgrades with the vendor.",
                         "category": "OOD",
                         "severity": 9,
+                        "count": 3,
+                    }
+                ],
+                "cap_systems": [
+                    {
+                        "key": "unpatched medical device firmware",
+                        "title": "Unpatched Medical Device Firmware",
+                        "systems": ["10.55.88.23 [mri01.med.example.com]"],
                     }
                 ],
                 "majority_type": "ISC",
@@ -1462,7 +1459,7 @@ LINTER_CONTEXT = {
                     }
                 ],
                 "xlsx_filename": "iot_nexpose.xlsx",
-                "xlsx_base64": "UEsDBBQAAgAIACJJb3ROZXhwb3Nl",
+                "xlsx": {"artifact_file_id": 3, "filename": "iot_nexpose.xlsx", "byte_size": 24576},
             },
             "nexpose_matrix_gaps": {
                 "missing_by_artifact": {

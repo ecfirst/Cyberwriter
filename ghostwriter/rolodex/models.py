@@ -3,6 +3,7 @@
 # Standard Libraries
 import os
 import re
+import uuid
 from collections import OrderedDict
 from datetime import time, timedelta
 from decimal import Decimal
@@ -931,8 +932,14 @@ class Project(models.Model):
 
         super().save(*args, **kwargs)
 
-    def rebuild_data_artifacts(self) -> None:
-        """Rebuild supporting data artifacts derived from uploaded files."""
+    def rebuild_data_artifacts(self, *, changed_file_ids: Optional[Set[int]] = None) -> None:
+        """Rebuild supporting data artifacts derived from uploaded files.
+
+        ``changed_file_ids`` is forwarded to
+        ``data_parsers.build_project_artifacts`` -- see its docstring for
+        what it does and why. ``None`` (the default) reparses every
+        uploaded file, exactly as before this parameter existed.
+        """
 
         from ghostwriter.rolodex.data_parsers import (
             ATTACK_PATHS_CAP_ISSUES,
@@ -962,7 +969,7 @@ class Project(models.Model):
         )
 
         existing_artifacts = dict(self.data_artifacts or {})
-        artifacts = build_project_artifacts(self)
+        artifacts = build_project_artifacts(self, changed_file_ids=changed_file_ids)
 
         ad_artifacts = (
             existing_artifacts.get("ad") if isinstance(existing_artifacts.get("ad"), Mapping) else None
@@ -1152,22 +1159,6 @@ class Project(models.Model):
                 return ""
             return str(value).strip().lower()
 
-        def _format_system_label(finding: Dict[str, Any]) -> str:
-            ip_address = (finding.get("Asset IP Address") or "").strip()
-            hostnames = (finding.get("Hostname(s)") or "").strip()
-            if ip_address:
-                label = ip_address
-                if hostnames:
-                    label = f"{label} [{hostnames}]"
-            elif hostnames:
-                label = hostnames
-            else:
-                return ""
-            status_code = (finding.get("Vulnerability Test Result Code") or "").strip().upper()
-            if status_code == "VP":
-                label = f"{label} (P)"
-            return label
-
         def _apply_nexpose_metrics(metrics_key: str, workbook_key: str) -> None:
             metrics_payload = artifacts.get(metrics_key)
             if not isinstance(metrics_payload, dict):
@@ -1352,23 +1343,14 @@ class Project(models.Model):
 
         def _build_nexpose_cap_entries_from_metrics() -> List[Dict[str, Any]]:
             issue_map: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-            findings_lookup: Dict[str, List[Dict[str, Any]]] = {}
-
-            for artifact_key in NEXPOSE_METRICS_KEY_MAP.keys():
-                artifact_entry = artifacts.get(artifact_key)
-                if not isinstance(artifact_entry, dict):
-                    continue
-                findings = artifact_entry.get("findings")
-                if not isinstance(findings, list):
-                    continue
-                for finding in findings:
-                    if not isinstance(finding, dict):
-                        continue
-                    title = (finding.get("Vulnerability Title") or finding.get("Vulnerability ID") or "").strip()
-                    key = _normalize_issue_key(title)
-                    if not key:
-                        continue
-                    findings_lookup.setdefault(key, []).append(finding)
+            # Deduped system labels per unique vulnerability title, sourced
+            # directly from each metrics payload's own "cap_systems" (built
+            # in the same pass as "unique_issues" -- see
+            # _build_nexpose_metrics_payload in data_parsers.py) instead of
+            # re-deriving them from the raw findings list, which is no
+            # longer stored (data_artifacts[<findings_key>] only keeps a
+            # "software" list -- see NEXPOSE_AGGREGATE_SCHEMA_VERSION).
+            systems_lookup: Dict[str, List[str]] = {}
 
             for metrics_key in NEXPOSE_METRICS_KEY_MAP.values():
                 metrics_payload = artifacts.get(metrics_key)
@@ -1395,16 +1377,25 @@ class Project(models.Model):
                     if remediation and not issue_record.get("action"):
                         issue_record["action"] = remediation
 
+                cap_systems = metrics_payload.get("cap_systems")
+                if isinstance(cap_systems, list):
+                    for cap_entry in cap_systems:
+                        if not isinstance(cap_entry, dict):
+                            continue
+                        key = (cap_entry.get("key") or "").strip()
+                        systems = cap_entry.get("systems")
+                        if not key or not isinstance(systems, list):
+                            continue
+                        existing = systems_lookup.setdefault(key, [])
+                        seen = set(existing)
+                        for label in systems:
+                            if label and label not in seen:
+                                seen.add(label)
+                                existing.append(label)
+
             cap_entries: List[Dict[str, Any]] = []
             for key, meta in issue_map.items():
-                systems: List[str] = []
-                seen_hosts: Set[str] = set()
-                for finding in findings_lookup.get(key, []):
-                    label = _format_system_label(finding)
-                    if not label or label in seen_hosts:
-                        continue
-                    seen_hosts.add(label)
-                    systems.append(label)
+                systems = systems_lookup.get(key, [])
 
                 entry: Dict[str, Any] = {}
                 issue_text = (meta.get("issue") or "").strip()
@@ -1455,10 +1446,14 @@ class Project(models.Model):
         # emptied that context for any template that used them, exactly the
         # ad_attack_paths bug from a few rounds ago. Drop only the confirmed
         # duplicative pair; the still-large all_issues/high/med/low_issues
-        # data remains one click away via xlsx_base64 (which already has a
-        # full "All Issues"/"High Risk Issues"/etc. tab per
-        # tab_index_entries' own descriptions) and the raw *_nexpose_findings
-        # artifact.
+        # data remains one click away via the generated workbook (xlsx/
+        # xlsx_base64, which already has a full "All Issues"/"High Risk
+        # Issues"/etc. tab per tab_index_entries' own descriptions). For
+        # Nexpose specifically (unlike web/firewall below), the raw
+        # *_nexpose_findings artifact no longer holds a copy either -- see
+        # NEXPOSE_AGGREGATE_SCHEMA_VERSION in data_parsers.py -- so
+        # unique_issues/cap_systems in the metrics payload (kept below) are
+        # the only remaining per-vulnerability detail in storage.
         _DROP_DUPLICATE_ISSUE_LISTS = ("all_issues", "high_issues", "med_issues", "low_issues")
 
         for metrics_key in NEXPOSE_METRICS_KEY_MAP.values():
@@ -2912,11 +2907,69 @@ class ProjectDataFile(models.Model):
         """Rebuild parsed artifacts for the related project."""
 
         project = self.project
-        project.rebuild_data_artifacts()
+        project.rebuild_data_artifacts(changed_file_ids={self.pk})
 
     @property
     def filename(self):
         return os.path.basename(self.file.name)
+
+
+def _project_artifact_upload_to(instance: "ProjectArtifactFile", filename: str) -> str:
+    """Return the storage path for a generated (not user-uploaded) project artifact file.
+
+    Namespaced by project and artifact key, with a random suffix so
+    re-generating the same artifact (e.g. re-uploading a Nexpose XML) never
+    collides with the file it's replacing while the old one is still being
+    deleted.
+    """
+    extension = os.path.splitext(filename)[1] or ".xlsx"
+    unique_suffix = uuid.uuid4().hex[:12]
+    return f"project_artifacts/{instance.project_id}/{instance.artifact_key}-{unique_suffix}{extension}"
+
+
+class ProjectArtifactFile(models.Model):
+    """Stores a generated (derived, not user-uploaded) file backing a project data artifact.
+
+    Distinct from :model:`rolodex.ProjectDataFile`, which holds the raw
+    files a user uploads (iterated by
+    ``data_parsers.build_project_artifacts`` and filtered by
+    ``requirement_slug`` throughout the supplementals UI) -- a derived
+    output like a generated Nexpose XLSX workbook must not enter that input
+    set.
+    """
+
+    project = models.ForeignKey(
+        Project,
+        related_name="artifact_files",
+        on_delete=models.CASCADE,
+    )
+    artifact_key = models.CharField(
+        "Artifact Key",
+        max_length=64,
+        help_text="The data_artifacts key this generated file belongs to (e.g. 'internal_nexpose_metrics').",
+    )
+    file = models.FileField(
+        "Generated Artifact File",
+        upload_to=_project_artifact_upload_to,
+        max_length=255,
+    )
+    filename = models.CharField(
+        "Display Filename",
+        max_length=255,
+        blank=True,
+        default="",
+    )
+    byte_size = models.BigIntegerField("File Size (bytes)", default=0)
+    generated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["project", "artifact_key"]
+        unique_together = ("project", "artifact_key")
+        verbose_name = "Project artifact file"
+        verbose_name_plural = "Project artifact files"
+
+    def __str__(self):
+        return f"{self.project} - {self.artifact_key}"
 
 
 class ProjectRole(models.Model):

@@ -58,6 +58,7 @@ from ghostwriter.rolodex.ip_artifacts import (
     IP_ARTIFACT_TYPE_INTERNAL,
 )
 from ghostwriter.rolodex.models import (
+    ProjectArtifactFile,
     ProjectDataFile,
     VulnerabilityMatrixEntry,
     WebIssueMatrixEntry,
@@ -1578,6 +1579,45 @@ class ProjectNexposeDataDownloadTests(TestCase):
         )
         self.assertTrue(response.content.startswith(b"PK"))
 
+    def test_download_returns_xlsx_from_artifact_file(self):
+        # Current uploads reference a real ProjectArtifactFile (see
+        # NEXPOSE_AGGREGATE_SCHEMA_VERSION / _persist_nexpose_workbook)
+        # instead of embedding the workbook as base64 in data_artifacts --
+        # xlsx_base64 (test_download_returns_xlsx, above) is exercised only
+        # as a fallback for data written before that change.
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="external_nexpose_metrics",
+            file=SimpleUploadedFile(
+                "nexpose_data.xlsx",
+                b"PK\x03\x04",
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            filename="nexpose_data.xlsx",
+            byte_size=4,
+        )
+        self.addCleanup(lambda: ProjectArtifactFile.objects.filter(pk=artifact_file.pk).delete())
+        self.project.data_artifacts = {
+            "external_nexpose_metrics": {
+                "summary": {"total": 1},
+                "xlsx_filename": "nexpose_data.xlsx",
+                "xlsx": {
+                    "artifact_file_id": artifact_file.pk,
+                    "filename": "nexpose_data.xlsx",
+                    "byte_size": 4,
+                },
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.url + "?artifact=external_nexpose_metrics")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertEqual(b"".join(response.streaming_content), b"PK\x03\x04")
+
     def test_download_redirects_when_missing(self):
         self.project.data_artifacts = {}
         self.project.save(update_fields=["data_artifacts"])
@@ -1762,6 +1802,88 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         self.update_url = reverse(
             "rolodex:project_workbook_data_update", kwargs={"pk": self.project.pk}
         )
+
+    def test_internal_nexpose_xml_upload_is_processed_asynchronously(self):
+        # Nexpose XML uploads hand off to a background task (see
+        # process_project_data_upload, rolodex/tasks.py) instead of parsing
+        # inline -- Q_CLUSTER["sync"] = True (config/settings/test.py) makes
+        # async_task() run that task synchronously here, so its effects are
+        # already visible by the time this request returns.
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node address='10.0.0.5' status='alive'>
+      <names><name>async-host.example.com</name></names>
+      <tests>
+        <test id='async-issue' status='vulnerable-exploited'>
+          <Paragraph><Paragraph>Async proof</Paragraph></Paragraph>
+        </test>
+      </tests>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability id='async-issue' title='Async Issue' severity='8'>
+      <description>Async description</description>
+      <solution>Fix async issue</solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+        upload = SimpleUploadedFile(
+            "internal_nexpose_xml.xml",
+            xml_payload.encode("utf-8"),
+            content_type="text/xml",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {"internal_nexpose_xml": upload, "area_key": "internal_nexpose"},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertTrue(payload.get("queued"))
+        self.assertEqual(payload.get("upload_field"), "internal_nexpose_xml")
+        self.assertNotIn("workbook_data", payload)
+        self.assertNotIn("data_artifacts", payload)
+
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+
+        artifact = self.project.data_artifacts.get("internal_nexpose_findings")
+        self.assertIsInstance(artifact, dict)
+        self.assertEqual(artifact.get("schema_version"), 2)
+        self.assertNotIn("findings", artifact)
+
+        metrics = self.project.data_artifacts.get("internal_nexpose_metrics")
+        self.assertIsInstance(metrics, dict)
+        self.assertEqual((metrics.get("summary") or {}).get("total"), 1)
+        unique_issues = metrics.get("unique_issues") or []
+        self.assertTrue(unique_issues)
+        self.assertEqual(unique_issues[0].get("count"), 1)
+        self.assertTrue(metrics.get("cap_systems"))
+
+        xlsx_ref = metrics.get("xlsx")
+        self.assertIsInstance(xlsx_ref, dict)
+        self.addCleanup(
+            lambda: ProjectArtifactFile.objects.filter(pk=xlsx_ref["artifact_file_id"]).delete()
+        )
+
+        # The "processing" marker set before the task ran must be cleared
+        # once it completes.
+        self.assertNotIn("processing_uploads", self.project.data_artifacts)
+
+        # get() is the frontend's poll-for-fresh-state endpoint (there's no
+        # synchronous upload response carrying this).
+        get_response = self.client_auth.get(self.update_url)
+        self.assertEqual(get_response.status_code, 200)
+        get_payload = get_response.json()
+        self.assertIn("internal_nexpose_metrics", get_payload.get("data_artifacts", {}))
 
     def test_password_responses_and_cap_rebuilt_on_area_save(self):
         self.project.workbook_data = {

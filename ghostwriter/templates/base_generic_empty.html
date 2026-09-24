@@ -351,10 +351,12 @@
     ws_user.onmessage = function (e) {
       let data = JSON.parse(e.data);
       displayToastTop({type: data.message.level, string: data.message.message, title: data.message.title});
+      document.dispatchEvent(new CustomEvent('ghostwriter:notification', {detail: data.message}));
     }
     ws_all.onmessage = function (e) {
       let data = JSON.parse(e.data);
       displayToastTop({type: data.message.level, string: data.message.message, title: data.message.title});
+      document.dispatchEvent(new CustomEvent('ghostwriter:notification', {detail: data.message}));
     };
 
     {% comment %} Handle unexpected WebSocket closures {% endcomment %}

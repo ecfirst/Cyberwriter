@@ -49,5 +49,21 @@ TEMPLATES[0]["OPTIONS"]["loaders"] = [  # noqa F405
 # https://docs.djangoproject.com/en/dev/ref/settings/#email-backend
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
+# DJANGO-Q
+# ------------------------------------------------------------------------------
+# Run async_task() calls inline instead of requiring a live Redis broker/queue
+# worker, so tests that trigger a background task (e.g. the Nexpose upload
+# view) can assert on its effects synchronously.
+Q_CLUSTER = {**Q_CLUSTER, "sync": True}  # noqa F405
+
+# CHANNELS
+# ------------------------------------------------------------------------------
+# Avoid requiring a live Redis instance for websocket notification tests.
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    }
+}
+
 # Your stuff...
 # ------------------------------------------------------------------------------

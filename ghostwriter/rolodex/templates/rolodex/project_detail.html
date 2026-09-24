@@ -132,7 +132,7 @@
              data-end="{{ project.end_date|date:'Y-m-d' }}"></div>
       </div>
 
-      <div id="workbook" class="tab-pane" data-workbook-update-url="{% url 'rolodex:project_workbook_data_update' project.id %}">
+      <div id="workbook" class="tab-pane" data-workbook-update-url="{% url 'rolodex:project_workbook_data_update' project.id %}" data-project-id="{{ project.id }}">
         <h4>Workbook</h4>
         <hr/>
         <div class="row mb-3">
@@ -1549,6 +1549,25 @@
 
         const workbookState = parseJsonScript('project-workbook-data') || {};
         const dataArtifactsState = parseJsonScript('project-data-artifacts') || {};
+        // Tracks upload fields (e.g. 'internal_nexpose_xml') with a
+        // background processing task still running -- seeded below from
+        // dataArtifactsState.processing_uploads (a marker
+        // ProjectWorkbookDataUpdate.post sets before enqueuing the task and
+        // clears once it finishes, so this survives a page reload) and kept
+        // in sync with it by updateDataArtifactsState.
+        const uploadProcessingState = {};
+        const syncUploadProcessingState = function() {
+          Object.keys(uploadProcessingState).forEach(function(key) {
+            delete uploadProcessingState[key];
+          });
+          const processing = dataArtifactsState.processing_uploads;
+          if (processing && typeof processing === 'object') {
+            Object.keys(processing).forEach(function(fieldName) {
+              uploadProcessingState[fieldName] = true;
+            });
+          }
+        };
+        syncUploadProcessingState();
         const scopingState = parseJsonScript('project-scoping-data') || {};
         const scopingWeights = parseJsonScript('project-scoping-weights') || {};
         const scopingConfig = parseJsonScript('project-scoping-config') || {};
@@ -4656,6 +4675,7 @@
           if (artifacts && typeof artifacts === 'object') {
             Object.assign(dataArtifactsState, artifacts);
           }
+          syncUploadProcessingState();
         };
 
         const uploadAdCsv = function(file, domain, metric, areaKey, modalId) {
@@ -5096,8 +5116,10 @@
           if (!workbookUpdateUrl || !file) {
             return;
           }
+          const fieldName = uploadFieldName || 'external_nexpose_xml';
           const formData = new FormData();
-          formData.append(uploadFieldName || 'external_nexpose_xml', file);
+          formData.append(fieldName, file);
+          formData.append('area_key', areaKey || '');
           return fetch(workbookUpdateUrl, {
             method: 'POST',
             headers: {
@@ -5107,6 +5129,22 @@
           }).then(function(response) {
             return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
+            if (data && data.queued) {
+              // Nexpose XML is parsed in a background task (large scans can
+              // run to hundreds of MB) -- there's no workbook_data/
+              // data_artifacts in this response yet. Mark this upload as
+              // processing and re-render so the card shows that instead of
+              // the normal "Selected: ..." state; the notification listener
+              // below (on 'ghostwriter:notification') clears it and pulls
+              // fresh data once the task finishes.
+              uploadProcessingState[fieldName] = true;
+              refreshWorkbookUi({
+                reopenModalId: modalId,
+                forceCloseModalId: modalId,
+                afterRender: function() { updateWorkbookCardProgress(areaKey); },
+              });
+              return;
+            }
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
               forceCloseModalId: modalId,
@@ -7723,6 +7761,10 @@
                   });
                   const fileNameDisplay = document.createElement('div');
                   fileNameDisplay.className = 'small text-muted mt-2';
+                  const processingNotice = document.createElement('div');
+                  processingNotice.className = 'alert alert-info small py-2 px-3 mt-2';
+                  processingNotice.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Processing upload — this can take several minutes for a large file. This card will update automatically when it finishes.';
+                  processingNotice.style.display = 'none';
                   const missingNotice = document.createElement('div');
                   missingNotice.className = 'alert alert-warning small py-2 px-3 mt-2';
                   missingNotice.textContent = 'Missing Nexpose issues identified! Update the matrix and re-upload.';
@@ -7731,7 +7773,19 @@
                     const hasMissing = hasNexposeMissingEntries(missingArtifactKey);
                     missingNotice.style.display = hasMissing ? '' : 'none';
                   };
+                  const isProcessing = function() {
+                    return !!uploadProcessingState[uploader.fieldName];
+                  };
                   const setFileNameFromState = function() {
+                    const processing = isProcessing();
+                    processingNotice.style.display = processing ? '' : 'none';
+                    uploadButton.disabled = processing;
+                    removeButton.disabled = processing;
+                    if (processing) {
+                      missingNotice.style.display = 'none';
+                      fileNameDisplay.textContent = '';
+                      return;
+                    }
                     updateMissingNotice();
                     if (!uploader.fileNameKey) {
                       fileNameDisplay.textContent = '';
@@ -7775,6 +7829,7 @@
                   uploadContainer.appendChild(removeButton);
                   uploadContainer.appendChild(uploadInput);
                   uploadContainer.appendChild(fileNameDisplay);
+                  uploadContainer.appendChild(processingNotice);
                   uploadContainer.appendChild(missingNotice);
                   setFileNameFromState();
                 });
@@ -8417,6 +8472,49 @@
           refreshWorkbookUi(renderOptions);
           refreshProjectDataTabs();
         };
+
+        // A background upload task (see process_project_data_upload,
+        // rolodex/tasks.py) has no synchronous response to report through,
+        // so it notifies over WebSockets instead -- base_generic.html
+        // relays every such message as a 'ghostwriter:notification'
+        // CustomEvent (in addition to the generic toast it already shows).
+        // Only react to ones about *this* project's upload completing;
+        // anything else (a different page's notification, or a message
+        // from an unrelated feature) is left for the generic toast alone.
+        const projectIdForNotifications = workbookTab ? workbookTab.getAttribute('data-project-id') : null;
+        document.addEventListener('ghostwriter:notification', function(event) {
+          const detail = event.detail || {};
+          if (detail.event !== 'workbook_upload_complete') {
+            return;
+          }
+          if (!projectIdForNotifications || String(detail.project_id) !== String(projectIdForNotifications)) {
+            return;
+          }
+          const fieldName = detail.upload_field;
+          if (fieldName) {
+            delete uploadProcessingState[fieldName];
+          }
+          if (detail.status !== 'success' || !workbookUpdateUrl) {
+            refreshWorkbookUi({afterRender: function() { updateWorkbookCardProgress(detail.area_key); }});
+            return;
+          }
+          fetch(workbookUpdateUrl, {
+            method: 'GET',
+            headers: {'Accept': 'application/json'},
+          }).then(function(response) {
+            return parseWorkbookJsonResponse(response, 'Unable to refresh workbook data');
+          }).then(function(data) {
+            handleWorkbookUpdateResponse(data, {
+              afterRender: function() { updateWorkbookCardProgress(detail.area_key); },
+            });
+          }).catch(function(error) {
+            console.error(error);
+            // The task already succeeded server-side (that's why we're
+            // here) -- a failed refetch just leaves stale data on screen
+            // until the next save/reload, not a data-loss risk.
+            refreshWorkbookUi({afterRender: function() { updateWorkbookCardProgress(detail.area_key); }});
+          });
+        });
 
         const getCsrfToken = function() {
           const cookieString = document.cookie || '';

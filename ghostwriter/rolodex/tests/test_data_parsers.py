@@ -4,6 +4,7 @@
 import base64
 import csv
 import io
+import os
 from typing import Any, Dict, Iterable
 from unittest import mock
 
@@ -39,6 +40,7 @@ from ghostwriter.rolodex.models import (
     DNSRecommendationMapping,
     GeneralCapMapping,
     PasswordCapMapping,
+    ProjectArtifactFile,
     ProjectDataFile,
     VulnerabilityMatrixEntry,
     WebIssueMatrixEntry,
@@ -88,6 +90,24 @@ class NexposeDataParserTests(TestCase):
                 self.assertIsNotNone(group)
                 self.assertEqual(group["total_unique"], 0)
                 self.assertEqual(group["items"], [])
+
+    def _discard_xlsx_temp_path(self, metrics_payload: Dict[str, Any]) -> None:
+        """Pop and clean up the temp workbook path a direct
+        ``_build_nexpose_metrics_payload`` call leaves behind.
+
+        That function always writes the generated workbook to a temp file
+        and hands back its path as ``_xlsx_temp_path`` for
+        ``build_project_artifacts`` to persist as a ``ProjectArtifactFile``
+        (see ``_persist_nexpose_workbook``) -- tests that call it directly
+        bypass that persistence step, so without this the temp file leaks on
+        disk and, if the payload is later fed into
+        ``rebuild_data_artifacts()`` via a mocked ``build_project_artifacts``,
+        the raw temp path would otherwise get written straight into
+        ``data_artifacts``.
+        """
+        temp_path = metrics_payload.pop("_xlsx_temp_path", None)
+        if temp_path:
+            self.addCleanup(lambda: os.path.exists(temp_path) and os.unlink(temp_path))
 
     def _build_csv_file(self, filename: str, rows: Iterable[Dict[str, str]]) -> SimpleUploadedFile:
         buffer = io.StringIO()
@@ -230,12 +250,20 @@ class NexposeDataParserTests(TestCase):
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
         self.assertIsInstance(artifact, dict)
-        findings = artifact.get("findings")
+        self.assertEqual(artifact.get("schema_version"), 2)
         software = artifact.get("software")
-        self.assertIsInstance(findings, list)
-        self.assertEqual(len(findings), 2)
         self.assertIsInstance(software, list)
         self.assertEqual(len(software), 1)
+
+        # Raw per-finding rows are no longer stored (only the aggregate
+        # under the sibling *_metrics key survives -- see
+        # NEXPOSE_AGGREGATE_SCHEMA_VERSION), so field-level extraction is
+        # verified directly against the parser instead.
+        findings = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml")
+        ).get("findings")
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), 2)
 
         host_finding = findings[0]
         self.assertEqual(host_finding["Asset IP Address"], "192.0.2.10")
@@ -313,9 +341,9 @@ class NexposeDataParserTests(TestCase):
 
         artifact = self.project.data_artifacts.get("internal_nexpose_findings")
         self.assertIsInstance(artifact, dict)
-        findings = artifact.get("findings")
-        self.assertIsInstance(findings, list)
-        self.assertEqual(len(findings), 1)
+        self.assertEqual(artifact.get("schema_version"), 2)
+        metrics = self.project.data_artifacts.get("internal_nexpose_metrics") or {}
+        self.assertEqual((metrics.get("summary") or {}).get("total"), 1)
         self.assertNotIn("external_nexpose_findings", self.project.data_artifacts)
 
     def test_nexpose_xml_generates_metrics_and_xlsx(self):
@@ -382,9 +410,17 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(summary.get("total"), 2)
         self.assertEqual(summary.get("total_high"), 1)
         self.assertEqual(summary.get("total_med"), 1)
-        workbook_b64 = metrics.get("xlsx_base64")
-        self.assertTrue(workbook_b64)
-        decoded = base64.b64decode(workbook_b64)
+
+        # The workbook is now a real file (ProjectArtifactFile), not a
+        # base64 blob embedded in data_artifacts -- see
+        # NEXPOSE_AGGREGATE_SCHEMA_VERSION / _persist_nexpose_workbook.
+        xlsx_ref = metrics.get("xlsx")
+        self.assertIsInstance(xlsx_ref, dict)
+        artifact_file = ProjectArtifactFile.objects.get(pk=xlsx_ref["artifact_file_id"])
+        self.addCleanup(lambda: ProjectArtifactFile.objects.filter(pk=artifact_file.pk).delete())
+        self.assertEqual(artifact_file.project_id, self.project.pk)
+        self.assertEqual(artifact_file.artifact_key, "external_nexpose_metrics")
+        decoded = artifact_file.file.read()
         self.assertTrue(decoded.startswith(b"PK"))
 
     def test_nexpose_metrics_calculates_minority_type(self):
@@ -416,6 +452,7 @@ class NexposeDataParserTests(TestCase):
         ]
 
         metrics_payload = _build_nexpose_metrics_payload(findings)
+        self._discard_xlsx_temp_path(metrics_payload)
         summary = metrics_payload.get("summary") or {}
 
         self.assertEqual(metrics_payload.get("majority_type"), "OOD")
@@ -465,6 +502,7 @@ class NexposeDataParserTests(TestCase):
         ]
 
         metrics_payload = _build_nexpose_metrics_payload(findings)
+        self._discard_xlsx_temp_path(metrics_payload)
         summary = metrics_payload.get("summary") or {}
 
         self.assertEqual(metrics_payload.get("majority_type"), "Even")
@@ -504,6 +542,7 @@ class NexposeDataParserTests(TestCase):
         ]
 
         metrics_payload = _build_nexpose_metrics_payload(findings)
+        self._discard_xlsx_temp_path(metrics_payload)
         top_hosts = metrics_payload.get("top_hosts") or []
         top_hosts_by_name = {entry.get("host"): entry for entry in top_hosts}
 
@@ -535,6 +574,7 @@ class NexposeDataParserTests(TestCase):
         ]
 
         metrics_payload = _build_nexpose_metrics_payload(findings)
+        self._discard_xlsx_temp_path(metrics_payload)
 
         self.assertEqual(metrics_payload.get("top_hosts_high"), 1)
         self.assertEqual(metrics_payload.get("top_hosts_med"), 1)
@@ -596,6 +636,7 @@ class NexposeDataParserTests(TestCase):
         self.assertIn("unique_issues", metrics_payload)
         self.assertIn("top_hosts", metrics_payload)
         self.assertIn("majority_type", metrics_payload)
+        self._discard_xlsx_temp_path(metrics_payload)
 
         with mock.patch(
             "ghostwriter.rolodex.models.build_project_artifacts",
@@ -610,8 +651,6 @@ class NexposeDataParserTests(TestCase):
             self.assertNotIn(dropped_key, stored_metrics)
         for kept_key in (
             "summary",
-            "xlsx_base64",
-            "xlsx_filename",
             "host_counts",
             "top_hosts",
             "top_hosts_high",
@@ -621,6 +660,7 @@ class NexposeDataParserTests(TestCase):
             "top_impacts",
             "tab_index_entries",
             "unique_issues",
+            "cap_systems",
             "majority_type",
             "minority_type",
             "majority_unique",
@@ -798,7 +838,12 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
-        findings = artifact.get("findings")
+        self.assertEqual(artifact.get("schema_version"), 2)
+        # Raw per-finding rows are no longer stored -- verify field-level
+        # extraction against the parser directly instead.
+        findings = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml")
+        ).get("findings")
         self.assertEqual(len(findings), 2)
 
         cipher_entry = next(
@@ -915,7 +960,12 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
-        finding = artifact["findings"][0]
+        self.assertEqual(artifact.get("schema_version"), 2)
+        # Raw per-finding rows are no longer stored -- verify field-level
+        # normalization against the parser directly instead.
+        finding = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml")
+        )["findings"][0]
 
         self.assertEqual(
             finding["Details"],
@@ -991,7 +1041,12 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
-        findings = artifact.get("findings")
+        self.assertEqual(artifact.get("schema_version"), 2)
+        # Raw per-finding rows are no longer stored -- verify title-matching
+        # against the parser directly instead.
+        findings = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml")
+        ).get("findings")
         self.assertEqual(len(findings), 1)
         entry = findings[0]
         self.assertEqual(
@@ -1062,7 +1117,12 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
-        finding = artifact["findings"][0]
+        self.assertEqual(artifact.get("schema_version"), 2)
+        # Raw per-finding rows are no longer stored -- verify CVE
+        # extraction against the parser directly instead.
+        finding = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml")
+        )["findings"][0]
 
         self.assertEqual(
             finding["Vulnerability CVE IDs"],
@@ -1165,7 +1225,14 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
-        findings = artifact.get("findings")
+        self.assertEqual(artifact.get("schema_version"), 2)
+        # Raw per-finding rows are no longer stored -- verify matrix
+        # application against the parser directly instead, passing the same
+        # matrix rebuild_data_artifacts() loads from the DB internally.
+        findings = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml"),
+            vulnerability_matrix=data_parsers.load_vulnerability_matrix(),
+        ).get("findings")
         host_entry = next(item for item in findings if item["Vulnerability ID"] == "vuln-host")
         service_entry = next(item for item in findings if item["Vulnerability ID"] == "vuln-service")
 
