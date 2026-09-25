@@ -1556,6 +1556,16 @@
         // clears once it finishes, so this survives a page reload) and kept
         // in sync with it by updateDataArtifactsState.
         const uploadProcessingState = {};
+        // Client-side-only companion to uploadProcessingState: which area
+        // card's modal (the 'workbook-area-modal-' + areaKey id) each
+        // still-processing field belongs to, so the poll fallback below
+        // (pollProcessingUploads) can apply a finished upload's own modal
+        // in place the same way the WebSocket notification handler does,
+        // instead of always waiting for a currently-open modal to close.
+        // Not seeded from the server (the persisted processing_uploads
+        // marker doesn't carry area_key) -- only populated for uploads
+        // this page session itself started, via uploadNexposeXml below.
+        const uploadProcessingAreaKeys = {};
         const syncUploadProcessingState = function() {
           Object.keys(uploadProcessingState).forEach(function(key) {
             delete uploadProcessingState[key];
@@ -1566,6 +1576,11 @@
               uploadProcessingState[fieldName] = true;
             });
           }
+          Object.keys(uploadProcessingAreaKeys).forEach(function(fieldName) {
+            if (!uploadProcessingState[fieldName]) {
+              delete uploadProcessingAreaKeys[fieldName];
+            }
+          });
         };
         syncUploadProcessingState();
         const scopingState = parseJsonScript('project-scoping-data') || {};
@@ -5138,11 +5153,13 @@
               // below (on 'ghostwriter:notification') clears it and pulls
               // fresh data once the task finishes.
               uploadProcessingState[fieldName] = true;
+              uploadProcessingAreaKeys[fieldName] = areaKey || '';
               refreshWorkbookUi({
                 reopenModalId: modalId,
                 forceCloseModalId: modalId,
                 afterRender: function() { updateWorkbookCardProgress(areaKey); },
               });
+              scheduleUploadPoll();
               return;
             }
             handleWorkbookUpdateResponse(data, {
@@ -8538,6 +8555,7 @@
           const fieldName = detail.upload_field;
           if (fieldName) {
             delete uploadProcessingState[fieldName];
+            delete uploadProcessingAreaKeys[fieldName];
           }
           if (detail.status !== 'success' || !workbookUpdateUrl) {
             applyWorkbookNotification(detail, null);
@@ -8558,6 +8576,63 @@
             applyWorkbookNotification(detail, null);
           });
         });
+
+        // Fallback for a completion notification that never arrives.
+        // base_generic.html's WebSocket reconnects on drop, but a
+        // recycle/restart still opens a gap (Channels' group_send has no
+        // delivery guarantee, so a message sent while a client is
+        // mid-reconnect is just lost) that would otherwise strand this
+        // card on "Processing..." until a manual reload -- the same bug
+        // the notification handling above exists to fix, just triggered by
+        // a dropped message instead of a self-deadlocking modal wait. Poll
+        // workbookUpdateUrl every 30s while anything is known to be
+        // processing, and stop as soon as nothing is.
+        let uploadPollTimer = null;
+        const scheduleUploadPoll = function() {
+          if (uploadPollTimer !== null || !Object.keys(uploadProcessingState).length) {
+            return;
+          }
+          uploadPollTimer = window.setTimeout(pollProcessingUploads, 30000);
+        };
+        const pollProcessingUploads = function() {
+          uploadPollTimer = null;
+          if (!workbookUpdateUrl || !Object.keys(uploadProcessingState).length) {
+            return;
+          }
+          fetch(workbookUpdateUrl, {
+            method: 'GET',
+            headers: {'Accept': 'application/json'},
+          }).then(function(response) {
+            return parseWorkbookJsonResponse(response, 'Unable to refresh workbook data');
+          }).then(function(data) {
+            const artifacts = (data && data.data_artifacts) || {};
+            const stillProcessing = artifacts.processing_uploads || {};
+            const finishedFields = Object.keys(uploadProcessingState).filter(function(fieldName) {
+              return !stillProcessing[fieldName];
+            });
+            if (!finishedFields.length) {
+              // Nothing finished -- don't touch state/DOM this tick.
+              scheduleUploadPoll();
+              return;
+            }
+            // Only one finished upload's own modal (if any) makes sense to
+            // reopen in place; if several finished in the same tick, pick
+            // any one of them for that purpose -- the render still applies
+            // every field's fresh data via handleWorkbookUpdateResponse,
+            // this only affects which modal (if the user has one of these
+            // specific ones open) gets force-refreshed versus deferred.
+            const areaKeyForReopen = uploadProcessingAreaKeys[finishedFields[0]];
+            finishedFields.forEach(function(fieldName) {
+              delete uploadProcessingAreaKeys[fieldName];
+            });
+            applyWorkbookNotification({area_key: areaKeyForReopen}, data);
+            scheduleUploadPoll();
+          }).catch(function(error) {
+            console.error(error);
+            scheduleUploadPoll();
+          });
+        };
+        scheduleUploadPoll();
 
         const getCsrfToken = function() {
           const cookieString = document.cookie || '';

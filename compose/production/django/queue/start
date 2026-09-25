@@ -4,4 +4,19 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
+# See the matching block in compose/production/django/start for the full
+# explanation (musl's malloc not returning freed memory to the OS). It
+# matters here too, arguably more: process_project_data_upload
+# (rolodex/tasks.py) parses whatever Nexpose XML gets uploaded --
+# hundreds of MB for a large scan -- entirely in this queue worker now,
+# and qcluster's own recycling (Q_CLUSTER["recycle"], config/settings/base.py)
+# is set to 500 tasks, much looser than the web tier's request limit.
+JEMALLOC_PATH=$(find /usr/lib /usr/local/lib -name 'libjemalloc.so*' 2>/dev/null | head -n 1)
+if [ -n "$JEMALLOC_PATH" ]; then
+  export LD_PRELOAD="$JEMALLOC_PATH"
+  echo "Using jemalloc ($LD_PRELOAD) to mitigate musl malloc memory retention"
+else
+  echo "WARNING: jemalloc .so not found -- continuing without LD_PRELOAD override"
+fi
+
 python manage.py qcluster

@@ -3,6 +3,7 @@
 # Standard Libraries
 import base64
 import csv
+import datetime
 import io
 import os
 from typing import Any, Dict, Iterable
@@ -1675,6 +1676,68 @@ class NexposeDataParserTests(TestCase):
         # The cache must never be persisted into data_artifacts at all --
         # it's process-local now, so there's nothing here to strip.
         self.assertNotIn("_file_parse_cache", self.project.data_artifacts)
+
+    def test_process_local_file_parse_cache_evicts_oldest_entries_past_cap(self):
+        # The parse cache (data_parsers._process_local_file_parse_cache) is a
+        # small bounded LRU, not an unbounded dict: --limit-max-requests
+        # (compose/production/django/start) was raised from 15 to 500, so a
+        # single worker now lives long enough to accumulate cache entries
+        # across many different projects' firewall uploads, and an unbounded
+        # cache would grow without limit across that lifetime. Confirm
+        # inserting past the cap evicts the oldest (least-recently-used)
+        # entry rather than growing forever, and that touching an existing
+        # entry protects it from the next eviction.
+        data_parsers._process_local_file_parse_cache.clear()
+
+        class _FakeStorage:
+            def __init__(self, mtime):
+                self._mtime = mtime
+
+            def get_modified_time(self, _name):
+                return self._mtime
+
+        class _FakeFile:
+            def __init__(self, mtime):
+                self.name = "fake.xml"
+                self.storage = _FakeStorage(mtime)
+
+        class _FakeDataFile:
+            def __init__(self, mtime):
+                self.file = _FakeFile(mtime)
+
+        fixed_mtime = datetime.datetime(2024, 1, 1)
+        cap = data_parsers._FILE_PARSE_CACHE_MAX_ENTRIES
+
+        for i in range(cap + 2):
+            data_parsers._resolve_cached_or_fresh_parse(
+                _FakeDataFile(fixed_mtime), f"cache-key-{i}", lambda i=i: {"value": i}
+            )
+
+        self.assertEqual(len(data_parsers._process_local_file_parse_cache), cap)
+        self.assertNotIn("cache-key-0", data_parsers._process_local_file_parse_cache)
+        self.assertNotIn("cache-key-1", data_parsers._process_local_file_parse_cache)
+        self.assertIn(f"cache-key-{cap + 1}", data_parsers._process_local_file_parse_cache)
+
+        # Touch the oldest surviving entry (a cache hit -- its parse_fn
+        # below must never run) so it becomes most-recently-used, then
+        # insert one more entry to force an eviction.
+        oldest_remaining_key = next(iter(data_parsers._process_local_file_parse_cache))
+        touched_result, was_cached = data_parsers._resolve_cached_or_fresh_parse(
+            _FakeDataFile(fixed_mtime),
+            oldest_remaining_key,
+            lambda: self.fail("cached entry should not be re-parsed"),
+        )
+        self.assertTrue(was_cached)
+        data_parsers._resolve_cached_or_fresh_parse(
+            _FakeDataFile(fixed_mtime), "cache-key-new", lambda: {"value": "new"}
+        )
+
+        self.assertIn(
+            oldest_remaining_key,
+            data_parsers._process_local_file_parse_cache,
+            "recently-touched entry should survive the next eviction",
+        )
+        self.assertEqual(len(data_parsers._process_local_file_parse_cache), cap)
 
     def test_complexity_table_rows_and_devices_are_parsed(self):
         xml_content = b"""

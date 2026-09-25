@@ -6091,10 +6091,26 @@ def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Counter[Tuple[str, s
 # than before the cache existed. Keeping the cache in-process instead adds
 # zero storage cost, at the price of a smaller cache scope (only benefits
 # repeated saves handled by the *same* worker before it recycles, via
-# --limit-max-requests, rather than persisting across requests/workers/
-# deployments) -- a deliberate, safer trade-off given the regression above.
+# --limit-max-requests -- now 500, see compose/production/django/start --
+# rather than persisting across requests/workers/deployments) -- a
+# deliberate, safer trade-off given the regression above.
+#
+# Bounded as an LRU (small cap, evict-oldest-on-insert) rather than left
+# unbounded: used by both the firewall and Nexpose XML branches below, and
+# a raised --limit-max-requests means a single worker (web) or the
+# long-lived qcluster worker (queue -- see process_project_data_upload,
+# rolodex/tasks.py, which now does the actual Nexpose parsing) lives long
+# enough to accumulate entries across many different projects' uploads,
+# each of which can run to hundreds of MB for a large Nexpose scan.
+# Unbounded, that's a real leak risk rather than a cache: notably, a
+# Nexpose re-upload always gets a brand-new ProjectDataFile row (the view
+# deletes the old one and creates a new one -- see views.py's
+# nexpose_upload_fields loop), so its old pk-keyed entry would never be
+# overwritten by a later hit, only ever added to. A small cap turns that
+# into a bounded, self-cleaning ceiling instead.
+_FILE_PARSE_CACHE_MAX_ENTRIES = 4
 _file_parse_cache_lock = threading.Lock()
-_process_local_file_parse_cache: Dict[str, Dict[str, Any]] = {}
+_process_local_file_parse_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
 
 def _resolve_cached_or_fresh_parse(
@@ -6139,17 +6155,20 @@ def _resolve_cached_or_fresh_parse(
 
     with _file_parse_cache_lock:
         cached_entry = _process_local_file_parse_cache.get(cache_key)
-
-    if (
-        isinstance(cached_entry, dict)
-        and cached_entry.get("mtime") == current_mtime
-        and "result" in cached_entry
-    ):
-        return cached_entry["result"], True
+        if (
+            isinstance(cached_entry, dict)
+            and cached_entry.get("mtime") == current_mtime
+            and "result" in cached_entry
+        ):
+            _process_local_file_parse_cache.move_to_end(cache_key)
+            return cached_entry["result"], True
 
     result = parse_fn()
     with _file_parse_cache_lock:
         _process_local_file_parse_cache[cache_key] = {"mtime": current_mtime, "result": result}
+        _process_local_file_parse_cache.move_to_end(cache_key)
+        while len(_process_local_file_parse_cache) > _FILE_PARSE_CACHE_MAX_ENTRIES:
+            _process_local_file_parse_cache.popitem(last=False)
     return result, False
 
 
@@ -6381,6 +6400,31 @@ def build_project_artifacts(
             file_name_key = NEXPOSE_FILENAME_KEY_MAP.get(xml_artifact_key)
             if file_name_key:
                 artifacts[file_name_key] = data_file.filename
+            # Still routed through _resolve_cached_or_fresh_parse despite
+            # changed_file_ids already skipping most unchanged files above
+            # (the "continue" a few lines up): that skip is per *artifact
+            # key*, not per file (see build_project_artifacts' docstring),
+            # so when two files share one key -- e.g. two separate Internal
+            # Nexpose XML uploads merged into one findings set -- and only
+            # one of them was just re-uploaded, the *other*, unchanged one
+            # still reaches this line and would otherwise be reparsed in
+            # full on every save. The two call sites that still pass
+            # changed_file_ids=None (clearing/deleting a data file --
+            # views.py, ProjectWorkbookDataUpdate's clear_workbook branch and
+            # the generic data-file delete view) skip the per-key check
+            # entirely and reach every Nexpose file here regardless of
+            # whether it changed, so for those this cache is the only thing
+            # standing between "delete one unrelated file" and a synchronous
+            # full reparse of every other uploaded Nexpose XML. A re-upload
+            # itself is still always a genuine cache miss (each upload gets
+            # a brand-new ProjectDataFile row -- see views.py's
+            # nexpose_upload_fields loop -- so its pk-keyed cache entry never
+            # existed before), which is correct: new bytes really do need
+            # reparsing. See the cache's own bounded-LRU comment above for
+            # why an unbounded version of this used to be a real leak risk
+            # in the now-long-lived queue worker, and why capping it fixes
+            # that without needing to special-case this branch out of
+            # caching altogether.
             nexpose_xml_cache_key = f"nexpose_xml:{xml_artifact_key}:{data_file.pk}"
             parsed_xml, nexpose_xml_was_cached = _resolve_cached_or_fresh_parse(
                 data_file,
@@ -6393,10 +6437,9 @@ def build_project_artifacts(
                     file_label,
                     getattr(project, "id", "?"),
                 )
-            # Caching is per-file (keyed above by data_file.pk), so this
-            # merge with any other file already processed under the same
-            # xml_artifact_key in this same call is unaffected -- parsed_xml
-            # is just this one file's own result, fresh or reused.
+            # This merges with any other file already processed under the
+            # same xml_artifact_key in this same call -- parsed_xml is just
+            # this one file's own result, fresh or reused.
             existing_entry = artifacts.get(xml_artifact_key)
             combined_findings: List[Dict[str, str]] = list(
                 pending_nexpose_findings.get(xml_artifact_key, [])
