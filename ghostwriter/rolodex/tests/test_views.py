@@ -1581,7 +1581,7 @@ class ProjectNexposeDataDownloadTests(TestCase):
 
     def test_download_returns_xlsx_from_artifact_file(self):
         # Current uploads reference a real ProjectArtifactFile (see
-        # NEXPOSE_AGGREGATE_SCHEMA_VERSION / _persist_nexpose_workbook)
+        # NEXPOSE_AGGREGATE_SCHEMA_VERSION / _persist_generated_workbook)
         # instead of embedding the workbook as base64 in data_artifacts --
         # xlsx_base64 (test_download_returns_xlsx, above) is exercised only
         # as a fallback for data written before that change.
@@ -1622,6 +1622,89 @@ class ProjectNexposeDataDownloadTests(TestCase):
         self.project.data_artifacts = {}
         self.project.save(update_fields=["data_artifacts"])
         response = self.client_mgr.get(self.url + "?artifact=external_nexpose_metrics")
+        self.assertEqual(response.status_code, 302)
+
+
+class ProjectFirewallDataDownloadTests(TestCase):
+    """Tests for downloading processed firewall XLSX data."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.manager = UserFactory(password=PASSWORD, role="manager")
+        cls.project = ProjectFactory()
+        cls.url = reverse(
+            "rolodex:project_firewall_data_download", kwargs={"pk": cls.project.pk}
+        )
+
+    def setUp(self):
+        self.client_mgr = Client()
+        self.assertTrue(self.client_mgr.login(username=self.manager.username, password=PASSWORD))
+
+    def test_download_returns_xlsx(self):
+        # Legacy fallback -- data written before the firewall storage
+        # modernization (see _render_firewall_metrics_workbook_to_tempfile,
+        # data_parsers.py) embedded the workbook as base64 directly.
+        workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
+        self.project.data_artifacts = {
+            "firewall_metrics": {
+                "summary": {"total": 1},
+                "xlsx_base64": workbook_b64,
+                "xlsx_filename": "firewall_data.xlsx",
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertTrue(response.content.startswith(b"PK"))
+
+    def test_download_returns_xlsx_from_artifact_file(self):
+        # Current uploads reference a real ProjectArtifactFile (see
+        # _persist_generated_workbook) instead of embedding the workbook as
+        # base64 in data_artifacts -- xlsx_base64 (test_download_returns_xlsx,
+        # above) is exercised only as a fallback for data written before
+        # that change.
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="firewall_metrics",
+            file=SimpleUploadedFile(
+                "firewall_data.xlsx",
+                b"PK\x03\x04",
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            filename="firewall_data.xlsx",
+            byte_size=4,
+        )
+        self.addCleanup(lambda: ProjectArtifactFile.objects.filter(pk=artifact_file.pk).delete())
+        self.project.data_artifacts = {
+            "firewall_metrics": {
+                "summary": {"total": 1},
+                "xlsx_filename": "firewall_data.xlsx",
+                "xlsx": {
+                    "artifact_file_id": artifact_file.pk,
+                    "filename": "firewall_data.xlsx",
+                    "byte_size": 4,
+                },
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertEqual(b"".join(response.streaming_content), b"PK\x03\x04")
+
+    def test_download_redirects_when_missing(self):
+        self.project.data_artifacts = {}
+        self.project.save(update_fields=["data_artifacts"])
+        response = self.client_mgr.get(self.url)
         self.assertEqual(response.status_code, 302)
 
 
@@ -1884,6 +1967,81 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         self.assertEqual(get_response.status_code, 200)
         get_payload = get_response.json()
         self.assertIn("internal_nexpose_metrics", get_payload.get("data_artifacts", {}))
+
+    def test_firewall_xml_upload_is_processed_asynchronously(self):
+        # Firewall (Nipper) XML uploads now go through the same background
+        # task as Nexpose (see process_project_data_upload, rolodex/tasks.py)
+        # -- mirrors test_internal_nexpose_xml_upload_is_processed_asynchronously
+        # above; Q_CLUSTER["sync"] = True (config/settings/test.py) makes
+        # async_task() run synchronously here too.
+        xml_content = b"""
+<root>
+  <document>
+    <information>
+      <devices><device><name>FW-1</name></device></devices>
+    </information>
+  </document>
+  <section ref=\"SECURITYAUDIT\">
+    <section ref=\"FILTER.TEST\" title=\"Blocked traffic review\">
+      <issuedetails>
+        <devices><device><name>FW-1</name></device></devices>
+        <ratings><rating>High</rating><cvssv2-temporal score=\"8.5\" /></ratings>
+      </issuedetails>
+      <section ref=\"IMPACT\"><text>Service disruption</text></section>
+      <section ref=\"RECOMMENDATION\"><text>Adjust rule set</text></section>
+      <section ref=\"FINDING\"><text>Traffic dropped</text></section>
+    </section>
+  </section>
+</root>
+"""
+        upload = SimpleUploadedFile(
+            "firewall_xml.xml",
+            xml_content,
+            content_type="application/xml",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {"firewall_xml": upload, "area_key": "firewall"},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertTrue(payload.get("queued"))
+        self.assertEqual(payload.get("upload_field"), "firewall_xml")
+        self.assertNotIn("workbook_data", payload)
+        self.assertNotIn("data_artifacts", payload)
+
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+
+        metrics = self.project.data_artifacts.get("firewall_metrics")
+        self.assertIsInstance(metrics, dict)
+        self.assertEqual((metrics.get("summary") or {}).get("total_high"), 1)
+
+        # The workbook is now a real file (ProjectArtifactFile), not a
+        # base64 blob embedded in data_artifacts -- see
+        # _render_firewall_metrics_workbook_to_tempfile / _persist_generated_workbook.
+        xlsx_ref = metrics.get("xlsx")
+        self.assertIsInstance(xlsx_ref, dict)
+        self.assertNotIn("xlsx_base64", metrics)
+        self.addCleanup(
+            lambda: ProjectArtifactFile.objects.filter(pk=xlsx_ref["artifact_file_id"]).delete()
+        )
+
+        # The "processing" marker set before the task ran must be cleared
+        # once it completes.
+        self.assertNotIn("processing_uploads", self.project.data_artifacts)
+
+        get_response = self.client_auth.get(self.update_url)
+        self.assertEqual(get_response.status_code, 200)
+        get_payload = get_response.json()
+        self.assertIn("firewall_metrics", get_payload.get("data_artifacts", {}))
 
     def test_password_responses_and_cap_rebuilt_on_area_save(self):
         self.project.workbook_data = {

@@ -5209,8 +5209,10 @@
           if (!workbookUpdateUrl || !file) {
             return;
           }
+          const fieldName = 'firewall_xml';
           const formData = new FormData();
-          formData.append('firewall_xml', file);
+          formData.append(fieldName, file);
+          formData.append('area_key', areaKey || '');
           return fetch(workbookUpdateUrl, {
             method: 'POST',
             headers: {
@@ -5220,6 +5222,20 @@
           }).then(function(response) {
             return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
+            if (data && data.queued) {
+              // Firewall (Nipper) XML is now parsed in a background task
+              // too (see process_project_data_upload, rolodex/tasks.py) --
+              // same reasoning and same handling as uploadNexposeXml above.
+              uploadProcessingState[fieldName] = true;
+              uploadProcessingAreaKeys[fieldName] = areaKey || '';
+              refreshWorkbookUi({
+                reopenModalId: modalId,
+                forceCloseModalId: modalId,
+                afterRender: function() { updateWorkbookCardProgress(areaKey); },
+              });
+              scheduleUploadPoll();
+              return;
+            }
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
               forceCloseModalId: modalId,
@@ -8102,7 +8118,37 @@
             uploadButton.addEventListener('click', function() { uploadInput.click(); });
             const fileNameDisplay = document.createElement('div');
             fileNameDisplay.className = 'small text-muted mt-2';
+            // Firewall XML is now parsed in a background task too (see
+            // process_project_data_upload, rolodex/tasks.py) -- same
+            // processing notice / disabled-state pattern the generic
+            // Nexpose uploaders use (config.uploaders' isProcessing/
+            // setFileNameFromState, above), hand-rolled here since this
+            // block isn't built from that same config-driven loop.
+            const processingNotice = document.createElement('div');
+            processingNotice.className = 'alert alert-info small py-2 px-3 mt-2';
+            processingNotice.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Processing upload — this can take several minutes for a large file. This card will update automatically when it finishes.';
+            processingNotice.style.display = 'none';
+            const isProcessing = function() {
+              return !!uploadProcessingState.firewall_xml;
+            };
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'btn btn-outline-danger ml-2';
+            removeButton.textContent = 'Remove Nipper Data';
+            removeButton.addEventListener('click', function() {
+              runWithButtonLoading(removeButton, 'Removing...', function() {
+                return removeFirewallData(areaKey, modalId);
+              }).then(function() { updateFileName(); });
+            });
             const updateFileName = function() {
+              const processing = isProcessing();
+              processingNotice.style.display = processing ? '' : 'none';
+              uploadButton.disabled = processing;
+              removeButton.disabled = processing;
+              if (processing) {
+                fileNameDisplay.textContent = '';
+                return;
+              }
               const name = (dataArtifactsState.firewall_xml_file_name || '').toString().trim();
               fileNameDisplay.textContent = name
                 ? 'Uploaded file: ' + name
@@ -8120,19 +8166,11 @@
                 event.target.value = '';
               }
             });
-            const removeButton = document.createElement('button');
-            removeButton.type = 'button';
-            removeButton.className = 'btn btn-outline-danger ml-2';
-            removeButton.textContent = 'Remove Nipper Data';
-            removeButton.addEventListener('click', function() {
-              runWithButtonLoading(removeButton, 'Removing...', function() {
-                return removeFirewallData(areaKey, modalId);
-              }).then(function() { updateFileName(); });
-            });
             uploadWrapper.appendChild(uploadInput);
             uploadWrapper.appendChild(uploadButton);
             uploadWrapper.appendChild(removeButton);
             uploadWrapper.appendChild(fileNameDisplay);
+            uploadWrapper.appendChild(processingNotice);
             modalBody.appendChild(uploadWrapper);
           }
           const modalFooter = document.createElement('div');

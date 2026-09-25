@@ -1499,10 +1499,15 @@ class Project(models.Model):
 
         firewall_metrics_payload = artifacts.get("firewall_metrics")
         if isinstance(firewall_metrics_payload, dict):
+            # "xlsx" (a ProjectArtifactFile reference) replaces "xlsx_base64"
+            # here -- the generated workbook is now written to disk via
+            # _persist_generated_workbook instead of embedded as base64 (see
+            # _render_firewall_metrics_workbook_to_tempfile, data_parsers.py),
+            # the same storage modernization Nexpose already went through.
             artifacts["firewall_metrics"] = {
                 "summary": firewall_metrics_payload.get("summary"),
                 "devices": firewall_metrics_payload.get("devices"),
-                "xlsx_base64": firewall_metrics_payload.get("xlsx_base64"),
+                "xlsx": firewall_metrics_payload.get("xlsx"),
                 "xlsx_filename": firewall_metrics_payload.get("xlsx_filename"),
             }
 

@@ -94,14 +94,15 @@ class NexposeDataParserTests(TestCase):
 
     def _discard_xlsx_temp_path(self, metrics_payload: Dict[str, Any]) -> None:
         """Pop and clean up the temp workbook path a direct
-        ``_build_nexpose_metrics_payload`` call leaves behind.
+        ``_build_nexpose_metrics_payload`` / ``_build_firewall_metrics_payload``
+        call leaves behind.
 
-        That function always writes the generated workbook to a temp file
-        and hands back its path as ``_xlsx_temp_path`` for
+        Both functions always write the generated workbook to a temp file
+        and hand back its path as ``_xlsx_temp_path`` for
         ``build_project_artifacts`` to persist as a ``ProjectArtifactFile``
-        (see ``_persist_nexpose_workbook``) -- tests that call it directly
-        bypass that persistence step, so without this the temp file leaks on
-        disk and, if the payload is later fed into
+        (see ``_persist_generated_workbook``) -- tests that call either
+        directly bypass that persistence step, so without this the temp
+        file leaks on disk and, if the payload is later fed into
         ``rebuild_data_artifacts()`` via a mocked ``build_project_artifacts``,
         the raw temp path would otherwise get written straight into
         ``data_artifacts``.
@@ -414,7 +415,7 @@ class NexposeDataParserTests(TestCase):
 
         # The workbook is now a real file (ProjectArtifactFile), not a
         # base64 blob embedded in data_artifacts -- see
-        # NEXPOSE_AGGREGATE_SCHEMA_VERSION / _persist_nexpose_workbook.
+        # NEXPOSE_AGGREGATE_SCHEMA_VERSION / _persist_generated_workbook.
         xlsx_ref = metrics.get("xlsx")
         self.assertIsInstance(xlsx_ref, dict)
         artifact_file = ProjectArtifactFile.objects.get(pk=xlsx_ref["artifact_file_id"])
@@ -739,6 +740,11 @@ class NexposeDataParserTests(TestCase):
         metrics_payload = data_parsers._build_firewall_metrics_payload(findings)
         self.assertIn("all_issues", metrics_payload)
         self.assertIn("rule_issues", metrics_payload)
+        # This test mocks build_project_artifacts (below), bypassing the
+        # real _persist_generated_workbook call that would normally consume
+        # "_xlsx_temp_path" -- discard it directly so the generated workbook
+        # doesn't leak on disk.
+        self._discard_xlsx_temp_path(metrics_payload)
 
         with mock.patch(
             "ghostwriter.rolodex.models.build_project_artifacts",
@@ -751,7 +757,7 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(stored_metrics, dict)
         self.assertEqual(
             set(stored_metrics.keys()),
-            {"summary", "devices", "xlsx_base64", "xlsx_filename"},
+            {"summary", "devices", "xlsx", "xlsx_filename"},
         )
         self.assertEqual(stored_metrics.get("devices"), metrics_payload.get("devices"))
 
@@ -1391,6 +1397,7 @@ class NexposeDataParserTests(TestCase):
         ]
 
         metrics = data_parsers._build_firewall_metrics_payload(findings)
+        self._discard_xlsx_temp_path(metrics)
         summary = metrics.get("summary") or {}
 
         self.assertEqual(summary.get("unique"), 3)

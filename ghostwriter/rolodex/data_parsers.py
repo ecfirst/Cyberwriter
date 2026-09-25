@@ -2592,9 +2592,14 @@ def _build_firewall_metrics_payload(
         "xlsx_filename": "firewall_data.xlsx",
     }
 
-    workbook_bytes = _render_firewall_metrics_workbook(metrics_payload)
-    if workbook_bytes:
-        metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
+    workbook_temp_path = _render_firewall_metrics_workbook_to_tempfile(metrics_payload)
+    if workbook_temp_path:
+        # Handed off to build_project_artifacts (which has the `project`
+        # context this pure function doesn't) to persist as a
+        # ProjectArtifactFile and replace with an "xlsx" reference -- never
+        # itself written to data_artifacts/Postgres. See
+        # _persist_generated_workbook.
+        metrics_payload["_xlsx_temp_path"] = workbook_temp_path
 
     # Deliberately return the full payload, not just what a *stored*
     # data_artifacts needs -- Project.rebuild_data_artifacts() (models.py)
@@ -2603,7 +2608,7 @@ def _build_firewall_metrics_payload(
     # build_project_artifacts() returns it. The fields that are genuinely
     # transient-only (all_issues/high_issues/med_issues/low_issues/
     # rule_issues/config_issues/complexity_issues/vuln_issues/top_impacts --
-    # needed only to build the xlsx_base64 workbook above) get dropped in
+    # needed only to build the workbook above) get dropped in
     # rebuild_data_artifacts() itself, after it has finished reading
     # everything it needs and just before the result is persisted.
     return metrics_payload
@@ -4727,7 +4732,7 @@ def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, 
         # `artifact_key` context this pure function doesn't) to persist as a
         # ProjectArtifactFile and replace with an "xlsx" reference -- never
         # itself written to data_artifacts/Postgres. See
-        # _persist_nexpose_workbook.
+        # _persist_generated_workbook.
         metrics_payload["_xlsx_temp_path"] = workbook_temp_path
 
     # Deliberately return the full payload here, not just what a *stored*
@@ -4771,7 +4776,7 @@ def _render_nexpose_metrics_workbook_to_tempfile(metrics: Dict[str, Any]) -> Opt
 
     Returns the temp file path on success (caller is responsible for moving
     it into permanent storage and deleting it -- see
-    _persist_nexpose_workbook), or ``None`` if nothing was written.
+    _persist_generated_workbook), or ``None`` if nothing was written.
     """
 
     fd, output_path = tempfile.mkstemp(suffix=".xlsx", prefix="nexpose_metrics_")
@@ -5053,17 +5058,23 @@ def _render_nexpose_metrics_workbook_to_tempfile(metrics: Dict[str, Any]) -> Opt
     return output_path
 
 
-def _persist_nexpose_workbook(
+def _persist_generated_workbook(
     project: "Project", artifact_key: str, temp_path: str, filename: str
 ) -> Optional[Dict[str, Any]]:
     """Move a temp-file XLSX workbook into permanent storage as a ``ProjectArtifactFile``.
 
-    Replaces base64-embedding the workbook into ``data_artifacts`` (the
-    ``xlsx_base64`` field): for a large scan the generated workbook can
-    itself run into the same multi-hundred-MB-per-JSON-value problem the
-    raw findings list did (see NEXPOSE_AGGREGATE_SCHEMA_VERSION) -- storing
-    it as a real file sidesteps that entirely. Always cleans up
-    ``temp_path`` before returning, whether or not the move succeeded.
+    Used for every generated workbook large enough to warrant
+    ``constant_memory`` rendering to a temp file in the first place --
+    currently the Nexpose and firewall metrics workbooks (see
+    ``_render_nexpose_metrics_workbook_to_tempfile`` /
+    ``_render_firewall_metrics_workbook_to_tempfile``), keyed by
+    ``artifact_key`` so each has its own row. Replaces base64-embedding the
+    workbook into ``data_artifacts`` (the ``xlsx_base64`` field): for a
+    large scan the generated workbook can itself run into the same
+    multi-hundred-MB-per-JSON-value problem the raw findings list did (see
+    NEXPOSE_AGGREGATE_SCHEMA_VERSION) -- storing it as a real file
+    sidesteps that entirely. Always cleans up ``temp_path`` before
+    returning, whether or not the move succeeded.
     """
 
     try:
@@ -5094,7 +5105,7 @@ def _persist_nexpose_workbook(
         artifact_file.save(update_fields=["file", "filename", "byte_size", "generated_at"])
     except Exception:
         logger.exception(
-            "Failed to persist generated Nexpose workbook for project ID=%s, artifact_key=%s",
+            "Failed to persist generated workbook for project ID=%s, artifact_key=%s",
             getattr(project, "id", "?"),
             artifact_key,
         )
@@ -5258,149 +5269,185 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
     return metrics_payload
 
 
-def _render_firewall_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
-    """Create an XLSX workbook for processed firewall findings."""
+def _render_firewall_metrics_workbook_to_tempfile(metrics: Dict[str, Any]) -> Optional[str]:
+    """Write an XLSX workbook for processed firewall findings to a temp file.
 
-    buffer = io.BytesIO()
-    workbook = Workbook(buffer, {"in_memory": True})
+    Uses xlsxwriter's ``constant_memory`` mode -- see
+    ``_render_nexpose_metrics_workbook_to_tempfile`` above for the full
+    rationale (large finding counts, ``in_memory`` mode's RAM/base64-storage
+    cost); this function mirrors that one's structure and hits the exact
+    same row-major hazard on its own Executive Summary sheet: three
+    ``write_table`` calls onto ``exec_ws`` at different ``(row, col)``
+    offsets ((0,0), (0,5), (16,5)), not row-major across the sheet as a
+    whole. Buffered via ``sink`` and flushed once, sorted by ``(row, col)``,
+    same as the Nexpose renderer. The 8 per-issue-type sheets
+    (``write_issue_sheet``, one ``write_table`` call per dedicated
+    worksheet) are already strictly row-major and need no buffering.
 
-    def header_format(color: str):
-        return workbook.add_format(
-            {
-                "bold": True,
-                "border": 1,
-                "font_color": "#000000",
-                "bg_color": color,
-                "pattern": 1,
-            }
+    Returns the temp file path on success (caller is responsible for moving
+    it into permanent storage and deleting it -- see
+    ``_persist_generated_workbook``), or ``None`` if nothing was written.
+    """
+
+    fd, output_path = tempfile.mkstemp(suffix=".xlsx", prefix="firewall_metrics_")
+    os.close(fd)
+    workbook = Workbook(output_path, {"constant_memory": True})
+
+    try:
+        def header_format(color: str):
+            return workbook.add_format(
+                {
+                    "bold": True,
+                    "border": 1,
+                    "font_color": "#000000",
+                    "bg_color": color,
+                    "pattern": 1,
+                }
+            )
+
+        header_cache: Dict[str, Any] = {}
+
+        def get_header(color: str):
+            if color not in header_cache:
+                header_cache[color] = header_format(color)
+            return header_cache[color]
+
+        data_fmt = workbook.add_format({"border": 1, "text_wrap": True, "font_color": "#000000"})
+        band_fmt = workbook.add_format(
+            {"border": 1, "text_wrap": True, "bg_color": "#99CCFF", "font_color": "#000000"}
         )
 
-    header_cache: Dict[str, Any] = {}
+        def _calc_text_width(value: Any) -> int:
+            if value is None:
+                return 0
+            text = str(value)
+            lines = text.splitlines() or [text]
+            return max(len(line) for line in lines)
 
-    def get_header(color: str):
-        if color not in header_cache:
-            header_cache[color] = header_format(color)
-        return header_cache[color]
-
-    data_fmt = workbook.add_format({"border": 1, "text_wrap": True, "font_color": "#000000"})
-    band_fmt = workbook.add_format(
-        {"border": 1, "text_wrap": True, "bg_color": "#99CCFF", "font_color": "#000000"}
-    )
-
-    def _calc_text_width(value: Any) -> int:
-        if value is None:
-            return 0
-        text = str(value)
-        lines = text.splitlines() or [text]
-        return max(len(line) for line in lines)
-
-    def write_table(
-        worksheet,
-        *,
-        start_row: int,
-        start_col: int,
-        headers: List[str],
-        rows: List[List[Any]],
-        header_colors: Optional[List[str]] = None,
-        width_tracker: Optional[Dict[int, int]] = None,
-    ) -> None:
-        for idx, header in enumerate(headers):
-            color = header_colors[idx] if header_colors and idx < len(header_colors) else "#0066CC"
-            worksheet.write(start_row, start_col + idx, header, get_header(color))
-            if width_tracker is not None:
-                column_index = start_col + idx
-                width_tracker[column_index] = max(width_tracker.get(column_index, 0), _calc_text_width(header))
-        for row_index, row in enumerate(rows):
-            fmt = band_fmt if row_index % 2 == 1 else data_fmt
-            for col_index, value in enumerate(row):
-                worksheet.write(start_row + 1 + row_index, start_col + col_index, value, fmt)
+        def write_table(
+            worksheet,
+            *,
+            start_row: int,
+            start_col: int,
+            headers: List[str],
+            rows: Iterable[List[Any]],
+            header_colors: Optional[List[str]] = None,
+            width_tracker: Optional[Dict[int, int]] = None,
+            sink: Optional[Callable[[int, int, Any, Any], None]] = None,
+        ) -> None:
+            write_cell = sink or worksheet.write
+            for idx, header in enumerate(headers):
+                color = header_colors[idx] if header_colors and idx < len(header_colors) else "#0066CC"
+                write_cell(start_row, start_col + idx, header, get_header(color))
                 if width_tracker is not None:
-                    column_index = start_col + col_index
-                    width_tracker[column_index] = max(width_tracker.get(column_index, 0), _calc_text_width(value))
+                    column_index = start_col + idx
+                    width_tracker[column_index] = max(width_tracker.get(column_index, 0), _calc_text_width(header))
+            for row_index, row in enumerate(rows):
+                fmt = band_fmt if row_index % 2 == 1 else data_fmt
+                for col_index, value in enumerate(row):
+                    write_cell(start_row + 1 + row_index, start_col + col_index, value, fmt)
+                    if width_tracker is not None:
+                        column_index = start_col + col_index
+                        width_tracker[column_index] = max(width_tracker.get(column_index, 0), _calc_text_width(value))
 
-    def apply_autofit(worksheet, width_tracker: Dict[int, int], columns: Iterable[int]) -> None:
-        for column in columns:
-            width = width_tracker.get(column, 10)
-            worksheet.set_column(column, column, min(width + 2, 80))
+        def apply_autofit(worksheet, width_tracker: Dict[int, int], columns: Iterable[int]) -> None:
+            for column in columns:
+                width = width_tracker.get(column, 10)
+                worksheet.set_column(column, column, min(width + 2, 80))
 
-    summary = metrics.get("summary") or {}
-    exec_ws = workbook.add_worksheet("Executive Summary")
-    exec_tracker: Dict[int, int] = {}
+        summary = metrics.get("summary") or {}
+        exec_ws = workbook.add_worksheet("Executive Summary")
+        exec_tracker: Dict[int, int] = {}
+        exec_cell_buffer: Dict[Tuple[int, int], Tuple[Any, Any]] = {}
 
-    summary_headers = ["Total", "Total High", "Total Medium", "Total Low"]
-    summary_colors = ["#0066CC", "#FF0000", "#FF9900", "#99CC00"]
-    summary_rows = [
-        [
-            summary.get("unique", 0),
-            summary.get("unique_high", 0),
-            summary.get("unique_med", 0),
-            summary.get("unique_low", 0),
+        def exec_sink(row: int, col: int, value: Any, fmt: Any) -> None:
+            exec_cell_buffer[(row, col)] = (value, fmt)
+
+        summary_headers = ["Total", "Total High", "Total Medium", "Total Low"]
+        summary_colors = ["#0066CC", "#FF0000", "#FF9900", "#99CC00"]
+        summary_rows = [
+            [
+                summary.get("unique", 0),
+                summary.get("unique_high", 0),
+                summary.get("unique_med", 0),
+                summary.get("unique_low", 0),
+            ]
         ]
-    ]
-    write_table(
-        exec_ws,
-        start_row=0,
-        start_col=0,
-        headers=summary_headers,
-        rows=summary_rows,
-        header_colors=summary_colors,
-        width_tracker=exec_tracker,
-    )
+        write_table(
+            exec_ws,
+            start_row=0,
+            start_col=0,
+            headers=summary_headers,
+            rows=summary_rows,
+            header_colors=summary_colors,
+            width_tracker=exec_tracker,
+            sink=exec_sink,
+        )
 
-    top_impacts = metrics.get("top_impacts") or []
-    impact_rows = [[entry.get("impact", ""), entry.get("count", 0)] for entry in top_impacts]
-    write_table(
-        exec_ws,
-        start_row=0,
-        start_col=5,
-        headers=["Top 10 Issue Impacts", "Count"],
-        rows=impact_rows,
-        header_colors=["#0066CC", "#0066CC"],
-        width_tracker=exec_tracker,
-    )
+        top_impacts = metrics.get("top_impacts") or []
+        impact_rows = [[entry.get("impact", ""), entry.get("count", 0)] for entry in top_impacts]
+        write_table(
+            exec_ws,
+            start_row=0,
+            start_col=5,
+            headers=["Top 10 Issue Impacts", "Count"],
+            rows=impact_rows,
+            header_colors=["#0066CC", "#0066CC"],
+            width_tracker=exec_tracker,
+            sink=exec_sink,
+        )
 
-    tab_index_rows = [
-        ["All Issues  -:-  All issues identified"],
-        ["High Risk Issues  -:-  All 'High' risk issues identified"],
-        ["Medium Risk Issues  -:-  All 'Medium' risk issues identified"],
-        ["Low Risk Issues  -:-  All 'Low' risk issues identified"],
-        ["Vulnerability Issues  -:-  All issues related to known vulnerabilities identified"],
-        ["Rule Issues  -:-  All issues related to rules identified"],
-        ["Config Issues  -:-  All issues related to configuration settings identified"],
-        ["Complexity Issues  -:-  All issues related to rules/configuration settings that add to the firewall complexity identified"],
-    ]
-    write_table(
-        exec_ws,
-        start_row=16,
-        start_col=5,
-        headers=["Tab Index"],
-        rows=tab_index_rows,
-        header_colors=["#CCFFFF"],
-        width_tracker=exec_tracker,
-    )
+        tab_index_rows = [
+            ["All Issues  -:-  All issues identified"],
+            ["High Risk Issues  -:-  All 'High' risk issues identified"],
+            ["Medium Risk Issues  -:-  All 'Medium' risk issues identified"],
+            ["Low Risk Issues  -:-  All 'Low' risk issues identified"],
+            ["Vulnerability Issues  -:-  All issues related to known vulnerabilities identified"],
+            ["Rule Issues  -:-  All issues related to rules identified"],
+            ["Config Issues  -:-  All issues related to configuration settings identified"],
+            ["Complexity Issues  -:-  All issues related to rules/configuration settings that add to the firewall complexity identified"],
+        ]
+        write_table(
+            exec_ws,
+            start_row=16,
+            start_col=5,
+            headers=["Tab Index"],
+            rows=tab_index_rows,
+            header_colors=["#CCFFFF"],
+            width_tracker=exec_tracker,
+            sink=exec_sink,
+        )
 
-    apply_autofit(exec_ws, exec_tracker, range(0, 7))
+        # Flush every buffered Executive Summary cell in row-major order --
+        # required by constant_memory mode, see the docstring above.
+        for (row, col), (value, fmt) in sorted(exec_cell_buffer.items()):
+            exec_ws.write(row, col, value, fmt)
 
-    issue_headers = [
-        "Issue",
-        "Impact",
-        "Devices",
-        "Details",
-        "Solution",
-        "Reference",
-        "Risk",
-        "Accepted",
-        "Score",
-    ]
-    issue_colors = ["#0066CC"] * len(issue_headers)
+        # autofit() requires the whole worksheet to be held in memory to
+        # measure it, which constant_memory mode doesn't support -- the
+        # width_tracker + set_column combination above/below is the
+        # constant_memory-safe substitute this renderer already used before
+        # this change, so no hazard here.
+        apply_autofit(exec_ws, exec_tracker, range(0, 7))
 
-    def _issue_rows(entries: Iterable[Dict[str, Any]]) -> List[List[Any]]:
-        rows: List[List[Any]] = []
-        for entry in entries or []:
-            if not isinstance(entry, dict):
-                continue
-            rows.append(
-                [
+        issue_headers = [
+            "Issue",
+            "Impact",
+            "Devices",
+            "Details",
+            "Solution",
+            "Reference",
+            "Risk",
+            "Accepted",
+            "Score",
+        ]
+        issue_colors = ["#0066CC"] * len(issue_headers)
+
+        def _issue_rows(entries: Iterable[Dict[str, Any]]) -> Iterable[List[Any]]:
+            for entry in entries or []:
+                if not isinstance(entry, dict):
+                    continue
+                yield [
                     entry.get("Issue", ""),
                     entry.get("Impact", ""),
                     entry.get("Devices", ""),
@@ -5411,35 +5458,44 @@ def _render_firewall_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes
                     entry.get("Accepted", ""),
                     entry.get("Score", ""),
                 ]
+
+        def write_issue_sheet(name: str, entries: Iterable[Dict[str, Any]]):
+            worksheet = workbook.add_worksheet(name)
+            width_tracker: Dict[int, int] = {}
+            write_table(
+                worksheet,
+                start_row=0,
+                start_col=0,
+                headers=issue_headers,
+                rows=_issue_rows(entries),
+                header_colors=issue_colors,
+                width_tracker=width_tracker,
             )
-        return rows
+            apply_autofit(worksheet, width_tracker, range(len(issue_headers)))
 
-    def write_issue_sheet(name: str, entries: Iterable[Dict[str, Any]]):
-        worksheet = workbook.add_worksheet(name)
-        width_tracker: Dict[int, int] = {}
-        rows = _issue_rows(entries)
-        write_table(
-            worksheet,
-            start_row=0,
-            start_col=0,
-            headers=issue_headers,
-            rows=rows,
-            header_colors=issue_colors,
-            width_tracker=width_tracker,
-        )
-        apply_autofit(worksheet, width_tracker, range(len(issue_headers)))
+        write_issue_sheet("All Issues", metrics.get("all_issues"))
+        write_issue_sheet("High Risk Issues", metrics.get("high_issues"))
+        write_issue_sheet("Medium Risk Issues", metrics.get("med_issues"))
+        write_issue_sheet("Low Risk Issues", metrics.get("low_issues"))
+        write_issue_sheet("Rule Issues", metrics.get("rule_issues"))
+        write_issue_sheet("Config Issues", metrics.get("config_issues"))
+        write_issue_sheet("Complexity Issues", metrics.get("complexity_issues"))
+        write_issue_sheet("Vulnerability Issues", metrics.get("vuln_issues"))
 
-    write_issue_sheet("All Issues", metrics.get("all_issues"))
-    write_issue_sheet("High Risk Issues", metrics.get("high_issues"))
-    write_issue_sheet("Medium Risk Issues", metrics.get("med_issues"))
-    write_issue_sheet("Low Risk Issues", metrics.get("low_issues"))
-    write_issue_sheet("Rule Issues", metrics.get("rule_issues"))
-    write_issue_sheet("Config Issues", metrics.get("config_issues"))
-    write_issue_sheet("Complexity Issues", metrics.get("complexity_issues"))
-    write_issue_sheet("Vulnerability Issues", metrics.get("vuln_issues"))
+        workbook.close()
+    except Exception:
+        logger.exception("Failed to render firewall metrics workbook")
+        try:
+            workbook.close()
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
+        try:
+            os.unlink(output_path)
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
+        return None
 
-    workbook.close()
-    return buffer.getvalue()
+    return output_path
 
 
 def _build_web_cap_entries_from_metrics(
@@ -6486,7 +6542,7 @@ def build_project_artifacts(
                 metrics_payload = _build_nexpose_metrics_payload(combined_findings)
                 xlsx_temp_path = metrics_payload.pop("_xlsx_temp_path", None)
                 if xlsx_temp_path:
-                    xlsx_info = _persist_nexpose_workbook(
+                    xlsx_info = _persist_generated_workbook(
                         project,
                         metrics_key,
                         xlsx_temp_path,
@@ -6566,7 +6622,18 @@ def build_project_artifacts(
         firewall_entries = []
 
     if firewall_entries:
-        artifacts["firewall_metrics"] = _build_firewall_metrics_payload(firewall_entries)
+        firewall_metrics_payload = _build_firewall_metrics_payload(firewall_entries)
+        firewall_xlsx_temp_path = firewall_metrics_payload.pop("_xlsx_temp_path", None)
+        if firewall_xlsx_temp_path:
+            firewall_xlsx_info = _persist_generated_workbook(
+                project,
+                "firewall_metrics",
+                firewall_xlsx_temp_path,
+                firewall_metrics_payload.get("xlsx_filename") or "firewall_data.xlsx",
+            )
+            if firewall_xlsx_info:
+                firewall_metrics_payload["xlsx"] = firewall_xlsx_info
+        artifacts["firewall_metrics"] = firewall_metrics_payload
         artifacts["firewall_vulnerabilities"] = _summarize_firewall_vulnerabilities(
             firewall_entries
         )

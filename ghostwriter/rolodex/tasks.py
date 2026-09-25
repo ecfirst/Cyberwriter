@@ -12,17 +12,45 @@ from channels.layers import get_channel_layer
 
 # Ghostwriter Libraries
 from ghostwriter.modules.notifications_slack import SlackNotification
-from ghostwriter.rolodex.data_parsers import (
-    NEXPOSE_METRICS_KEY_MAP,
-    NEXPOSE_METRICS_LABELS,
-    NEXPOSE_XML_ARTIFACT_MAP,
-)
 from ghostwriter.rolodex.models import Project, ProjectDataFile
 
 # Using __name__ resolves to ghostwriter.rolodex.tasks
 logger = logging.getLogger(__name__)
 
 channel_layer = get_channel_layer()
+
+# Every upload field process_project_data_upload (below) can be handed --
+# each of ProjectWorkbookDataUpdate.post's async_upload_fields, rolodex/views.py
+# -- mapped to the notification label, the data_artifacts key holding its
+# metrics/summary once processed, and a human-readable name for the
+# "doesn't look like a valid X" warning message. Kept here rather than
+# reusing data_parsers.py's Nexpose-specific NEXPOSE_METRICS_KEY_MAP/
+# NEXPOSE_XML_ARTIFACT_MAP chain (which only ever covered the three Nexpose
+# fields, and silently resolved to a useless empty label/metrics_key for
+# any other upload_field) since a flat, direct mapping covers every field
+# this task handles, Nexpose or not, with no string-munging indirection.
+_UPLOAD_FIELD_METADATA: Dict[str, Dict[str, str]] = {
+    "external_nexpose_xml": {
+        "label": "External Nexpose",
+        "metrics_key": "external_nexpose_metrics",
+        "file_type": "Nexpose XML",
+    },
+    "internal_nexpose_xml": {
+        "label": "Internal Nexpose",
+        "metrics_key": "internal_nexpose_metrics",
+        "file_type": "Nexpose XML",
+    },
+    "iot_nexpose_xml": {
+        "label": "IoT/IoMT Nexpose",
+        "metrics_key": "iot_iomt_nexpose_metrics",
+        "file_type": "Nexpose XML",
+    },
+    "firewall_xml": {
+        "label": "Firewall Data",
+        "metrics_key": "firewall_metrics",
+        "file_type": "Nipper XML",
+    },
+}
 
 
 def check_project_freshness():
@@ -78,26 +106,23 @@ def process_project_data_upload(
     """Parse an uploaded project data file and rebuild the project's derived artifacts.
 
     Runs off the request/response cycle (queued via ``async_task`` from
-    ``ProjectWorkbookDataUpdate.post``, rolodex/views.py) specifically for
-    the Nexpose XML upload fields, whose scans can run to hundreds of MB and
-    hundreds of thousands of findings -- parsing that synchronously risks
+    ``ProjectWorkbookDataUpdate.post``, rolodex/views.py) for upload fields
+    whose files can run large enough that parsing them synchronously risks
     nginx's ``proxy_read_timeout`` and uvicorn's worker healthcheck killing
-    the request mid-response (see NEXPOSE_AGGREGATE_SCHEMA_VERSION in
-    data_parsers.py for the storage side of that same problem). Named
-    generically, not "nexpose"-specific, since firewall/burp XML uploads
-    share the same risk profile and could reuse this task later.
+    the request mid-response: originally just the three Nexpose XML fields
+    (see NEXPOSE_AGGREGATE_SCHEMA_VERSION in data_parsers.py for the storage
+    side of that same problem), now also firewall_xml (a Nipper XML export,
+    confirmed an 8-second parse for a 69MB file). Named generically, not
+    "nexpose"-specific, since burp XML uploads share the same risk profile
+    and could reuse this task later too.
 
     Always ends by notifying ``username`` over WebSockets (success, empty
     result, or failure) -- there's no synchronous HTTP response left to
     report any of that through.
     """
 
-    label = NEXPOSE_METRICS_LABELS.get(
-        NEXPOSE_METRICS_KEY_MAP.get(
-            NEXPOSE_XML_ARTIFACT_MAP.get(upload_field.replace("_nexpose_xml", ""), "")
-        ),
-        upload_field.replace("_", " ").title(),
-    )
+    metadata = _UPLOAD_FIELD_METADATA.get(upload_field, {})
+    label = metadata.get("label") or upload_field.replace("_", " ").title()
 
     try:
         project = Project.objects.get(pk=project_id)
@@ -146,7 +171,7 @@ def process_project_data_upload(
         project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
     except Exception:
         logger.exception(
-            "Failed to process uploaded Nexpose XML for project ID=%s, upload_field=%s",
+            "Failed to process uploaded data file for project ID=%s, upload_field=%s",
             project_id,
             upload_field,
         )
@@ -178,9 +203,7 @@ def process_project_data_upload(
             project.data_artifacts = artifacts
             project.save(update_fields=["data_artifacts"])
 
-    metrics_key = NEXPOSE_METRICS_KEY_MAP.get(
-        NEXPOSE_XML_ARTIFACT_MAP.get(upload_field.replace("_nexpose_xml", ""), "")
-    )
+    metrics_key = metadata.get("metrics_key")
     artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
     metrics_payload = artifacts.get(metrics_key) if metrics_key else None
     total_findings = 0
@@ -202,16 +225,18 @@ def process_project_data_upload(
             status="success",
         )
     else:
-        # parse_nexpose_xml_report (data_parsers.py) swallows malformed XML
-        # and simply returns no findings -- this is the only place that can
-        # surface that to the user, since there's no synchronous response
-        # left to return a 400 through.
+        # The parsers (parse_nexpose_xml_report / parse_nipper_firewall_report,
+        # data_parsers.py) swallow malformed XML and simply return no
+        # findings -- this is the only place that can surface that to the
+        # user, since there's no synchronous response left to return a 400
+        # through.
+        file_type = metadata.get("file_type", "file")
         _notify_user(
             username,
             title=f"{label} Upload Complete",
             message=(
                 f"No findings could be read from {data_file.filename}. "
-                "It may not be a valid Nexpose XML export."
+                f"It may not be a valid {file_type} export."
             ),
             level="warning",
             event="workbook_upload_complete",

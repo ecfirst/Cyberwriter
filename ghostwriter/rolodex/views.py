@@ -1133,7 +1133,7 @@ def _build_processed_cards(
                 "metrics_key": "firewall_metrics",
                 "summary": summary,
                 "devices": firewall_metrics.get("devices", []),
-                "has_file": bool(firewall_metrics.get("xlsx_base64")),
+                "has_file": bool(firewall_metrics.get("xlsx") or firewall_metrics.get("xlsx_base64")),
                 "type": "firewall",
             }
         )
@@ -5568,18 +5568,25 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             if "dns_xml" in request.FILES:
                 return self._handle_dns_xml_upload(request, project)
 
-            nexpose_upload_fields = {
-                "external_nexpose_xml": "external_nexpose_xml.xml",
-                "internal_nexpose_xml": "internal_nexpose_xml.xml",
-                "iot_nexpose_xml": "iot_nexpose_xml.xml",
+            # Every upload field here is handed off to the same background
+            # task (process_project_data_upload, rolodex/tasks.py) instead
+            # of being parsed inline -- originally just the three Nexpose
+            # fields (whose scans can run to hundreds of MB and hundreds of
+            # thousands of findings), now also firewall_xml (a Nipper XML
+            # export, which shares the same risk profile -- confirmed an
+            # 8-second parse for a 69MB file -- and used to be handled in
+            # its own separate, synchronous branch below this loop).
+            async_upload_fields = {
+                "external_nexpose_xml": ("external_nexpose_xml.xml", "No Nexpose XML provided."),
+                "internal_nexpose_xml": ("internal_nexpose_xml.xml", "No Nexpose XML provided."),
+                "iot_nexpose_xml": ("iot_nexpose_xml.xml", "No Nexpose XML provided."),
+                "firewall_xml": ("firewall_xml.xml", "No Firewall XML provided."),
             }
-            for upload_field, requirement_label in nexpose_upload_fields.items():
+            for upload_field, (requirement_label, missing_file_error) in async_upload_fields.items():
                 if upload_field in request.FILES:
                     upload = request.FILES.get(upload_field)
                     if not upload:
-                        return JsonResponse(
-                            {"error": "No Nexpose XML provided."}, status=400
-                        )
+                        return JsonResponse({"error": missing_file_error}, status=400)
 
                     requirement_slug = _slugify_identifier("required", requirement_label)
                     # Replace any previously uploaded file for this slot so
@@ -5651,28 +5658,6 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                         },
                         status=202,
                     )
-
-            if "firewall_xml" in request.FILES:
-                upload = request.FILES.get("firewall_xml")
-                if not upload:
-                    return JsonResponse({"error": "No Firewall XML provided."}, status=400)
-
-                data_file = ProjectDataFile(
-                    project=project,
-                    requirement_slug=_slugify_identifier("required", "firewall_xml.xml"),
-                    requirement_label="firewall_xml.xml",
-                    requirement_context="firewall xml",
-                    description="",
-                )
-                data_file.file.save(upload.name, upload)
-                data_file.save()
-
-                project.rebuild_data_artifacts(changed_file_ids={data_file.pk})
-                project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
-
-                return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
-                )
 
             if "burp_xml" in request.FILES:
                 upload = request.FILES.get("burp_xml")
@@ -6864,6 +6849,17 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             ):
                 artifacts.pop(key, None)
 
+            # Delete the generated workbook's own ProjectArtifactFile row too
+            # (not just the JSONField keys above) -- since the storage
+            # modernization, firewall_metrics["xlsx"] references one instead
+            # of embedding the workbook as base64, so leaving it behind
+            # would orphan the file. Mirrors the equivalent cleanup in the
+            # remove_nexpose handler below.
+            for artifact_file in project.artifact_files.filter(artifact_key="firewall_metrics"):
+                if artifact_file.file:
+                    artifact_file.file.delete(save=False)
+                artifact_file.delete()
+
             workbook_payload = normalize_workbook_payload(project.workbook_data)
             default_values = copy.deepcopy(WORKBOOK_DEFAULTS.get("firewall"))
             if default_values is not None:
@@ -7509,6 +7505,30 @@ class ProjectFirewallDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin
             messages.error(request, "No firewall data file is available for download.")
             return HttpResponseRedirect(self.get_success_url(project))
 
+        filename = payload.get("xlsx_filename") or "firewall_data.xlsx"
+        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        xlsx_ref = payload.get("xlsx")
+        if isinstance(xlsx_ref, dict) and xlsx_ref.get("artifact_file_id"):
+            artifact_file = ProjectArtifactFile.objects.filter(
+                project=project, pk=xlsx_ref["artifact_file_id"]
+            ).first()
+            if artifact_file and artifact_file.file:
+                try:
+                    response = FileResponse(
+                        artifact_file.file.open("rb"), content_type=content_type
+                    )
+                    add_content_disposition_header(response, filename)
+                    return response
+                except (FileNotFoundError, OSError):  # pragma: no cover - storage backend edge case
+                    logger.exception(
+                        "Generated firewall workbook file is missing from storage (project ID=%s, artifact_file ID=%s)",
+                        project.pk,
+                        artifact_file.pk,
+                    )
+
+        # Fallback for data written before the firewall storage modernization
+        # (base64-embedded in data_artifacts rather than a ProjectArtifactFile).
         workbook_b64 = payload.get("xlsx_base64")
         if not workbook_b64:
             messages.error(request, "The firewall data file is not available for download yet.")
@@ -7521,11 +7541,7 @@ class ProjectFirewallDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin
             messages.error(request, "Unable to decode the firewall data file.")
             return HttpResponseRedirect(self.get_success_url(project))
 
-        response = HttpResponse(
-            workbook_bytes,
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        filename = payload.get("xlsx_filename") or "firewall_data.xlsx"
+        response = HttpResponse(workbook_bytes, content_type=content_type)
         add_content_disposition_header(response, filename)
         return response
 

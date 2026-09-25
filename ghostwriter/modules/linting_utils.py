@@ -1049,6 +1049,7 @@ LINTER_CONTEXT = {
                         "ood": "no",
                     }
                 ],
+                "xlsx": {"artifact_file_id": 4, "filename": "firewall_data.xlsx", "byte_size": 24576},
             },
             "firewall_vulnerabilities": {
                 "high": {
