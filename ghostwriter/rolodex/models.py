@@ -1433,11 +1433,28 @@ class Project(models.Model):
         # internal_nexpose_metrics 134MB for a data-heavy project (confirmed
         # via pg_column_size).
         #
+        # majority_subset belongs in this same dropped set, not the "bounded"
+        # one below -- despite the name pairing it with majority_unique (which
+        # *is* bounded, filtered from the deduped unique_issues), it's built
+        # from total_entries (data_parsers.py's _build_nexpose_metrics_payload),
+        # the exact same full, undeduplicated per-finding list all_issues is.
+        # For a scan where most findings match the majority category, this is
+        # a THIRD full copy of the finding set -- confirmed as the cause of a
+        # `psycopg2.errors.InternalError_: invalid memory alloc request size
+        # 1073741824` (Postgres's hard 1GB single-value ceiling) crash on a
+        # 237MB/419K-finding real-world scan, well after all_issues/high/med/
+        # low_issues alone would have fit. majority_unique is dropped
+        # alongside it purely for consistency with this function's own
+        # documented intent (see _build_nexpose_metrics_payload's docstring,
+        # which already listed both as transient-only) -- it isn't itself a
+        # bloat risk.
+        #
         # Everything else in these payloads (summary/host_counts/top_hosts*/
-        # top_impacts/tab_index_entries/unique_issues/majority_*) is bounded
-        # (capped at 10, a fixed constant, a scalar, or sized by unique-
-        # issue/host count rather than raw finding count) and IS read back
-        # out of a *stored* data_artifacts: ProjectSerializer.to_representation
+        # top_impacts/tab_index_entries/unique_issues/cap_systems/
+        # majority_type/minority_type) is bounded (capped at 10, a fixed
+        # constant, a scalar, or sized by unique-issue/host count rather than
+        # raw finding count) and IS read back out of a *stored*
+        # data_artifacts: ProjectSerializer.to_representation
         # (custom_serializers.py) runs data_artifacts through
         # normalize_nexpose_artifacts_map for the report-generation Jinja
         # context, and a template can reference any of these fields
@@ -1445,16 +1462,23 @@ class Project(models.Model):
         # linting_utils.py) -- trimming them unconditionally silently
         # emptied that context for any template that used them, exactly the
         # ad_attack_paths bug from a few rounds ago. Drop only the confirmed
-        # duplicative pair; the still-large all_issues/high/med/low_issues
-        # data remains one click away via the generated workbook (xlsx/
-        # xlsx_base64, which already has a full "All Issues"/"High Risk
-        # Issues"/etc. tab per tab_index_entries' own descriptions). For
-        # Nexpose specifically (unlike web/firewall below), the raw
-        # *_nexpose_findings artifact no longer holds a copy either -- see
-        # NEXPOSE_AGGREGATE_SCHEMA_VERSION in data_parsers.py -- so
-        # unique_issues/cap_systems in the metrics payload (kept below) are
-        # the only remaining per-vulnerability detail in storage.
-        _DROP_DUPLICATE_ISSUE_LISTS = ("all_issues", "high_issues", "med_issues", "low_issues")
+        # duplicative set; the still-large all_issues/high/med/low_issues/
+        # majority_subset data remains one click away via the generated
+        # workbook (xlsx/xlsx_base64, which already has a full "All Issues"/
+        # "High Risk Issues"/etc. tab per tab_index_entries' own
+        # descriptions). For Nexpose specifically (unlike web/firewall
+        # below), the raw *_nexpose_findings artifact no longer holds a copy
+        # either -- see NEXPOSE_AGGREGATE_SCHEMA_VERSION in data_parsers.py
+        # -- so unique_issues/cap_systems in the metrics payload (kept below)
+        # are the only remaining per-vulnerability detail in storage.
+        _DROP_DUPLICATE_ISSUE_LISTS = (
+            "all_issues",
+            "high_issues",
+            "med_issues",
+            "low_issues",
+            "majority_unique",
+            "majority_subset",
+        )
 
         for metrics_key in NEXPOSE_METRICS_KEY_MAP.values():
             metrics_payload = artifacts.get(metrics_key)

@@ -314,16 +314,6 @@
     const protocol = ws_proto
     const username = '{{ user.get_clean_username }}';
 
-    {% comment %} Connect to channel for individual notifications {% endcomment %}
-    const ws_user = new WebSocket(
-      protocol + window.location.host +
-      '/ws/users/' + username + '/');
-
-    {% comment %} Connect to channel for all user notifications {% endcomment %}
-    const ws_all = new WebSocket(
-      protocol + window.location.host +
-      '/ws/users/all/');
-
     {% comment %} Functions for sending messages {% endcomment %}
     function sendMessage(socket, msg) {
       {% comment %} Wait until the state of the socket is not ready and send the message when it is... {% endcomment %}
@@ -348,24 +338,45 @@
     }
 
     {% comment %} Handle receiving messages on channels {% endcomment %}
-    ws_user.onmessage = function (e) {
-      let data = JSON.parse(e.data);
-      displayToastTop({type: data.message.level, string: data.message.message, title: data.message.title});
-      document.dispatchEvent(new CustomEvent('ghostwriter:notification', {detail: data.message}));
-    }
-    ws_all.onmessage = function (e) {
+    const handleNotificationSocketMessage = function (e) {
       let data = JSON.parse(e.data);
       displayToastTop({type: data.message.level, string: data.message.message, title: data.message.title});
       document.dispatchEvent(new CustomEvent('ghostwriter:notification', {detail: data.message}));
     };
 
-    {% comment %} Handle unexpected WebSocket closures {% endcomment %}
-    ws_user.onclose = function () {
-      console.error('User notification WebSocket closed unexpectedly');
+    {% comment %} Reconnect on drop instead of leaving the user permanently
+    cut off from further notifications -- worker recycling under normal
+    load (e.g. uvicorn's --limit-max-requests) routinely closes these
+    connections, so a dropped socket here is common, not exceptional; a
+    background task's "processing" UI state depends on its completion
+    notification eventually arriving. {% endcomment %}
+    let ws_user;
+    let ws_all;
+
+    const connectUserSocket = function () {
+      ws_user = new WebSocket(
+        protocol + window.location.host +
+        '/ws/users/' + username + '/');
+      ws_user.onmessage = handleNotificationSocketMessage;
+      ws_user.onclose = function () {
+        console.error('User notification WebSocket closed unexpectedly, reconnecting...');
+        setTimeout(connectUserSocket, 3000);
+      };
     };
-    ws_all.onclose = function () {
-      console.error('Global notification WebSocket closed unexpectedly');
+
+    const connectAllSocket = function () {
+      ws_all = new WebSocket(
+        protocol + window.location.host +
+        '/ws/users/all/');
+      ws_all.onmessage = handleNotificationSocketMessage;
+      ws_all.onclose = function () {
+        console.error('Global notification WebSocket closed unexpectedly, reconnecting...');
+        setTimeout(connectAllSocket, 3000);
+      };
     };
+
+    connectUserSocket();
+    connectAllSocket();
   {% endif %}
 
   // Theme Toggle Functionality

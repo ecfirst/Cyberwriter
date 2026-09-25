@@ -1176,28 +1176,11 @@ LINTER_CONTEXT = {
                 ],
                 "majority_type": "ISC",
                 "minority_type": "IWC",
-                "majority_unique": [
-                    {
-                        "risk": "Medium",
-                        "issue": "SMB Signing Not Required",
-                        "impact": "Permits MITM attacks.",
-                        "remediation": "Require SMB signing.",
-                        "category": "ISC",
-                        "severity": 6,
-                    }
-                ],
-                "majority_subset": [
-                    {
-                        "ip": "203.0.113.10",
-                        "hostnames": "edge.example.com",
-                        "issue": "SMB Signing Not Required",
-                        "impact": "Permits MITM attacks.",
-                        "remediation": "Require SMB signing.",
-                        "risk": "Medium",
-                        "category": "ISC",
-                        "severity": 6,
-                    }
-                ],
+                # majority_unique/majority_subset are transient-only (used to
+                # build the workbook, dropped before storage -- see
+                # _DROP_DUPLICATE_ISSUE_LISTS in models.py's
+                # rebuild_data_artifacts) and never reach a stored
+                # data_artifacts, so they're deliberately absent here.
                 "xlsx_filename": "external_nexpose.xlsx",
                 "xlsx": {"artifact_file_id": 1, "filename": "external_nexpose.xlsx", "byte_size": 24576},
             },
@@ -1342,28 +1325,8 @@ LINTER_CONTEXT = {
                 ],
                 "majority_type": "ISC",
                 "minority_type": "IWC",
-                "majority_unique": [
-                    {
-                        "risk": "Medium",
-                        "issue": "SMB Signing Not Required",
-                        "impact": "Permits MITM attacks.",
-                        "remediation": "Require SMB signing.",
-                        "category": "ISC",
-                        "severity": 6,
-                    }
-                ],
-                "majority_subset": [
-                    {
-                        "ip": "10.20.30.40",
-                        "hostnames": "file01.corp.example.com",
-                        "issue": "SMB Signing Not Required",
-                        "impact": "Permits MITM attacks.",
-                        "remediation": "Require SMB signing.",
-                        "risk": "Medium",
-                        "category": "ISC",
-                        "severity": 6,
-                    }
-                ],
+                # majority_unique/majority_subset are transient-only -- see
+                # the external_nexpose_metrics entry above.
                 "xlsx_filename": "internal_nexpose.xlsx",
                 "xlsx": {"artifact_file_id": 2, "filename": "internal_nexpose.xlsx", "byte_size": 24576},
             },
@@ -1436,28 +1399,8 @@ LINTER_CONTEXT = {
                 ],
                 "majority_type": "ISC",
                 "minority_type": "OOD",
-                "majority_unique": [
-                    {
-                        "risk": "Medium",
-                        "issue": "Default Credentials Enabled",
-                        "impact": "Shared vendor passwords allow unauthorized access to device management.",
-                        "remediation": "Rotate credentials and restrict access.",
-                        "category": "ISC",
-                        "severity": 6,
-                    }
-                ],
-                "majority_subset": [
-                    {
-                        "ip": "10.55.88.23",
-                        "hostnames": "mri01.med.example.com",
-                        "issue": "Default Credentials Enabled",
-                        "impact": "Shared vendor passwords allow unauthorized access to device management.",
-                        "remediation": "Rotate credentials and restrict access.",
-                        "risk": "Medium",
-                        "category": "ISC",
-                        "severity": 6,
-                    }
-                ],
+                # majority_unique/majority_subset are transient-only -- see
+                # the external_nexpose_metrics entry above.
                 "xlsx_filename": "iot_nexpose.xlsx",
                 "xlsx": {"artifact_file_id": 3, "filename": "iot_nexpose.xlsx", "byte_size": 24576},
             },

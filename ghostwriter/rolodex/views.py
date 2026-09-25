@@ -5581,11 +5581,28 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                             {"error": "No Nexpose XML provided."}, status=400
                         )
 
+                    requirement_slug = _slugify_identifier("required", requirement_label)
+                    # Replace any previously uploaded file for this slot so
+                    # re-uploads don't accumulate without bound -- each
+                    # extra row gets re-parsed and merged into the same key
+                    # on every future rebuild (see the multi-file-per-key
+                    # merge in data_parsers.build_project_artifacts),
+                    # unboundedly growing the stored aggregate and the
+                    # generated workbook for no benefit, since only the
+                    # latest scan should represent this slot. Matches the
+                    # pattern ProjectDataFileUpload.post/ProjectIPArtifactUpload.post
+                    # already use.
+                    existing_files = list(
+                        project.data_files.filter(requirement_slug=requirement_slug)
+                    )
+                    for existing in existing_files:
+                        if existing.file:
+                            existing.file.delete(save=False)
+                        existing.delete()
+
                     data_file = ProjectDataFile(
                         project=project,
-                        requirement_slug=_slugify_identifier(
-                            "required", requirement_label
-                        ),
+                        requirement_slug=requirement_slug,
                         requirement_label=requirement_label,
                         requirement_context=f"{upload_field.replace('_', ' ')}",
                         description="",
