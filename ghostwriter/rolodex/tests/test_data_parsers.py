@@ -1321,6 +1321,106 @@ class NexposeDataParserTests(TestCase):
             "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
         )
 
+    def test_missing_matrix_entries_survive_an_unrelated_nexpose_upload(self):
+        # Reproduces the reported bug: upload Internal Nexpose XML (with a
+        # missing-matrix-entry-producing finding), then upload External
+        # Nexpose XML -- Internal's missing-matrix notice must survive,
+        # since nothing about Internal changed. Regression test for the
+        # changed_file_ids skip-and-carry-forward block in
+        # build_project_artifacts not carrying forward nexpose_matrix_gaps
+        # (see that function's docstring).
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>203.0.113.5</address>
+      <status>alive</status>
+      <names>
+        <name>alpha.example.com</name>
+      </names>
+      <tests>
+        <test id='vuln-host' status='vulnerable-version'>
+          <details>Proof</details>
+        </test>
+      </tests>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability>
+      <id>vuln-host</id>
+      <title>Fancy — Vulnerability</title>
+      <severity>7</severity>
+      <description>Node description</description>
+      <solution>Apply patches</solution>
+      <references>
+        <reference>
+          <source>CVE</source>
+          <value>CVE-2020-0001</value>
+        </reference>
+      </references>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        internal_upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "internal_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="internal_nexpose_xml.xml",
+            requirement_slug="required_internal_nexpose_xml-xml",
+            requirement_context="internal nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=internal_upload.pk).delete())
+
+        self.project.rebuild_data_artifacts(changed_file_ids={internal_upload.pk})
+        self.project.refresh_from_db()
+
+        gaps = self.project.data_artifacts.get("nexpose_matrix_gaps") or {}
+        self.assertIn("internal_nexpose_findings", gaps.get("missing_by_artifact", {}))
+
+        # Now upload External Nexpose XML -- a real upload flow scopes
+        # changed_file_ids to just the newly-uploaded file's pk (see
+        # process_project_data_upload, rolodex/tasks.py), so Internal's key
+        # is not dirty this round.
+        external_upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                b"<?xml version='1.0' encoding='UTF-8'?><NexposeReport version='1.0'><nodes/></NexposeReport>",
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=external_upload.pk).delete())
+
+        self.project.rebuild_data_artifacts(changed_file_ids={external_upload.pk})
+        self.project.refresh_from_db()
+
+        gaps = self.project.data_artifacts.get("nexpose_matrix_gaps") or {}
+        self.assertIn(
+            "internal_nexpose_findings",
+            gaps.get("missing_by_artifact", {}),
+            "Internal Nexpose's missing-matrix notice should survive an unrelated External upload",
+        )
+
+        # A save that scopes changed_file_ids to nothing at all (matching
+        # every Remove-button handler and most area-card saves) must not
+        # wipe it either.
+        self.project.rebuild_data_artifacts(changed_file_ids=set())
+        self.project.refresh_from_db()
+        gaps = self.project.data_artifacts.get("nexpose_matrix_gaps") or {}
+        self.assertIn(
+            "internal_nexpose_findings",
+            gaps.get("missing_by_artifact", {}),
+            "Internal Nexpose's missing-matrix notice should survive a changed_file_ids=set() save",
+        )
+
     def test_vulnerability_matrix_enriches_artifacts(self):
         VulnerabilityMatrixEntry.objects.create(
             vulnerability="Zeta Exposure",

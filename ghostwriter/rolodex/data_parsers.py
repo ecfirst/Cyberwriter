@@ -6258,6 +6258,18 @@ def build_project_artifacts(
     ``changed_file_ids``, the *other* one must still be reparsed too, or its
     contribution would be silently dropped from the merge. ``dirty_nexpose_keys``
     (computed in a cheap, file-I/O-free pre-pass below) tracks this.
+
+    A skipped key's everything -- its own artifact entry, metrics, file
+    name, *and* its ``nexpose_matrix_gaps`` "missing matrix entries"
+    contribution -- must be explicitly carried forward from
+    ``previous_artifacts`` inside the skip branch below. Nothing here is
+    additive across calls by default: every one of these is rebuilt from
+    scratch each call from whatever keys actually got (re)parsed *this*
+    call, with no fallback, so a key that's silently forgotten here doesn't
+    just stay stale -- it vanishes the moment any other key is dirty (fixed
+    for ``nexpose_matrix_gaps`` after it was found missing this carry-forward
+    entirely, silently dropping every *other* Nexpose type's missing-entries
+    notice on every save that touched only one type).
     """
 
     previous_artifacts: Dict[str, Any] = (
@@ -6272,6 +6284,27 @@ def build_project_artifacts(
             key = _resolve_nexpose_xml_artifact_key(data_file)
             if key:
                 dirty_nexpose_keys.add(key)
+
+    # Previously-stored "missing Nexpose matrix entries" per xml_artifact_key
+    # (see nexpose_matrix_gaps, built near the end of this function) -- read
+    # once up front so the skip-and-carry-forward block below can restore a
+    # skipped key's entry into carried_missing_by_artifact. Without this, a
+    # key that isn't reparsed this round (it wasn't in changed_file_ids)
+    # contributes nothing to missing_matrix_tracker either, and since the
+    # final nexpose_matrix_gaps is built purely from that tracker with no
+    # other fallback, its "missing entries" notice would silently vanish on
+    # every save that doesn't happen to touch that specific file -- e.g.
+    # uploading External Nexpose XML previously wiped Internal's missing-entries
+    # notice, and any changed_file_ids=set() save (every Remove-button
+    # handler, most area-card saves) wiped every Nexpose type's at once.
+    previous_nexpose_matrix_gaps = previous_artifacts.get("nexpose_matrix_gaps")
+    previous_missing_by_artifact: Dict[str, Any] = (
+        previous_nexpose_matrix_gaps.get("missing_by_artifact")
+        if isinstance(previous_nexpose_matrix_gaps, dict)
+        and isinstance(previous_nexpose_matrix_gaps.get("missing_by_artifact"), dict)
+        else {}
+    )
+    carried_missing_by_artifact: Dict[str, Dict[str, Any]] = {}
 
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
@@ -6451,6 +6484,13 @@ def build_project_artifacts(
                     and file_name_key in previous_artifacts
                 ):
                     artifacts[file_name_key] = previous_artifacts[file_name_key]
+                if (
+                    xml_artifact_key not in carried_missing_by_artifact
+                    and xml_artifact_key in previous_missing_by_artifact
+                ):
+                    carried_missing_by_artifact[xml_artifact_key] = previous_missing_by_artifact[
+                        xml_artifact_key
+                    ]
                 continue
 
             file_name_key = NEXPOSE_FILENAME_KEY_MAP.get(xml_artifact_key)
@@ -6671,8 +6711,15 @@ def build_project_artifacts(
             "low": _coerce_severity_group(details.get("low")),
         }
 
-    if missing_matrix_tracker:
-        missing_by_artifact: Dict[str, Dict[str, Any]] = {}
+    if missing_matrix_tracker or carried_missing_by_artifact:
+        # Seed with whatever skipped keys carried forward (see
+        # carried_missing_by_artifact above), then let this round's freshly
+        # parsed keys take over -- a key is either dirty (reparsed this
+        # round, below) or skipped (carried, already in the seed), never
+        # both, so there's no real collision; a dirty key's own fresh
+        # result -- including "no longer missing, so omitted" -- always
+        # wins for that key.
+        missing_by_artifact: Dict[str, Dict[str, Any]] = dict(carried_missing_by_artifact)
         for artifact_key, rows in missing_matrix_tracker.items():
             if not rows:
                 continue

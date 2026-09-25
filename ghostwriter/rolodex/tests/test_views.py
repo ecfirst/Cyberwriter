@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import os
 import shutil
 import re
 import tempfile
@@ -4645,3 +4646,172 @@ class AiReviewAttackPathsParityTests(TestCase):
         self.assertIn("corp.example.com", prompt)
         self.assertIn("Kerberoastable Accounts", prompt)
         self.assertIn("High", prompt)
+
+
+class ProjectFileCleanupSignalTests(TestCase):
+    """Tests that deleting ProjectDataFile/ProjectArtifactFile/Project rows
+    also removes their underlying files from storage (see
+    ghostwriter/rolodex/signals.py's post_delete receivers)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # Real filesystem storage (the default -- see MEDIA_ROOT,
+        # config/settings/base.py), pointed at a throwaway temp dir so
+        # these tests can assert files are actually gone from disk without
+        # touching real media. Matches ProjectWorkbookUploadViewTests above.
+        cls._media_root = tempfile.mkdtemp()
+        cls._override = override_settings(MEDIA_ROOT=cls._media_root)
+        cls._override.enable()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._override.disable()
+        shutil.rmtree(cls._media_root, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        self.project = ProjectFactory()
+        self.user = MgrFactory(password=PASSWORD)
+        self.client_auth = Client()
+        self.assertTrue(self.client_auth.login(username=self.user.username, password=PASSWORD))
+        self.detail_url = reverse("rolodex:project_detail", kwargs={"pk": self.project.pk})
+
+    def test_deleting_project_data_file_removes_file_from_storage(self):
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("evidence.txt", b"content"),
+            requirement_label="evidence.txt",
+        )
+        file_path = data_file.file.path
+        self.assertTrue(os.path.exists(file_path))
+
+        data_file.delete()
+
+        self.assertFalse(os.path.exists(file_path))
+
+    def test_deleting_project_artifact_file_removes_file_from_storage(self):
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="internal_nexpose_metrics",
+            file=SimpleUploadedFile("internal_nexpose.xlsx", b"PK\x03\x04"),
+            filename="internal_nexpose.xlsx",
+            byte_size=4,
+        )
+        file_path = artifact_file.file.path
+        self.assertTrue(os.path.exists(file_path))
+
+        artifact_file.delete()
+
+        self.assertFalse(os.path.exists(file_path))
+
+    def test_queryset_delete_removes_files_from_storage(self):
+        # Mirrors remove_sql / DNS domain removal / a dns_csv re-upload
+        # (views.py) -- all remove ProjectDataFile rows via a queryset
+        # .delete() rather than an instance .delete(), which still emits
+        # post_delete per row (documented Django behavior), not just a bulk
+        # SQL DELETE with no signals.
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("sql_report.xlsx", b"content"),
+            requirement_label="sql_report.xlsx",
+            requirement_slug="required_sql-report-xlsx",
+        )
+        file_path = data_file.file.path
+        self.assertTrue(os.path.exists(file_path))
+
+        self.project.data_files.filter(requirement_slug="required_sql-report-xlsx").delete()
+
+        self.assertFalse(os.path.exists(file_path))
+
+    def test_deleting_project_removes_workbook_and_related_files(self):
+        self.project.workbook_file = SimpleUploadedFile("workbook.json", b"{}")
+        self.project.save(update_fields=["workbook_file"])
+        workbook_path = self.project.workbook_file.path
+
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("firewall_xml.xml", b"<root/>"),
+            requirement_label="firewall_xml.xml",
+        )
+        data_file_path = data_file.file.path
+
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="firewall_metrics",
+            file=SimpleUploadedFile("firewall_data.xlsx", b"PK\x03\x04"),
+            filename="firewall_data.xlsx",
+            byte_size=4,
+        )
+        artifact_file_path = artifact_file.file.path
+
+        for path in (workbook_path, data_file_path, artifact_file_path):
+            self.assertTrue(os.path.exists(path))
+
+        self.project.delete()
+
+        for path in (workbook_path, data_file_path, artifact_file_path):
+            self.assertFalse(os.path.exists(path))
+
+    def test_deleting_supplemental_file_also_removes_its_artifact_file(self):
+        # ProjectDataFileDelete (the generic single-file "Supplementals"
+        # delete view) only sees the ProjectDataFile being removed, not
+        # which upload branch created it -- see
+        # _XML_REQUIREMENT_LABEL_TO_ARTIFACT_KEY (views.py). Deleting a
+        # Nexpose/firewall XML through it must still clean up that file's
+        # generated workbook.
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("firewall_xml.xml", b"<root/>"),
+            requirement_label="firewall_xml.xml",
+        )
+        data_file_path = data_file.file.path
+
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="firewall_metrics",
+            file=SimpleUploadedFile("firewall_data.xlsx", b"PK\x03\x04"),
+            filename="firewall_data.xlsx",
+            byte_size=4,
+        )
+        artifact_file_path = artifact_file.file.path
+
+        self.assertTrue(os.path.exists(data_file_path))
+        self.assertTrue(os.path.exists(artifact_file_path))
+
+        delete_url = reverse("rolodex:project_data_file_delete", kwargs={"pk": data_file.pk})
+        response = self.client_auth.post(delete_url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(os.path.exists(data_file_path))
+        self.assertFalse(os.path.exists(artifact_file_path))
+        self.assertFalse(
+            ProjectArtifactFile.objects.filter(pk=artifact_file.pk).exists()
+        )
+
+    def test_clear_workbook_removes_artifact_files(self):
+        # clear_workbook (ProjectWorkbookUpload.post) deletes every
+        # ProjectDataFile but, before this fix, never touched
+        # project.artifact_files -- a generated Nexpose/firewall workbook
+        # would survive with nothing left pointing at it.
+        self.project.workbook_file = SimpleUploadedFile("workbook.json", b"{}")
+        self.project.save(update_fields=["workbook_file"])
+
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="internal_nexpose_metrics",
+            file=SimpleUploadedFile("internal_nexpose.xlsx", b"PK\x03\x04"),
+            filename="internal_nexpose.xlsx",
+            byte_size=4,
+        )
+        artifact_file_path = artifact_file.file.path
+        self.assertTrue(os.path.exists(artifact_file_path))
+
+        upload_url = reverse("rolodex:project_workbook", kwargs={"pk": self.project.pk})
+        response = self.client_auth.post(upload_url, {"clear_workbook": "1"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(os.path.exists(artifact_file_path))
+        self.assertFalse(
+            ProjectArtifactFile.objects.filter(pk=artifact_file.pk).exists()
+        )

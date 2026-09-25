@@ -3548,6 +3548,14 @@ class ProjectWorkbookUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                 if data_file.file:
                     data_file.file.delete(save=False)
                 data_file.delete()
+            # Generated workbooks (Nexpose/firewall metrics XLSX) aren't
+            # ProjectDataFile rows -- clearing the workbook needs to drop
+            # these too, or they're orphaned in storage with nothing left
+            # pointing at them once data_artifacts is reset below.
+            for artifact_file in list(project.artifact_files.all()):
+                if artifact_file.file:
+                    artifact_file.file.delete(save=False)
+                artifact_file.delete()
             project.workbook_file = None
             project.workbook_data = {}
             project.data_responses = {}
@@ -5664,9 +5672,27 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 if not upload:
                     return JsonResponse({"error": "No Burp XML provided."}, status=400)
 
+                burp_requirement_slug = _slugify_identifier("required", "burp_xml.xml")
+                # Replace any previously uploaded file for this slot so
+                # re-uploads don't accumulate without bound -- same reasoning
+                # as async_upload_fields above (this branch predates that
+                # loop and never got the fix at the time). Without this, the
+                # web-findings parse path (build_project_artifacts,
+                # data_parsers.py) extends parsed_web_findings from every
+                # ProjectDataFile row sharing this slug, so a re-upload
+                # doubled up every prior finding on top of the new ones, on
+                # top of leaking the old file in storage.
+                existing_burp_files = list(
+                    project.data_files.filter(requirement_slug=burp_requirement_slug)
+                )
+                for existing in existing_burp_files:
+                    if existing.file:
+                        existing.file.delete(save=False)
+                    existing.delete()
+
                 data_file = ProjectDataFile(
                     project=project,
-                    requirement_slug=_slugify_identifier("required", "burp_xml.xml"),
+                    requirement_slug=burp_requirement_slug,
                     requirement_label="burp_xml.xml",
                     requirement_context="burp xml",
                     description="",
@@ -7675,6 +7701,22 @@ class ProjectIPArtifactUpload(RoleBasedAccessControlMixin, SingleObjectMixin, Vi
         return redirect(self.get_success_url())
 
 
+# Maps a ProjectDataFile's own requirement_label (the literal string every
+# upload branch in ProjectWorkbookDataUpdate.post sets it to -- see
+# async_upload_fields above) to the artifact_key of the ProjectArtifactFile
+# a successful upload of that file generates. Used by ProjectDataFileDelete
+# below: deleting one of these four uploaded files also orphans its
+# generated workbook unless that row is deleted too, and this view (unlike
+# remove_nexpose/remove_firewall) only ever has the ProjectDataFile itself
+# to work from, not which upload branch created it.
+_XML_REQUIREMENT_LABEL_TO_ARTIFACT_KEY = {
+    "external_nexpose_xml.xml": "external_nexpose_metrics",
+    "internal_nexpose_xml.xml": "internal_nexpose_metrics",
+    "iot_nexpose_xml.xml": "iot_iomt_nexpose_metrics",
+    "firewall_xml.xml": "firewall_metrics",
+}
+
+
 class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View):
     """Delete a supporting data file from a project."""
 
@@ -7791,7 +7833,16 @@ class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View
         if data_file.file:
             data_file.file.delete(save=False)
         project = data_file.project
+        artifact_key = _XML_REQUIREMENT_LABEL_TO_ARTIFACT_KEY.get(data_file.requirement_label)
         data_file.delete()
+        if artifact_key:
+            # This file's own generated workbook (if it has one) is orphaned
+            # once its source file is gone -- see
+            # _XML_REQUIREMENT_LABEL_TO_ARTIFACT_KEY above.
+            for artifact_file in project.artifact_files.filter(artifact_key=artifact_key):
+                if artifact_file.file:
+                    artifact_file.file.delete(save=False)
+                artifact_file.delete()
         project.rebuild_data_artifacts()
         messages.success(request, "Supporting data file deleted.")
         success_url = self.get_success_url()
