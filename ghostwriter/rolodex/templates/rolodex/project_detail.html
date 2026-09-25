@@ -8481,23 +8481,49 @@
         // Only react to ones about *this* project's upload completing;
         // anything else (a different page's notification, or a message
         // from an unrelated feature) is left for the generic toast alone.
-        // handleWorkbookUpdateResponse (and refreshWorkbookUi's own
-        // immediate path) mutate workbookState/dataArtifactsState
-        // synchronously -- fine for a user-initiated save, but a
-        // notification can land at any time, including while a modal has
-        // an open closure over the *current* workbookState (e.g. a
-        // "Remove Domain" button capturing `workbookState.dns.records`
-        // when the modal opened). refreshWorkbookUi already defers the DOM
-        // re-render until an open modal closes; this defers the state
-        // mutation itself the same way, so an open modal's captured
-        // references never go stale out from under it.
-        const runAfterAnyOpenModalCloses = function(callback) {
+        //
+        // Applying the update has to account for whichever modal (if any)
+        // is open when the notification lands -- three cases:
+        //  - nothing open: apply immediately, nothing to reopen.
+        //  - this same upload's own modal is open: it got there by
+        //    reopening itself after the 202 response (see
+        //    uploadNexposeXml), the same close-then-reopen convention every
+        //    other save handler in this file uses (reopenModalId/
+        //    forceCloseModalId) -- so force-refresh it in place
+        //    immediately, the same way. Waiting for the user to close it
+        //    first would deadlock: nothing prompts them to, it's just
+        //    sitting there showing "Processing...".
+        //  - a *different* modal is open (e.g. a DNS "Remove Domain"
+        //    dialog with a closure over workbookState.dns.records captured
+        //    when it opened): defer the whole update -- state mutation
+        //    included, not just the render, since handleWorkbookUpdateResponse
+        //    mutates workbookState/dataArtifactsState synchronously, before
+        //    refreshWorkbookUi's own deferred-render check even runs --
+        //    until that modal closes on its own, and don't reopen the
+        //    nexpose modal afterward; the user didn't ask for it.
+        const applyWorkbookNotification = function(detail, data) {
+          const relatedModalId = detail.area_key ? ('workbook-area-modal-' + detail.area_key) : null;
           const activeModal = document.querySelector('.modal.show');
-          if (activeModal) {
-            $(activeModal).one('hidden.bs.modal', callback);
-            return;
+          const isOwnModalOpen = !!(relatedModalId && activeModal && activeModal.id === relatedModalId);
+          const renderOptions = {
+            afterRender: function() { updateWorkbookCardProgress(detail.area_key); },
+          };
+          if (isOwnModalOpen) {
+            renderOptions.reopenModalId = relatedModalId;
+            renderOptions.forceCloseModalId = relatedModalId;
           }
-          callback();
+          const apply = function() {
+            if (data) {
+              handleWorkbookUpdateResponse(data, renderOptions);
+            } else {
+              refreshWorkbookUi(renderOptions);
+            }
+          };
+          if (activeModal && !isOwnModalOpen) {
+            $(activeModal).one('hidden.bs.modal', apply);
+          } else {
+            apply();
+          }
         };
 
         const projectIdForNotifications = workbookTab ? workbookTab.getAttribute('data-project-id') : null;
@@ -8514,9 +8540,7 @@
             delete uploadProcessingState[fieldName];
           }
           if (detail.status !== 'success' || !workbookUpdateUrl) {
-            runAfterAnyOpenModalCloses(function() {
-              refreshWorkbookUi({afterRender: function() { updateWorkbookCardProgress(detail.area_key); }});
-            });
+            applyWorkbookNotification(detail, null);
             return;
           }
           fetch(workbookUpdateUrl, {
@@ -8525,19 +8549,13 @@
           }).then(function(response) {
             return parseWorkbookJsonResponse(response, 'Unable to refresh workbook data');
           }).then(function(data) {
-            runAfterAnyOpenModalCloses(function() {
-              handleWorkbookUpdateResponse(data, {
-                afterRender: function() { updateWorkbookCardProgress(detail.area_key); },
-              });
-            });
+            applyWorkbookNotification(detail, data);
           }).catch(function(error) {
             console.error(error);
             // The task already succeeded server-side (that's why we're
             // here) -- a failed refetch just leaves stale data on screen
             // until the next save/reload, not a data-loss risk.
-            runAfterAnyOpenModalCloses(function() {
-              refreshWorkbookUi({afterRender: function() { updateWorkbookCardProgress(detail.area_key); }});
-            });
+            applyWorkbookNotification(detail, null);
           });
         });
 
