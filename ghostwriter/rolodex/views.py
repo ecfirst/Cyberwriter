@@ -4212,10 +4212,15 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             is_online = online_status.lower() == "online"
 
             if not is_online:
+                # computer_name (above) is already available here -- only
+                # the per-security-product/username/SSID detail columns are
+                # genuinely unavailable for a system that wasn't fully
+                # scanned (e.g. "Unreachable", "AdminRestricted", or any
+                # other non-"Online" status this ingestion produces).
                 rows.append(
                     [
                         online_status,
-                        "N/A",
+                        computer_name,
                         "N/A",
                         "N/A",
                         "N/A",

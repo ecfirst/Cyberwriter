@@ -17,7 +17,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils.encoding import force_str
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 # Ghostwriter Libraries
 from ghostwriter.factories import (
@@ -70,7 +70,11 @@ from ghostwriter.rolodex.workbook_defaults import (
     ensure_data_responses_defaults,
 )
 from ghostwriter.rolodex.templatetags import determine_primary
-from ghostwriter.rolodex.views import _build_ai_review_prompt, _build_ai_review_sections
+from ghostwriter.rolodex.views import (
+    ProjectWorkbookDataUpdate,
+    _build_ai_review_prompt,
+    _build_ai_review_sections,
+)
 
 logging.disable(logging.CRITICAL)
 
@@ -4815,3 +4819,69 @@ class ProjectFileCleanupSignalTests(TestCase):
         self.assertFalse(
             ProjectArtifactFile.objects.filter(pk=artifact_file.pk).exists()
         )
+
+
+class EndpointMetricsPayloadTests(TestCase):
+    """Tests for ProjectWorkbookDataUpdate._build_endpoint_metrics_payload."""
+
+    def test_non_online_systems_show_computer_name_not_na(self):
+        # Regression test: the "not online" branch used to hardcode "N/A"
+        # for the Computer column instead of reusing the already-computed
+        # computer_name, for every status other than exactly "Online" --
+        # confirmed by the user for both "Unreachable" and
+        # "AdminRestricted" (see _build_endpoint_metrics_payload, views.py).
+        computers = [
+            {
+                "Computer": "CORP-LAP-01",
+                "Online_Status": "Online",
+                "securityproducts": [
+                    {
+                        "SecurityProduct": "Defender",
+                        "Version": "1.0",
+                        "Status": "Enabled, UpToDate",
+                        "LastUpdated": "2026-09-01",
+                        "Running": "Yes",
+                        "VTP_Enabled": "Yes",
+                    }
+                ],
+            },
+            {"Computer": "CORP-WKS-02", "Online_Status": "Unreachable"},
+            {"Computer": "CORP-WKS-03", "Online_Status": "AdminRestricted"},
+        ]
+
+        payload = ProjectWorkbookDataUpdate._build_endpoint_metrics_payload(
+            "example.local", computers
+        )
+
+        self.assertEqual(payload["summary"]["total_computers"], 3)
+        self.assertEqual(payload["summary"]["online_count"], 1)
+
+        workbook_bytes = base64.b64decode(payload["xlsx_base64"])
+        workbook = load_workbook(BytesIO(workbook_bytes))
+        sheet = workbook["example.local"]
+
+        # Column order: Online_Status, Computer, Username, SecurityProduct,
+        # Version, Status, LastUpdated, Running, VTP_Enabled, SSID, Method
+        # (domain_headers, views.py). Grouping by the Computer column is
+        # itself part of the regression check -- before the fix, every
+        # non-online row's Computer cell was "N/A", so they'd all collapse
+        # into one bogus group instead of each computer's own row.
+        rows_by_computer: dict = {}
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            rows_by_computer.setdefault(row[1], []).append(row)
+
+        unreachable_row = rows_by_computer.get("CORP-WKS-02", [None])[0]
+        self.assertIsNotNone(unreachable_row)
+        self.assertEqual(unreachable_row[0], "Unreachable")
+        self.assertEqual(unreachable_row[1], "CORP-WKS-02")
+        self.assertTrue(all(cell == "N/A" for cell in unreachable_row[2:]))
+
+        restricted_row = rows_by_computer.get("CORP-WKS-03", [None])[0]
+        self.assertIsNotNone(restricted_row)
+        self.assertEqual(restricted_row[0], "AdminRestricted")
+        self.assertEqual(restricted_row[1], "CORP-WKS-03")
+        self.assertTrue(all(cell == "N/A" for cell in restricted_row[2:]))
+
+        online_row = rows_by_computer.get("CORP-LAP-01", [None])[0]
+        self.assertIsNotNone(online_row)
+        self.assertEqual(online_row[3], "Defender")
