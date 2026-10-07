@@ -347,6 +347,11 @@ class ReportDetailSupplementalsTabTests(SupplementalViewTestsBase):
         self.assertContains(response, "<strong>Nexpose</strong>")
         self.assertContains(response, "Not uploaded", count=2)
         self.assertContains(response, self.upload_uri)
+        self.assertContains(response, 'class="btn btn-primary btn-sm js-supplemental-pick"', count=2)
+        self.assertContains(response, 'id="id_supplemental_file_web"', count=1)
+        self.assertContains(response, 'id="id_supplemental_file_nexpose"', count=1)
+        self.assertNotContains(response, "form-control-file")
+        self.assertContains(response, 'data-default-text="Upload"', count=2)
 
         self.assertTrue(response.context["can_edit"])
         self.assertFalse(response.context["has_supplementals"])
@@ -382,6 +387,8 @@ class ReportDetailSupplementalsTabTests(SupplementalViewTestsBase):
             ),
         )
         self.assertContains(response, "1 warning")
+        self.assertContains(response, 'data-default-text="Replace"', count=1)
+        self.assertContains(response, 'data-default-text="Upload"', count=1)
         self.assertContains(response, "Not uploaded", count=1)
         self.assertTrue(response.context["has_supplementals"])
         self.assertEqual(response.context["supplemental_slots"][1]["file"], supplemental)
