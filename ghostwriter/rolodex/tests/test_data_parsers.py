@@ -3,7 +3,9 @@
 # Standard Libraries
 import base64
 import csv
+import datetime
 import io
+import os
 from typing import Any, Dict, Iterable
 from unittest import mock
 
@@ -39,6 +41,7 @@ from ghostwriter.rolodex.models import (
     DNSRecommendationMapping,
     GeneralCapMapping,
     PasswordCapMapping,
+    ProjectArtifactFile,
     ProjectDataFile,
     VulnerabilityMatrixEntry,
     WebIssueMatrixEntry,
@@ -88,6 +91,25 @@ class NexposeDataParserTests(TestCase):
                 self.assertIsNotNone(group)
                 self.assertEqual(group["total_unique"], 0)
                 self.assertEqual(group["items"], [])
+
+    def _discard_xlsx_temp_path(self, metrics_payload: Dict[str, Any]) -> None:
+        """Pop and clean up the temp workbook path a direct
+        ``_build_nexpose_metrics_payload`` / ``_build_firewall_metrics_payload``
+        call leaves behind.
+
+        Both functions always write the generated workbook to a temp file
+        and hand back its path as ``_xlsx_temp_path`` for
+        ``build_project_artifacts`` to persist as a ``ProjectArtifactFile``
+        (see ``_persist_generated_workbook``) -- tests that call either
+        directly bypass that persistence step, so without this the temp
+        file leaks on disk and, if the payload is later fed into
+        ``rebuild_data_artifacts()`` via a mocked ``build_project_artifacts``,
+        the raw temp path would otherwise get written straight into
+        ``data_artifacts``.
+        """
+        temp_path = metrics_payload.pop("_xlsx_temp_path", None)
+        if temp_path:
+            self.addCleanup(lambda: os.path.exists(temp_path) and os.unlink(temp_path))
 
     def _build_csv_file(self, filename: str, rows: Iterable[Dict[str, str]]) -> SimpleUploadedFile:
         buffer = io.StringIO()
@@ -230,12 +252,20 @@ class NexposeDataParserTests(TestCase):
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
         self.assertIsInstance(artifact, dict)
-        findings = artifact.get("findings")
+        self.assertEqual(artifact.get("schema_version"), 2)
         software = artifact.get("software")
-        self.assertIsInstance(findings, list)
-        self.assertEqual(len(findings), 2)
         self.assertIsInstance(software, list)
         self.assertEqual(len(software), 1)
+
+        # Raw per-finding rows are no longer stored (only the aggregate
+        # under the sibling *_metrics key survives -- see
+        # NEXPOSE_AGGREGATE_SCHEMA_VERSION), so field-level extraction is
+        # verified directly against the parser instead.
+        findings = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml")
+        ).get("findings")
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), 2)
 
         host_finding = findings[0]
         self.assertEqual(host_finding["Asset IP Address"], "192.0.2.10")
@@ -313,9 +343,9 @@ class NexposeDataParserTests(TestCase):
 
         artifact = self.project.data_artifacts.get("internal_nexpose_findings")
         self.assertIsInstance(artifact, dict)
-        findings = artifact.get("findings")
-        self.assertIsInstance(findings, list)
-        self.assertEqual(len(findings), 1)
+        self.assertEqual(artifact.get("schema_version"), 2)
+        metrics = self.project.data_artifacts.get("internal_nexpose_metrics") or {}
+        self.assertEqual((metrics.get("summary") or {}).get("total"), 1)
         self.assertNotIn("external_nexpose_findings", self.project.data_artifacts)
 
     def test_nexpose_xml_generates_metrics_and_xlsx(self):
@@ -382,9 +412,17 @@ class NexposeDataParserTests(TestCase):
         self.assertEqual(summary.get("total"), 2)
         self.assertEqual(summary.get("total_high"), 1)
         self.assertEqual(summary.get("total_med"), 1)
-        workbook_b64 = metrics.get("xlsx_base64")
-        self.assertTrue(workbook_b64)
-        decoded = base64.b64decode(workbook_b64)
+
+        # The workbook is now a real file (ProjectArtifactFile), not a
+        # base64 blob embedded in data_artifacts -- see
+        # NEXPOSE_AGGREGATE_SCHEMA_VERSION / _persist_generated_workbook.
+        xlsx_ref = metrics.get("xlsx")
+        self.assertIsInstance(xlsx_ref, dict)
+        artifact_file = ProjectArtifactFile.objects.get(pk=xlsx_ref["artifact_file_id"])
+        self.addCleanup(lambda: ProjectArtifactFile.objects.filter(pk=artifact_file.pk).delete())
+        self.assertEqual(artifact_file.project_id, self.project.pk)
+        self.assertEqual(artifact_file.artifact_key, "external_nexpose_metrics")
+        decoded = artifact_file.file.read()
         self.assertTrue(decoded.startswith(b"PK"))
 
     def test_nexpose_metrics_calculates_minority_type(self):
@@ -416,6 +454,7 @@ class NexposeDataParserTests(TestCase):
         ]
 
         metrics_payload = _build_nexpose_metrics_payload(findings)
+        self._discard_xlsx_temp_path(metrics_payload)
         summary = metrics_payload.get("summary") or {}
 
         self.assertEqual(metrics_payload.get("majority_type"), "OOD")
@@ -465,6 +504,7 @@ class NexposeDataParserTests(TestCase):
         ]
 
         metrics_payload = _build_nexpose_metrics_payload(findings)
+        self._discard_xlsx_temp_path(metrics_payload)
         summary = metrics_payload.get("summary") or {}
 
         self.assertEqual(metrics_payload.get("majority_type"), "Even")
@@ -504,6 +544,7 @@ class NexposeDataParserTests(TestCase):
         ]
 
         metrics_payload = _build_nexpose_metrics_payload(findings)
+        self._discard_xlsx_temp_path(metrics_payload)
         top_hosts = metrics_payload.get("top_hosts") or []
         top_hosts_by_name = {entry.get("host"): entry for entry in top_hosts}
 
@@ -535,6 +576,7 @@ class NexposeDataParserTests(TestCase):
         ]
 
         metrics_payload = _build_nexpose_metrics_payload(findings)
+        self._discard_xlsx_temp_path(metrics_payload)
 
         self.assertEqual(metrics_payload.get("top_hosts_high"), 1)
         self.assertEqual(metrics_payload.get("top_hosts_med"), 1)
@@ -596,6 +638,7 @@ class NexposeDataParserTests(TestCase):
         self.assertIn("unique_issues", metrics_payload)
         self.assertIn("top_hosts", metrics_payload)
         self.assertIn("majority_type", metrics_payload)
+        self._discard_xlsx_temp_path(metrics_payload)
 
         with mock.patch(
             "ghostwriter.rolodex.models.build_project_artifacts",
@@ -610,8 +653,6 @@ class NexposeDataParserTests(TestCase):
             self.assertNotIn(dropped_key, stored_metrics)
         for kept_key in (
             "summary",
-            "xlsx_base64",
-            "xlsx_filename",
             "host_counts",
             "top_hosts",
             "top_hosts_high",
@@ -621,6 +662,7 @@ class NexposeDataParserTests(TestCase):
             "top_impacts",
             "tab_index_entries",
             "unique_issues",
+            "cap_systems",
             "majority_type",
             "minority_type",
             "majority_unique",
@@ -698,6 +740,11 @@ class NexposeDataParserTests(TestCase):
         metrics_payload = data_parsers._build_firewall_metrics_payload(findings)
         self.assertIn("all_issues", metrics_payload)
         self.assertIn("rule_issues", metrics_payload)
+        # This test mocks build_project_artifacts (below), bypassing the
+        # real _persist_generated_workbook call that would normally consume
+        # "_xlsx_temp_path" -- discard it directly so the generated workbook
+        # doesn't leak on disk.
+        self._discard_xlsx_temp_path(metrics_payload)
 
         with mock.patch(
             "ghostwriter.rolodex.models.build_project_artifacts",
@@ -710,7 +757,7 @@ class NexposeDataParserTests(TestCase):
         self.assertIsInstance(stored_metrics, dict)
         self.assertEqual(
             set(stored_metrics.keys()),
-            {"summary", "devices", "xlsx_base64", "xlsx_filename"},
+            {"summary", "devices", "xlsx", "xlsx_filename"},
         )
         self.assertEqual(stored_metrics.get("devices"), metrics_payload.get("devices"))
 
@@ -798,7 +845,12 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
-        findings = artifact.get("findings")
+        self.assertEqual(artifact.get("schema_version"), 2)
+        # Raw per-finding rows are no longer stored -- verify field-level
+        # extraction against the parser directly instead.
+        findings = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml")
+        ).get("findings")
         self.assertEqual(len(findings), 2)
 
         cipher_entry = next(
@@ -915,7 +967,12 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
-        finding = artifact["findings"][0]
+        self.assertEqual(artifact.get("schema_version"), 2)
+        # Raw per-finding rows are no longer stored -- verify field-level
+        # normalization against the parser directly instead.
+        finding = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml")
+        )["findings"][0]
 
         self.assertEqual(
             finding["Details"],
@@ -991,7 +1048,12 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
-        findings = artifact.get("findings")
+        self.assertEqual(artifact.get("schema_version"), 2)
+        # Raw per-finding rows are no longer stored -- verify title-matching
+        # against the parser directly instead.
+        findings = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml")
+        ).get("findings")
         self.assertEqual(len(findings), 1)
         entry = findings[0]
         self.assertEqual(
@@ -1062,7 +1124,12 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
-        finding = artifact["findings"][0]
+        self.assertEqual(artifact.get("schema_version"), 2)
+        # Raw per-finding rows are no longer stored -- verify CVE
+        # extraction against the parser directly instead.
+        finding = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml")
+        )["findings"][0]
 
         self.assertEqual(
             finding["Vulnerability CVE IDs"],
@@ -1165,7 +1232,14 @@ class NexposeDataParserTests(TestCase):
         self.project.refresh_from_db()
 
         artifact = self.project.data_artifacts.get("external_nexpose_findings")
-        findings = artifact.get("findings")
+        self.assertEqual(artifact.get("schema_version"), 2)
+        # Raw per-finding rows are no longer stored -- verify matrix
+        # application against the parser directly instead, passing the same
+        # matrix rebuild_data_artifacts() loads from the DB internally.
+        findings = data_parsers.parse_nexpose_xml_report(
+            SimpleUploadedFile("reparse.xml", xml_payload.encode("utf-8"), content_type="text/xml"),
+            vulnerability_matrix=data_parsers.load_vulnerability_matrix(),
+        ).get("findings")
         host_entry = next(item for item in findings if item["Vulnerability ID"] == "vuln-host")
         service_entry = next(item for item in findings if item["Vulnerability ID"] == "vuln-service")
 
@@ -1247,6 +1321,106 @@ class NexposeDataParserTests(TestCase):
             "http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2020-0001",
         )
 
+    def test_missing_matrix_entries_survive_an_unrelated_nexpose_upload(self):
+        # Reproduces the reported bug: upload Internal Nexpose XML (with a
+        # missing-matrix-entry-producing finding), then upload External
+        # Nexpose XML -- Internal's missing-matrix notice must survive,
+        # since nothing about Internal changed. Regression test for the
+        # changed_file_ids skip-and-carry-forward block in
+        # build_project_artifacts not carrying forward nexpose_matrix_gaps
+        # (see that function's docstring).
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node>
+      <address>203.0.113.5</address>
+      <status>alive</status>
+      <names>
+        <name>alpha.example.com</name>
+      </names>
+      <tests>
+        <test id='vuln-host' status='vulnerable-version'>
+          <details>Proof</details>
+        </test>
+      </tests>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability>
+      <id>vuln-host</id>
+      <title>Fancy — Vulnerability</title>
+      <severity>7</severity>
+      <description>Node description</description>
+      <solution>Apply patches</solution>
+      <references>
+        <reference>
+          <source>CVE</source>
+          <value>CVE-2020-0001</value>
+        </reference>
+      </references>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+
+        internal_upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "internal_nexpose_xml.xml",
+                xml_payload.encode("utf-8"),
+                content_type="text/xml",
+            ),
+            requirement_label="internal_nexpose_xml.xml",
+            requirement_slug="required_internal_nexpose_xml-xml",
+            requirement_context="internal nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=internal_upload.pk).delete())
+
+        self.project.rebuild_data_artifacts(changed_file_ids={internal_upload.pk})
+        self.project.refresh_from_db()
+
+        gaps = self.project.data_artifacts.get("nexpose_matrix_gaps") or {}
+        self.assertIn("internal_nexpose_findings", gaps.get("missing_by_artifact", {}))
+
+        # Now upload External Nexpose XML -- a real upload flow scopes
+        # changed_file_ids to just the newly-uploaded file's pk (see
+        # process_project_data_upload, rolodex/tasks.py), so Internal's key
+        # is not dirty this round.
+        external_upload = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile(
+                "external_nexpose_xml.xml",
+                b"<?xml version='1.0' encoding='UTF-8'?><NexposeReport version='1.0'><nodes/></NexposeReport>",
+                content_type="text/xml",
+            ),
+            requirement_label="external_nexpose_xml.xml",
+            requirement_slug="required_external_nexpose_xml-xml",
+            requirement_context="external nexpose_xml",
+        )
+        self.addCleanup(lambda: ProjectDataFile.objects.filter(pk=external_upload.pk).delete())
+
+        self.project.rebuild_data_artifacts(changed_file_ids={external_upload.pk})
+        self.project.refresh_from_db()
+
+        gaps = self.project.data_artifacts.get("nexpose_matrix_gaps") or {}
+        self.assertIn(
+            "internal_nexpose_findings",
+            gaps.get("missing_by_artifact", {}),
+            "Internal Nexpose's missing-matrix notice should survive an unrelated External upload",
+        )
+
+        # A save that scopes changed_file_ids to nothing at all (matching
+        # every Remove-button handler and most area-card saves) must not
+        # wipe it either.
+        self.project.rebuild_data_artifacts(changed_file_ids=set())
+        self.project.refresh_from_db()
+        gaps = self.project.data_artifacts.get("nexpose_matrix_gaps") or {}
+        self.assertIn(
+            "internal_nexpose_findings",
+            gaps.get("missing_by_artifact", {}),
+            "Internal Nexpose's missing-matrix notice should survive a changed_file_ids=set() save",
+        )
+
     def test_vulnerability_matrix_enriches_artifacts(self):
         VulnerabilityMatrixEntry.objects.create(
             vulnerability="Zeta Exposure",
@@ -1323,6 +1497,7 @@ class NexposeDataParserTests(TestCase):
         ]
 
         metrics = data_parsers._build_firewall_metrics_payload(findings)
+        self._discard_xlsx_temp_path(metrics)
         summary = metrics.get("summary") or {}
 
         self.assertEqual(summary.get("unique"), 3)
@@ -1608,6 +1783,68 @@ class NexposeDataParserTests(TestCase):
         # The cache must never be persisted into data_artifacts at all --
         # it's process-local now, so there's nothing here to strip.
         self.assertNotIn("_file_parse_cache", self.project.data_artifacts)
+
+    def test_process_local_file_parse_cache_evicts_oldest_entries_past_cap(self):
+        # The parse cache (data_parsers._process_local_file_parse_cache) is a
+        # small bounded LRU, not an unbounded dict: --limit-max-requests
+        # (compose/production/django/start) was raised from 15 to 500, so a
+        # single worker now lives long enough to accumulate cache entries
+        # across many different projects' firewall uploads, and an unbounded
+        # cache would grow without limit across that lifetime. Confirm
+        # inserting past the cap evicts the oldest (least-recently-used)
+        # entry rather than growing forever, and that touching an existing
+        # entry protects it from the next eviction.
+        data_parsers._process_local_file_parse_cache.clear()
+
+        class _FakeStorage:
+            def __init__(self, mtime):
+                self._mtime = mtime
+
+            def get_modified_time(self, _name):
+                return self._mtime
+
+        class _FakeFile:
+            def __init__(self, mtime):
+                self.name = "fake.xml"
+                self.storage = _FakeStorage(mtime)
+
+        class _FakeDataFile:
+            def __init__(self, mtime):
+                self.file = _FakeFile(mtime)
+
+        fixed_mtime = datetime.datetime(2024, 1, 1)
+        cap = data_parsers._FILE_PARSE_CACHE_MAX_ENTRIES
+
+        for i in range(cap + 2):
+            data_parsers._resolve_cached_or_fresh_parse(
+                _FakeDataFile(fixed_mtime), f"cache-key-{i}", lambda i=i: {"value": i}
+            )
+
+        self.assertEqual(len(data_parsers._process_local_file_parse_cache), cap)
+        self.assertNotIn("cache-key-0", data_parsers._process_local_file_parse_cache)
+        self.assertNotIn("cache-key-1", data_parsers._process_local_file_parse_cache)
+        self.assertIn(f"cache-key-{cap + 1}", data_parsers._process_local_file_parse_cache)
+
+        # Touch the oldest surviving entry (a cache hit -- its parse_fn
+        # below must never run) so it becomes most-recently-used, then
+        # insert one more entry to force an eviction.
+        oldest_remaining_key = next(iter(data_parsers._process_local_file_parse_cache))
+        touched_result, was_cached = data_parsers._resolve_cached_or_fresh_parse(
+            _FakeDataFile(fixed_mtime),
+            oldest_remaining_key,
+            lambda: self.fail("cached entry should not be re-parsed"),
+        )
+        self.assertTrue(was_cached)
+        data_parsers._resolve_cached_or_fresh_parse(
+            _FakeDataFile(fixed_mtime), "cache-key-new", lambda: {"value": "new"}
+        )
+
+        self.assertIn(
+            oldest_remaining_key,
+            data_parsers._process_local_file_parse_cache,
+            "recently-touched entry should survive the next eviction",
+        )
+        self.assertEqual(len(data_parsers._process_local_file_parse_cache), cap)
 
     def test_complexity_table_rows_and_devices_are_parsed(self):
         xml_content = b"""

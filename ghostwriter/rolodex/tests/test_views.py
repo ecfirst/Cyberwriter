@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import os
 import shutil
 import re
 import tempfile
@@ -16,7 +17,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils.encoding import force_str
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 # Ghostwriter Libraries
 from ghostwriter.factories import (
@@ -58,6 +59,7 @@ from ghostwriter.rolodex.ip_artifacts import (
     IP_ARTIFACT_TYPE_INTERNAL,
 )
 from ghostwriter.rolodex.models import (
+    ProjectArtifactFile,
     ProjectDataFile,
     VulnerabilityMatrixEntry,
     WebIssueMatrixEntry,
@@ -68,7 +70,11 @@ from ghostwriter.rolodex.workbook_defaults import (
     ensure_data_responses_defaults,
 )
 from ghostwriter.rolodex.templatetags import determine_primary
-from ghostwriter.rolodex.views import _build_ai_review_prompt, _build_ai_review_sections
+from ghostwriter.rolodex.views import (
+    ProjectWorkbookDataUpdate,
+    _build_ai_review_prompt,
+    _build_ai_review_sections,
+)
 
 logging.disable(logging.CRITICAL)
 
@@ -866,11 +872,11 @@ class ProjectListViewTests(TestCase):
         """Test that execution window cells have data-text attribute for locale-independent sorting."""
         response = self.client_mgr.get(self.uri)
         self.assertEqual(response.status_code, 200)
-        
+
         # Check that the response contains data-text attribute with ISO date format
         content = response.content.decode('utf-8')
         self.assertIn('data-text="', content, "data-text attribute should be present in the template")
-        
+
         # Verify each project in the queryset has its start_date in the data-text attribute
         for project in response.context["filter"].qs:
             expected_sort_value = project.start_date.strftime("%Y-%m-%d")
@@ -1578,10 +1584,132 @@ class ProjectNexposeDataDownloadTests(TestCase):
         )
         self.assertTrue(response.content.startswith(b"PK"))
 
+    def test_download_returns_xlsx_from_artifact_file(self):
+        # Current uploads reference a real ProjectArtifactFile (see
+        # NEXPOSE_AGGREGATE_SCHEMA_VERSION / _persist_generated_workbook)
+        # instead of embedding the workbook as base64 in data_artifacts --
+        # xlsx_base64 (test_download_returns_xlsx, above) is exercised only
+        # as a fallback for data written before that change.
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="external_nexpose_metrics",
+            file=SimpleUploadedFile(
+                "nexpose_data.xlsx",
+                b"PK\x03\x04",
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            filename="nexpose_data.xlsx",
+            byte_size=4,
+        )
+        self.addCleanup(lambda: ProjectArtifactFile.objects.filter(pk=artifact_file.pk).delete())
+        self.project.data_artifacts = {
+            "external_nexpose_metrics": {
+                "summary": {"total": 1},
+                "xlsx_filename": "nexpose_data.xlsx",
+                "xlsx": {
+                    "artifact_file_id": artifact_file.pk,
+                    "filename": "nexpose_data.xlsx",
+                    "byte_size": 4,
+                },
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.url + "?artifact=external_nexpose_metrics")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertEqual(b"".join(response.streaming_content), b"PK\x03\x04")
+
     def test_download_redirects_when_missing(self):
         self.project.data_artifacts = {}
         self.project.save(update_fields=["data_artifacts"])
         response = self.client_mgr.get(self.url + "?artifact=external_nexpose_metrics")
+        self.assertEqual(response.status_code, 302)
+
+
+class ProjectFirewallDataDownloadTests(TestCase):
+    """Tests for downloading processed firewall XLSX data."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.manager = UserFactory(password=PASSWORD, role="manager")
+        cls.project = ProjectFactory()
+        cls.url = reverse(
+            "rolodex:project_firewall_data_download", kwargs={"pk": cls.project.pk}
+        )
+
+    def setUp(self):
+        self.client_mgr = Client()
+        self.assertTrue(self.client_mgr.login(username=self.manager.username, password=PASSWORD))
+
+    def test_download_returns_xlsx(self):
+        # Legacy fallback -- data written before the firewall storage
+        # modernization (see _render_firewall_metrics_workbook_to_tempfile,
+        # data_parsers.py) embedded the workbook as base64 directly.
+        workbook_b64 = base64.b64encode(b"PK\x03\x04").decode("ascii")
+        self.project.data_artifacts = {
+            "firewall_metrics": {
+                "summary": {"total": 1},
+                "xlsx_base64": workbook_b64,
+                "xlsx_filename": "firewall_data.xlsx",
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertTrue(response.content.startswith(b"PK"))
+
+    def test_download_returns_xlsx_from_artifact_file(self):
+        # Current uploads reference a real ProjectArtifactFile (see
+        # _persist_generated_workbook) instead of embedding the workbook as
+        # base64 in data_artifacts -- xlsx_base64 (test_download_returns_xlsx,
+        # above) is exercised only as a fallback for data written before
+        # that change.
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="firewall_metrics",
+            file=SimpleUploadedFile(
+                "firewall_data.xlsx",
+                b"PK\x03\x04",
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            filename="firewall_data.xlsx",
+            byte_size=4,
+        )
+        self.addCleanup(lambda: ProjectArtifactFile.objects.filter(pk=artifact_file.pk).delete())
+        self.project.data_artifacts = {
+            "firewall_metrics": {
+                "summary": {"total": 1},
+                "xlsx_filename": "firewall_data.xlsx",
+                "xlsx": {
+                    "artifact_file_id": artifact_file.pk,
+                    "filename": "firewall_data.xlsx",
+                    "byte_size": 4,
+                },
+            }
+        }
+        self.project.save(update_fields=["data_artifacts"])
+
+        response = self.client_mgr.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertEqual(b"".join(response.streaming_content), b"PK\x03\x04")
+
+    def test_download_redirects_when_missing(self):
+        self.project.data_artifacts = {}
+        self.project.save(update_fields=["data_artifacts"])
+        response = self.client_mgr.get(self.url)
         self.assertEqual(response.status_code, 302)
 
 
@@ -1762,6 +1890,163 @@ class ProjectWorkbookDataUpdateViewTests(TestCase):
         self.update_url = reverse(
             "rolodex:project_workbook_data_update", kwargs={"pk": self.project.pk}
         )
+
+    def test_internal_nexpose_xml_upload_is_processed_asynchronously(self):
+        # Nexpose XML uploads hand off to a background task (see
+        # process_project_data_upload, rolodex/tasks.py) instead of parsing
+        # inline -- Q_CLUSTER["sync"] = True (config/settings/test.py) makes
+        # async_task() run that task synchronously here, so its effects are
+        # already visible by the time this request returns.
+        xml_payload = """<?xml version='1.0' encoding='UTF-8'?>
+<NexposeReport version='1.0'>
+  <nodes>
+    <node address='10.0.0.5' status='alive'>
+      <names><name>async-host.example.com</name></names>
+      <tests>
+        <test id='async-issue' status='vulnerable-exploited'>
+          <Paragraph><Paragraph>Async proof</Paragraph></Paragraph>
+        </test>
+      </tests>
+    </node>
+  </nodes>
+  <vulnerabilityDefinitions>
+    <vulnerability id='async-issue' title='Async Issue' severity='8'>
+      <description>Async description</description>
+      <solution>Fix async issue</solution>
+    </vulnerability>
+  </vulnerabilityDefinitions>
+</NexposeReport>
+"""
+        upload = SimpleUploadedFile(
+            "internal_nexpose_xml.xml",
+            xml_payload.encode("utf-8"),
+            content_type="text/xml",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {"internal_nexpose_xml": upload, "area_key": "internal_nexpose"},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertTrue(payload.get("queued"))
+        self.assertEqual(payload.get("upload_field"), "internal_nexpose_xml")
+        self.assertNotIn("workbook_data", payload)
+        self.assertNotIn("data_artifacts", payload)
+
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+
+        artifact = self.project.data_artifacts.get("internal_nexpose_findings")
+        self.assertIsInstance(artifact, dict)
+        self.assertEqual(artifact.get("schema_version"), 2)
+        self.assertNotIn("findings", artifact)
+
+        metrics = self.project.data_artifacts.get("internal_nexpose_metrics")
+        self.assertIsInstance(metrics, dict)
+        self.assertEqual((metrics.get("summary") or {}).get("total"), 1)
+        unique_issues = metrics.get("unique_issues") or []
+        self.assertTrue(unique_issues)
+        self.assertEqual(unique_issues[0].get("count"), 1)
+        self.assertTrue(metrics.get("cap_systems"))
+
+        xlsx_ref = metrics.get("xlsx")
+        self.assertIsInstance(xlsx_ref, dict)
+        self.addCleanup(
+            lambda: ProjectArtifactFile.objects.filter(pk=xlsx_ref["artifact_file_id"]).delete()
+        )
+
+        # The "processing" marker set before the task ran must be cleared
+        # once it completes.
+        self.assertNotIn("processing_uploads", self.project.data_artifacts)
+
+        # get() is the frontend's poll-for-fresh-state endpoint (there's no
+        # synchronous upload response carrying this).
+        get_response = self.client_auth.get(self.update_url)
+        self.assertEqual(get_response.status_code, 200)
+        get_payload = get_response.json()
+        self.assertIn("internal_nexpose_metrics", get_payload.get("data_artifacts", {}))
+
+    def test_firewall_xml_upload_is_processed_asynchronously(self):
+        # Firewall (Nipper) XML uploads now go through the same background
+        # task as Nexpose (see process_project_data_upload, rolodex/tasks.py)
+        # -- mirrors test_internal_nexpose_xml_upload_is_processed_asynchronously
+        # above; Q_CLUSTER["sync"] = True (config/settings/test.py) makes
+        # async_task() run synchronously here too.
+        xml_content = b"""
+<root>
+  <document>
+    <information>
+      <devices><device><name>FW-1</name></device></devices>
+    </information>
+  </document>
+  <section ref=\"SECURITYAUDIT\">
+    <section ref=\"FILTER.TEST\" title=\"Blocked traffic review\">
+      <issuedetails>
+        <devices><device><name>FW-1</name></device></devices>
+        <ratings><rating>High</rating><cvssv2-temporal score=\"8.5\" /></ratings>
+      </issuedetails>
+      <section ref=\"IMPACT\"><text>Service disruption</text></section>
+      <section ref=\"RECOMMENDATION\"><text>Adjust rule set</text></section>
+      <section ref=\"FINDING\"><text>Traffic dropped</text></section>
+    </section>
+  </section>
+</root>
+"""
+        upload = SimpleUploadedFile(
+            "firewall_xml.xml",
+            xml_content,
+            content_type="application/xml",
+        )
+
+        response = self.client_auth.post(
+            self.update_url,
+            {"firewall_xml": upload, "area_key": "firewall"},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertTrue(payload.get("queued"))
+        self.assertEqual(payload.get("upload_field"), "firewall_xml")
+        self.assertNotIn("workbook_data", payload)
+        self.assertNotIn("data_artifacts", payload)
+
+        self.project.refresh_from_db()
+        self.addCleanup(
+            lambda: [
+                (data_file.file.delete(save=False), data_file.delete())
+                for data_file in list(self.project.data_files.all())
+            ]
+        )
+
+        metrics = self.project.data_artifacts.get("firewall_metrics")
+        self.assertIsInstance(metrics, dict)
+        self.assertEqual((metrics.get("summary") or {}).get("total_high"), 1)
+
+        # The workbook is now a real file (ProjectArtifactFile), not a
+        # base64 blob embedded in data_artifacts -- see
+        # _render_firewall_metrics_workbook_to_tempfile / _persist_generated_workbook.
+        xlsx_ref = metrics.get("xlsx")
+        self.assertIsInstance(xlsx_ref, dict)
+        self.assertNotIn("xlsx_base64", metrics)
+        self.addCleanup(
+            lambda: ProjectArtifactFile.objects.filter(pk=xlsx_ref["artifact_file_id"]).delete()
+        )
+
+        # The "processing" marker set before the task ran must be cleared
+        # once it completes.
+        self.assertNotIn("processing_uploads", self.project.data_artifacts)
+
+        get_response = self.client_auth.get(self.update_url)
+        self.assertEqual(get_response.status_code, 200)
+        get_payload = get_response.json()
+        self.assertIn("firewall_metrics", get_payload.get("data_artifacts", {}))
 
     def test_password_responses_and_cap_rebuilt_on_area_save(self):
         self.project.workbook_data = {
@@ -4367,6 +4652,239 @@ class AiReviewAttackPathsParityTests(TestCase):
         self.assertIn("High", prompt)
 
 
+class ProjectFileCleanupSignalTests(TestCase):
+    """Tests that deleting ProjectDataFile/ProjectArtifactFile/Project rows
+    also removes their underlying files from storage (see
+    ghostwriter/rolodex/signals.py's post_delete receivers)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # Real filesystem storage (the default -- see MEDIA_ROOT,
+        # config/settings/base.py), pointed at a throwaway temp dir so
+        # these tests can assert files are actually gone from disk without
+        # touching real media. Matches ProjectWorkbookUploadViewTests above.
+        cls._media_root = tempfile.mkdtemp()
+        cls._override = override_settings(MEDIA_ROOT=cls._media_root)
+        cls._override.enable()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._override.disable()
+        shutil.rmtree(cls._media_root, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        self.project = ProjectFactory()
+        self.user = MgrFactory(password=PASSWORD)
+        self.client_auth = Client()
+        self.assertTrue(self.client_auth.login(username=self.user.username, password=PASSWORD))
+        self.detail_url = reverse("rolodex:project_detail", kwargs={"pk": self.project.pk})
+
+    def test_deleting_project_data_file_removes_file_from_storage(self):
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("evidence.txt", b"content"),
+            requirement_label="evidence.txt",
+        )
+        file_path = data_file.file.path
+        self.assertTrue(os.path.exists(file_path))
+
+        data_file.delete()
+
+        self.assertFalse(os.path.exists(file_path))
+
+    def test_deleting_project_artifact_file_removes_file_from_storage(self):
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="internal_nexpose_metrics",
+            file=SimpleUploadedFile("internal_nexpose.xlsx", b"PK\x03\x04"),
+            filename="internal_nexpose.xlsx",
+            byte_size=4,
+        )
+        file_path = artifact_file.file.path
+        self.assertTrue(os.path.exists(file_path))
+
+        artifact_file.delete()
+
+        self.assertFalse(os.path.exists(file_path))
+
+    def test_queryset_delete_removes_files_from_storage(self):
+        # Mirrors remove_sql / DNS domain removal / a dns_csv re-upload
+        # (views.py) -- all remove ProjectDataFile rows via a queryset
+        # .delete() rather than an instance .delete(), which still emits
+        # post_delete per row (documented Django behavior), not just a bulk
+        # SQL DELETE with no signals.
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("sql_report.xlsx", b"content"),
+            requirement_label="sql_report.xlsx",
+            requirement_slug="required_sql-report-xlsx",
+        )
+        file_path = data_file.file.path
+        self.assertTrue(os.path.exists(file_path))
+
+        self.project.data_files.filter(requirement_slug="required_sql-report-xlsx").delete()
+
+        self.assertFalse(os.path.exists(file_path))
+
+    def test_deleting_project_removes_workbook_and_related_files(self):
+        self.project.workbook_file = SimpleUploadedFile("workbook.json", b"{}")
+        self.project.save(update_fields=["workbook_file"])
+        workbook_path = self.project.workbook_file.path
+
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("firewall_xml.xml", b"<root/>"),
+            requirement_label="firewall_xml.xml",
+        )
+        data_file_path = data_file.file.path
+
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="firewall_metrics",
+            file=SimpleUploadedFile("firewall_data.xlsx", b"PK\x03\x04"),
+            filename="firewall_data.xlsx",
+            byte_size=4,
+        )
+        artifact_file_path = artifact_file.file.path
+
+        for path in (workbook_path, data_file_path, artifact_file_path):
+            self.assertTrue(os.path.exists(path))
+
+        self.project.delete()
+
+        for path in (workbook_path, data_file_path, artifact_file_path):
+            self.assertFalse(os.path.exists(path))
+
+    def test_deleting_supplemental_file_also_removes_its_artifact_file(self):
+        # ProjectDataFileDelete (the generic single-file "Supplementals"
+        # delete view) only sees the ProjectDataFile being removed, not
+        # which upload branch created it -- see
+        # _XML_REQUIREMENT_LABEL_TO_ARTIFACT_KEY (views.py). Deleting a
+        # Nexpose/firewall XML through it must still clean up that file's
+        # generated workbook.
+        data_file = ProjectDataFile.objects.create(
+            project=self.project,
+            file=SimpleUploadedFile("firewall_xml.xml", b"<root/>"),
+            requirement_label="firewall_xml.xml",
+        )
+        data_file_path = data_file.file.path
+
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="firewall_metrics",
+            file=SimpleUploadedFile("firewall_data.xlsx", b"PK\x03\x04"),
+            filename="firewall_data.xlsx",
+            byte_size=4,
+        )
+        artifact_file_path = artifact_file.file.path
+
+        self.assertTrue(os.path.exists(data_file_path))
+        self.assertTrue(os.path.exists(artifact_file_path))
+
+        delete_url = reverse("rolodex:project_data_file_delete", kwargs={"pk": data_file.pk})
+        response = self.client_auth.post(delete_url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(os.path.exists(data_file_path))
+        self.assertFalse(os.path.exists(artifact_file_path))
+        self.assertFalse(
+            ProjectArtifactFile.objects.filter(pk=artifact_file.pk).exists()
+        )
+
+    def test_clear_workbook_removes_artifact_files(self):
+        # clear_workbook (ProjectWorkbookUpload.post) deletes every
+        # ProjectDataFile but, before this fix, never touched
+        # project.artifact_files -- a generated Nexpose/firewall workbook
+        # would survive with nothing left pointing at it.
+        self.project.workbook_file = SimpleUploadedFile("workbook.json", b"{}")
+        self.project.save(update_fields=["workbook_file"])
+
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=self.project,
+            artifact_key="internal_nexpose_metrics",
+            file=SimpleUploadedFile("internal_nexpose.xlsx", b"PK\x03\x04"),
+            filename="internal_nexpose.xlsx",
+            byte_size=4,
+        )
+        artifact_file_path = artifact_file.file.path
+        self.assertTrue(os.path.exists(artifact_file_path))
+
+        upload_url = reverse("rolodex:project_workbook", kwargs={"pk": self.project.pk})
+        response = self.client_auth.post(upload_url, {"clear_workbook": "1"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(os.path.exists(artifact_file_path))
+        self.assertFalse(
+            ProjectArtifactFile.objects.filter(pk=artifact_file.pk).exists()
+        )
+
+
+class EndpointMetricsPayloadTests(TestCase):
+    """Tests for ProjectWorkbookDataUpdate._build_endpoint_metrics_payload."""
+
+    def test_non_online_systems_show_computer_name_not_na(self):
+        # Regression test: the "not online" branch used to hardcode "N/A"
+        # for the Computer column instead of reusing the already-computed
+        # computer_name, for every status other than exactly "Online" --
+        # confirmed by the user for both "Unreachable" and
+        # "AdminRestricted" (see _build_endpoint_metrics_payload, views.py).
+        computers = [
+            {
+                "Computer": "CORP-LAP-01",
+                "Online_Status": "Online",
+                "securityproducts": [
+                    {
+                        "SecurityProduct": "Defender",
+                        "Version": "1.0",
+                        "Status": "Enabled, UpToDate",
+                        "LastUpdated": "2026-09-01",
+                        "Running": "Yes",
+                        "VTP_Enabled": "Yes",
+                    }
+                ],
+            },
+            {"Computer": "CORP-WKS-02", "Online_Status": "Unreachable"},
+            {"Computer": "CORP-WKS-03", "Online_Status": "AdminRestricted"},
+        ]
+
+        payload = ProjectWorkbookDataUpdate._build_endpoint_metrics_payload(
+            "example.local", computers
+        )
+
+        self.assertEqual(payload["summary"]["total_computers"], 3)
+        self.assertEqual(payload["summary"]["online_count"], 1)
+
+        workbook_bytes = base64.b64decode(payload["xlsx_base64"])
+        workbook = load_workbook(BytesIO(workbook_bytes))
+        sheet = workbook["example.local"]
+
+        # Column order: Online_Status, Computer, Username, SecurityProduct,
+        # Version, Status, LastUpdated, Running, VTP_Enabled, SSID, Method
+        # (domain_headers, views.py). Grouping by the Computer column is
+        # itself part of the regression check -- before the fix, every
+        # non-online row's Computer cell was "N/A", so they'd all collapse
+        # into one bogus group instead of each computer's own row.
+        rows_by_computer: dict = {}
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            rows_by_computer.setdefault(row[1], []).append(row)
+
+        unreachable_row = rows_by_computer.get("CORP-WKS-02", [None])[0]
+        self.assertIsNotNone(unreachable_row)
+        self.assertEqual(unreachable_row[0], "Unreachable")
+        self.assertEqual(unreachable_row[1], "CORP-WKS-02")
+        self.assertTrue(all(cell == "N/A" for cell in unreachable_row[2:]))
+
+        restricted_row = rows_by_computer.get("CORP-WKS-03", [None])[0]
+        self.assertIsNotNone(restricted_row)
+        self.assertEqual(restricted_row[0], "AdminRestricted")
+        self.assertEqual(restricted_row[1], "CORP-WKS-03")
+        self.assertTrue(all(cell == "N/A" for cell in restricted_row[2:]))
+
+        online_row = rows_by_computer.get("CORP-LAP-01", [None])[0]
+        self.assertIsNotNone(online_row)
+        self.assertEqual(online_row[3], "Defender")
 class AiReviewPasswordNistGuidanceTests(TestCase):
     """Confirm the Password AI Review prompt reflects current NIST guidance."""
 

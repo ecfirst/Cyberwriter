@@ -4,13 +4,53 @@
 import datetime
 import logging
 from datetime import date
+from typing import Any, Dict
+
+# 3rd Party Libraries
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 
 # Ghostwriter Libraries
 from ghostwriter.modules.notifications_slack import SlackNotification
-from ghostwriter.rolodex.models import Project
+from ghostwriter.rolodex.models import Project, ProjectDataFile
 
 # Using __name__ resolves to ghostwriter.rolodex.tasks
 logger = logging.getLogger(__name__)
+
+channel_layer = get_channel_layer()
+
+# Every upload field process_project_data_upload (below) can be handed --
+# each of ProjectWorkbookDataUpdate.post's async_upload_fields, rolodex/views.py
+# -- mapped to the notification label, the data_artifacts key holding its
+# metrics/summary once processed, and a human-readable name for the
+# "doesn't look like a valid X" warning message. Kept here rather than
+# reusing data_parsers.py's Nexpose-specific NEXPOSE_METRICS_KEY_MAP/
+# NEXPOSE_XML_ARTIFACT_MAP chain (which only ever covered the three Nexpose
+# fields, and silently resolved to a useless empty label/metrics_key for
+# any other upload_field) since a flat, direct mapping covers every field
+# this task handles, Nexpose or not, with no string-munging indirection.
+_UPLOAD_FIELD_METADATA: Dict[str, Dict[str, str]] = {
+    "external_nexpose_xml": {
+        "label": "External Nexpose",
+        "metrics_key": "external_nexpose_metrics",
+        "file_type": "Nexpose XML",
+    },
+    "internal_nexpose_xml": {
+        "label": "Internal Nexpose",
+        "metrics_key": "internal_nexpose_metrics",
+        "file_type": "Nexpose XML",
+    },
+    "iot_nexpose_xml": {
+        "label": "IoT/IoMT Nexpose",
+        "metrics_key": "iot_iomt_nexpose_metrics",
+        "file_type": "Nexpose XML",
+    },
+    "firewall_xml": {
+        "label": "Firewall Data",
+        "metrics_key": "firewall_metrics",
+        "file_type": "Nipper XML",
+    },
+}
 
 
 def check_project_freshness():
@@ -34,3 +74,176 @@ def check_project_freshness():
                         "Attempt to send a Slack notification returned an error: %s",
                         err,
                     )
+
+
+def _notify_user(username: str, *, title: str, message: str, level: str, **extra) -> None:
+    """Push a toast to every one of ``username``'s open tabs over WebSockets.
+
+    ``username`` must be the hex-encoded form (``User.get_clean_username()``)
+    -- that's what ``UserConsumer.connect()`` (home/consumers.py) groups on,
+    and what ``base_generic.html`` subscribes to as ``ws_user``. Any keys in
+    ``extra`` ride along in the message payload; the generic toast handler
+    in base templates reads only message/level/title and ignores the rest,
+    so project_detail.html can key off e.g. "event"/"project_id" without
+    touching that shared handler.
+    """
+    async_to_sync(channel_layer.group_send)(
+        "notify_{}".format(username),
+        {
+            "type": "message",
+            "message": {"message": message, "level": level, "title": title, **extra},
+        },
+    )
+
+
+def process_project_data_upload(
+    project_id: int,
+    data_file_id: int,
+    upload_field: str,
+    area_key: str,
+    username: str,
+) -> Dict[str, Any]:
+    """Parse an uploaded project data file and rebuild the project's derived artifacts.
+
+    Runs off the request/response cycle (queued via ``async_task`` from
+    ``ProjectWorkbookDataUpdate.post``, rolodex/views.py) for upload fields
+    whose files can run large enough that parsing them synchronously risks
+    nginx's ``proxy_read_timeout`` and uvicorn's worker healthcheck killing
+    the request mid-response: originally just the three Nexpose XML fields
+    (see NEXPOSE_AGGREGATE_SCHEMA_VERSION in data_parsers.py for the storage
+    side of that same problem), now also firewall_xml (a Nipper XML export,
+    confirmed an 8-second parse for a 69MB file). Named generically, not
+    "nexpose"-specific, since burp XML uploads share the same risk profile
+    and could reuse this task later too.
+
+    Always ends by notifying ``username`` over WebSockets (success, empty
+    result, or failure) -- there's no synchronous HTTP response left to
+    report any of that through.
+    """
+
+    metadata = _UPLOAD_FIELD_METADATA.get(upload_field, {})
+    label = metadata.get("label") or upload_field.replace("_", " ").title()
+
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        logger.error("Project ID=%s no longer exists; dropping queued upload for %s", project_id, upload_field)
+        return {"status": "error", "reason": "project_missing"}
+
+    try:
+        data_file = ProjectDataFile.objects.get(pk=data_file_id, project=project)
+    except ProjectDataFile.DoesNotExist:
+        logger.error(
+            "ProjectDataFile ID=%s no longer exists for project ID=%s; dropping queued upload for %s",
+            data_file_id,
+            project_id,
+            upload_field,
+        )
+        _notify_user(
+            username,
+            title=f"{label} Upload Failed",
+            message="The uploaded file could not be found. Please try uploading it again.",
+            level="error",
+            event="workbook_upload_complete",
+            project_id=project_id,
+            upload_field=upload_field,
+            area_key=area_key,
+            status="error",
+        )
+        return {"status": "error", "reason": "data_file_missing"}
+
+    try:
+        # project was fetched when this task started, which for a large
+        # scan can be a while before we get here (queue backlog, then the
+        # parse itself) -- refresh first so rebuild_data_artifacts()'s
+        # closing save() (models.py, self.save(update_fields=["data_artifacts",
+        # "data_responses", "cap", "workbook_data"])) doesn't clobber a
+        # concurrent edit made through the web UI while this task was
+        # queued/running with a stale in-memory copy of those four fields.
+        # This narrows the race window to the duration of the rebuild call
+        # itself -- the same exposure any other synchronous save already
+        # has -- rather than eliminating it outright (a save landing in the
+        # middle of the rebuild call can still be lost; closing that
+        # completely would need row-level locking around the whole
+        # read-modify-write).
+        project.refresh_from_db()
+        project.rebuild_data_artifacts(changed_file_ids={data_file.pk})
+        project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
+    except Exception:
+        logger.exception(
+            "Failed to process uploaded data file for project ID=%s, upload_field=%s",
+            project_id,
+            upload_field,
+        )
+        _notify_user(
+            username,
+            title=f"{label} Upload Failed",
+            message=f"Something went wrong while processing {data_file.filename}. Check the server logs for details.",
+            level="error",
+            event="workbook_upload_complete",
+            project_id=project_id,
+            upload_field=upload_field,
+            area_key=area_key,
+            status="error",
+        )
+        return {"status": "error", "reason": "processing_failed"}
+    finally:
+        # Clear the "Processing..." marker regardless of outcome, so a
+        # failure doesn't leave the upload card stuck.
+        artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+        processing = artifacts.get("processing_uploads")
+        if isinstance(processing, dict) and upload_field in processing:
+            artifacts = dict(artifacts)
+            processing = dict(processing)
+            processing.pop(upload_field, None)
+            if processing:
+                artifacts["processing_uploads"] = processing
+            else:
+                artifacts.pop("processing_uploads", None)
+            project.data_artifacts = artifacts
+            project.save(update_fields=["data_artifacts"])
+
+    metrics_key = metadata.get("metrics_key")
+    artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+    metrics_payload = artifacts.get(metrics_key) if metrics_key else None
+    total_findings = 0
+    if isinstance(metrics_payload, dict):
+        summary = metrics_payload.get("summary")
+        if isinstance(summary, dict):
+            total_findings = summary.get("total") or 0
+
+    if total_findings:
+        _notify_user(
+            username,
+            title=f"{label} Processed",
+            message=f"{data_file.filename} processed successfully ({total_findings} findings).",
+            level="success",
+            event="workbook_upload_complete",
+            project_id=project_id,
+            upload_field=upload_field,
+            area_key=area_key,
+            status="success",
+        )
+    else:
+        # The parsers (parse_nexpose_xml_report / parse_nipper_firewall_report,
+        # data_parsers.py) swallow malformed XML and simply return no
+        # findings -- this is the only place that can surface that to the
+        # user, since there's no synchronous response left to return a 400
+        # through.
+        file_type = metadata.get("file_type", "file")
+        _notify_user(
+            username,
+            title=f"{label} Upload Complete",
+            message=(
+                f"No findings could be read from {data_file.filename}. "
+                f"It may not be a valid {file_type} export."
+            ),
+            level="warning",
+            event="workbook_upload_complete",
+            project_id=project_id,
+            upload_field=upload_field,
+            area_key=area_key,
+            status="success",
+        )
+
+    return {"status": "success", "total_findings": total_findings}

@@ -9,6 +9,7 @@ import io
 import logging
 import os
 import re
+import tempfile
 import threading
 import unicodedata
 from base64 import b64decode
@@ -2591,9 +2592,14 @@ def _build_firewall_metrics_payload(
         "xlsx_filename": "firewall_data.xlsx",
     }
 
-    workbook_bytes = _render_firewall_metrics_workbook(metrics_payload)
-    if workbook_bytes:
-        metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
+    workbook_temp_path = _render_firewall_metrics_workbook_to_tempfile(metrics_payload)
+    if workbook_temp_path:
+        # Handed off to build_project_artifacts (which has the `project`
+        # context this pure function doesn't) to persist as a
+        # ProjectArtifactFile and replace with an "xlsx" reference -- never
+        # itself written to data_artifacts/Postgres. See
+        # _persist_generated_workbook.
+        metrics_payload["_xlsx_temp_path"] = workbook_temp_path
 
     # Deliberately return the full payload, not just what a *stored*
     # data_artifacts needs -- Project.rebuild_data_artifacts() (models.py)
@@ -2602,7 +2608,7 @@ def _build_firewall_metrics_payload(
     # build_project_artifacts() returns it. The fields that are genuinely
     # transient-only (all_issues/high_issues/med_issues/low_issues/
     # rule_issues/config_issues/complexity_issues/vuln_issues/top_impacts --
-    # needed only to build the xlsx_base64 workbook above) get dropped in
+    # needed only to build the workbook above) get dropped in
     # rebuild_data_artifacts() itself, after it has finished reading
     # everything it needs and just before the result is persisted.
     return metrics_payload
@@ -3908,6 +3914,7 @@ def _normalize_nexpose_metrics_payload(metrics: Any) -> Dict[str, Any]:
         "top_impacts",
         "tab_index_entries",
         "unique_issues",
+        "cap_systems",
         "majority_unique",
         "majority_subset",
         "all_issues",
@@ -3927,6 +3934,13 @@ def _normalize_nexpose_metrics_payload(metrics: Any) -> Dict[str, Any]:
         normalized.get("xlsx_filename")
         if isinstance(normalized.get("xlsx_filename"), str)
         else None
+    )
+    # "xlsx" (a small {"artifact_file_id", ...} reference to a
+    # ProjectArtifactFile) is the current on-disk-backed form; "xlsx_base64"
+    # is kept only as a fallback for data written before
+    # NEXPOSE_AGGREGATE_SCHEMA_VERSION -- see ProjectNexposeDataDownload.
+    normalized["xlsx"] = (
+        normalized.get("xlsx") if isinstance(normalized.get("xlsx"), dict) else None
     )
     normalized["xlsx_base64"] = (
         normalized.get("xlsx_base64") if isinstance(normalized.get("xlsx_base64"), str) else None
@@ -4133,12 +4147,25 @@ def parse_nexpose_vulnerability_report(
     return summaries
 
 
-def _build_nexpose_vulnerability_summary_from_findings(
-    findings: Any,
+def _build_nexpose_vulnerability_summary_from_unique_issues(
+    unique_issues: Any,
     *,
     vulnerability_matrix: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> Dict[str, _SeverityGroup]:
-    """Summarize Nexpose findings into vulnerability groupings."""
+    """Summarize Nexpose findings into vulnerability groupings.
+
+    Sources from ``unique_issues`` (already deduped by (severity, title) and
+    carrying a ``count`` -- see ``_build_nexpose_metrics_payload``) instead
+    of the raw per-finding list, so this never needs the (potentially
+    hundreds-of-MB) raw findings that are no longer stored. One accepted
+    behavior difference: the raw-findings version could split a title into
+    two (title, impact) buckets when some instances were unconfirmed ("may")
+    vs confirmed ("can") -- see ``_adjust_matrix_impact`` -- since a matrix
+    threat template's impact text differs by that one word based on each
+    instance's own status. This version keeps first-occurrence impact text
+    per title (matching how ``unique_issues`` itself already worked) and
+    counts all instances of that title together.
+    """
 
     grouped: Dict[str, Counter] = {
         "High": Counter(),
@@ -4146,22 +4173,19 @@ def _build_nexpose_vulnerability_summary_from_findings(
         "Low": Counter(),
     }
 
-    if isinstance(findings, list):
-        for entry in findings:
+    if isinstance(unique_issues, list):
+        for entry in unique_issues:
             if not isinstance(entry, dict):
                 continue
-            severity_value = _parse_severity_level(
-                entry.get("Vulnerability Severity Level")
-            )
-            severity_bucket = _categorize_severity(severity_value)
+            severity_bucket = _categorize_severity(entry.get("severity"))
             if not severity_bucket:
                 continue
 
-            title = str(entry.get("Vulnerability Title") or "").strip()
-            impact = str(entry.get("Impact") or "").strip()
+            title = str(entry.get("issue") or "").strip()
+            impact = str(entry.get("impact") or "").strip()
             if not title and not impact:
                 continue
-            grouped[severity_bucket][(title, impact)] += 1
+            grouped[severity_bucket][(title, impact)] += _coerce_int(entry.get("count")) or 1
 
     severity_map = {
         "High": "high",
@@ -4364,6 +4388,14 @@ NEXPOSE_FILENAME_KEY_MAP = {
     "iot_iomt_nexpose_findings": "iot_iomt_nexpose_file_name",
 }
 
+# Bumped when the shape stored under a `NEXPOSE_XML_ARTIFACT_MAP` findings
+# key changes -- v1 was `{"findings": [...], "software": [...]}` (raw
+# per-finding rows, unbounded with scan size); v2 drops `findings` (moved
+# into the already-small, already-bounded `unique_issues`/`cap_systems`
+# structures under the matching metrics key instead -- see
+# _build_nexpose_metrics_payload) and keeps only `software`.
+NEXPOSE_AGGREGATE_SCHEMA_VERSION = 2
+
 NEXPOSE_METRICS_KEY_MAP = {
     "external_nexpose_findings": "external_nexpose_metrics",
     "internal_nexpose_findings": "internal_nexpose_metrics",
@@ -4449,6 +4481,32 @@ def _format_port_display(port_value: str, protocol: str) -> str:
     return port_text
 
 
+def _format_system_label(finding: Dict[str, Any]) -> str:
+    """Return the display label for the asset that produced ``finding``.
+
+    Shared by ``_build_nexpose_metrics_payload`` (building ``cap_systems``,
+    below) and ``Project.rebuild_data_artifacts`` (models.py, reading it back
+    out via ``_build_nexpose_cap_entries_from_metrics``) -- moved here (from
+    a nested function in models.py) so it has one definition instead of two
+    that could drift apart.
+    """
+
+    ip_address = (finding.get("Asset IP Address") or "").strip()
+    hostnames = (finding.get("Hostname(s)") or "").strip()
+    if ip_address:
+        label = ip_address
+        if hostnames:
+            label = f"{label} [{hostnames}]"
+    elif hostnames:
+        label = hostnames
+    else:
+        return ""
+    status_code = (finding.get("Vulnerability Test Result Code") or "").strip().upper()
+    if status_code == "VP":
+        label = f"{label} (P)"
+    return label
+
+
 def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Build summary metrics, top lists, and workbook bytes for Nexpose findings."""
 
@@ -4473,6 +4531,15 @@ def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, 
     high_issues: List[Dict[str, Any]] = []
     med_issues: List[Dict[str, Any]] = []
     low_issues: List[Dict[str, Any]] = []
+
+    # Deduped, ordered system labels per unique vulnerability title -- built
+    # in this same pass over `findings` so callers (Project.rebuild_data_artifacts's
+    # _build_nexpose_cap_entries_from_metrics) never need the raw findings
+    # list themselves, only this already-small-and-bounded summary. Keyed by
+    # title only (not severity+title like `unique_entries`), matching how
+    # that caller already groups CAP entries via _normalize_issue_key(title).
+    cap_systems: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+    cap_systems_seen: Dict[str, Set[str]] = {}
 
     for entry in findings or []:
         ip_address = (entry.get("Asset IP Address") or "").strip()
@@ -4519,7 +4586,20 @@ def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, 
                 "remediation": solution or remediation,
                 "category": category,
                 "severity": severity,
+                "count": 0,
             }
+        unique_entries[unique_key]["count"] += 1
+
+        cap_key = title.lower()
+        cap_entry = cap_systems.get(cap_key)
+        if cap_entry is None:
+            cap_entry = {"key": cap_key, "title": title, "systems": []}
+            cap_systems[cap_key] = cap_entry
+            cap_systems_seen[cap_key] = set()
+        system_label = _format_system_label(entry)
+        if system_label and system_label not in cap_systems_seen[cap_key]:
+            cap_systems_seen[cap_key].add(system_label)
+            cap_entry["systems"].append(system_label)
 
         bucket = host_counters.setdefault(host_identifier, {"high": 0, "med": 0, "low": 0})
         if severity >= 8:
@@ -4634,6 +4714,7 @@ def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, 
         "top_impacts": top_impacts,
         "tab_index_entries": NEXPOSE_TAB_INDEX_ENTRIES,
         "unique_issues": unique_values,
+        "cap_systems": list(cap_systems.values()),
         "majority_type": majority_type,
         "minority_type": minority_type,
         "majority_unique": majority_unique,
@@ -4645,9 +4726,14 @@ def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, 
         "xlsx_filename": "nexpose_data.xlsx",
     }
 
-    workbook_bytes = _render_nexpose_metrics_workbook(metrics_payload)
-    if workbook_bytes:
-        metrics_payload["xlsx_base64"] = base64.b64encode(workbook_bytes).decode("ascii")
+    workbook_temp_path = _render_nexpose_metrics_workbook_to_tempfile(metrics_payload)
+    if workbook_temp_path:
+        # Handed off to build_project_artifacts (which has the `project`/
+        # `artifact_key` context this pure function doesn't) to persist as a
+        # ProjectArtifactFile and replace with an "xlsx" reference -- never
+        # itself written to data_artifacts/Postgres. See
+        # _persist_generated_workbook.
+        metrics_payload["_xlsx_temp_path"] = workbook_temp_path
 
     # Deliberately return the full payload here, not just what a *stored*
     # data_artifacts needs -- Project.rebuild_data_artifacts() (models.py)
@@ -4665,220 +4751,265 @@ def _build_nexpose_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, 
     return metrics_payload
 
 
-def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
-    """Create an XLSX workbook for the processed Nexpose metrics."""
+def _render_nexpose_metrics_workbook_to_tempfile(metrics: Dict[str, Any]) -> Optional[str]:
+    """Write an XLSX workbook for the processed Nexpose metrics to a temp file.
 
-    buffer = io.BytesIO()
-    workbook = Workbook(buffer, {"in_memory": True})
+    Uses xlsxwriter's ``constant_memory`` mode: a large scan can produce
+    hundreds of thousands of rows across the four issue sheets, and
+    ``in_memory`` mode holds the entire generated workbook (its XML, zipped)
+    in RAM on top of the already-large ``metrics`` payload -- the same class
+    of bloat that made storing the result as a base64 JSON string
+    (``xlsx_base64``) unworkable for a large scan (see
+    NEXPOSE_AGGREGATE_SCHEMA_VERSION). ``constant_memory`` instead flushes
+    and frees each row to the output file as soon as writing moves past it.
 
-    def header_format(color: str):
-        fmt = workbook.add_format(
-            {
-                "bold": True,
-                "border": 1,
-                "font_color": "#000000",
-                "bg_color": color,
-                "pattern": 1,
-            }
-        )
-        return fmt
+    That imposes one constraint every worksheet's writes must satisfy: they
+    must be strictly row-major (never write to a row already passed). Every
+    sheet here already is, with one exception -- the Executive Summary sheet
+    places several small tables at different (row, col) offsets on the same
+    sheet (a host list at col 0 that can run to `len(host_counts)` rows,
+    plus small fixed-size summary tables at col 5 row 0, col 5 row 3, col 10
+    row 0, col 10 row 16). Those writes are buffered here (`exec_cell_buffer`
+    is small -- bounded by host/summary row counts, not finding count) and
+    flushed once, sorted into row-major order, instead of being written
+    directly as each table is built.
 
-    summary_header_cache: Dict[str, Any] = {}
+    Returns the temp file path on success (caller is responsible for moving
+    it into permanent storage and deleting it -- see
+    _persist_generated_workbook), or ``None`` if nothing was written.
+    """
 
-    def get_header(color: str):
-        if color not in summary_header_cache:
-            summary_header_cache[color] = header_format(color)
-        return summary_header_cache[color]
+    fd, output_path = tempfile.mkstemp(suffix=".xlsx", prefix="nexpose_metrics_")
+    os.close(fd)
+    workbook = Workbook(output_path, {"constant_memory": True})
 
-    summary_data_fmt = workbook.add_format({"border": 1, "font_color": "#000000"})
-    summary_band_fmt = workbook.add_format({"border": 1, "bg_color": "#99CCFF", "font_color": "#000000"})
-    text_data_fmt = workbook.add_format({"border": 1, "text_wrap": True, "font_color": "#000000"})
-    text_band_fmt = workbook.add_format({"border": 1, "text_wrap": True, "bg_color": "#99CCFF", "font_color": "#000000"})
+    try:
+        def header_format(color: str):
+            fmt = workbook.add_format(
+                {
+                    "bold": True,
+                    "border": 1,
+                    "font_color": "#000000",
+                    "bg_color": color,
+                    "pattern": 1,
+                }
+            )
+            return fmt
 
-    def _calc_text_width(value: Any) -> int:
-        if value is None:
-            return 0
-        text = str(value)
-        lines = text.splitlines() or [text]
-        return max(len(line) for line in lines)
+        summary_header_cache: Dict[str, Any] = {}
 
-    def write_table(
-        worksheet,
-        *,
-        start_row: int,
-        start_col: int,
-        headers: List[str],
-        rows: List[List[Any]],
-        header_colors: Optional[List[str]] = None,
-        data_format=text_data_fmt,
-        band_format=text_band_fmt,
-        width_tracker: Optional[Dict[int, int]] = None,
-    ) -> None:
-        for idx, header in enumerate(headers):
-            color = (header_colors[idx] if header_colors and idx < len(header_colors) else (header_colors[0] if header_colors else "#0066CC"))
-            worksheet.write(start_row, start_col + idx, header, get_header(color))
-            if width_tracker is not None:
-                column_index = start_col + idx
-                width_tracker[column_index] = max(
-                    width_tracker.get(column_index, 0),
-                    _calc_text_width(header),
-                )
-        for row_index, row in enumerate(rows):
-            fmt = band_format if row_index % 2 == 1 else data_format
-            for col_index, value in enumerate(row):
-                worksheet.write(start_row + 1 + row_index, start_col + col_index, value, fmt)
-                if width_tracker is not None:
-                    column_index = start_col + col_index
-                    width_tracker[column_index] = max(
-                        width_tracker.get(column_index, 0),
-                        _calc_text_width(value),
-                    )
+        def get_header(color: str):
+            if color not in summary_header_cache:
+                summary_header_cache[color] = header_format(color)
+            return summary_header_cache[color]
 
-    def apply_autofit(worksheet, width_tracker: Dict[int, int], columns: Iterable[int]) -> None:
-        for column in columns:
-            width = width_tracker.get(column, 10)
-            worksheet.set_column(column, column, min(width + 2, 60))
+        summary_data_fmt = workbook.add_format({"border": 1, "font_color": "#000000"})
+        summary_band_fmt = workbook.add_format({"border": 1, "bg_color": "#99CCFF", "font_color": "#000000"})
+        text_data_fmt = workbook.add_format({"border": 1, "text_wrap": True, "font_color": "#000000"})
+        text_band_fmt = workbook.add_format({"border": 1, "text_wrap": True, "bg_color": "#99CCFF", "font_color": "#000000"})
 
-    exec_ws = workbook.add_worksheet("Executive Summary")
-    exec_width_tracker: Dict[int, int] = {}
+        def _calc_text_width(value: Any) -> int:
+            if value is None:
+                return 0
+            text = str(value)
+            lines = text.splitlines() or [text]
+            return max(len(line) for line in lines)
 
-    host_rows = [
-        [row["host"], row["high"], row["med"], row["low"]]
-        for row in metrics.get("host_counts", [])
-    ]
-    write_table(
-        exec_ws,
-        start_row=0,
-        start_col=0,
-        headers=["Host", "High", "Medium", "Low"],
-        rows=host_rows,
-        header_colors=["#0066CC", "#0066CC", "#0066CC", "#0066CC"],
-        data_format=summary_data_fmt,
-        band_format=summary_band_fmt,
-        width_tracker=exec_width_tracker,
-    )
-
-    summary = metrics.get("summary") or {}
-    totals_rows = [[
-        summary.get("total", 0),
-        summary.get("total_high", 0),
-        summary.get("total_med", 0),
-        summary.get("total_low", 0),
-    ]]
-    write_table(
-        exec_ws,
-        start_row=0,
-        start_col=5,
-        headers=["Total", "Total High", "Total Medium", "Total Low"],
-        rows=totals_rows,
-        header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
-        data_format=summary_data_fmt,
-        band_format=summary_band_fmt,
-        width_tracker=exec_width_tracker,
-    )
-
-    unique_rows = [[
-        summary.get("unique", 0),
-        summary.get("unique_high", 0),
-        summary.get("unique_med", 0),
-        summary.get("unique_low", 0),
-    ]]
-    write_table(
-        exec_ws,
-        start_row=3,
-        start_col=5,
-        headers=["Unique Total", "Unique High", "Unique Medium", "Unique Low"],
-        rows=unique_rows,
-        header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
-        data_format=summary_data_fmt,
-        band_format=summary_band_fmt,
-        width_tracker=exec_width_tracker,
-    )
-
-    top_host_rows = [
-        [row.get("host"), row.get("high"), row.get("med"), row.get("low")]
-        for row in metrics.get("top_hosts", [])
-    ]
-    write_table(
-        exec_ws,
-        start_row=6,
-        start_col=5,
-        headers=["Top Risk Hosts", "High", "Medium", "Low"],
-        rows=top_host_rows,
-        header_colors=["#FF0000", "#FF0000", "#FF9900", "#99CC00"],
-        data_format=summary_data_fmt,
-        band_format=summary_band_fmt,
-        width_tracker=exec_width_tracker,
-    )
-
-    impact_rows = [
-        [item.get("impact"), item.get("count", 0)]
-        for item in metrics.get("top_impacts", [])
-    ]
-    impact_headers = ["Top 10 Issue Impacts", "Count"]
-    write_table(
-        exec_ws,
-        start_row=0,
-        start_col=10,
-        headers=impact_headers,
-        rows=impact_rows,
-        header_colors=["#0066CC", "#0066CC"],
-        data_format=text_data_fmt,
-        band_format=text_band_fmt,
-        width_tracker=exec_width_tracker,
-    )
-
-    tab_index_rows = [[entry] for entry in metrics.get("tab_index_entries", [])]
-    write_table(
-        exec_ws,
-        start_row=16,
-        start_col=10,
-        headers=["Tab Index"],
-        rows=tab_index_rows,
-        header_colors=["#CCFFFF"],
-        data_format=text_data_fmt,
-        band_format=text_band_fmt,
-        width_tracker=exec_width_tracker,
-    )
-
-    exec_columns_to_fit = list(range(0, 4)) + list(range(5, 9)) + [10, 11]
-    if hasattr(exec_ws, "autofit"):
-        exec_ws.autofit()
-    else:
-        apply_autofit(exec_ws, exec_width_tracker, exec_columns_to_fit)
-
-    def write_issue_sheet(name: str, data_rows: List[List[Any]], headers: List[str]) -> None:
-        ws = workbook.add_worksheet(name)
-        ws.set_column(0, len(headers) - 1, 35)
-        write_table(
-            ws,
-            start_row=0,
-            start_col=0,
-            headers=headers,
-            rows=data_rows,
-            header_colors=["#0066CC"] * len(headers),
+        def write_table(
+            worksheet,
+            *,
+            start_row: int,
+            start_col: int,
+            headers: List[str],
+            rows: Iterable[List[Any]],
+            header_colors: Optional[List[str]] = None,
             data_format=text_data_fmt,
             band_format=text_band_fmt,
+            width_tracker: Optional[Dict[int, int]] = None,
+            sink: Optional[Callable[[int, int, Any, Any], None]] = None,
+        ) -> None:
+            write_cell = sink or worksheet.write
+            for idx, header in enumerate(headers):
+                color = (header_colors[idx] if header_colors and idx < len(header_colors) else (header_colors[0] if header_colors else "#0066CC"))
+                write_cell(start_row, start_col + idx, header, get_header(color))
+                if width_tracker is not None:
+                    column_index = start_col + idx
+                    width_tracker[column_index] = max(
+                        width_tracker.get(column_index, 0),
+                        _calc_text_width(header),
+                    )
+            for row_index, row in enumerate(rows):
+                fmt = band_format if row_index % 2 == 1 else data_format
+                for col_index, value in enumerate(row):
+                    write_cell(start_row + 1 + row_index, start_col + col_index, value, fmt)
+                    if width_tracker is not None:
+                        column_index = start_col + col_index
+                        width_tracker[column_index] = max(
+                            width_tracker.get(column_index, 0),
+                            _calc_text_width(value),
+                        )
+
+        def apply_autofit(worksheet, width_tracker: Dict[int, int], columns: Iterable[int]) -> None:
+            for column in columns:
+                width = width_tracker.get(column, 10)
+                worksheet.set_column(column, column, min(width + 2, 60))
+
+        exec_ws = workbook.add_worksheet("Executive Summary")
+        exec_width_tracker: Dict[int, int] = {}
+        exec_cell_buffer: Dict[Tuple[int, int], Tuple[Any, Any]] = {}
+
+        def exec_sink(row: int, col: int, value: Any, fmt: Any) -> None:
+            exec_cell_buffer[(row, col)] = (value, fmt)
+
+        host_rows = (
+            [row["host"], row["high"], row["med"], row["low"]]
+            for row in metrics.get("host_counts", [])
+        )
+        write_table(
+            exec_ws,
+            start_row=0,
+            start_col=0,
+            headers=["Host", "High", "Medium", "Low"],
+            rows=host_rows,
+            header_colors=["#0066CC", "#0066CC", "#0066CC", "#0066CC"],
+            data_format=summary_data_fmt,
+            band_format=summary_band_fmt,
+            width_tracker=exec_width_tracker,
+            sink=exec_sink,
         )
 
-    unique_headers = ["Risk", "Issue", "Impact", "Remediation", "Category"]
-    unique_rows_table = [
-        [entry.get("risk"), entry.get("issue"), entry.get("impact"), entry.get("remediation"), entry.get("category")]
-        for entry in metrics.get("unique_issues", [])
-    ]
-    write_issue_sheet("Unique Issues", unique_rows_table, unique_headers)
+        summary = metrics.get("summary") or {}
+        totals_rows = [[
+            summary.get("total", 0),
+            summary.get("total_high", 0),
+            summary.get("total_med", 0),
+            summary.get("total_low", 0),
+        ]]
+        write_table(
+            exec_ws,
+            start_row=0,
+            start_col=5,
+            headers=["Total", "Total High", "Total Medium", "Total Low"],
+            rows=totals_rows,
+            header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
+            data_format=summary_data_fmt,
+            band_format=summary_band_fmt,
+            width_tracker=exec_width_tracker,
+            sink=exec_sink,
+        )
 
-    majority_rows = [
-        [entry.get("risk"), entry.get("issue"), entry.get("impact"), entry.get("remediation"), entry.get("category")]
-        for entry in metrics.get("majority_unique", [])
-    ]
-    write_issue_sheet("Issues by Majority Type", majority_rows, unique_headers)
+        unique_rows = [[
+            summary.get("unique", 0),
+            summary.get("unique_high", 0),
+            summary.get("unique_med", 0),
+            summary.get("unique_low", 0),
+        ]]
+        write_table(
+            exec_ws,
+            start_row=3,
+            start_col=5,
+            headers=["Unique Total", "Unique High", "Unique Medium", "Unique Low"],
+            rows=unique_rows,
+            header_colors=["#0066CC", "#FF0000", "#FF9900", "#99CC00"],
+            data_format=summary_data_fmt,
+            band_format=summary_band_fmt,
+            width_tracker=exec_width_tracker,
+            sink=exec_sink,
+        )
 
-    def build_full_rows(items: List[Dict[str, Any]]) -> List[List[Any]]:
-        rows = []
-        for item in items:
-            rows.append(
-                [
+        top_host_rows = [
+            [row.get("host"), row.get("high"), row.get("med"), row.get("low")]
+            for row in metrics.get("top_hosts", [])
+        ]
+        write_table(
+            exec_ws,
+            start_row=6,
+            start_col=5,
+            headers=["Top Risk Hosts", "High", "Medium", "Low"],
+            rows=top_host_rows,
+            header_colors=["#FF0000", "#FF0000", "#FF9900", "#99CC00"],
+            data_format=summary_data_fmt,
+            band_format=summary_band_fmt,
+            width_tracker=exec_width_tracker,
+            sink=exec_sink,
+        )
+
+        impact_rows = [
+            [item.get("impact"), item.get("count", 0)]
+            for item in metrics.get("top_impacts", [])
+        ]
+        impact_headers = ["Top 10 Issue Impacts", "Count"]
+        write_table(
+            exec_ws,
+            start_row=0,
+            start_col=10,
+            headers=impact_headers,
+            rows=impact_rows,
+            header_colors=["#0066CC", "#0066CC"],
+            data_format=text_data_fmt,
+            band_format=text_band_fmt,
+            width_tracker=exec_width_tracker,
+            sink=exec_sink,
+        )
+
+        tab_index_rows = [[entry] for entry in metrics.get("tab_index_entries", [])]
+        write_table(
+            exec_ws,
+            start_row=16,
+            start_col=10,
+            headers=["Tab Index"],
+            rows=tab_index_rows,
+            header_colors=["#CCFFFF"],
+            data_format=text_data_fmt,
+            band_format=text_band_fmt,
+            width_tracker=exec_width_tracker,
+            sink=exec_sink,
+        )
+
+        # Flush every buffered Executive Summary cell in row-major order --
+        # required by constant_memory mode, see the docstring above.
+        for (row, col), (value, fmt) in sorted(exec_cell_buffer.items()):
+            exec_ws.write(row, col, value, fmt)
+
+        # autofit() requires the whole worksheet to be held in memory to
+        # measure it, which constant_memory mode doesn't support.
+        exec_columns_to_fit = list(range(0, 4)) + list(range(5, 9)) + [10, 11]
+        apply_autofit(exec_ws, exec_width_tracker, exec_columns_to_fit)
+
+        def write_issue_sheet(name: str, data_rows: Iterable[List[Any]], headers: List[str]) -> None:
+            ws = workbook.add_worksheet(name)
+            ws.set_column(0, len(headers) - 1, 35)
+            write_table(
+                ws,
+                start_row=0,
+                start_col=0,
+                headers=headers,
+                rows=data_rows,
+                header_colors=["#0066CC"] * len(headers),
+                data_format=text_data_fmt,
+                band_format=text_band_fmt,
+            )
+
+        unique_headers = ["Risk", "Issue", "Impact", "Remediation", "Category"]
+        unique_rows_table = [
+            [entry.get("risk"), entry.get("issue"), entry.get("impact"), entry.get("remediation"), entry.get("category")]
+            for entry in metrics.get("unique_issues", [])
+        ]
+        write_issue_sheet("Unique Issues", unique_rows_table, unique_headers)
+
+        majority_rows = [
+            [entry.get("risk"), entry.get("issue"), entry.get("impact"), entry.get("remediation"), entry.get("category")]
+            for entry in metrics.get("majority_unique", [])
+        ]
+        write_issue_sheet("Issues by Majority Type", majority_rows, unique_headers)
+
+        def build_full_rows(items: List[Dict[str, Any]]) -> Iterable[List[Any]]:
+            # A generator, not a list -- these can run to hundreds of
+            # thousands of rows for a large scan; no need to hold a second
+            # materialized copy of them (on top of `metrics["all_issues"]`
+            # etc., already in memory) just to reshape each dict into a row.
+            for item in items:
+                yield [
                     item.get("ip"),
                     item.get("hostnames"),
                     item.get("port"),
@@ -4890,39 +5021,107 @@ def _render_nexpose_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]
                     item.get("risk"),
                     item.get("category"),
                 ]
-            )
-        return rows
 
-    full_headers = [
-        "IP Address",
-        "Hostname(s)",
-        "Port",
-        "Issue",
-        "Impact",
-        "Issue Details",
-        "Evidence",
-        "Remediation",
-        "Risk",
-        "Category",
-    ]
+        full_headers = [
+            "IP Address",
+            "Hostname(s)",
+            "Port",
+            "Issue",
+            "Impact",
+            "Issue Details",
+            "Evidence",
+            "Remediation",
+            "Risk",
+            "Category",
+        ]
 
-    workbook.add_worksheet("Subset of Majority Issues")
+        workbook.add_worksheet("Subset of Majority Issues")
 
-    all_rows = build_full_rows(metrics.get("all_issues", []))
-    write_issue_sheet("All Issues", all_rows, full_headers)
+        write_issue_sheet("All Issues", build_full_rows(metrics.get("all_issues", [])), full_headers)
+        write_issue_sheet("High Risk Issues", build_full_rows(metrics.get("high_issues", [])), full_headers)
+        write_issue_sheet("Medium Risk Issues", build_full_rows(metrics.get("med_issues", [])), full_headers)
+        write_issue_sheet("Low Risk Issues", build_full_rows(metrics.get("low_issues", [])), full_headers)
 
-    high_rows = build_full_rows(metrics.get("high_issues", []))
-    write_issue_sheet("High Risk Issues", high_rows, full_headers)
+        workbook.close()
+    except Exception:
+        logger.exception("Failed to render Nexpose metrics workbook")
+        try:
+            workbook.close()
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
+        try:
+            os.unlink(output_path)
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
+        return None
 
-    med_rows = build_full_rows(metrics.get("med_issues", []))
-    write_issue_sheet("Medium Risk Issues", med_rows, full_headers)
+    return output_path
 
-    low_rows = build_full_rows(metrics.get("low_issues", []))
-    write_issue_sheet("Low Risk Issues", low_rows, full_headers)
 
-    workbook.close()
-    buffer.seek(0)
-    return buffer.getvalue()
+def _persist_generated_workbook(
+    project: "Project", artifact_key: str, temp_path: str, filename: str
+) -> Optional[Dict[str, Any]]:
+    """Move a temp-file XLSX workbook into permanent storage as a ``ProjectArtifactFile``.
+
+    Used for every generated workbook large enough to warrant
+    ``constant_memory`` rendering to a temp file in the first place --
+    currently the Nexpose and firewall metrics workbooks (see
+    ``_render_nexpose_metrics_workbook_to_tempfile`` /
+    ``_render_firewall_metrics_workbook_to_tempfile``), keyed by
+    ``artifact_key`` so each has its own row. Replaces base64-embedding the
+    workbook into ``data_artifacts`` (the ``xlsx_base64`` field): for a
+    large scan the generated workbook can itself run into the same
+    multi-hundred-MB-per-JSON-value problem the raw findings list did (see
+    NEXPOSE_AGGREGATE_SCHEMA_VERSION) -- storing it as a real file
+    sidesteps that entirely. Always cleans up ``temp_path`` before
+    returning, whether or not the move succeeded.
+    """
+
+    try:
+        byte_size = os.path.getsize(temp_path)
+    except OSError:
+        byte_size = 0
+
+    if not project.pk:
+        # Nothing to attach the file to (shouldn't happen in practice --
+        # build_project_artifacts is only ever called with a saved project).
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        return None
+
+    ProjectArtifactFile = apps.get_model("rolodex", "ProjectArtifactFile")
+    try:
+        artifact_file, created = ProjectArtifactFile.objects.get_or_create(
+            project=project, artifact_key=artifact_key
+        )
+        if not created and artifact_file.file:
+            artifact_file.file.delete(save=False)
+        with open(temp_path, "rb") as handle:
+            artifact_file.file.save(filename, File(handle), save=False)
+        artifact_file.filename = filename
+        artifact_file.byte_size = byte_size
+        artifact_file.save(update_fields=["file", "filename", "byte_size", "generated_at"])
+    except Exception:
+        logger.exception(
+            "Failed to persist generated workbook for project ID=%s, artifact_key=%s",
+            getattr(project, "id", "?"),
+            artifact_key,
+        )
+        return None
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+
+    return {
+        "artifact_file_id": artifact_file.pk,
+        "filename": filename,
+        "byte_size": artifact_file.byte_size,
+        "generated_at": artifact_file.generated_at.isoformat(),
+    }
 
 
 def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -5070,149 +5269,185 @@ def _build_web_metrics_payload(findings: List[Dict[str, Any]]) -> Dict[str, Any]
     return metrics_payload
 
 
-def _render_firewall_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes]:
-    """Create an XLSX workbook for processed firewall findings."""
+def _render_firewall_metrics_workbook_to_tempfile(metrics: Dict[str, Any]) -> Optional[str]:
+    """Write an XLSX workbook for processed firewall findings to a temp file.
 
-    buffer = io.BytesIO()
-    workbook = Workbook(buffer, {"in_memory": True})
+    Uses xlsxwriter's ``constant_memory`` mode -- see
+    ``_render_nexpose_metrics_workbook_to_tempfile`` above for the full
+    rationale (large finding counts, ``in_memory`` mode's RAM/base64-storage
+    cost); this function mirrors that one's structure and hits the exact
+    same row-major hazard on its own Executive Summary sheet: three
+    ``write_table`` calls onto ``exec_ws`` at different ``(row, col)``
+    offsets ((0,0), (0,5), (16,5)), not row-major across the sheet as a
+    whole. Buffered via ``sink`` and flushed once, sorted by ``(row, col)``,
+    same as the Nexpose renderer. The 8 per-issue-type sheets
+    (``write_issue_sheet``, one ``write_table`` call per dedicated
+    worksheet) are already strictly row-major and need no buffering.
 
-    def header_format(color: str):
-        return workbook.add_format(
-            {
-                "bold": True,
-                "border": 1,
-                "font_color": "#000000",
-                "bg_color": color,
-                "pattern": 1,
-            }
+    Returns the temp file path on success (caller is responsible for moving
+    it into permanent storage and deleting it -- see
+    ``_persist_generated_workbook``), or ``None`` if nothing was written.
+    """
+
+    fd, output_path = tempfile.mkstemp(suffix=".xlsx", prefix="firewall_metrics_")
+    os.close(fd)
+    workbook = Workbook(output_path, {"constant_memory": True})
+
+    try:
+        def header_format(color: str):
+            return workbook.add_format(
+                {
+                    "bold": True,
+                    "border": 1,
+                    "font_color": "#000000",
+                    "bg_color": color,
+                    "pattern": 1,
+                }
+            )
+
+        header_cache: Dict[str, Any] = {}
+
+        def get_header(color: str):
+            if color not in header_cache:
+                header_cache[color] = header_format(color)
+            return header_cache[color]
+
+        data_fmt = workbook.add_format({"border": 1, "text_wrap": True, "font_color": "#000000"})
+        band_fmt = workbook.add_format(
+            {"border": 1, "text_wrap": True, "bg_color": "#99CCFF", "font_color": "#000000"}
         )
 
-    header_cache: Dict[str, Any] = {}
+        def _calc_text_width(value: Any) -> int:
+            if value is None:
+                return 0
+            text = str(value)
+            lines = text.splitlines() or [text]
+            return max(len(line) for line in lines)
 
-    def get_header(color: str):
-        if color not in header_cache:
-            header_cache[color] = header_format(color)
-        return header_cache[color]
-
-    data_fmt = workbook.add_format({"border": 1, "text_wrap": True, "font_color": "#000000"})
-    band_fmt = workbook.add_format(
-        {"border": 1, "text_wrap": True, "bg_color": "#99CCFF", "font_color": "#000000"}
-    )
-
-    def _calc_text_width(value: Any) -> int:
-        if value is None:
-            return 0
-        text = str(value)
-        lines = text.splitlines() or [text]
-        return max(len(line) for line in lines)
-
-    def write_table(
-        worksheet,
-        *,
-        start_row: int,
-        start_col: int,
-        headers: List[str],
-        rows: List[List[Any]],
-        header_colors: Optional[List[str]] = None,
-        width_tracker: Optional[Dict[int, int]] = None,
-    ) -> None:
-        for idx, header in enumerate(headers):
-            color = header_colors[idx] if header_colors and idx < len(header_colors) else "#0066CC"
-            worksheet.write(start_row, start_col + idx, header, get_header(color))
-            if width_tracker is not None:
-                column_index = start_col + idx
-                width_tracker[column_index] = max(width_tracker.get(column_index, 0), _calc_text_width(header))
-        for row_index, row in enumerate(rows):
-            fmt = band_fmt if row_index % 2 == 1 else data_fmt
-            for col_index, value in enumerate(row):
-                worksheet.write(start_row + 1 + row_index, start_col + col_index, value, fmt)
+        def write_table(
+            worksheet,
+            *,
+            start_row: int,
+            start_col: int,
+            headers: List[str],
+            rows: Iterable[List[Any]],
+            header_colors: Optional[List[str]] = None,
+            width_tracker: Optional[Dict[int, int]] = None,
+            sink: Optional[Callable[[int, int, Any, Any], None]] = None,
+        ) -> None:
+            write_cell = sink or worksheet.write
+            for idx, header in enumerate(headers):
+                color = header_colors[idx] if header_colors and idx < len(header_colors) else "#0066CC"
+                write_cell(start_row, start_col + idx, header, get_header(color))
                 if width_tracker is not None:
-                    column_index = start_col + col_index
-                    width_tracker[column_index] = max(width_tracker.get(column_index, 0), _calc_text_width(value))
+                    column_index = start_col + idx
+                    width_tracker[column_index] = max(width_tracker.get(column_index, 0), _calc_text_width(header))
+            for row_index, row in enumerate(rows):
+                fmt = band_fmt if row_index % 2 == 1 else data_fmt
+                for col_index, value in enumerate(row):
+                    write_cell(start_row + 1 + row_index, start_col + col_index, value, fmt)
+                    if width_tracker is not None:
+                        column_index = start_col + col_index
+                        width_tracker[column_index] = max(width_tracker.get(column_index, 0), _calc_text_width(value))
 
-    def apply_autofit(worksheet, width_tracker: Dict[int, int], columns: Iterable[int]) -> None:
-        for column in columns:
-            width = width_tracker.get(column, 10)
-            worksheet.set_column(column, column, min(width + 2, 80))
+        def apply_autofit(worksheet, width_tracker: Dict[int, int], columns: Iterable[int]) -> None:
+            for column in columns:
+                width = width_tracker.get(column, 10)
+                worksheet.set_column(column, column, min(width + 2, 80))
 
-    summary = metrics.get("summary") or {}
-    exec_ws = workbook.add_worksheet("Executive Summary")
-    exec_tracker: Dict[int, int] = {}
+        summary = metrics.get("summary") or {}
+        exec_ws = workbook.add_worksheet("Executive Summary")
+        exec_tracker: Dict[int, int] = {}
+        exec_cell_buffer: Dict[Tuple[int, int], Tuple[Any, Any]] = {}
 
-    summary_headers = ["Total", "Total High", "Total Medium", "Total Low"]
-    summary_colors = ["#0066CC", "#FF0000", "#FF9900", "#99CC00"]
-    summary_rows = [
-        [
-            summary.get("unique", 0),
-            summary.get("unique_high", 0),
-            summary.get("unique_med", 0),
-            summary.get("unique_low", 0),
+        def exec_sink(row: int, col: int, value: Any, fmt: Any) -> None:
+            exec_cell_buffer[(row, col)] = (value, fmt)
+
+        summary_headers = ["Total", "Total High", "Total Medium", "Total Low"]
+        summary_colors = ["#0066CC", "#FF0000", "#FF9900", "#99CC00"]
+        summary_rows = [
+            [
+                summary.get("unique", 0),
+                summary.get("unique_high", 0),
+                summary.get("unique_med", 0),
+                summary.get("unique_low", 0),
+            ]
         ]
-    ]
-    write_table(
-        exec_ws,
-        start_row=0,
-        start_col=0,
-        headers=summary_headers,
-        rows=summary_rows,
-        header_colors=summary_colors,
-        width_tracker=exec_tracker,
-    )
+        write_table(
+            exec_ws,
+            start_row=0,
+            start_col=0,
+            headers=summary_headers,
+            rows=summary_rows,
+            header_colors=summary_colors,
+            width_tracker=exec_tracker,
+            sink=exec_sink,
+        )
 
-    top_impacts = metrics.get("top_impacts") or []
-    impact_rows = [[entry.get("impact", ""), entry.get("count", 0)] for entry in top_impacts]
-    write_table(
-        exec_ws,
-        start_row=0,
-        start_col=5,
-        headers=["Top 10 Issue Impacts", "Count"],
-        rows=impact_rows,
-        header_colors=["#0066CC", "#0066CC"],
-        width_tracker=exec_tracker,
-    )
+        top_impacts = metrics.get("top_impacts") or []
+        impact_rows = [[entry.get("impact", ""), entry.get("count", 0)] for entry in top_impacts]
+        write_table(
+            exec_ws,
+            start_row=0,
+            start_col=5,
+            headers=["Top 10 Issue Impacts", "Count"],
+            rows=impact_rows,
+            header_colors=["#0066CC", "#0066CC"],
+            width_tracker=exec_tracker,
+            sink=exec_sink,
+        )
 
-    tab_index_rows = [
-        ["All Issues  -:-  All issues identified"],
-        ["High Risk Issues  -:-  All 'High' risk issues identified"],
-        ["Medium Risk Issues  -:-  All 'Medium' risk issues identified"],
-        ["Low Risk Issues  -:-  All 'Low' risk issues identified"],
-        ["Vulnerability Issues  -:-  All issues related to known vulnerabilities identified"],
-        ["Rule Issues  -:-  All issues related to rules identified"],
-        ["Config Issues  -:-  All issues related to configuration settings identified"],
-        ["Complexity Issues  -:-  All issues related to rules/configuration settings that add to the firewall complexity identified"],
-    ]
-    write_table(
-        exec_ws,
-        start_row=16,
-        start_col=5,
-        headers=["Tab Index"],
-        rows=tab_index_rows,
-        header_colors=["#CCFFFF"],
-        width_tracker=exec_tracker,
-    )
+        tab_index_rows = [
+            ["All Issues  -:-  All issues identified"],
+            ["High Risk Issues  -:-  All 'High' risk issues identified"],
+            ["Medium Risk Issues  -:-  All 'Medium' risk issues identified"],
+            ["Low Risk Issues  -:-  All 'Low' risk issues identified"],
+            ["Vulnerability Issues  -:-  All issues related to known vulnerabilities identified"],
+            ["Rule Issues  -:-  All issues related to rules identified"],
+            ["Config Issues  -:-  All issues related to configuration settings identified"],
+            ["Complexity Issues  -:-  All issues related to rules/configuration settings that add to the firewall complexity identified"],
+        ]
+        write_table(
+            exec_ws,
+            start_row=16,
+            start_col=5,
+            headers=["Tab Index"],
+            rows=tab_index_rows,
+            header_colors=["#CCFFFF"],
+            width_tracker=exec_tracker,
+            sink=exec_sink,
+        )
 
-    apply_autofit(exec_ws, exec_tracker, range(0, 7))
+        # Flush every buffered Executive Summary cell in row-major order --
+        # required by constant_memory mode, see the docstring above.
+        for (row, col), (value, fmt) in sorted(exec_cell_buffer.items()):
+            exec_ws.write(row, col, value, fmt)
 
-    issue_headers = [
-        "Issue",
-        "Impact",
-        "Devices",
-        "Details",
-        "Solution",
-        "Reference",
-        "Risk",
-        "Accepted",
-        "Score",
-    ]
-    issue_colors = ["#0066CC"] * len(issue_headers)
+        # autofit() requires the whole worksheet to be held in memory to
+        # measure it, which constant_memory mode doesn't support -- the
+        # width_tracker + set_column combination above/below is the
+        # constant_memory-safe substitute this renderer already used before
+        # this change, so no hazard here.
+        apply_autofit(exec_ws, exec_tracker, range(0, 7))
 
-    def _issue_rows(entries: Iterable[Dict[str, Any]]) -> List[List[Any]]:
-        rows: List[List[Any]] = []
-        for entry in entries or []:
-            if not isinstance(entry, dict):
-                continue
-            rows.append(
-                [
+        issue_headers = [
+            "Issue",
+            "Impact",
+            "Devices",
+            "Details",
+            "Solution",
+            "Reference",
+            "Risk",
+            "Accepted",
+            "Score",
+        ]
+        issue_colors = ["#0066CC"] * len(issue_headers)
+
+        def _issue_rows(entries: Iterable[Dict[str, Any]]) -> Iterable[List[Any]]:
+            for entry in entries or []:
+                if not isinstance(entry, dict):
+                    continue
+                yield [
                     entry.get("Issue", ""),
                     entry.get("Impact", ""),
                     entry.get("Devices", ""),
@@ -5223,35 +5458,44 @@ def _render_firewall_metrics_workbook(metrics: Dict[str, Any]) -> Optional[bytes
                     entry.get("Accepted", ""),
                     entry.get("Score", ""),
                 ]
+
+        def write_issue_sheet(name: str, entries: Iterable[Dict[str, Any]]):
+            worksheet = workbook.add_worksheet(name)
+            width_tracker: Dict[int, int] = {}
+            write_table(
+                worksheet,
+                start_row=0,
+                start_col=0,
+                headers=issue_headers,
+                rows=_issue_rows(entries),
+                header_colors=issue_colors,
+                width_tracker=width_tracker,
             )
-        return rows
+            apply_autofit(worksheet, width_tracker, range(len(issue_headers)))
 
-    def write_issue_sheet(name: str, entries: Iterable[Dict[str, Any]]):
-        worksheet = workbook.add_worksheet(name)
-        width_tracker: Dict[int, int] = {}
-        rows = _issue_rows(entries)
-        write_table(
-            worksheet,
-            start_row=0,
-            start_col=0,
-            headers=issue_headers,
-            rows=rows,
-            header_colors=issue_colors,
-            width_tracker=width_tracker,
-        )
-        apply_autofit(worksheet, width_tracker, range(len(issue_headers)))
+        write_issue_sheet("All Issues", metrics.get("all_issues"))
+        write_issue_sheet("High Risk Issues", metrics.get("high_issues"))
+        write_issue_sheet("Medium Risk Issues", metrics.get("med_issues"))
+        write_issue_sheet("Low Risk Issues", metrics.get("low_issues"))
+        write_issue_sheet("Rule Issues", metrics.get("rule_issues"))
+        write_issue_sheet("Config Issues", metrics.get("config_issues"))
+        write_issue_sheet("Complexity Issues", metrics.get("complexity_issues"))
+        write_issue_sheet("Vulnerability Issues", metrics.get("vuln_issues"))
 
-    write_issue_sheet("All Issues", metrics.get("all_issues"))
-    write_issue_sheet("High Risk Issues", metrics.get("high_issues"))
-    write_issue_sheet("Medium Risk Issues", metrics.get("med_issues"))
-    write_issue_sheet("Low Risk Issues", metrics.get("low_issues"))
-    write_issue_sheet("Rule Issues", metrics.get("rule_issues"))
-    write_issue_sheet("Config Issues", metrics.get("config_issues"))
-    write_issue_sheet("Complexity Issues", metrics.get("complexity_issues"))
-    write_issue_sheet("Vulnerability Issues", metrics.get("vuln_issues"))
+        workbook.close()
+    except Exception:
+        logger.exception("Failed to render firewall metrics workbook")
+        try:
+            workbook.close()
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
+        try:
+            os.unlink(output_path)
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
+        return None
 
-    workbook.close()
-    return buffer.getvalue()
+    return output_path
 
 
 def _build_web_cap_entries_from_metrics(
@@ -5903,10 +6147,26 @@ def parse_web_report(file_obj: File) -> Dict[str, Dict[str, Counter[Tuple[str, s
 # than before the cache existed. Keeping the cache in-process instead adds
 # zero storage cost, at the price of a smaller cache scope (only benefits
 # repeated saves handled by the *same* worker before it recycles, via
-# --limit-max-requests, rather than persisting across requests/workers/
-# deployments) -- a deliberate, safer trade-off given the regression above.
+# --limit-max-requests -- now 500, see compose/production/django/start --
+# rather than persisting across requests/workers/deployments) -- a
+# deliberate, safer trade-off given the regression above.
+#
+# Bounded as an LRU (small cap, evict-oldest-on-insert) rather than left
+# unbounded: used by both the firewall and Nexpose XML branches below, and
+# a raised --limit-max-requests means a single worker (web) or the
+# long-lived qcluster worker (queue -- see process_project_data_upload,
+# rolodex/tasks.py, which now does the actual Nexpose parsing) lives long
+# enough to accumulate entries across many different projects' uploads,
+# each of which can run to hundreds of MB for a large Nexpose scan.
+# Unbounded, that's a real leak risk rather than a cache: notably, a
+# Nexpose re-upload always gets a brand-new ProjectDataFile row (the view
+# deletes the old one and creates a new one -- see views.py's
+# nexpose_upload_fields loop), so its old pk-keyed entry would never be
+# overwritten by a later hit, only ever added to. A small cap turns that
+# into a bounded, self-cleaning ceiling instead.
+_FILE_PARSE_CACHE_MAX_ENTRIES = 4
 _file_parse_cache_lock = threading.Lock()
-_process_local_file_parse_cache: Dict[str, Dict[str, Any]] = {}
+_process_local_file_parse_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
 
 def _resolve_cached_or_fresh_parse(
@@ -5951,22 +6211,100 @@ def _resolve_cached_or_fresh_parse(
 
     with _file_parse_cache_lock:
         cached_entry = _process_local_file_parse_cache.get(cache_key)
-
-    if (
-        isinstance(cached_entry, dict)
-        and cached_entry.get("mtime") == current_mtime
-        and "result" in cached_entry
-    ):
-        return cached_entry["result"], True
+        if (
+            isinstance(cached_entry, dict)
+            and cached_entry.get("mtime") == current_mtime
+            and "result" in cached_entry
+        ):
+            _process_local_file_parse_cache.move_to_end(cache_key)
+            return cached_entry["result"], True
 
     result = parse_fn()
     with _file_parse_cache_lock:
         _process_local_file_parse_cache[cache_key] = {"mtime": current_mtime, "result": result}
+        _process_local_file_parse_cache.move_to_end(cache_key)
+        while len(_process_local_file_parse_cache) > _FILE_PARSE_CACHE_MAX_ENTRIES:
+            _process_local_file_parse_cache.popitem(last=False)
     return result, False
 
 
-def build_project_artifacts(project: "Project") -> Dict[str, Any]:
-    """Aggregate parsed artifacts for the provided project."""
+def build_project_artifacts(
+    project: "Project", *, changed_file_ids: Optional[Set[int]] = None
+) -> Dict[str, Any]:
+    """Aggregate parsed artifacts for the provided project.
+
+    ``changed_file_ids`` (default ``None``, meaning "reparse everything" --
+    today's behavior, and the only behavior every caller but the one below
+    used before this parameter existed) lets a caller that knows only a
+    specific file changed skip re-parsing every *other* uploaded file --
+    this function runs on every workbook save regardless of which area was
+    edited, so without this, saving an unrelated field re-parses a
+    multi-hundred-MB Nexpose XML from scratch every time (see
+    ``process_project_data_upload``, rolodex/tasks.py, the primary caller
+    that passes a non-None value).
+
+    Currently only the Nexpose XML branch (``elif xml_artifact_key:``,
+    below) honors this -- firewall/burp/other branches always reparse
+    regardless, since they're out of scope for the problem this exists to
+    solve (a single Nexpose XML can run to hundreds of MB; nothing else
+    uploaded through this loop gets remotely that large) and skipping them
+    too would multiply the surface area for a subtle bug for no real
+    benefit yet.
+
+    Skip decisions are made per *artifact key*, not per file: if two
+    ProjectDataFile rows feed the same key (e.g. two Internal Nexpose XML
+    uploads merged into one findings set -- see the per-key merge inside the
+    ``xml_artifact_key`` branch) and only one of them is in
+    ``changed_file_ids``, the *other* one must still be reparsed too, or its
+    contribution would be silently dropped from the merge. ``dirty_nexpose_keys``
+    (computed in a cheap, file-I/O-free pre-pass below) tracks this.
+
+    A skipped key's everything -- its own artifact entry, metrics, file
+    name, *and* its ``nexpose_matrix_gaps`` "missing matrix entries"
+    contribution -- must be explicitly carried forward from
+    ``previous_artifacts`` inside the skip branch below. Nothing here is
+    additive across calls by default: every one of these is rebuilt from
+    scratch each call from whatever keys actually got (re)parsed *this*
+    call, with no fallback, so a key that's silently forgotten here doesn't
+    just stay stale -- it vanishes the moment any other key is dirty (fixed
+    for ``nexpose_matrix_gaps`` after it was found missing this carry-forward
+    entirely, silently dropping every *other* Nexpose type's missing-entries
+    notice on every save that touched only one type).
+    """
+
+    previous_artifacts: Dict[str, Any] = (
+        project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+    )
+
+    dirty_nexpose_keys: Set[str] = set()
+    if changed_file_ids is not None:
+        for data_file in project.data_files.all():
+            if data_file.pk not in changed_file_ids:
+                continue
+            key = _resolve_nexpose_xml_artifact_key(data_file)
+            if key:
+                dirty_nexpose_keys.add(key)
+
+    # Previously-stored "missing Nexpose matrix entries" per xml_artifact_key
+    # (see nexpose_matrix_gaps, built near the end of this function) -- read
+    # once up front so the skip-and-carry-forward block below can restore a
+    # skipped key's entry into carried_missing_by_artifact. Without this, a
+    # key that isn't reparsed this round (it wasn't in changed_file_ids)
+    # contributes nothing to missing_matrix_tracker either, and since the
+    # final nexpose_matrix_gaps is built purely from that tracker with no
+    # other fallback, its "missing entries" notice would silently vanish on
+    # every save that doesn't happen to touch that specific file -- e.g.
+    # uploading External Nexpose XML previously wiped Internal's missing-entries
+    # notice, and any changed_file_ids=set() save (every Remove-button
+    # handler, most area-card saves) wiped every Nexpose type's at once.
+    previous_nexpose_matrix_gaps = previous_artifacts.get("nexpose_matrix_gaps")
+    previous_missing_by_artifact: Dict[str, Any] = (
+        previous_nexpose_matrix_gaps.get("missing_by_artifact")
+        if isinstance(previous_nexpose_matrix_gaps, dict)
+        and isinstance(previous_nexpose_matrix_gaps.get("missing_by_artifact"), dict)
+        else {}
+    )
+    carried_missing_by_artifact: Dict[str, Dict[str, Any]] = {}
 
     artifacts: Dict[str, Any] = {}
     dns_results: Dict[str, List[Dict[str, str]]] = {}
@@ -5976,6 +6314,15 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
     }
 
     missing_matrix_tracker: Dict[str, Dict[str, Dict[str, str]]] = {}
+    # Raw findings accumulated across however many ProjectDataFile rows share
+    # one xml_artifact_key *within this call* (e.g. several Internal Nexpose
+    # XML uploads merged into one findings list) -- kept only in this
+    # process-local dict, never in `artifacts`/`data_artifacts`, since the
+    # stored shape (below, at the `xml_artifact_key` assignment) no longer
+    # retains raw per-finding rows. Reading it back per iteration is what
+    # lets a second file processed later in this same loop still merge with
+    # an earlier one's contribution.
+    pending_nexpose_findings: Dict[str, List[Dict[str, str]]] = {}
     nexpose_definitions_by_key: Dict[str, str] = {
         definition["artifact_key"]: definition["label"]
         for definition in NEXPOSE_ARTIFACT_DEFINITIONS.values()
@@ -6115,9 +6462,65 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     **parsed_vulnerabilities,
                 }
         elif xml_artifact_key:
+            if (
+                changed_file_ids is not None
+                and data_file.pk not in changed_file_ids
+                and xml_artifact_key not in dirty_nexpose_keys
+            ):
+                # Nothing that feeds this key changed this round -- carry
+                # its previously-computed artifacts forward unchanged rather
+                # than re-parsing (possibly hundreds of MB of) XML that
+                # produces the exact same result. See the changed_file_ids
+                # docstring above.
+                if xml_artifact_key not in artifacts and xml_artifact_key in previous_artifacts:
+                    artifacts[xml_artifact_key] = previous_artifacts[xml_artifact_key]
+                metrics_key = NEXPOSE_METRICS_KEY_MAP.get(xml_artifact_key)
+                if metrics_key and metrics_key not in artifacts and metrics_key in previous_artifacts:
+                    artifacts[metrics_key] = previous_artifacts[metrics_key]
+                file_name_key = NEXPOSE_FILENAME_KEY_MAP.get(xml_artifact_key)
+                if (
+                    file_name_key
+                    and file_name_key not in artifacts
+                    and file_name_key in previous_artifacts
+                ):
+                    artifacts[file_name_key] = previous_artifacts[file_name_key]
+                if (
+                    xml_artifact_key not in carried_missing_by_artifact
+                    and xml_artifact_key in previous_missing_by_artifact
+                ):
+                    carried_missing_by_artifact[xml_artifact_key] = previous_missing_by_artifact[
+                        xml_artifact_key
+                    ]
+                continue
+
             file_name_key = NEXPOSE_FILENAME_KEY_MAP.get(xml_artifact_key)
             if file_name_key:
                 artifacts[file_name_key] = data_file.filename
+            # Still routed through _resolve_cached_or_fresh_parse despite
+            # changed_file_ids already skipping most unchanged files above
+            # (the "continue" a few lines up): that skip is per *artifact
+            # key*, not per file (see build_project_artifacts' docstring),
+            # so when two files share one key -- e.g. two separate Internal
+            # Nexpose XML uploads merged into one findings set -- and only
+            # one of them was just re-uploaded, the *other*, unchanged one
+            # still reaches this line and would otherwise be reparsed in
+            # full on every save. The two call sites that still pass
+            # changed_file_ids=None (clearing/deleting a data file --
+            # views.py, ProjectWorkbookDataUpdate's clear_workbook branch and
+            # the generic data-file delete view) skip the per-key check
+            # entirely and reach every Nexpose file here regardless of
+            # whether it changed, so for those this cache is the only thing
+            # standing between "delete one unrelated file" and a synchronous
+            # full reparse of every other uploaded Nexpose XML. A re-upload
+            # itself is still always a genuine cache miss (each upload gets
+            # a brand-new ProjectDataFile row -- see views.py's
+            # nexpose_upload_fields loop -- so its pk-keyed cache entry never
+            # existed before), which is correct: new bytes really do need
+            # reparsing. See the cache's own bounded-LRU comment above for
+            # why an unbounded version of this used to be a real leak risk
+            # in the now-long-lived queue worker, and why capping it fixes
+            # that without needing to special-case this branch out of
+            # caching altogether.
             nexpose_xml_cache_key = f"nexpose_xml:{xml_artifact_key}:{data_file.pk}"
             parsed_xml, nexpose_xml_was_cached = _resolve_cached_or_fresh_parse(
                 data_file,
@@ -6130,18 +6533,16 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                     file_label,
                     getattr(project, "id", "?"),
                 )
-            # Caching is per-file (keyed above by data_file.pk), so this
-            # merge with any other file already processed under the same
-            # xml_artifact_key in this same call is unaffected -- parsed_xml
-            # is just this one file's own result, fresh or reused.
+            # This merges with any other file already processed under the
+            # same xml_artifact_key in this same call -- parsed_xml is just
+            # this one file's own result, fresh or reused.
             existing_entry = artifacts.get(xml_artifact_key)
-            combined_findings: List[Dict[str, str]] = []
+            combined_findings: List[Dict[str, str]] = list(
+                pending_nexpose_findings.get(xml_artifact_key, [])
+            )
             combined_software: List[Dict[str, str]] = []
             if isinstance(existing_entry, dict):
-                existing_findings = existing_entry.get("findings")
                 existing_software = existing_entry.get("software")
-                if isinstance(existing_findings, list):
-                    combined_findings.extend(existing_findings)
                 if isinstance(existing_software, list):
                     combined_software.extend(existing_software)
             parsed_findings = parsed_xml.get("findings") if isinstance(parsed_xml, dict) else []
@@ -6171,13 +6572,25 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
                         "Category": row.get("Category", ""),
                         "CVE": row.get("CVE", ""),
                     }
+            pending_nexpose_findings[xml_artifact_key] = combined_findings
             artifacts[xml_artifact_key] = {
-                "findings": combined_findings,
+                "schema_version": NEXPOSE_AGGREGATE_SCHEMA_VERSION,
                 "software": combined_software,
             }
             metrics_key = NEXPOSE_METRICS_KEY_MAP.get(xml_artifact_key)
             if metrics_key:
-                artifacts[metrics_key] = _build_nexpose_metrics_payload(combined_findings)
+                metrics_payload = _build_nexpose_metrics_payload(combined_findings)
+                xlsx_temp_path = metrics_payload.pop("_xlsx_temp_path", None)
+                if xlsx_temp_path:
+                    xlsx_info = _persist_generated_workbook(
+                        project,
+                        metrics_key,
+                        xlsx_temp_path,
+                        metrics_payload.get("xlsx_filename") or "nexpose_data.xlsx",
+                    )
+                    if xlsx_info:
+                        metrics_payload["xlsx"] = xlsx_info
+                artifacts[metrics_key] = metrics_payload
         else:
             requirement_slug = (data_file.requirement_slug or "").strip()
             if requirement_slug:
@@ -6249,23 +6662,35 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
         firewall_entries = []
 
     if firewall_entries:
-        artifacts["firewall_metrics"] = _build_firewall_metrics_payload(firewall_entries)
+        firewall_metrics_payload = _build_firewall_metrics_payload(firewall_entries)
+        firewall_xlsx_temp_path = firewall_metrics_payload.pop("_xlsx_temp_path", None)
+        if firewall_xlsx_temp_path:
+            firewall_xlsx_info = _persist_generated_workbook(
+                project,
+                "firewall_metrics",
+                firewall_xlsx_temp_path,
+                firewall_metrics_payload.get("xlsx_filename") or "firewall_data.xlsx",
+            )
+            if firewall_xlsx_info:
+                firewall_metrics_payload["xlsx"] = firewall_xlsx_info
+        artifacts["firewall_metrics"] = firewall_metrics_payload
         artifacts["firewall_vulnerabilities"] = _summarize_firewall_vulnerabilities(
             firewall_entries
         )
 
     for findings_key, vulnerability_key in NEXPOSE_FINDINGS_VULNERABILITY_MAP.items():
-        findings_entry = artifacts.get(findings_key)
-        findings = (
-            findings_entry.get("findings")
-            if isinstance(findings_entry, dict)
+        metrics_key = NEXPOSE_METRICS_KEY_MAP.get(findings_key)
+        metrics_entry = artifacts.get(metrics_key) if metrics_key else None
+        unique_issues = (
+            metrics_entry.get("unique_issues")
+            if isinstance(metrics_entry, dict)
             else None
         )
-        if not findings:
+        if not unique_issues:
             continue
 
-        summary = _build_nexpose_vulnerability_summary_from_findings(
-            findings, vulnerability_matrix=vulnerability_matrix
+        summary = _build_nexpose_vulnerability_summary_from_unique_issues(
+            unique_issues, vulnerability_matrix=vulnerability_matrix
         )
         if summary:
             nexpose_results[vulnerability_key] = {
@@ -6286,8 +6711,15 @@ def build_project_artifacts(project: "Project") -> Dict[str, Any]:
             "low": _coerce_severity_group(details.get("low")),
         }
 
-    if missing_matrix_tracker:
-        missing_by_artifact: Dict[str, Dict[str, Any]] = {}
+    if missing_matrix_tracker or carried_missing_by_artifact:
+        # Seed with whatever skipped keys carried forward (see
+        # carried_missing_by_artifact above), then let this round's freshly
+        # parsed keys take over -- a key is either dirty (reparsed this
+        # round, below) or skipped (carried, already in the seed), never
+        # both, so there's no real collision; a dirty key's own fresh
+        # result -- including "no longer missing, so omitted" -- always
+        # wins for that key.
+        missing_by_artifact: Dict[str, Dict[str, Any]] = dict(carried_missing_by_artifact)
         for artifact_key, rows in missing_matrix_tracker.items():
             if not rows:
                 continue

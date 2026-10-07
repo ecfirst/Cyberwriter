@@ -26,10 +26,11 @@ from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError, transaction
 from django.db.models import Prefetch, Q
 from django.core.files.base import ContentFile
-from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
+from django.http import FileResponse, HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.template.loader import render_to_string
 from django.urls import reverse, reverse_lazy
+from django.utils import timezone
 from django.utils.html import escape
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import ListView
@@ -37,6 +38,7 @@ from django.views.generic.detail import DetailView, SingleObjectMixin
 from django.views.generic.edit import CreateView, DeleteView, UpdateView, View
 
 # 3rd Party Libraries
+from django_q.tasks import async_task
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from taggit.models import Tag
@@ -91,6 +93,7 @@ from ghostwriter.rolodex.models import (
     ObjectivePriority,
     ObjectiveStatus,
     Project,
+    ProjectArtifactFile,
     ProjectDataFile,
     ProjectAssignment,
     ProjectContact,
@@ -1002,13 +1005,20 @@ _METRICS_KEYS_SUMMARY_ONLY = frozenset(NEXPOSE_METRICS_LABELS.keys()) | {
 
 
 def _strip_large_unused_artifacts(
-    value: Any, *, depth: int = 0, top_level_key: Optional[str] = None
+    value: Any,
+    *,
+    depth: int = 0,
+    top_level_key: Optional[str] = None,
+    strip_xlsx_base64: bool = True,
 ) -> Any:
     """Deep-copy ``value``, omitting keys never read by the page's client-side JS.
 
-    Drops 'xlsx_base64' at any nesting depth (compact per-artifact blobs, only
-    needed by the dedicated download views, which re-read them from the
-    database); at the top level only, any key ending in '_findings' (raw
+    Drops 'xlsx_base64' at any nesting depth, when ``strip_xlsx_base64`` is
+    true (compact per-artifact blobs, only needed by the dedicated download
+    views, which re-read them from the database -- pass ``False`` for a
+    single upload's JSON response, where a handful of these blobs is not the
+    payload-size problem and some callers/tests expect the just-uploaded
+    artifact's blob to be present); at the top level only, any key ending in '_findings' (raw
     per-finding lists -- one entry per host/port/vulnerability triple, each
     with several free-text fields -- that scale with finding count and are
     never read by client-side JS; only their already-summarized
@@ -1033,7 +1043,7 @@ def _strip_large_unused_artifacts(
     if isinstance(value, dict):
         result = {}
         for key, inner in value.items():
-            if key == "xlsx_base64":
+            if strip_xlsx_base64 and key == "xlsx_base64":
                 continue
             if depth == 0 and key == "_file_parse_cache":
                 continue
@@ -1042,7 +1052,10 @@ def _strip_large_unused_artifacts(
             if depth == 0 and key in _METRICS_KEYS_SUMMARY_ONLY and isinstance(inner, dict):
                 result[key] = {
                     "summary": _strip_large_unused_artifacts(
-                        inner.get("summary"), depth=depth + 2, top_level_key=key
+                        inner.get("summary"),
+                        depth=depth + 2,
+                        top_level_key=key,
+                        strip_xlsx_base64=strip_xlsx_base64,
                     )
                 }
                 continue
@@ -1054,12 +1067,17 @@ def _strip_large_unused_artifacts(
                 continue
             next_top_level_key = key if depth == 0 else top_level_key
             result[key] = _strip_large_unused_artifacts(
-                inner, depth=depth + 1, top_level_key=next_top_level_key
+                inner,
+                depth=depth + 1,
+                top_level_key=next_top_level_key,
+                strip_xlsx_base64=strip_xlsx_base64,
             )
         return result
     if isinstance(value, list):
         return [
-            _strip_large_unused_artifacts(item, depth=depth + 1, top_level_key=top_level_key)
+            _strip_large_unused_artifacts(
+                item, depth=depth + 1, top_level_key=top_level_key, strip_xlsx_base64=strip_xlsx_base64
+            )
             for item in value
         ]
     return value
@@ -1097,7 +1115,7 @@ def _build_processed_cards(
                 "label": label,
                 "metrics_key": metrics_key,
                 "summary": summary,
-                "has_file": bool(payload.get("xlsx_base64")),
+                "has_file": bool(payload.get("xlsx") or payload.get("xlsx_base64")),
                 "type": "nexpose",
                 "upload": upload_meta,
                 "upload_filename": upload_file.filename if upload_file else None,
@@ -1134,7 +1152,7 @@ def _build_processed_cards(
                 "metrics_key": "firewall_metrics",
                 "summary": summary,
                 "devices": firewall_metrics.get("devices", []),
-                "has_file": bool(firewall_metrics.get("xlsx_base64")),
+                "has_file": bool(firewall_metrics.get("xlsx") or firewall_metrics.get("xlsx_base64")),
                 "type": "firewall",
             }
         )
@@ -3549,6 +3567,14 @@ class ProjectWorkbookUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                 if data_file.file:
                     data_file.file.delete(save=False)
                 data_file.delete()
+            # Generated workbooks (Nexpose/firewall metrics XLSX) aren't
+            # ProjectDataFile rows -- clearing the workbook needs to drop
+            # these too, or they're orphaned in storage with nothing left
+            # pointing at them once data_artifacts is reset below.
+            for artifact_file in list(project.artifact_files.all()):
+                if artifact_file.file:
+                    artifact_file.file.delete(save=False)
+                artifact_file.delete()
             project.workbook_file = None
             project.workbook_data = {}
             project.data_responses = {}
@@ -4205,10 +4231,15 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             is_online = online_status.lower() == "online"
 
             if not is_online:
+                # computer_name (above) is already available here -- only
+                # the per-security-product/username/SSID detail columns are
+                # genuinely unavailable for a system that wasn't fully
+                # scanned (e.g. "Unreachable", "AdminRestricted", or any
+                # other non-"Online" status this ingestion produces).
                 rows.append(
                     [
                         online_status,
-                        "N/A",
+                        computer_name,
                         "N/A",
                         "N/A",
                         "N/A",
@@ -4965,7 +4996,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         data_file.file.save(upload.name, ContentFile(raw_bytes or b""))
         data_file.save()
 
-        project.rebuild_data_artifacts()
+        project.rebuild_data_artifacts(changed_file_ids={data_file.pk})
         artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
 
         if rows is not None:
@@ -5014,7 +5045,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.data_artifacts = artifacts
         project.save(update_fields=["workbook_data", "data_artifacts"])
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_dns_xml_upload(self, request, project):
@@ -5072,7 +5103,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.data_artifacts = artifacts
         project.save(update_fields=["workbook_data", "data_artifacts"])
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_ad_csv_upload(self, request, project):
@@ -5138,12 +5169,12 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         workbook_payload = build_workbook_entry_payload(project=project, areas={"ad": ad_state})
         project.workbook_data = workbook_payload
         project.data_artifacts = artifacts
-        project.rebuild_data_artifacts()
+        project.rebuild_data_artifacts(changed_file_ids=set())
         project.refresh_from_db(
             fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
         )
         return JsonResponse(
-            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_attack_paths_csv_upload(self, request, project):
@@ -5236,12 +5267,12 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         )
         project.workbook_data = workbook_payload
         project.data_artifacts = artifacts
-        project.rebuild_data_artifacts()
+        project.rebuild_data_artifacts(changed_file_ids=set())
         project.refresh_from_db(
             fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
         )
         return JsonResponse(
-            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_ad_log_upload(self, request, project):
@@ -5336,13 +5367,13 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         workbook_payload = build_workbook_entry_payload(project=project, areas={"ad": ad_state})
         project.workbook_data = workbook_payload
         project.data_artifacts = artifacts
-        project.rebuild_data_artifacts()
+        project.rebuild_data_artifacts(changed_file_ids=set())
         project.refresh_from_db(
             fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
         )
 
         return JsonResponse(
-            {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+            {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_ad_admin_users_upload(self, request, project):
@@ -5414,7 +5445,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.save(update_fields=["workbook_data", "data_artifacts"])
 
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def _handle_password_csv_upload(self, request, project):
@@ -5533,7 +5564,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.save(update_fields=["workbook_data", "data_artifacts"])
 
         return JsonResponse(
-            {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+            {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
         )
 
     def test_func(self):
@@ -5542,6 +5573,23 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
     def handle_no_permission(self):
         messages.error(self.request, "You do not have permission to modify that project.")
         return redirect("home:dashboard")
+
+    def get(self, request, *args, **kwargs):
+        """Return the project's current workbook state.
+
+        Used by the frontend to pull fresh data after a background upload
+        task (see process_project_data_upload, rolodex/tasks.py) finishes --
+        that task has no synchronous response of its own to carry the
+        result back through, unlike every other workbook update in this
+        view's post().
+        """
+        project = self.get_object()
+        return JsonResponse(
+            {
+                "workbook_data": project.workbook_data,
+                "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
+            }
+        )
 
     def post(self, request, *args, **kwargs):
         project = self.get_object()
@@ -5552,24 +5600,48 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             if "dns_xml" in request.FILES:
                 return self._handle_dns_xml_upload(request, project)
 
-            nexpose_upload_fields = {
-                "external_nexpose_xml": "external_nexpose_xml.xml",
-                "internal_nexpose_xml": "internal_nexpose_xml.xml",
-                "iot_nexpose_xml": "iot_nexpose_xml.xml",
+            # Every upload field here is handed off to the same background
+            # task (process_project_data_upload, rolodex/tasks.py) instead
+            # of being parsed inline -- originally just the three Nexpose
+            # fields (whose scans can run to hundreds of MB and hundreds of
+            # thousands of findings), now also firewall_xml (a Nipper XML
+            # export, which shares the same risk profile -- confirmed an
+            # 8-second parse for a 69MB file -- and used to be handled in
+            # its own separate, synchronous branch below this loop).
+            async_upload_fields = {
+                "external_nexpose_xml": ("external_nexpose_xml.xml", "No Nexpose XML provided."),
+                "internal_nexpose_xml": ("internal_nexpose_xml.xml", "No Nexpose XML provided."),
+                "iot_nexpose_xml": ("iot_nexpose_xml.xml", "No Nexpose XML provided."),
+                "firewall_xml": ("firewall_xml.xml", "No Firewall XML provided."),
             }
-            for upload_field, requirement_label in nexpose_upload_fields.items():
+            for upload_field, (requirement_label, missing_file_error) in async_upload_fields.items():
                 if upload_field in request.FILES:
                     upload = request.FILES.get(upload_field)
                     if not upload:
-                        return JsonResponse(
-                            {"error": "No Nexpose XML provided."}, status=400
-                        )
+                        return JsonResponse({"error": missing_file_error}, status=400)
+
+                    requirement_slug = _slugify_identifier("required", requirement_label)
+                    # Replace any previously uploaded file for this slot so
+                    # re-uploads don't accumulate without bound -- each
+                    # extra row gets re-parsed and merged into the same key
+                    # on every future rebuild (see the multi-file-per-key
+                    # merge in data_parsers.build_project_artifacts),
+                    # unboundedly growing the stored aggregate and the
+                    # generated workbook for no benefit, since only the
+                    # latest scan should represent this slot. Matches the
+                    # pattern ProjectDataFileUpload.post/ProjectIPArtifactUpload.post
+                    # already use.
+                    existing_files = list(
+                        project.data_files.filter(requirement_slug=requirement_slug)
+                    )
+                    for existing in existing_files:
+                        if existing.file:
+                            existing.file.delete(save=False)
+                        existing.delete()
 
                     data_file = ProjectDataFile(
                         project=project,
-                        requirement_slug=_slugify_identifier(
-                            "required", requirement_label
-                        ),
+                        requirement_slug=requirement_slug,
                         requirement_label=requirement_label,
                         requirement_context=f"{upload_field.replace('_', ' ')}",
                         description="",
@@ -5577,46 +5649,74 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                     data_file.file.save(upload.name, upload)
                     data_file.save()
 
-                    project.rebuild_data_artifacts()
-                    project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
+                    # Nexpose scans can run to hundreds of MB and hundreds
+                    # of thousands of findings -- parsing that inline risks
+                    # nginx's proxy_read_timeout and uvicorn's worker
+                    # healthcheck killing this request mid-response. Hand
+                    # off to a background task instead (see
+                    # process_project_data_upload, rolodex/tasks.py) and
+                    # respond immediately; the frontend shows a "Processing"
+                    # state on this card until a WebSocket notification (or
+                    # a page reload, since the marker below is persisted)
+                    # says it's done.
+                    area_key = (request.POST.get("area_key") or "").strip()
+                    artifacts = project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
+                    artifacts = dict(artifacts)
+                    processing = dict(artifacts.get("processing_uploads") or {})
+                    processing[upload_field] = {
+                        "started": timezone.now().isoformat(),
+                        "filename": data_file.filename,
+                    }
+                    artifacts["processing_uploads"] = processing
+                    project.data_artifacts = artifacts
+                    project.save(update_fields=["data_artifacts"])
+
+                    task_id = async_task(
+                        "ghostwriter.rolodex.tasks.process_project_data_upload",
+                        project_id=project.pk,
+                        data_file_id=data_file.pk,
+                        upload_field=upload_field,
+                        area_key=area_key,
+                        username=request.user.get_clean_username(),
+                        group="Project Data Uploads",
+                    )
 
                     return JsonResponse(
                         {
-                            "workbook_data": project.workbook_data,
-                            "data_artifacts": project.data_artifacts,
-                        }
+                            "queued": True,
+                            "task_id": task_id,
+                            "upload_field": upload_field,
+                            "message": "Upload received. Processing in the background…",
+                        },
+                        status=202,
                     )
-
-            if "firewall_xml" in request.FILES:
-                upload = request.FILES.get("firewall_xml")
-                if not upload:
-                    return JsonResponse({"error": "No Firewall XML provided."}, status=400)
-
-                data_file = ProjectDataFile(
-                    project=project,
-                    requirement_slug=_slugify_identifier("required", "firewall_xml.xml"),
-                    requirement_label="firewall_xml.xml",
-                    requirement_context="firewall xml",
-                    description="",
-                )
-                data_file.file.save(upload.name, upload)
-                data_file.save()
-
-                project.rebuild_data_artifacts()
-                project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
-
-                return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
-                )
 
             if "burp_xml" in request.FILES:
                 upload = request.FILES.get("burp_xml")
                 if not upload:
                     return JsonResponse({"error": "No Burp XML provided."}, status=400)
 
+                burp_requirement_slug = _slugify_identifier("required", "burp_xml.xml")
+                # Replace any previously uploaded file for this slot so
+                # re-uploads don't accumulate without bound -- same reasoning
+                # as async_upload_fields above (this branch predates that
+                # loop and never got the fix at the time). Without this, the
+                # web-findings parse path (build_project_artifacts,
+                # data_parsers.py) extends parsed_web_findings from every
+                # ProjectDataFile row sharing this slug, so a re-upload
+                # doubled up every prior finding on top of the new ones, on
+                # top of leaking the old file in storage.
+                existing_burp_files = list(
+                    project.data_files.filter(requirement_slug=burp_requirement_slug)
+                )
+                for existing in existing_burp_files:
+                    if existing.file:
+                        existing.file.delete(save=False)
+                    existing.delete()
+
                 data_file = ProjectDataFile(
                     project=project,
-                    requirement_slug=_slugify_identifier("required", "burp_xml.xml"),
+                    requirement_slug=burp_requirement_slug,
                     requirement_label="burp_xml.xml",
                     requirement_context="burp xml",
                     description="",
@@ -5624,13 +5724,13 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 data_file.file.save(upload.name, upload)
                 data_file.save()
 
-                project.rebuild_data_artifacts()
+                project.rebuild_data_artifacts(changed_file_ids={data_file.pk})
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
                     {
                         "workbook_data": project.workbook_data,
-                        "data_artifacts": project.data_artifacts,
+                        "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                     }
                 )
 
@@ -5708,7 +5808,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "iam_management_xlsx" in request.FILES:
@@ -5783,7 +5883,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "system_configuration_xlsx" in request.FILES:
@@ -5859,7 +5959,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "wireless_xlsx" in request.FILES:
@@ -5969,7 +6069,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "sql_xlsx" in request.FILES:
@@ -6019,7 +6119,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.refresh_from_db(fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "ad_csv" in request.FILES:
@@ -6063,7 +6163,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.save(update_fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             if "snmp_csv" in request.FILES:
@@ -6091,7 +6191,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 project.save(update_fields=["workbook_data", "data_artifacts"])
 
                 return JsonResponse(
-                    {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                    {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
                 )
 
             return JsonResponse({"error": "Unsupported upload type."}, status=400)
@@ -6121,7 +6221,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 for domain in removed_domains:
                     slug = _slugify_identifier("required", "dns_report.csv", domain)
                     project.data_files.filter(requirement_slug=slug).delete()
-                project.rebuild_data_artifacts()
+                project.rebuild_data_artifacts(changed_file_ids=set())
                 artifacts = (
                     project.data_artifacts if isinstance(project.data_artifacts, dict) else {}
                 )
@@ -6232,12 +6332,12 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             )
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
             )
             return JsonResponse(
-                {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
             )
 
         attack_paths_removal = payload.get("remove_attack_paths_metric")
@@ -6322,14 +6422,14 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             )
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
             )
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6455,14 +6555,14 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             )
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
             )
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6477,7 +6577,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             project.data_artifacts = artifacts
             project.save(update_fields=["workbook_data", "data_artifacts"])
             return JsonResponse(
-                {"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts}
+                {"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
             )
 
         if payload.get("remove_snmp"):
@@ -6496,11 +6596,11 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(fields=["workbook_data", "data_artifacts", "cap"])
 
             return JsonResponse(
-                {"workbook_data": project.workbook_data, "data_artifacts": project.data_artifacts}
+                {"workbook_data": project.workbook_data, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)}
             )
 
         if payload.get("remove_sql"):
@@ -6529,7 +6629,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                     "cap": project.cap,
                 }
             )
@@ -6555,7 +6655,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "cap", "data_responses"]
             )
@@ -6563,7 +6663,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6588,7 +6688,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "cap", "data_responses"]
             )
@@ -6596,7 +6696,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6621,7 +6721,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "cap", "data_responses"]
             )
@@ -6629,7 +6729,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6667,7 +6767,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                     "cap": project.cap,
                     "data_responses": project.data_responses,
                 }
@@ -6735,7 +6835,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                     "cap": project.cap,
                     "data_responses": project.data_responses,
                 }
@@ -6770,7 +6870,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
             )
@@ -6778,7 +6878,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6799,6 +6899,17 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             ):
                 artifacts.pop(key, None)
 
+            # Delete the generated workbook's own ProjectArtifactFile row too
+            # (not just the JSONField keys above) -- since the storage
+            # modernization, firewall_metrics["xlsx"] references one instead
+            # of embedding the workbook as base64, so leaving it behind
+            # would orphan the file. Mirrors the equivalent cleanup in the
+            # remove_nexpose handler below.
+            for artifact_file in project.artifact_files.filter(artifact_key="firewall_metrics"):
+                if artifact_file.file:
+                    artifact_file.file.delete(save=False)
+                artifact_file.delete()
+
             workbook_payload = normalize_workbook_payload(project.workbook_data)
             default_values = copy.deepcopy(WORKBOOK_DEFAULTS.get("firewall"))
             if default_values is not None:
@@ -6808,7 +6919,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
 
             project.workbook_data = workbook_payload
             project.data_artifacts = artifacts
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
             )
@@ -6816,7 +6927,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6869,6 +6980,13 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             for key in removal_meta.get("artifact_keys", []):
                 artifacts.pop(key, None)
 
+            for artifact_file in project.artifact_files.filter(
+                artifact_key__in=removal_meta.get("artifact_keys", [])
+            ):
+                if artifact_file.file:
+                    artifact_file.file.delete(save=False)
+                artifact_file.delete()
+
             project.data_artifacts = artifacts
 
             workbook_payload = normalize_workbook_payload(project.workbook_data)
@@ -6879,7 +6997,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
                 workbook_payload.pop(nexpose_removal_key, None)
 
             project.workbook_data = workbook_payload
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap"]
             )
@@ -6887,7 +7005,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
             return JsonResponse(
                 {
                     "workbook_data": project.workbook_data,
-                    "data_artifacts": project.data_artifacts,
+                    "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False),
                 }
             )
 
@@ -6906,7 +7024,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         if artifacts_updated:
             update_fields.append("data_artifacts")
 
-        project.rebuild_data_artifacts()
+        project.rebuild_data_artifacts(changed_file_ids=set())
 
         project.refresh_from_db(
             fields=["workbook_data", "data_artifacts", "data_responses", "cap", "risks"]
@@ -6932,7 +7050,7 @@ class ProjectWorkbookDataUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, 
         project.data_responses = ensure_data_responses_defaults(refreshed_responses)
         project.save(update_fields=["data_responses"])
 
-        return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": project.data_artifacts})
+        return JsonResponse({"workbook_data": workbook_payload, "data_artifacts": _strip_large_unused_artifacts(project.data_artifacts, strip_xlsx_base64=False)})
 
     def _handle_endpoint_csv_upload(self, request, project):
         upload = request.FILES.get("endpoint_csv")
@@ -7086,7 +7204,7 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
                         description_parts.append(f"for {requirement_context}")
                     data_file.description = " ".join(part for part in description_parts if part).strip()
             data_file.save()
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids={data_file.pk})
             messages.success(request, "Supporting data file uploaded.")
         else:
             error_message = form.errors.as_text()
@@ -7214,13 +7332,20 @@ class ProjectNexposeDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin,
         if not isinstance(artifacts, dict):
             return None
         payload = artifacts.get(artifact)
-        if isinstance(payload, dict):
-            return payload
+        # A direct hit only counts if it's the *metrics* payload (has the
+        # summary/xlsx data downloads need) -- since NEXPOSE_AGGREGATE_SCHEMA_VERSION
+        # 2, the findings key (e.g. "internal_nexpose_findings") also
+        # resolves to a dict here, but only {"schema_version", "software"},
+        # never an xlsx. Prefer the metrics key whenever one exists for
+        # ``artifact``, falling back to a direct hit only when there is none
+        # (``artifact`` was already a metrics key, or an unrelated key).
         metrics_key = NEXPOSE_METRICS_KEY_MAP.get(artifact)
         if metrics_key:
-            payload = artifacts.get(metrics_key)
-            if isinstance(payload, dict):
-                return payload
+            metrics_payload = artifacts.get(metrics_key)
+            if isinstance(metrics_payload, dict):
+                return metrics_payload
+        if isinstance(payload, dict):
+            return payload
         return None
 
     def get(self, request, *args, **kwargs):
@@ -7235,6 +7360,30 @@ class ProjectNexposeDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin,
             messages.error(request, "No Nexpose data file is available for download.")
             return HttpResponseRedirect(self.get_success_url(project))
 
+        filename = payload.get("xlsx_filename") or "nexpose_data.xlsx"
+        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        xlsx_ref = payload.get("xlsx")
+        if isinstance(xlsx_ref, dict) and xlsx_ref.get("artifact_file_id"):
+            artifact_file = ProjectArtifactFile.objects.filter(
+                project=project, pk=xlsx_ref["artifact_file_id"]
+            ).first()
+            if artifact_file and artifact_file.file:
+                try:
+                    response = FileResponse(
+                        artifact_file.file.open("rb"), content_type=content_type
+                    )
+                    add_content_disposition_header(response, filename)
+                    return response
+                except (FileNotFoundError, OSError):  # pragma: no cover - storage backend edge case
+                    logger.exception(
+                        "Generated Nexpose workbook file is missing from storage (project ID=%s, artifact_file ID=%s)",
+                        project.pk,
+                        artifact_file.pk,
+                    )
+
+        # Fallback for data written before NEXPOSE_AGGREGATE_SCHEMA_VERSION 2
+        # (base64-embedded in data_artifacts rather than a ProjectArtifactFile).
         workbook_b64 = payload.get("xlsx_base64")
         if not workbook_b64:
             messages.error(request, "The Nexpose data file is not available for download yet.")
@@ -7247,11 +7396,7 @@ class ProjectNexposeDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin,
             messages.error(request, "Unable to decode the Nexpose data file.")
             return HttpResponseRedirect(self.get_success_url(project))
 
-        response = HttpResponse(
-            workbook_bytes,
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        filename = payload.get("xlsx_filename") or "nexpose_data.xlsx"
+        response = HttpResponse(workbook_bytes, content_type=content_type)
         add_content_disposition_header(response, filename)
         return response
 
@@ -7410,6 +7555,30 @@ class ProjectFirewallDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin
             messages.error(request, "No firewall data file is available for download.")
             return HttpResponseRedirect(self.get_success_url(project))
 
+        filename = payload.get("xlsx_filename") or "firewall_data.xlsx"
+        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        xlsx_ref = payload.get("xlsx")
+        if isinstance(xlsx_ref, dict) and xlsx_ref.get("artifact_file_id"):
+            artifact_file = ProjectArtifactFile.objects.filter(
+                project=project, pk=xlsx_ref["artifact_file_id"]
+            ).first()
+            if artifact_file and artifact_file.file:
+                try:
+                    response = FileResponse(
+                        artifact_file.file.open("rb"), content_type=content_type
+                    )
+                    add_content_disposition_header(response, filename)
+                    return response
+                except (FileNotFoundError, OSError):  # pragma: no cover - storage backend edge case
+                    logger.exception(
+                        "Generated firewall workbook file is missing from storage (project ID=%s, artifact_file ID=%s)",
+                        project.pk,
+                        artifact_file.pk,
+                    )
+
+        # Fallback for data written before the firewall storage modernization
+        # (base64-embedded in data_artifacts rather than a ProjectArtifactFile).
         workbook_b64 = payload.get("xlsx_base64")
         if not workbook_b64:
             messages.error(request, "The firewall data file is not available for download yet.")
@@ -7422,11 +7591,7 @@ class ProjectFirewallDataDownload(RoleBasedAccessControlMixin, SingleObjectMixin
             messages.error(request, "Unable to decode the firewall data file.")
             return HttpResponseRedirect(self.get_success_url(project))
 
-        response = HttpResponse(
-            workbook_bytes,
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        filename = payload.get("xlsx_filename") or "firewall_data.xlsx"
+        response = HttpResponse(workbook_bytes, content_type=content_type)
         add_content_disposition_header(response, filename)
         return response
 
@@ -7549,7 +7714,7 @@ class ProjectIPArtifactUpload(RoleBasedAccessControlMixin, SingleObjectMixin, Vi
             )
             data_file.file.save(definition.filename, ContentFile(content), save=False)
             data_file.save()
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids={data_file.pk})
             messages.success(request, f"{definition.label} saved for this project.")
         else:
             error_message = form.errors.as_text()
@@ -7558,6 +7723,22 @@ class ProjectIPArtifactUpload(RoleBasedAccessControlMixin, SingleObjectMixin, Vi
             else:
                 messages.error(request, "Unable to process the submitted IP addresses. Please review the form for errors.")
         return redirect(self.get_success_url())
+
+
+# Maps a ProjectDataFile's own requirement_label (the literal string every
+# upload branch in ProjectWorkbookDataUpdate.post sets it to -- see
+# async_upload_fields above) to the artifact_key of the ProjectArtifactFile
+# a successful upload of that file generates. Used by ProjectDataFileDelete
+# below: deleting one of these four uploaded files also orphans its
+# generated workbook unless that row is deleted too, and this view (unlike
+# remove_nexpose/remove_firewall) only ever has the ProjectDataFile itself
+# to work from, not which upload branch created it.
+_XML_REQUIREMENT_LABEL_TO_ARTIFACT_KEY = {
+    "external_nexpose_xml.xml": "external_nexpose_metrics",
+    "internal_nexpose_xml.xml": "internal_nexpose_metrics",
+    "iot_nexpose_xml.xml": "iot_iomt_nexpose_metrics",
+    "firewall_xml.xml": "firewall_metrics",
+}
 
 
 class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View):
@@ -7676,7 +7857,16 @@ class ProjectDataFileDelete(RoleBasedAccessControlMixin, SingleObjectMixin, View
         if data_file.file:
             data_file.file.delete(save=False)
         project = data_file.project
+        artifact_key = _XML_REQUIREMENT_LABEL_TO_ARTIFACT_KEY.get(data_file.requirement_label)
         data_file.delete()
+        if artifact_key:
+            # This file's own generated workbook (if it has one) is orphaned
+            # once its source file is gone -- see
+            # _XML_REQUIREMENT_LABEL_TO_ARTIFACT_KEY above.
+            for artifact_file in project.artifact_files.filter(artifact_key=artifact_key):
+                if artifact_file.file:
+                    artifact_file.file.delete(save=False)
+                artifact_file.delete()
         project.rebuild_data_artifacts()
         messages.success(request, "Supporting data file deleted.")
         success_url = self.get_success_url()
@@ -7743,7 +7933,7 @@ class ProjectDataResponsesUpdate(RoleBasedAccessControlMixin, SingleObjectMixin,
 
             project.data_responses = ensure_data_responses_defaults(grouped_responses)
             project.save(update_fields=["data_responses"])
-            project.rebuild_data_artifacts()
+            project.rebuild_data_artifacts(changed_file_ids=set())
             project.refresh_from_db(
                 fields=["workbook_data", "data_artifacts", "data_responses", "cap", "risks"]
             )

@@ -5,16 +5,68 @@ import logging
 from datetime import date, timedelta
 
 # Django Imports
-from django.db.models.signals import post_save, pre_save
+from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
 # Ghostwriter Libraries
 from ghostwriter.modules.notifications_slack import SlackNotification
-from ghostwriter.rolodex.models import Project
+from ghostwriter.rolodex.models import Project, ProjectArtifactFile, ProjectDataFile
 from ghostwriter.shepherd.models import History, ServerHistory
 
 # Using __name__ resolves to ghostwriter.rolodex.signals
 logger = logging.getLogger(__name__)
+
+
+@receiver(post_delete, sender=Project)
+def remove_project_workbook_file_on_delete(sender, instance, **kwargs):
+    """
+    Delete a :model:`rolodex.Project` entry's ``workbook_file`` from storage
+    when the project is deleted.
+
+    ``on_delete=CASCADE`` (and Django's cascading ``QuerySet.delete()``,
+    which fires ``post_delete`` per instance the same way) removes DB rows,
+    not the underlying file bytes -- without this, deleting a project (or
+    its client, which cascades the same way) orphans its workbook upload in
+    storage forever. See ``remove_project_data_file_on_delete`` /
+    ``remove_project_artifact_file_on_delete`` below for the equivalent on
+    :model:`rolodex.ProjectDataFile` / :model:`rolodex.ProjectArtifactFile`,
+    which this doesn't cover since those are separate models with their own
+    ``file`` field, not a field on ``Project`` itself.
+    """
+    if instance.workbook_file:
+        instance.workbook_file.delete(save=False)
+
+
+@receiver(post_delete, sender=ProjectDataFile)
+def remove_project_data_file_on_delete(sender, instance, **kwargs):
+    """
+    Delete a :model:`rolodex.ProjectDataFile` entry's uploaded file from
+    storage when the row is deleted.
+
+    Most call sites already do this by hand (``instance.file.delete(save=False)``
+    before deleting the row) -- this is a safety net for the ones that
+    don't (project/client deletion cascading, and a handful of ``views.py``
+    handlers that remove rows via a queryset ``.delete()`` with no explicit
+    file cleanup first, e.g. ``remove_sql``, DNS domain removal, and a
+    ``dns_csv`` re-upload through the same domain). Harmless where a caller
+    already deleted the file itself first: ``instance.file`` is already
+    cleared on this same in-memory instance by the time ``post_delete``
+    fires for it, so the guard below is a no-op in that case.
+    """
+    if instance.file:
+        instance.file.delete(save=False)
+
+
+@receiver(post_delete, sender=ProjectArtifactFile)
+def remove_project_artifact_file_on_delete(sender, instance, **kwargs):
+    """
+    Delete a :model:`rolodex.ProjectArtifactFile` entry's generated workbook
+    from storage when the row is deleted. See
+    ``remove_project_data_file_on_delete`` above for why this exists as a
+    signal rather than relying solely on each caller to clean up by hand.
+    """
+    if instance.file:
+        instance.file.delete(save=False)
 
 
 @receiver(pre_save, sender=Project)

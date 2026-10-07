@@ -132,7 +132,7 @@
              data-end="{{ project.end_date|date:'Y-m-d' }}"></div>
       </div>
 
-      <div id="workbook" class="tab-pane" data-workbook-update-url="{% url 'rolodex:project_workbook_data_update' project.id %}">
+      <div id="workbook" class="tab-pane" data-workbook-update-url="{% url 'rolodex:project_workbook_data_update' project.id %}" data-project-id="{{ project.id }}">
         <h4>Workbook</h4>
         <hr/>
         <div class="row mb-3">
@@ -1507,6 +1507,34 @@
 
         const workbookTab = document.getElementById('workbook');
         const workbookUpdateUrl = workbookTab ? workbookTab.getAttribute('data-workbook-update-url') : null;
+        const parseWorkbookJsonResponse = function(response, fallbackMessage) {
+          return response.text().then(function(text) {
+            let data = null;
+            if (text) {
+              try {
+                data = JSON.parse(text);
+              } catch (parseError) {
+                data = null;
+              }
+            }
+            if (!response.ok || data === null) {
+              let message = (data && data.error) ? data.error : fallbackMessage;
+              if (!response.ok && (!data || !data.error)) {
+                if (response.status === 413) {
+                  message = 'That file is too large to upload.';
+                } else if (response.status === 504 || response.status === 502 || response.status === 503) {
+                  message = 'The server took too long to process that file. It may be too large.';
+                } else {
+                  message = fallbackMessage + ' (server returned status ' + response.status + ').';
+                }
+              } else if (response.ok && data === null) {
+                message = 'The server returned an unexpected response while saving workbook data.';
+              }
+              throw new Error(message);
+            }
+            return data;
+          });
+        };
         const parseJsonScript = function(id) {
           const node = document.getElementById(id);
           if (!node) {
@@ -1521,6 +1549,40 @@
 
         const workbookState = parseJsonScript('project-workbook-data') || {};
         const dataArtifactsState = parseJsonScript('project-data-artifacts') || {};
+        // Tracks upload fields (e.g. 'internal_nexpose_xml') with a
+        // background processing task still running -- seeded below from
+        // dataArtifactsState.processing_uploads (a marker
+        // ProjectWorkbookDataUpdate.post sets before enqueuing the task and
+        // clears once it finishes, so this survives a page reload) and kept
+        // in sync with it by updateDataArtifactsState.
+        const uploadProcessingState = {};
+        // Client-side-only companion to uploadProcessingState: which area
+        // card's modal (the 'workbook-area-modal-' + areaKey id) each
+        // still-processing field belongs to, so the poll fallback below
+        // (pollProcessingUploads) can apply a finished upload's own modal
+        // in place the same way the WebSocket notification handler does,
+        // instead of always waiting for a currently-open modal to close.
+        // Not seeded from the server (the persisted processing_uploads
+        // marker doesn't carry area_key) -- only populated for uploads
+        // this page session itself started, via uploadNexposeXml below.
+        const uploadProcessingAreaKeys = {};
+        const syncUploadProcessingState = function() {
+          Object.keys(uploadProcessingState).forEach(function(key) {
+            delete uploadProcessingState[key];
+          });
+          const processing = dataArtifactsState.processing_uploads;
+          if (processing && typeof processing === 'object') {
+            Object.keys(processing).forEach(function(fieldName) {
+              uploadProcessingState[fieldName] = true;
+            });
+          }
+          Object.keys(uploadProcessingAreaKeys).forEach(function(fieldName) {
+            if (!uploadProcessingState[fieldName]) {
+              delete uploadProcessingAreaKeys[fieldName];
+            }
+          });
+        };
+        syncUploadProcessingState();
         const scopingState = parseJsonScript('project-scoping-data') || {};
         const scopingWeights = parseJsonScript('project-scoping-weights') || {};
         const scopingConfig = parseJsonScript('project-scoping-config') || {};
@@ -4628,6 +4690,7 @@
           if (artifacts && typeof artifacts === 'object') {
             Object.assign(dataArtifactsState, artifacts);
           }
+          syncUploadProcessingState();
         };
 
         const uploadAdCsv = function(file, domain, metric, areaKey, modalId) {
@@ -4650,13 +4713,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4689,13 +4746,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4743,13 +4794,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4777,13 +4822,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update password data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update password data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4817,13 +4856,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4904,13 +4937,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to upload the endpoint CSV';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to upload the endpoint CSV');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4950,13 +4977,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -4982,13 +5003,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5014,13 +5029,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to upload the cloud management XLSX';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to upload the cloud management XLSX');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5046,13 +5055,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to upload the IAM management XLSX';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to upload the IAM management XLSX');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5078,13 +5081,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to upload the system configuration XLSX';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to upload the system configuration XLSX');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5117,13 +5114,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to save workbook data.';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to save workbook data.');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5140,8 +5131,10 @@
           if (!workbookUpdateUrl || !file) {
             return;
           }
+          const fieldName = uploadFieldName || 'external_nexpose_xml';
           const formData = new FormData();
-          formData.append(uploadFieldName || 'external_nexpose_xml', file);
+          formData.append(fieldName, file);
+          formData.append('area_key', areaKey || '');
           return fetch(workbookUpdateUrl, {
             method: 'POST',
             headers: {
@@ -5149,14 +5142,26 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
+            if (data && data.queued) {
+              // Nexpose XML is parsed in a background task (large scans can
+              // run to hundreds of MB) -- there's no workbook_data/
+              // data_artifacts in this response yet. Mark this upload as
+              // processing and re-render so the card shows that instead of
+              // the normal "Selected: ..." state; the notification listener
+              // below (on 'ghostwriter:notification') clears it and pulls
+              // fresh data once the task finishes.
+              uploadProcessingState[fieldName] = true;
+              uploadProcessingAreaKeys[fieldName] = areaKey || '';
+              refreshWorkbookUi({
+                reopenModalId: modalId,
+                forceCloseModalId: modalId,
+                afterRender: function() { updateWorkbookCardProgress(areaKey); },
+              });
+              scheduleUploadPoll();
+              return;
+            }
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
               forceCloseModalId: modalId,
@@ -5187,13 +5192,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -5210,8 +5209,10 @@
           if (!workbookUpdateUrl || !file) {
             return;
           }
+          const fieldName = 'firewall_xml';
           const formData = new FormData();
-          formData.append('firewall_xml', file);
+          formData.append(fieldName, file);
+          formData.append('area_key', areaKey || '');
           return fetch(workbookUpdateUrl, {
             method: 'POST',
             headers: {
@@ -5219,14 +5220,22 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
+            if (data && data.queued) {
+              // Firewall (Nipper) XML is now parsed in a background task
+              // too (see process_project_data_upload, rolodex/tasks.py) --
+              // same reasoning and same handling as uploadNexposeXml above.
+              uploadProcessingState[fieldName] = true;
+              uploadProcessingAreaKeys[fieldName] = areaKey || '';
+              refreshWorkbookUi({
+                reopenModalId: modalId,
+                forceCloseModalId: modalId,
+                afterRender: function() { updateWorkbookCardProgress(areaKey); },
+              });
+              scheduleUploadPoll();
+              return;
+            }
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
               forceCloseModalId: modalId,
@@ -5251,13 +5260,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -7163,13 +7166,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -7198,13 +7195,7 @@
             },
             body: formData,
           }).then(function(response) {
-            return response.json().then(function(data) {
-              if (!response.ok) {
-                const message = (data && data.error) ? data.error : 'Unable to update workbook data';
-                throw new Error(message);
-              }
-              return data;
-            });
+            return parseWorkbookJsonResponse(response, 'Unable to update workbook data');
           }).then(function(data) {
             handleWorkbookUpdateResponse(data, {
               reopenModalId: modalId,
@@ -7803,6 +7794,10 @@
                   });
                   const fileNameDisplay = document.createElement('div');
                   fileNameDisplay.className = 'small text-muted mt-2';
+                  const processingNotice = document.createElement('div');
+                  processingNotice.className = 'alert alert-info small py-2 px-3 mt-2';
+                  processingNotice.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Processing upload — this can take several minutes for a large file. This card will update automatically when it finishes.';
+                  processingNotice.style.display = 'none';
                   const missingNotice = document.createElement('div');
                   missingNotice.className = 'alert alert-warning small py-2 px-3 mt-2';
                   missingNotice.textContent = 'Missing Nexpose issues identified! Update the matrix and re-upload.';
@@ -7811,7 +7806,19 @@
                     const hasMissing = hasNexposeMissingEntries(missingArtifactKey);
                     missingNotice.style.display = hasMissing ? '' : 'none';
                   };
+                  const isProcessing = function() {
+                    return !!uploadProcessingState[uploader.fieldName];
+                  };
                   const setFileNameFromState = function() {
+                    const processing = isProcessing();
+                    processingNotice.style.display = processing ? '' : 'none';
+                    uploadButton.disabled = processing;
+                    removeButton.disabled = processing;
+                    if (processing) {
+                      missingNotice.style.display = 'none';
+                      fileNameDisplay.textContent = '';
+                      return;
+                    }
                     updateMissingNotice();
                     if (!uploader.fileNameKey) {
                       fileNameDisplay.textContent = '';
@@ -7855,6 +7862,7 @@
                   uploadContainer.appendChild(removeButton);
                   uploadContainer.appendChild(uploadInput);
                   uploadContainer.appendChild(fileNameDisplay);
+                  uploadContainer.appendChild(processingNotice);
                   uploadContainer.appendChild(missingNotice);
                   setFileNameFromState();
                 });
@@ -8110,7 +8118,37 @@
             uploadButton.addEventListener('click', function() { uploadInput.click(); });
             const fileNameDisplay = document.createElement('div');
             fileNameDisplay.className = 'small text-muted mt-2';
+            // Firewall XML is now parsed in a background task too (see
+            // process_project_data_upload, rolodex/tasks.py) -- same
+            // processing notice / disabled-state pattern the generic
+            // Nexpose uploaders use (config.uploaders' isProcessing/
+            // setFileNameFromState, above), hand-rolled here since this
+            // block isn't built from that same config-driven loop.
+            const processingNotice = document.createElement('div');
+            processingNotice.className = 'alert alert-info small py-2 px-3 mt-2';
+            processingNotice.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>Processing upload — this can take several minutes for a large file. This card will update automatically when it finishes.';
+            processingNotice.style.display = 'none';
+            const isProcessing = function() {
+              return !!uploadProcessingState.firewall_xml;
+            };
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'btn btn-outline-danger ml-2';
+            removeButton.textContent = 'Remove Nipper Data';
+            removeButton.addEventListener('click', function() {
+              runWithButtonLoading(removeButton, 'Removing...', function() {
+                return removeFirewallData(areaKey, modalId);
+              }).then(function() { updateFileName(); });
+            });
             const updateFileName = function() {
+              const processing = isProcessing();
+              processingNotice.style.display = processing ? '' : 'none';
+              uploadButton.disabled = processing;
+              removeButton.disabled = processing;
+              if (processing) {
+                fileNameDisplay.textContent = '';
+                return;
+              }
               const name = (dataArtifactsState.firewall_xml_file_name || '').toString().trim();
               fileNameDisplay.textContent = name
                 ? 'Uploaded file: ' + name
@@ -8128,19 +8166,11 @@
                 event.target.value = '';
               }
             });
-            const removeButton = document.createElement('button');
-            removeButton.type = 'button';
-            removeButton.className = 'btn btn-outline-danger ml-2';
-            removeButton.textContent = 'Remove Nipper Data';
-            removeButton.addEventListener('click', function() {
-              runWithButtonLoading(removeButton, 'Removing...', function() {
-                return removeFirewallData(areaKey, modalId);
-              }).then(function() { updateFileName(); });
-            });
             uploadWrapper.appendChild(uploadInput);
             uploadWrapper.appendChild(uploadButton);
             uploadWrapper.appendChild(removeButton);
             uploadWrapper.appendChild(fileNameDisplay);
+            uploadWrapper.appendChild(processingNotice);
             modalBody.appendChild(uploadWrapper);
           }
           const modalFooter = document.createElement('div');
@@ -8497,6 +8527,150 @@
           refreshWorkbookUi(renderOptions);
           refreshProjectDataTabs();
         };
+
+        // A background upload task (see process_project_data_upload,
+        // rolodex/tasks.py) has no synchronous response to report through,
+        // so it notifies over WebSockets instead -- base_generic.html
+        // relays every such message as a 'ghostwriter:notification'
+        // CustomEvent (in addition to the generic toast it already shows).
+        // Only react to ones about *this* project's upload completing;
+        // anything else (a different page's notification, or a message
+        // from an unrelated feature) is left for the generic toast alone.
+        //
+        // Applying the update has to account for whichever modal (if any)
+        // is open when the notification lands -- three cases:
+        //  - nothing open: apply immediately, nothing to reopen.
+        //  - this same upload's own modal is open: it got there by
+        //    reopening itself after the 202 response (see
+        //    uploadNexposeXml), the same close-then-reopen convention every
+        //    other save handler in this file uses (reopenModalId/
+        //    forceCloseModalId) -- so force-refresh it in place
+        //    immediately, the same way. Waiting for the user to close it
+        //    first would deadlock: nothing prompts them to, it's just
+        //    sitting there showing "Processing...".
+        //  - a *different* modal is open (e.g. a DNS "Remove Domain"
+        //    dialog with a closure over workbookState.dns.records captured
+        //    when it opened): defer the whole update -- state mutation
+        //    included, not just the render, since handleWorkbookUpdateResponse
+        //    mutates workbookState/dataArtifactsState synchronously, before
+        //    refreshWorkbookUi's own deferred-render check even runs --
+        //    until that modal closes on its own, and don't reopen the
+        //    nexpose modal afterward; the user didn't ask for it.
+        const applyWorkbookNotification = function(detail, data) {
+          const relatedModalId = detail.area_key ? ('workbook-area-modal-' + detail.area_key) : null;
+          const activeModal = document.querySelector('.modal.show');
+          const isOwnModalOpen = !!(relatedModalId && activeModal && activeModal.id === relatedModalId);
+          const renderOptions = {
+            afterRender: function() { updateWorkbookCardProgress(detail.area_key); },
+          };
+          if (isOwnModalOpen) {
+            renderOptions.reopenModalId = relatedModalId;
+            renderOptions.forceCloseModalId = relatedModalId;
+          }
+          const apply = function() {
+            if (data) {
+              handleWorkbookUpdateResponse(data, renderOptions);
+            } else {
+              refreshWorkbookUi(renderOptions);
+            }
+          };
+          if (activeModal && !isOwnModalOpen) {
+            $(activeModal).one('hidden.bs.modal', apply);
+          } else {
+            apply();
+          }
+        };
+
+        const projectIdForNotifications = workbookTab ? workbookTab.getAttribute('data-project-id') : null;
+        document.addEventListener('ghostwriter:notification', function(event) {
+          const detail = event.detail || {};
+          if (detail.event !== 'workbook_upload_complete') {
+            return;
+          }
+          if (!projectIdForNotifications || String(detail.project_id) !== String(projectIdForNotifications)) {
+            return;
+          }
+          const fieldName = detail.upload_field;
+          if (fieldName) {
+            delete uploadProcessingState[fieldName];
+            delete uploadProcessingAreaKeys[fieldName];
+          }
+          if (detail.status !== 'success' || !workbookUpdateUrl) {
+            applyWorkbookNotification(detail, null);
+            return;
+          }
+          fetch(workbookUpdateUrl, {
+            method: 'GET',
+            headers: {'Accept': 'application/json'},
+          }).then(function(response) {
+            return parseWorkbookJsonResponse(response, 'Unable to refresh workbook data');
+          }).then(function(data) {
+            applyWorkbookNotification(detail, data);
+          }).catch(function(error) {
+            console.error(error);
+            // The task already succeeded server-side (that's why we're
+            // here) -- a failed refetch just leaves stale data on screen
+            // until the next save/reload, not a data-loss risk.
+            applyWorkbookNotification(detail, null);
+          });
+        });
+
+        // Fallback for a completion notification that never arrives.
+        // base_generic.html's WebSocket reconnects on drop, but a
+        // recycle/restart still opens a gap (Channels' group_send has no
+        // delivery guarantee, so a message sent while a client is
+        // mid-reconnect is just lost) that would otherwise strand this
+        // card on "Processing..." until a manual reload -- the same bug
+        // the notification handling above exists to fix, just triggered by
+        // a dropped message instead of a self-deadlocking modal wait. Poll
+        // workbookUpdateUrl every 30s while anything is known to be
+        // processing, and stop as soon as nothing is.
+        let uploadPollTimer = null;
+        const scheduleUploadPoll = function() {
+          if (uploadPollTimer !== null || !Object.keys(uploadProcessingState).length) {
+            return;
+          }
+          uploadPollTimer = window.setTimeout(pollProcessingUploads, 30000);
+        };
+        const pollProcessingUploads = function() {
+          uploadPollTimer = null;
+          if (!workbookUpdateUrl || !Object.keys(uploadProcessingState).length) {
+            return;
+          }
+          fetch(workbookUpdateUrl, {
+            method: 'GET',
+            headers: {'Accept': 'application/json'},
+          }).then(function(response) {
+            return parseWorkbookJsonResponse(response, 'Unable to refresh workbook data');
+          }).then(function(data) {
+            const artifacts = (data && data.data_artifacts) || {};
+            const stillProcessing = artifacts.processing_uploads || {};
+            const finishedFields = Object.keys(uploadProcessingState).filter(function(fieldName) {
+              return !stillProcessing[fieldName];
+            });
+            if (!finishedFields.length) {
+              // Nothing finished -- don't touch state/DOM this tick.
+              scheduleUploadPoll();
+              return;
+            }
+            // Only one finished upload's own modal (if any) makes sense to
+            // reopen in place; if several finished in the same tick, pick
+            // any one of them for that purpose -- the render still applies
+            // every field's fresh data via handleWorkbookUpdateResponse,
+            // this only affects which modal (if the user has one of these
+            // specific ones open) gets force-refreshed versus deferred.
+            const areaKeyForReopen = uploadProcessingAreaKeys[finishedFields[0]];
+            finishedFields.forEach(function(fieldName) {
+              delete uploadProcessingAreaKeys[fieldName];
+            });
+            applyWorkbookNotification({area_key: areaKeyForReopen}, data);
+            scheduleUploadPoll();
+          }).catch(function(error) {
+            console.error(error);
+            scheduleUploadPoll();
+          });
+        };
+        scheduleUploadPoll();
 
         const getCsrfToken = function() {
           const cookieString = document.cookie || '';
