@@ -695,6 +695,15 @@ class SelectReportTemplateForm(forms.ModelForm):
                         title="Generate an XLSX report"
                     ></button>
                     <button
+                        class="btn btn-default cap-btn-icon"
+                        type="submit"
+                        formaction="{% url 'reporting:generate_cap' report.id %}"
+                        formmethod="get"
+                        data-toggle="tooltip"
+                        data-placement="top"
+                        title="Generate a CAP report"
+                    ></button>
+                    <button
                         class="btn btn-default json-btn-icon"
                         type="submit"
                         formaction="{% url 'reporting:generate_json' report.id %}"
@@ -713,6 +722,14 @@ class SelectReportTemplateForm(forms.ModelForm):
                         title="Generate and package all report types and evidence in a Zip"
                     ></button>
                 </div>
+                {% if supplemental_slots and not has_supplementals %}
+                <div class="alert alert-info mt-3 text-left" role="alert">
+                    No supplemental files uploaded. The CAP will include report findings only.
+                    Upload Web/Nexpose workbooks on the
+                    <a href="javascript:void(0)" class="alert-link"
+                       onclick="$('#id_supplementals').tab('show')">Supplementals</a> tab.
+                </div>
+                {% endif %}
                 """
             ),
         )

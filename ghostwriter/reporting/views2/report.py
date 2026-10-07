@@ -34,6 +34,7 @@ from ghostwriter.modules.reportwriter.base import ReportExportTemplateError
 from ghostwriter.modules.reportwriter.report.docx import ExportReportDocx
 from ghostwriter.modules.reportwriter.report.json import ExportReportJson
 from ghostwriter.modules.reportwriter.report.pptx import ExportReportPptx
+from ghostwriter.modules.reportwriter.report.cap_xlsx import ExportReportCapXlsx
 from ghostwriter.modules.reportwriter.report.xlsx import ExportReportXlsx
 from ghostwriter.modules.shared import add_content_disposition_header
 from ghostwriter.reporting.archive import archive_report
@@ -689,6 +690,7 @@ class GenerateReportBase(RoleBasedAccessControlMixin, SingleObjectMixin, View):
         "tags",
         "reportfindinglink_set",
         "reportfindinglink_set__evidence_set",
+        "supplemental_files",
         "reportobservationlink_set",
         "evidence_set",
         "project__oplog_set",
@@ -859,6 +861,54 @@ class GenerateReportXLSX(GenerateReportBase):
             messages.error(
                 self.request,
                 "Encountered an error generating the spreadsheet: {}".format(error),
+                extra_tags="alert-danger",
+            )
+        return HttpResponseRedirect(reverse("reporting:report_detail", kwargs={"pk": obj.pk}) + "#generate")
+
+
+class GenerateReportCAP(GenerateReportBase):
+    """
+    Generate a Corrective Action Plan (CAP) XLSX workbook for an individual
+    :model:`reporting.Report` from its findings and uploaded supplemental workbooks.
+    """
+
+    def get(self, *args, **kwargs):
+        obj = self.object
+
+        logger.info(
+            "Generating CAP report for %s %s by request of %s",
+            obj.__class__.__name__,
+            obj.id,
+            self.request.user,
+        )
+
+        try:
+            exporter = ExportReportCapXlsx(obj, include_bloodhound=False)
+            if not exporter.has_rows():
+                messages.warning(
+                    self.request,
+                    "Nothing to put in the CAP: this report has no findings and no supplemental files.",
+                    extra_tags="alert-warning",
+                )
+                return HttpResponseRedirect(reverse("reporting:report_detail", kwargs={"pk": obj.pk}) + "#generate")
+
+            report_name = exporter.render_filename(ExportReportCapXlsx.FILENAME_TEMPLATE, ext="xlsx")
+            output = exporter.run()
+            response = HttpResponse(output.getvalue(), content_type=ExportReportCapXlsx.mime_type())
+            add_content_disposition_header(response, report_name)
+            output.close()
+
+            return response
+        except Exception as error:
+            logger.exception(
+                "CAP generation failed unexpectedly for %s %s and user %s",
+                obj.__class__.__name__,
+                obj.id,
+                self.request.user,
+            )
+            messages.error(
+                self.request,
+                "Encountered an error generating the CAP: {}".format(error),
                 extra_tags="alert-danger",
             )
         return HttpResponseRedirect(reverse("reporting:report_detail", kwargs={"pk": obj.pk}) + "#generate")

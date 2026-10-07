@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 from unittest import mock
+from urllib.parse import unquote
 
 # Django Imports
 from django.contrib.messages import get_messages
@@ -15,6 +16,8 @@ from ghostwriter.factories import ProjectAssignmentFactory, ReportFactory, UserF
 from ghostwriter.reporting.models import ReportSupplementalFile
 from ghostwriter.reporting.tests.supplemental_fixtures import (
     nexpose_workbook,
+    read_workbook,
+    sheet_rows,
     uploaded,
     web_workbook,
 )
@@ -382,3 +385,91 @@ class ReportDetailSupplementalsTabTests(SupplementalViewTestsBase):
         self.assertContains(response, "Not uploaded", count=1)
         self.assertTrue(response.context["has_supplementals"])
         self.assertEqual(response.context["supplemental_slots"][1]["file"], supplemental)
+
+
+class GenerateReportCAPTests(SupplementalViewTestsBase):
+    """Collection of tests for :view:`reporting.GenerateReportCAP`."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.cap_uri = reverse("reporting:generate_cap", kwargs={"pk": cls.report.pk})
+        cls.xlsx_type = (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    def test_view_requires_login_and_permissions(self):
+        create_supplemental(self.report)
+        response = self.client.get(self.cap_uri)
+        self.assertEqual(response.status_code, 302)
+
+        response = self.client_auth.get(self.cap_uri)
+        self.assertEqual(response.status_code, 302)
+
+        ProjectAssignmentFactory(project=self.report.project, operator=self.user)
+        response = self.client_auth.get(self.cap_uri)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get("Content-Type"), self.xlsx_type)
+
+    def test_generates_workbook_from_supplementals(self):
+        create_supplemental(
+            self.report,
+            kind="nexpose",
+            cap_entries=[
+                {
+                    "source": "nexpose",
+                    "issue": "N-High",
+                    "systems": "10.0.0.1",
+                    "action": "Fix",
+                    "risk": "High",
+                    "score": None,
+                },
+                {
+                    "source": "nexpose",
+                    "issue": "N-Low",
+                    "systems": "10.0.0.2",
+                    "action": "Fix",
+                    "risk": "Low",
+                    "score": None,
+                },
+            ],
+            row_count=2,
+        )
+        response = self.client_mgr.get(self.cap_uri)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get("Content-Type"), self.xlsx_type)
+        disposition = unquote(response.get("Content-Disposition"))
+        self.assertIn("Cybersecurity Report Corrective Action Plan", disposition)
+        self.assertIn(".xlsx", disposition)
+
+        workbook = read_workbook(response.content)
+        self.assertEqual(
+            workbook.sheetnames, ["High Priority", "Med Priority", "Lower Priority"]
+        )
+        self.assertEqual(
+            [row[1] for row in sheet_rows(workbook["High Priority"])[1:]], ["N-High"]
+        )
+        self.assertEqual(
+            [row[1] for row in sheet_rows(workbook["Lower Priority"])[1:]], ["N-Low"]
+        )
+
+    def test_empty_report_redirects_with_warning(self):
+        response = self.client_mgr.get(self.cap_uri)
+        self.assertRedirects(
+            response, self.detail_uri + "#generate", fetch_redirect_response=False
+        )
+        self.assertIn(
+            "Nothing to put in the CAP: this report has no findings and no supplemental files.",
+            messages_for(response),
+        )
+
+    def test_generate_tab_button_and_info_alert(self):
+        response = self.client_mgr.get(self.detail_uri)
+        self.assertContains(response, 'formaction="{}"'.format(self.cap_uri))
+        self.assertContains(response, "cap-btn-icon")
+        self.assertContains(response, "No supplemental files uploaded.")
+
+        create_supplemental(self.report, kind="web")
+        response = self.client_mgr.get(self.detail_uri)
+        self.assertContains(response, "cap-btn-icon")
+        self.assertNotContains(response, "No supplemental files uploaded.")
