@@ -39,7 +39,14 @@ from ghostwriter.modules.shared import add_content_disposition_header
 from ghostwriter.reporting.archive import archive_report
 from ghostwriter.reporting.filters import ReportFilter, ReportTemplateFilter
 from ghostwriter.reporting.forms import ReportForm, ReportTemplateForm, SelectReportTemplateForm
-from ghostwriter.reporting.models import Archive, Finding, Observation, Report, ReportTemplate
+from ghostwriter.reporting.models import (
+    Archive,
+    Finding,
+    Observation,
+    Report,
+    ReportSupplementalFile,
+    ReportTemplate,
+)
 from ghostwriter.rolodex.models import Project
 
 logger = logging.getLogger(__name__)
@@ -214,6 +221,15 @@ class ReportDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["observation_autocomplete"] = self.observation_autocomplete
         ctx["report_extra_fields_spec"] = ExtraFieldSpec.objects.filter(target_model=Report._meta.label)
         ctx["report_config"] = ReportConfiguration.get_solo()
+
+        # Supplemental workbook slots (Web then Nexpose) and whether the user may change them
+        ctx["can_edit"] = self.object.user_can_edit(self.request.user)
+        files_by_kind = {f.kind: f for f in self.object.supplemental_files.all()}
+        ctx["supplemental_slots"] = [
+            {"kind": kind.value, "label": kind.label, "file": files_by_kind.get(kind.value)}
+            for kind in ReportSupplementalFile.Kind
+        ]
+        ctx["has_supplementals"] = bool(files_by_kind)
 
         return ctx
 
