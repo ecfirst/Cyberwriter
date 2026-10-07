@@ -872,11 +872,11 @@ class ProjectListViewTests(TestCase):
         """Test that execution window cells have data-text attribute for locale-independent sorting."""
         response = self.client_mgr.get(self.uri)
         self.assertEqual(response.status_code, 200)
-        
+
         # Check that the response contains data-text attribute with ISO date format
         content = response.content.decode('utf-8')
         self.assertIn('data-text="', content, "data-text attribute should be present in the template")
-        
+
         # Verify each project in the queryset has its start_date in the data-text attribute
         for project in response.context["filter"].qs:
             expected_sort_value = project.start_date.strftime("%Y-%m-%d")
@@ -4885,3 +4885,62 @@ class EndpointMetricsPayloadTests(TestCase):
         online_row = rows_by_computer.get("CORP-LAP-01", [None])[0]
         self.assertIsNotNone(online_row)
         self.assertEqual(online_row[3], "Defender")
+class AiReviewPasswordNistGuidanceTests(TestCase):
+    """Confirm the Password AI Review prompt reflects current NIST guidance."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.project = ProjectFactory()
+
+    def _password_workbook(self):
+        return {
+            "password": {
+                "policies": [
+                    {
+                        "domain": "corp.example.com",
+                        "name": "Default Domain Policy",
+                        "passwords_cracked": 12,
+                        "admin_cracked": 1,
+                        "enabled_accounts": 400,
+                        "max_age": 0,
+                        "complexity_enabled": "FALSE",
+                    }
+                ]
+            },
+            "external_internal_grades": {
+                "iam": {"password": {"score": 4.0, "risk": "Medium"}},
+            },
+        }
+
+    def test_prompt_includes_nist_guidance(self):
+        prompt = _build_ai_review_prompt(
+            "password_rt", self.project, self._password_workbook(), {}
+        )
+        self.assertIn("Password policy effectiveness", prompt)
+        self.assertIn("NIST SP 800-63B", prompt)
+        self.assertIn("Do not recommend periodic or forced password expiration", prompt)
+        self.assertIn("Do not recommend enabling character-composition", prompt)
+        self.assertIn(
+            "Prioritize cracked password results and administrator credentials",
+            prompt,
+        )
+        self.assertIn(
+            "ecfirst has determined that, based on the defined and implemented password policy",
+            prompt,
+        )
+        self.assertIn("Medium", prompt)
+
+    def test_bare_password_key_also_gets_guidance(self):
+        prompt = _build_ai_review_prompt(
+            "password", self.project, self._password_workbook(), {}
+        )
+        self.assertIn("NIST SP 800-63B", prompt)
+
+    def test_other_sections_do_not_receive_password_guidance(self):
+        workbook = {
+            "ad_attack_paths": {
+                "domains": [{"domain": "corp.example.com", "kerberoastable": 1}]
+            },
+        }
+        prompt = _build_ai_review_prompt("ad_attack_paths_rt", self.project, workbook, {})
+        self.assertNotIn("NIST SP 800-63B", prompt)
