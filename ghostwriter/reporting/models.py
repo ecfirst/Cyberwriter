@@ -18,7 +18,10 @@ from cvss import CVSS3, CVSS4
 from taggit.managers import TaggableManager
 
 # Ghostwriter Libraries
-from ghostwriter.reporting.validators import validate_evidence_extension
+from ghostwriter.reporting.validators import (
+    validate_evidence_extension,
+    validate_xlsx_extension,
+)
 
 # Using __name__ resolves to ghostwriter.reporting.models
 logger = logging.getLogger(__name__)
@@ -911,6 +914,66 @@ class Evidence(models.Model):
     @property
     def filename(self):
         return os.path.basename(self.document.name)
+
+
+def set_supplemental_upload_destination(this, filename):
+    """Sets the `upload_to` destination to the supplementals folder for the associated report ID."""
+    return os.path.join("supplementals", f"report_{this.report.id}", filename)
+
+
+class ReportSupplementalFile(models.Model):
+    """
+    Stores an uploaded supplemental XLSX workbook (Web/Burp or Nexpose), related to
+    :model:`reporting.Report` and :model:`users.User`, along with the Corrective Action Plan
+    rows parsed from it at upload time.
+    """
+
+    class Kind(models.TextChoices):
+        WEB = "web", "Web (Burp)"
+        NEXPOSE = "nexpose", "Nexpose"
+
+    report = models.ForeignKey("Report", on_delete=models.CASCADE, related_name="supplemental_files")
+    kind = models.CharField("Kind", max_length=32, choices=Kind.choices)
+    document = models.FileField(
+        upload_to=set_supplemental_upload_destination,
+        validators=[validate_xlsx_extension],
+        max_length=255,
+    )
+    original_filename = models.CharField("Original Filename", max_length=255, blank=True)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    uploaded_at = models.DateTimeField("Uploaded At", auto_now=True)
+
+    # Parsed at upload time so CAP generation is fast and parse errors surface immediately
+    cap_entries = models.JSONField(
+        "CAP Entries",
+        default=list,
+        blank=True,
+        help_text="Normalized CAP rows parsed from the workbook",
+    )
+    row_count = models.PositiveIntegerField("Row Count", default=0)
+    parse_warnings = models.JSONField("Parse Warnings", default=list, blank=True)
+
+    class Meta:
+        ordering = ["report", "kind"]
+        verbose_name = "Report supplemental file"
+        verbose_name_plural = "Report supplemental files"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["report", "kind"],
+                name="reporting_supplemental_unique_kind_per_report",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.get_kind_display()} supplemental for {self.report}"
+
+    @property
+    def filename(self):
+        return os.path.basename(self.document.name)
+
+    @property
+    def has_warnings(self):
+        return bool(self.parse_warnings)
 
 
 class Archive(models.Model):

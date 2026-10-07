@@ -21,6 +21,7 @@ from ghostwriter.reporting.models import (
     Report,
     ReportFindingLink,
     ReportObservationLink,
+    ReportSupplementalFile,
     ReportTemplate,
     Severity,
 )
@@ -291,3 +292,21 @@ class ObservationAdmin(ImportExportMixin, CollabAdminBase):
 class ReportObservationLinkAdmin(CollabAdminBase):
     list_display = ("report", "title")
     list_display_links = ("report", "title")
+
+
+@admin.register(ReportSupplementalFile)
+class ReportSupplementalFileAdmin(admin.ModelAdmin):
+    list_display = ("report", "kind", "original_filename", "row_count", "uploaded_at", "uploaded_by")
+    list_filter = ("kind",)
+    list_display_links = ("report", "original_filename")
+    readonly_fields = ("cap_entries", "parse_warnings", "row_count", "uploaded_at")
+    fieldsets = (
+        (
+            "Supplemental File",
+            {"fields": ("report", "kind", "document", "original_filename", "uploaded_by", "uploaded_at")},
+        ),
+        (
+            "Parsed CAP Data",
+            {"fields": ("row_count", "parse_warnings", "cap_entries")},
+        ),
+    )
