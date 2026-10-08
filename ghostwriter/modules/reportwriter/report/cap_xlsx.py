@@ -5,7 +5,8 @@ The workbook has three tabs (High / Med / Lower Priority) with identical columns
 from two sources, in this order:
 
 1. The report's findings (``ReportFindingLink``), bucketed by severity name with a CVSS
-   fallback for severities that are not one of the standard names.
+   fallback for severities that are not one of the standard names. The Sev cell shows the
+   severity name; the CVSS score only orders rows within a tab.
 2. The CAP entries parsed from the report's uploaded supplemental workbooks
    (``ReportSupplementalFile``), Web first and then Nexpose, bucketed by their risk label
    with a numeric-score fallback.
@@ -164,12 +165,8 @@ class ExportReportCapXlsx(ExportXlsxBase, ExportReportBase):
             else:
                 priority = self._threshold_priority(cvss, self.FINDING_CVSS_RULES)
 
-            if cvss is not None:
-                sev = f"{cvss:.1f}"
-            elif risk == "Low":
-                sev = "Low"
-            else:
-                sev = severity_name
+            # Sev shows the severity name; CVSS only orders rows within a tab
+            sev = severity_name
 
             systems = self._render_finding_field(finding, "affected_entities")
             recommendation = self._render_finding_field(finding, "mitigation")

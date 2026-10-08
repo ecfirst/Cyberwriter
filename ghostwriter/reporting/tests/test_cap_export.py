@@ -142,10 +142,10 @@ class ExportReportCapXlsxTests(TestCase):
         self.assertEqual(
             sev_by_issue(ws),
             {
-                "Crit": "9.8",
+                "Crit": "Critical",
                 "W-8": "8",
-                "High": "7.5",
-                "Weird-7.1": "7.1",
+                "High": "High",
+                "Weird-7.1": "Weird",
                 "N-High": "High",
             },
         )
@@ -155,8 +155,11 @@ class ExportReportCapXlsxTests(TestCase):
         ws = workbook["Med Priority"]
         # Ties keep source order: findings, then web, then nexpose
         self.assertEqual(issues(ws), ["W-5.5", "N-5.5", "Med", "Weird-4.0", "W-Med"])
-        self.assertEqual(sev_by_issue(ws)["W-Med"], "Medium")
-        self.assertEqual(sev_by_issue(ws)["N-5.5"], "5.5")
+        sevs = sev_by_issue(ws)
+        self.assertEqual(sevs["W-Med"], "Medium")
+        self.assertEqual(sevs["N-5.5"], "5.5")
+        self.assertEqual(sevs["Med"], "Medium")
+        self.assertEqual(sevs["Weird-4.0"], "Weird")
 
     def test_lower_priority_rows(self):
         _, workbook = export(self.report)
@@ -166,10 +169,14 @@ class ExportReportCapXlsxTests(TestCase):
             ["W-4.5", "N-Low", "Low", "Weird-1.0", "Info", "Weird-none", "N-none"],
         )
         sevs = sev_by_issue(ws)
-        self.assertEqual(sevs["Info"], "Low", "Informational findings roll up into Low")
         self.assertEqual(
-            sevs["Weird-none"], "Weird", "Unmapped severity without CVSS shows its name"
+            sevs["Info"],
+            "Informational",
+            "Informational lands in Lower with its own name",
         )
+        self.assertEqual(sevs["Low"], "Low")
+        self.assertEqual(sevs["Weird-1.0"], "Weird")
+        self.assertEqual(sevs["Weird-none"], "Weird")
         self.assertEqual(sevs["N-none"], "", "No risk and no score leaves Sev blank")
         self.assertEqual(sevs["N-Low"], "3")
         self.assertEqual(
@@ -223,7 +230,7 @@ class ExportReportCapXlsxTests(TestCase):
         med = sheet_rows(workbook["Med Priority"])[1:]
         matches = [row for row in med if row[1] == "W-Med"]
         self.assertEqual(len(matches), 1)
-        self.assertEqual(matches[0][0], "Medium", "The supplemental Sev wins, not 9.0")
+        self.assertEqual(matches[0][0], "Medium", "The supplemental Sev wins, not High")
         self.assertEqual(matches[0][2], "sys")
         self.assertEqual(matches[0][3], "act")
 
@@ -290,6 +297,9 @@ class ExportReportCapXlsxTests(TestCase):
         exporter, workbook = export(report)
         self.assertEqual(exporter.shadowed_findings, [])
         self.assertEqual(issues(workbook["High Priority"]), ["Alpha", "Beta"])
+        self.assertEqual(
+            sev_by_issue(workbook["High Priority"]), {"Alpha": "High", "Beta": "High"}
+        )
 
     def test_collect_rows_is_memoized(self):
         exporter = ExportReportCapXlsx(self.report, include_bloodhound=False)
