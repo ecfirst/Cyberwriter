@@ -10,19 +10,26 @@ from two sources, in this order:
    (``ReportSupplementalFile``), Web first and then Nexpose, bucketed by their risk label
    with a numeric-score fallback.
 
+Supplemental rows take precedence: a finding whose title matches the issue of any
+supplemental entry (ignoring case and surrounding/repeated whitespace) is left out so the
+scanner's row, with its per-host system list and remediation, is the one in the CAP.
+
 Styling, headers, and sheet configuration mirror Cyberwriter's CAP export so the output is
 interchangeable with the workbook analysts already know.
 """
 
 # Standard Libraries
 import io
-from typing import Any, Dict, List, Optional
+import logging
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 # Ghostwriter Libraries
 from ghostwriter.modules.reportwriter.base.xlsx import ExportXlsxBase
 from ghostwriter.modules.reportwriter.report.base import ExportReportBase
 from ghostwriter.reporting.models import ReportSupplementalFile
 from ghostwriter.reporting.supplemental_parsers import RISK_RANK, truncate_excel_text
+
+logger = logging.getLogger(__name__)
 
 HIGH_PRIORITY = "High Priority"
 MED_PRIORITY = "Med Priority"
@@ -104,6 +111,8 @@ class ExportReportCapXlsx(ExportXlsxBase, ExportReportBase):
         super().__init__(object, **kwargs)
         self.report = object
         self._rows: Optional[Dict[str, List[Dict[str, Any]]]] = None
+        # Titles of findings left out because a supplemental row has the same title
+        self.shadowed_findings: List[str] = []
 
     # ------------------------------------------------------------------ row collection
 
@@ -113,17 +122,36 @@ class ExportReportCapXlsx(ExportXlsxBase, ExportReportBase):
             rows: Dict[str, List[Dict[str, Any]]] = {
                 config["name"]: [] for config in self.SHEET_CONFIGS
             }
-            self._append_finding_rows(rows)
-            self._append_supplemental_rows(rows)
+            entries = self._supplemental_entries()
+            shadowed = {
+                key
+                for key in (self._match_key(entry.get("issue")) for _, entry in entries)
+                if key
+            }
+            self._append_finding_rows(rows, shadowed)
+            self._append_supplemental_rows(rows, entries)
             self._rows = rows
         return self._rows
 
     def has_rows(self) -> bool:
         return any(self.collect_rows().values())
 
-    def _append_finding_rows(self, rows: Dict[str, List[Dict[str, Any]]]) -> None:
+    def _append_finding_rows(
+        self, rows: Dict[str, List[Dict[str, Any]]], shadowed: Set[str]
+    ) -> None:
         context = self.map_rich_texts()
+        self.shadowed_findings = []
         for finding in context.get("findings", []):
+            title = finding.get("title")
+            if self._match_key(title) in shadowed:
+                self.shadowed_findings.append(self._stringify(title))
+                logger.info(
+                    "CAP export omitted finding %r for report %s because a supplemental row has the same title",
+                    title,
+                    self.report.pk,
+                )
+                continue
+
             severity_name = self._stringify(finding.get("severity"))
             cvss = self._coerce_score(finding.get("cvss_score"))
             if cvss is not None and cvss <= 0:
@@ -145,9 +173,7 @@ class ExportReportCapXlsx(ExportXlsxBase, ExportReportBase):
 
             systems = self._render_finding_field(finding, "affected_entities")
             recommendation = self._render_finding_field(finding, "mitigation")
-            self._add_row(
-                rows, priority, sev, finding.get("title"), systems, recommendation, cvss
-            )
+            self._add_row(rows, priority, sev, title, systems, recommendation, cvss)
 
     def _render_finding_field(self, finding: Dict[str, Any], field: str) -> str:
         """Render a finding's rich text field to plain text, or ``""`` when it is empty."""
@@ -158,50 +184,60 @@ class ExportReportCapXlsx(ExportXlsxBase, ExportReportBase):
             return ""
         return self.render_rich_text_xlsx(rich_text)
 
-    def _append_supplemental_rows(self, rows: Dict[str, List[Dict[str, Any]]]) -> None:
+    def _supplemental_entries(
+        self,
+    ) -> List[Tuple[ReportSupplementalFile, Dict[str, Any]]]:
+        """Every well-formed CAP entry across the report's supplemental files, Web first."""
         files = sorted(
             self.report.supplemental_files.all(),
             key=lambda f: self.KIND_ORDER.index(f.kind)
             if f.kind in self.KIND_ORDER
             else len(self.KIND_ORDER),
         )
+        pairs: List[Tuple[ReportSupplementalFile, Dict[str, Any]]] = []
         for supplemental in files:
             entries = (
                 supplemental.cap_entries
                 if isinstance(supplemental.cap_entries, list)
                 else []
             )
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                risk = entry.get("risk")
-                if risk not in RISK_RANK:
-                    risk = None
-                score = self._coerce_score(entry.get("score"))
-                source = entry.get("source") or supplemental.kind
+            pairs.extend(
+                (supplemental, entry) for entry in entries if isinstance(entry, dict)
+            )
+        return pairs
 
-                if risk:
-                    priority = self.PRIORITY_BY_RISK[risk]
-                else:
-                    rules = self.PRIORITY_OVERRIDES.get(
-                        source, self.DEFAULT_PRIORITY_RULES
-                    )
-                    priority = self._threshold_priority(score, rules)
+    def _append_supplemental_rows(
+        self,
+        rows: Dict[str, List[Dict[str, Any]]],
+        entries: Iterable[Tuple[ReportSupplementalFile, Dict[str, Any]]],
+    ) -> None:
+        for supplemental, entry in entries:
+            risk = entry.get("risk")
+            if risk not in RISK_RANK:
+                risk = None
+            score = self._coerce_score(entry.get("score"))
+            source = entry.get("source") or supplemental.kind
 
-                if score is not None:
-                    sev = self._format_score(score)
-                else:
-                    sev = risk or ""
+            if risk:
+                priority = self.PRIORITY_BY_RISK[risk]
+            else:
+                rules = self.PRIORITY_OVERRIDES.get(source, self.DEFAULT_PRIORITY_RULES)
+                priority = self._threshold_priority(score, rules)
 
-                self._add_row(
-                    rows,
-                    priority,
-                    sev,
-                    entry.get("issue"),
-                    entry.get("systems"),
-                    entry.get("action"),
-                    score,
-                )
+            if score is not None:
+                sev = self._format_score(score)
+            else:
+                sev = risk or ""
+
+            self._add_row(
+                rows,
+                priority,
+                sev,
+                entry.get("issue"),
+                entry.get("systems"),
+                entry.get("action"),
+                score,
+            )
 
     def _add_row(
         self,
@@ -260,6 +296,11 @@ class ExportReportCapXlsx(ExportXlsxBase, ExportReportBase):
     @staticmethod
     def _format_score(score: float) -> str:
         return str(int(score)) if float(score).is_integer() else str(score)
+
+    @classmethod
+    def _match_key(cls, value: Any) -> str:
+        """Normalize a title/issue for duplicate detection: trimmed, single-spaced, casefolded."""
+        return " ".join(cls._stringify(value).split()).casefold()
 
     @staticmethod
     def _stringify(value: Any) -> str:

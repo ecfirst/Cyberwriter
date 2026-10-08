@@ -62,6 +62,7 @@ class ExportReportCapXlsxTests(TestCase):
         cls.report = ReportFactory()
         critical = SeverityFactory(severity="Critical", weight=0)
         high = SeverityFactory(severity="High", weight=1)
+        cls.high = high
         medium = SeverityFactory(severity="Medium", weight=2)
         low = SeverityFactory(severity="Low", weight=3)
         info = SeverityFactory(severity="Informational", weight=4)
@@ -87,6 +88,9 @@ class ExportReportCapXlsxTests(TestCase):
         finding("Weird-4.0", weird, 4.0)
         finding("Weird-1.0", weird, 1.0)
         finding("Weird-none", weird, 0.0)
+        # Shadowed by supplemental rows below: exact match, and a case/whitespace variant
+        finding("W-Med", high, 9.0)
+        finding("  n-high ", critical, 9.9)
 
         ReportSupplementalFile.objects.create(
             report=cls.report,
@@ -212,6 +216,80 @@ class ExportReportCapXlsxTests(TestCase):
         self.assertTrue(exporter.has_rows())
         _, workbook = export(empty_report)
         self.assertEqual(issues(workbook["High Priority"]), ["Only"])
+
+    def test_supplemental_row_replaces_matching_finding(self):
+        _, workbook = export(self.report)
+        self.assertNotIn("W-Med", issues(workbook["High Priority"]))
+        med = sheet_rows(workbook["Med Priority"])[1:]
+        matches = [row for row in med if row[1] == "W-Med"]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0][0], "Medium", "The supplemental Sev wins, not 9.0")
+        self.assertEqual(matches[0][2], "sys")
+        self.assertEqual(matches[0][3], "act")
+
+    def test_title_match_ignores_case_and_whitespace(self):
+        _, workbook = export(self.report)
+        for name in workbook.sheetnames:
+            self.assertNotIn(
+                "n-high",
+                [i.strip().lower() for i in issues(workbook[name]) if i != "N-High"],
+            )
+        rows = {row[1]: row for row in sheet_rows(workbook["High Priority"])[1:]}
+        self.assertIn("N-High", rows)
+        self.assertEqual(rows["N-High"][0], "High")
+        self.assertEqual(rows["N-High"][2], "10.0.0.1 [host-a]")
+        self.assertEqual(issues(workbook["High Priority"]).count("N-High"), 1)
+
+    def test_shadowed_findings_recorded(self):
+        exporter = ExportReportCapXlsx(self.report, include_bloodhound=False)
+        exporter.collect_rows()
+        # Findings are serialized in severity order, so the Critical one comes first
+        self.assertEqual(exporter.shadowed_findings, ["n-high", "W-Med"])
+
+    def test_both_supplementals_kept_when_both_match(self):
+        report = ReportFactory()
+        ReportFindingLinkFactory(
+            report=report,
+            title="Dup",
+            severity=self.high,
+            cvss_score=9.0,
+        )
+        ReportSupplementalFile.objects.create(
+            report=report,
+            kind="web",
+            document=uploaded("web.xlsx", web_workbook()),
+            cap_entries=[entry("web", "Dup", risk="High", systems="web-host")],
+            row_count=1,
+        )
+        ReportSupplementalFile.objects.create(
+            report=report,
+            kind="nexpose",
+            document=uploaded("nexpose.xlsx", nexpose_workbook()),
+            cap_entries=[entry("nexpose", "dup", score=7.5, systems="10.0.0.9")],
+            row_count=1,
+        )
+        exporter, workbook = export(report)
+        self.assertEqual(exporter.shadowed_findings, ["Dup"])
+        high = sheet_rows(workbook["High Priority"])[1:]
+        self.assertEqual([row[1] for row in high], ["Dup"])
+        self.assertEqual(high[0][2], "web-host")
+        med = sheet_rows(workbook["Med Priority"])[1:]
+        self.assertEqual(
+            [(row[0], row[1], row[2]) for row in med], [("7.5", "dup", "10.0.0.9")]
+        )
+        self.assertEqual(issues(workbook["Lower Priority"]), [])
+
+    def test_no_supplementals_leaves_findings_untouched(self):
+        report = ReportFactory()
+        ReportFindingLinkFactory(
+            report=report, title="Alpha", severity=self.high, cvss_score=8.0
+        )
+        ReportFindingLinkFactory(
+            report=report, title="Beta", severity=self.high, cvss_score=7.0
+        )
+        exporter, workbook = export(report)
+        self.assertEqual(exporter.shadowed_findings, [])
+        self.assertEqual(issues(workbook["High Priority"]), ["Alpha", "Beta"])
 
     def test_collect_rows_is_memoized(self):
         exporter = ExportReportCapXlsx(self.report, include_bloodhound=False)
