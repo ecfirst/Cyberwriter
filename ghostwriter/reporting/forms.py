@@ -40,9 +40,12 @@ from ghostwriter.reporting.models import (
     Report,
     ReportFindingLink,
     ReportObservationLink,
+    ReportSupplementalFile,
     ReportTemplate,
     Severity,
 )
+from ghostwriter.reporting.supplemental_parsers import MAX_SUPPLEMENTAL_UPLOAD_BYTES
+from ghostwriter.reporting.validators import validate_xlsx_extension
 from ghostwriter.rolodex.models import Project
 
 class AssignReportFindingForm(forms.ModelForm):
@@ -279,6 +282,25 @@ class EvidenceForm(forms.ModelForm):
                     "duplicate",
                 )
         return friendly_name
+
+
+class ReportSupplementalUploadForm(forms.Form):
+    """
+    Upload a supplemental workbook into one of the :model:`reporting.ReportSupplementalFile`
+    slots for a :model:`reporting.Report`.
+    """
+
+    kind = forms.ChoiceField(choices=ReportSupplementalFile.Kind.choices)
+    document = forms.FileField(validators=[validate_xlsx_extension])
+
+    def clean_document(self):
+        document = self.cleaned_data["document"]
+        if document.size > MAX_SUPPLEMENTAL_UPLOAD_BYTES:
+            raise ValidationError(
+                _("The file is larger than %(limit)s MB.") % {"limit": MAX_SUPPLEMENTAL_UPLOAD_BYTES // (1024 * 1024)},
+                "too_large",
+            )
+        return document
 
 
 class FindingNoteForm(forms.ModelForm):
@@ -673,6 +695,15 @@ class SelectReportTemplateForm(forms.ModelForm):
                         title="Generate an XLSX report"
                     ></button>
                     <button
+                        class="btn btn-default cap-btn-icon"
+                        type="submit"
+                        formaction="{% url 'reporting:generate_cap' report.id %}"
+                        formmethod="get"
+                        data-toggle="tooltip"
+                        data-placement="top"
+                        title="Generate a CAP report"
+                    ></button>
+                    <button
                         class="btn btn-default json-btn-icon"
                         type="submit"
                         formaction="{% url 'reporting:generate_json' report.id %}"
@@ -691,6 +722,14 @@ class SelectReportTemplateForm(forms.ModelForm):
                         title="Generate and package all report types and evidence in a Zip"
                     ></button>
                 </div>
+                {% if supplemental_slots and not has_supplementals %}
+                <div class="alert alert-info mt-3 text-left" role="alert">
+                    No supplemental files uploaded. The CAP will include report findings only.
+                    Upload Web/Nexpose workbooks on the
+                    <a href="javascript:void(0)" class="alert-link"
+                       onclick="$('#id_supplementals').tab('show')">Supplementals</a> tab.
+                </div>
+                {% endif %}
                 """
             ),
         )

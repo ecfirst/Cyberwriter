@@ -339,6 +339,96 @@
         {% endif %}
       </div>
 
+      {% comment %} Supplementals Tab {% endcomment %}
+      <div id="supplementals" class="tab-pane">
+        <h4>Supplemental Files</h4>
+        <hr>
+
+        <p>Upload the Web (Burp) and Nexpose workbooks for this engagement. Their unique issues are combined with
+          this report's findings when you generate a CAP report from the Generate tab. Click <strong>Upload</strong>
+          (or <strong>Replace</strong>) on a row, choose the .xlsx workbook, and it uploads immediately. Uploading to
+          a slot that already has a file replaces it.</p>
+
+        <table id="supplementals-table" class="table table-sm table-hover">
+          <thead>
+          <tr>
+            <th class="align-middle text-left">Slot</th>
+            <th class="align-middle text-left">Current File</th>
+            <th class="align-middle">CAP Rows</th>
+            <th class="align-middle text-left">Uploaded</th>
+            {% if can_edit %}
+              <th class="align-middle">Actions</th>
+            {% endif %}
+          </tr>
+          </thead>
+          <tbody>
+          {% for slot in supplemental_slots %}
+            <tr data-kind="{{ slot.kind }}">
+              <td class="align-middle text-left"><strong>{{ slot.label }}</strong></td>
+              <td class="align-middle text-left">
+                {% if slot.file %}
+                  <a class="icon download-icon" title="Download this file"
+                     href="{% url 'reporting:report_supplemental_download' slot.file.id %}">
+                    {{ slot.file.original_filename|default:slot.file.filename|truncate_filename:50 }}
+                  </a>
+                {% else %}
+                  <em>Not uploaded</em>
+                {% endif %}
+              </td>
+              <td class="align-middle">
+                {% if slot.file %}
+                  {{ slot.file.row_count }}
+                  {% if slot.file.has_warnings %}
+                    <span class="badge badge-warning ml-1" data-toggle="tooltip" data-placement="top"
+                          title="{{ slot.file.parse_warnings|join:' | ' }}">
+                      {{ slot.file.parse_warnings|length }} warning{{ slot.file.parse_warnings|length|pluralize }}
+                    </span>
+                  {% endif %}
+                {% else %}
+                  &mdash;
+                {% endif %}
+              </td>
+              <td class="align-middle text-left">
+                {% if slot.file %}
+                  {{ slot.file.uploaded_at }}{% if slot.file.uploaded_by %} by {{ slot.file.uploaded_by }}{% endif %}
+                {% else %}
+                  &mdash;
+                {% endif %}
+              </td>
+              {% if can_edit %}
+                <td class="align-middle">
+                  <div class="d-flex justify-content-center align-items-center">
+                    <form method="post" enctype="multipart/form-data" class="js-supplemental-upload-form"
+                          data-kind="{{ slot.kind }}"
+                          action="{% url 'reporting:report_supplemental_upload' report.id %}">
+                      {% csrf_token %}
+                      <input type="hidden" name="kind" value="{{ slot.kind }}">
+                      <input type="file" name="document" accept=".xlsx" class="d-none js-supplemental-file"
+                             id="id_supplemental_file_{{ slot.kind }}" aria-label="{{ slot.label }} workbook">
+                      <button type="button" class="btn btn-primary btn-sm js-supplemental-pick"
+                              data-default-text="{% if slot.file %}Replace{% else %}Upload{% endif %}"
+                              title="Upload the {{ slot.label }} workbook (.xlsx)">
+                        {% if slot.file %}Replace{% else %}Upload{% endif %}
+                      </button>
+                    </form>
+                    {% if slot.file %}
+                      <form method="post" class="ml-2"
+                            action="{% url 'reporting:report_supplemental_delete' slot.file.id %}"
+                            onsubmit="return confirm('Delete the {{ slot.label|escapejs }} supplemental file? This cannot be undone.');">
+                        {% csrf_token %}
+                        <button type="submit" class="icon trash-icon btn btn-link p-0"
+                                title="Delete this supplemental file"></button>
+                      </form>
+                    {% endif %}
+                  </div>
+                </td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
       {% if report_extra_fields_spec %}
         {% comment %} Extra Fields Tab {% endcomment %}
         <div id="extra-fields" class="tab-pane">
@@ -467,6 +557,26 @@
     webSocketInit();
 
     {% comment %} Display the loading spinner while report generates {% endcomment %}
+    // Supplementals tab: the Upload/Replace button opens the picker and the form submits on selection
+    let supplementalsTable = $('#supplementals-table');
+    supplementalsTable.on('click', '.js-supplemental-pick', function () {
+      $(this).closest('form').find('.js-supplemental-file').trigger('click');
+    });
+    supplementalsTable.on('change', '.js-supplemental-file', function () {
+      if (!this.files || !this.files.length) {
+        return;
+      }
+      let form = this.form;
+      if (typeof form.requestSubmit === 'function') {
+        form.requestSubmit();
+      } else {
+        form.submit();
+      }
+    });
+    supplementalsTable.on('submit', '.js-supplemental-upload-form', function () {
+      $(this).find('.js-supplemental-pick').prop('disabled', true).text('Uploading…');
+    });
+
     $('.js-generate-report').click(function () {
       $spinnerModal.modal('show');
       // Wait 30 seconds and hide the spinner – just in case there is an error that prevents it from closing via WebSockets

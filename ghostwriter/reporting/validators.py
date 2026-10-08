@@ -9,6 +9,8 @@ DOCX_ALLOWED_EXTENSIONS = ["docx", "doc", "docm", "dotx", "dotm"]
 PPTX_ALLOWED_EXTENSIONS = ["pptx", "ppt", "pptm", "potx", "potm", "ppsx", "ppsm"]
 TEMPLATE_ALLOWED_EXTENSIONS = DOCX_ALLOWED_EXTENSIONS + PPTX_ALLOWED_EXTENSIONS
 
+XLSX_ALLOWED_EXTENSIONS = ["xlsx"]
+
 
 def validate_evidence_extension(value):
     """
@@ -16,3 +18,11 @@ def validate_evidence_extension(value):
     text and image files that will work for report documents.
     """
     return FileExtensionValidator(allowed_extensions=EVIDENCE_ALLOWED_EXTENSIONS)(value)
+
+
+def validate_xlsx_extension(value):
+    """
+    Enforce an allowlist of ``.xlsx`` only for supplemental workbook uploads. Macro-enabled
+    and legacy Excel formats are rejected because the parser only reads OOXML workbooks.
+    """
+    return FileExtensionValidator(allowed_extensions=XLSX_ALLOWED_EXTENSIONS)(value)

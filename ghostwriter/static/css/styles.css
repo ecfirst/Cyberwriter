@@ -2558,6 +2558,13 @@ th.icon {
   color: var(--excel-color);
 }
 
+.cap-btn-icon:before {
+  content: '\f46d';
+  font-weight: 900;
+  font-size: 2em;
+  color: var(--excel-color);
+}
+
 .archive-btn-icon:before {
   content: '\f1c6';
   font-size: 2em;

@@ -10,6 +10,7 @@ import ghostwriter.reporting.views2.report_observation_link
 import ghostwriter.reporting.views2.finding
 import ghostwriter.reporting.views2.report_finding_link
 import ghostwriter.reporting.views2.report
+import ghostwriter.reporting.views2.supplementals
 
 app_name = "reporting"
 
@@ -267,6 +268,25 @@ urlpatterns += [
     ),
 ]
 
+# URLs for supplemental workbooks attached to reports
+urlpatterns += [
+    path(
+        "reports/<int:pk>/supplementals/upload/",
+        ghostwriter.reporting.views2.supplementals.ReportSupplementalUpload.as_view(),
+        name="report_supplemental_upload",
+    ),
+    path(
+        "reports/supplementals/<int:pk>/download/",
+        ghostwriter.reporting.views2.supplementals.ReportSupplementalDownload.as_view(),
+        name="report_supplemental_download",
+    ),
+    path(
+        "reports/supplementals/<int:pk>/delete/",
+        ghostwriter.reporting.views2.supplementals.ReportSupplementalDelete.as_view(),
+        name="report_supplemental_delete",
+    ),
+]
+
 # URLs for generating reports
 urlpatterns += [
     path(
@@ -278,6 +298,11 @@ urlpatterns += [
         "reports/<int:pk>/xlsx/",
         ghostwriter.reporting.views2.report.GenerateReportXLSX.as_view(),
         name="generate_xlsx",
+    ),
+    path(
+        "reports/<int:pk>/cap/",
+        ghostwriter.reporting.views2.report.GenerateReportCAP.as_view(),
+        name="generate_cap",
     ),
     path(
         "reports/<int:pk>/pptx/",

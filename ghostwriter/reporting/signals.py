@@ -10,10 +10,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 
 # Ghostwriter Libraries
-from ghostwriter.reporting.models import (
-    ReportTemplate,
-    Severity,
-)
+from ghostwriter.reporting.models import ReportSupplementalFile, ReportTemplate, Severity
 
 # Using __name__ resolves to ghostwriter.reporting.signals
 logger = logging.getLogger(__name__)
@@ -112,6 +109,23 @@ def remove_template_on_delete(sender, instance, **kwargs):
             try:
                 os.remove(instance.document.path)
                 logger.info("Deleted report template at %s", instance.document.path)
+            except Exception:  # pragma: no cover
+                logger.warning(
+                    "Failed to delete file associated with %s %s: %s",
+                    instance.__class__.__name__,
+                    instance.id,
+                    instance.document.path,
+                )
+
+
+@receiver(post_delete, sender=ReportSupplementalFile)
+def remove_supplemental_on_delete(sender, instance, **kwargs):
+    """Deletes file from filesystem when related :model:`reporting.ReportSupplementalFile` entry is deleted."""
+    if instance.document:
+        if os.path.isfile(instance.document.path):
+            try:
+                os.remove(instance.document.path)
+                logger.info("Deleted supplemental file at %s", instance.document.path)
             except Exception:  # pragma: no cover
                 logger.warning(
                     "Failed to delete file associated with %s %s: %s",
