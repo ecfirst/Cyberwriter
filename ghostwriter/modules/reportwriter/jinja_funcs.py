@@ -383,6 +383,29 @@ def replace_blanks(list_of_dicts, placeholder=""):
     return list_of_dicts
 
 
+def default_if_none(value, default_value="", boolean=False):
+    """
+    Drop-in replacement for Jinja's built-in ``default`` / ``d`` filter that also
+    treats ``None`` as a missing value.
+
+    Workbook data is normalized with ``None`` for every section that was never
+    uploaded (see ``rolodex.workbook_defaults``), so ``{{ wb.data.osint.total_ips|default(0) }}``
+    must yield ``0`` rather than ``None`` (which makes ``+`` and ``is gt`` raise ``TypeError``).
+
+    **Parameters**
+
+    ``value``
+        Value to check
+    ``default_value``
+        Value to return if ``value`` is ``None`` or undefined
+    ``boolean``
+        If ``True``, also return ``default_value`` for any falsy ``value`` (matches Jinja's behavior)
+    """
+    if value is None or isinstance(value, jinja2.Undefined) or (boolean and not value):
+        return default_value
+    return value
+
+
 def filter_bhe_findings_by_domain(findings, domain_sid):
     """
     Filter a list of BloodHound Enterprise findings to return only those associated with a given domain.

@@ -61,6 +61,9 @@ def prepare_jinja2_env(debug=False):
     env.filters["replace_blanks"] = jinja_funcs.replace_blanks
     env.filters["filter_bhe_findings_by_domain"] = jinja_funcs.filter_bhe_findings_by_domain
     env.filters["translate_domain_sid"] = jinja_funcs.translate_domain_sid
+    # Override Jinja's built-in `default`/`d` so `None` (not just undefined) is replaced
+    env.filters["default"] = jinja_funcs.default_if_none
+    env.filters["d"] = jinja_funcs.default_if_none
 
     if debug:
         return env, undefined_vars

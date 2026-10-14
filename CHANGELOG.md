@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+* The `default` / `d` report template filter now treats `None` as a missing value, fixing `unsupported operand type(s) for +: 'NoneType' and 'NoneType'` errors when workbook sections are out of scope
+
 ## [6.1.1] - 15 December 2025
 
 ### Added
