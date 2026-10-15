@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * The `default` / `d` report template filter now treats `None` as a missing value, fixing `unsupported operand type(s) for +: 'NoneType' and 'NoneType'` errors when workbook sections are out of scope
 * The supplemental documents ZIP now includes the generated firewall workbook, which was dropped after firewall metrics moved to on-disk storage
 
+### Changed
+
+* Generated CAP XLSX filenames now use "Cybersecurity Assessment Report CAP" instead of "Cybersecurity Report Corrective Action Plan"
+
 ## [6.1.1] - 15 December 2025
 
 ### Added
