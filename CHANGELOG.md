@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 * The `default` / `d` report template filter now treats `None` as a missing value, fixing `unsupported operand type(s) for +: 'NoneType' and 'NoneType'` errors when workbook sections are out of scope
+* The supplemental documents ZIP now includes the generated firewall workbook, which was dropped after firewall metrics moved to on-disk storage
 
 ## [6.1.1] - 15 December 2025
 

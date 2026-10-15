@@ -9,6 +9,7 @@ import logging
 import re
 from typing import Any, Callable, Dict, Iterable, List, Sequence, Tuple
 
+from django.apps import apps
 from django.utils.dateparse import parse_date, parse_datetime
 from xlsxwriter.workbook import Workbook
 
@@ -583,6 +584,17 @@ class SupplementalDocumentBuilder:
     def _append_processed_payload(self, files: List[Tuple[str, bytes]], payload: Any, filename: str) -> None:
         if not isinstance(payload, dict):
             return
+
+        # Generated workbooks that went through the on-disk storage modernization
+        # (currently firewall metrics; see ``_persist_generated_workbook`` in
+        # ``rolodex.data_parsers``) carry a ``ProjectArtifactFile`` reference under
+        # "xlsx" instead of embedding the workbook as base64.
+        workbook_bytes = self._read_artifact_file_reference(payload.get("xlsx"))
+        if workbook_bytes:
+            files.append((filename, workbook_bytes))
+            return
+
+        # Fallback for payloads that still embed the workbook as base64.
         workbook_b64 = payload.get("xlsx_base64")
         if not workbook_b64:
             return
@@ -597,6 +609,33 @@ class SupplementalDocumentBuilder:
             return
 
         files.append((filename, workbook_bytes))
+
+    def _read_artifact_file_reference(self, xlsx_ref: Any) -> bytes | None:
+        """Return the bytes of a generated workbook referenced by ``{"artifact_file_id": ...}``."""
+        if not isinstance(xlsx_ref, dict) or not xlsx_ref.get("artifact_file_id"):
+            return None
+
+        ProjectArtifactFile = apps.get_model("rolodex", "ProjectArtifactFile")
+        artifact_file = ProjectArtifactFile.objects.filter(
+            project=self.project, pk=xlsx_ref["artifact_file_id"]
+        ).first()
+        if not artifact_file or not artifact_file.file:
+            return None
+
+        try:
+            with artifact_file.file.open("rb") as handle:
+                content = handle.read()
+        except (FileNotFoundError, OSError):
+            logger.exception(
+                "Generated workbook file is missing from storage (project ID=%s, artifact_file ID=%s)",
+                getattr(self.project, "pk", "?"),
+                artifact_file.pk,
+            )
+            return None
+
+        if not isinstance(content, (bytes, bytearray)) or not content:
+            return None
+        return bytes(content)
 
     def _append_password_metrics(self, files: List[Tuple[str, bytes]]):
         password_payload = self.artifacts.get("password")
