@@ -53,7 +53,12 @@ from ghostwriter.api.utils import (
     get_project_list,
     verify_user_is_privileged,
 )
-from ghostwriter.commandcenter.models import BloodHoundConfiguration, ExtraFieldSpec, ReportConfiguration
+from ghostwriter.commandcenter.models import (
+    BloodHoundConfiguration,
+    ExtraFieldSpec,
+    ReportConfiguration,
+    ScoringConfiguration,
+)
 from ghostwriter.commandcenter.views import CollabModelUpdate
 from ghostwriter.modules import codenames
 from ghostwriter.modules.openai_client import submit_prompt_to_assistant
@@ -3393,6 +3398,12 @@ class ProjectDetailView(RoleBasedAccessControlMixin, DetailView):
         ctx["risk_score_map_json"] = {
             risk: {"min": float(bounds[0]), "max": float(bounds[1])}
             for risk, bounds in RiskScoreRangeMapping.get_risk_score_map().items()
+        }
+        scoring_settings = ScoringConfiguration.get_values()
+        ctx["scoring_config_json"] = {
+            "area_exponent": float(scoring_settings.area_score_exponent),
+            "overall_exponent": float(scoring_settings.overall_score_exponent),
+            "wireless_overall_weight": float(scoring_settings.wireless_overall_weight),
         }
         ctx["workbook_data_json"] = normalized_workbook
         ctx["ad_threshold_map_json"] = load_ad_threshold_map()

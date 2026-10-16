@@ -372,3 +372,32 @@ class BannerConfigurationTests(TestCase):
             self.assertEqual(entry.pk, 1)
         except Exception:
             self.fail("BannerConfiguration model `get_solo` method failed unexpectedly!")
+
+
+class ScoringConfigurationTests(TestCase):
+    """Collection of tests for :model:`commandcenter.ScoringConfiguration`."""
+
+    def test_get_values_returns_defaults_without_edits(self):
+        from decimal import Decimal
+
+        from ghostwriter.commandcenter.models import ScoringConfiguration
+
+        values = ScoringConfiguration.get_values()
+        self.assertEqual(values.area_score_exponent, Decimal("3.00"))
+        self.assertEqual(values.overall_score_exponent, Decimal("2.00"))
+        self.assertEqual(values.wireless_overall_weight, Decimal("0.90"))
+
+    def test_get_values_reflects_saved_settings(self):
+        from decimal import Decimal
+
+        from ghostwriter.commandcenter.models import ScoringConfiguration
+
+        config = ScoringConfiguration.get_solo()
+        config.area_score_exponent = Decimal("1.00")
+        config.wireless_overall_weight = Decimal("0.75")
+        config.save()
+
+        values = ScoringConfiguration.get_values()
+        self.assertEqual(values.area_score_exponent, Decimal("1.00"))
+        self.assertEqual(values.overall_score_exponent, Decimal("2.00"))
+        self.assertEqual(values.wireless_overall_weight, Decimal("0.75"))

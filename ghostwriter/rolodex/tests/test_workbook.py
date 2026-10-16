@@ -1,5 +1,10 @@
 """Unit tests for workbook helper utilities."""
 
+# Standard Libraries
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import patch
+
 # Django Imports
 from django import forms
 from django.test import SimpleTestCase
@@ -17,7 +22,12 @@ from ghostwriter.rolodex.workbook import (
     has_any_scoping_selection,
     prepare_data_responses_initial,
 )
-from ghostwriter.rolodex.workbook_entry import build_workbook_entry_payload
+from ghostwriter.rolodex.workbook_entry import (
+    _compute_overall_grade,
+    build_overall_area_weights,
+    build_workbook_entry_payload,
+    weighted_power_mean,
+)
 from ghostwriter.rolodex.workbook_defaults import (
     ensure_data_responses_defaults,
     normalize_workbook_payload,
@@ -743,3 +753,133 @@ class WorkbookEntryIsolationTests(SimpleTestCase):
             "Insecure System Configurations",
         )
         self.assertIsNone(payload["external_nexpose"].get("majority_type"))
+
+
+_INTERNAL_WEIGHTS = {"nexpose": Decimal("0.5"), "snmp": Decimal("0.12"), "sql": Decimal("0.11")}
+_RISK_MAP = {
+    "Low": (Decimal("1.0"), Decimal("1.9")),
+    "Low-->Medium": (Decimal("2.0"), Decimal("2.4")),
+    "Medium-->Low": (Decimal("2.5"), Decimal("2.9")),
+    "Medium": (Decimal("3.0"), Decimal("3.9")),
+    "Medium-->High": (Decimal("4.0"), Decimal("4.4")),
+    "High-->Medium": (Decimal("4.5"), Decimal("4.9")),
+    "High": (Decimal("5.0"), Decimal("6.0")),
+}
+
+
+class PowerMeanScoringTests(SimpleTestCase):
+    """Validate the weighted power mean used for area totals and the overall grade."""
+
+    def test_exponent_one_matches_weighted_average(self):
+        scores = {"nexpose": Decimal("6"), "snmp": Decimal("1"), "sql": Decimal("1")}
+        self.assertEqual(weighted_power_mean(scores, _INTERNAL_WEIGHTS, 1), Decimal("4.4"))
+
+    def test_exponent_three_lets_high_score_dominate(self):
+        scores = {"nexpose": Decimal("6"), "snmp": Decimal("1"), "sql": Decimal("1")}
+        self.assertEqual(weighted_power_mean(scores, _INTERNAL_WEIGHTS, 3), Decimal("5.3"))
+
+    def test_uniform_scores_unchanged_by_exponent(self):
+        scores = {"nexpose": Decimal("3"), "snmp": Decimal("3"), "sql": Decimal("3")}
+        for exponent in (1, 2, 3, Decimal("4.5")):
+            self.assertEqual(weighted_power_mean(scores, _INTERNAL_WEIGHTS, exponent), Decimal("3.0"))
+
+    def test_result_bounded_by_inputs(self):
+        scores = {"nexpose": Decimal("1"), "snmp": Decimal("1"), "sql": Decimal("6")}
+        total = weighted_power_mean(scores, _INTERNAL_WEIGHTS, 3)
+        self.assertEqual(total, Decimal("3.2"))
+        self.assertGreaterEqual(total, Decimal("1.0"))
+        self.assertLessEqual(total, Decimal("6.0"))
+
+    def test_blank_scores_are_excluded_and_weights_renormalized(self):
+        with_blank = weighted_power_mean(
+            {"nexpose": Decimal("6"), "snmp": Decimal("1"), "sql": None}, _INTERNAL_WEIGHTS, 3
+        )
+        without_sql = weighted_power_mean(
+            {"nexpose": Decimal("6"), "snmp": Decimal("1")},
+            {"nexpose": Decimal("0.5"), "snmp": Decimal("0.12")},
+            3,
+        )
+        self.assertEqual(with_blank, without_sql)
+        self.assertGreater(with_blank, Decimal("5.3"))
+
+    def test_all_blank_returns_none(self):
+        self.assertIsNone(weighted_power_mean({"nexpose": None, "snmp": None}, _INTERNAL_WEIGHTS, 3))
+        self.assertIsNone(weighted_power_mean({}, _INTERNAL_WEIGHTS, 3))
+
+    def test_zero_weights_fall_back_to_equal_shares(self):
+        scores = {"iot_iomt": Decimal("6"), "endpoint": Decimal("2")}
+        weights = {"iot_iomt": Decimal("0"), "endpoint": Decimal("0")}
+        self.assertEqual(weighted_power_mean(scores, weights, 1), Decimal("4.0"))
+
+    def test_no_weights_uses_equal_shares(self):
+        scores = {"a": Decimal("6"), "b": Decimal("2")}
+        self.assertEqual(weighted_power_mean(scores, {}, 1), Decimal("4.0"))
+
+    def test_overall_area_weights_redistribute_wireless_discount(self):
+        weights = build_overall_area_weights(["external", "internal", "wireless"], Decimal("0.9"))
+        self.assertEqual(weights["wireless"].quantize(Decimal("0.0001")), Decimal("0.3000"))
+        self.assertEqual(weights["external"].quantize(Decimal("0.0001")), Decimal("0.3500"))
+        self.assertEqual(weights["internal"].quantize(Decimal("0.0001")), Decimal("0.3500"))
+        self.assertEqual(sum(weights.values()).quantize(Decimal("0.0001")), Decimal("1.0000"))
+
+    def test_overall_area_weights_without_wireless_are_equal(self):
+        weights = build_overall_area_weights(["external", "internal", "firewall"], Decimal("0.9"))
+        for value in weights.values():
+            self.assertEqual(value.quantize(Decimal("0.0001")), Decimal("0.3333"))
+
+    def test_overall_area_weights_wireless_alone(self):
+        self.assertEqual(build_overall_area_weights(["wireless"], Decimal("0.9")), {"wireless": Decimal("1")})
+
+    def test_overall_grade_power_mean_exceeds_plain_average(self):
+        scoping = {
+            "external": {"selected": True},
+            "internal": {"selected": True},
+            "firewall": {"selected": False},
+        }
+        scores = {"external": Decimal("5.5"), "internal": Decimal("1.5"), "firewall": Decimal("6.0")}
+        plain = _compute_overall_grade(
+            category_scores=scores, risk_score_map=_RISK_MAP, scoping=scoping, exponent=1, wireless_weight=Decimal("0.9")
+        )
+        squared = _compute_overall_grade(
+            category_scores=scores, risk_score_map=_RISK_MAP, scoping=scoping, exponent=2, wireless_weight=Decimal("0.9")
+        )
+        # (5.5 + 1.5) / 2 = 3.5 -> Medium; sqrt((5.5^2 + 1.5^2) / 2) = 4.0 -> Medium-->High
+        self.assertEqual(plain, "Medium")
+        self.assertEqual(squared, "Medium-->High")
+
+    def test_overall_grade_ignores_unselected_and_blank_areas(self):
+        scoping = {"external": {"selected": True}, "wireless": {"selected": True}, "iam": {"selected": False}}
+        scores = {"external": Decimal("3.0"), "wireless": None, "iam": Decimal("6.0")}
+        grade = _compute_overall_grade(
+            category_scores=scores, risk_score_map=_RISK_MAP, scoping=scoping, exponent=2, wireless_weight=Decimal("0.9")
+        )
+        self.assertEqual(grade, "Medium")
+
+    def test_workbook_entry_payload_uses_power_mean_for_area_total(self):
+        scoping = default_project_scoping()
+        scoping["internal"].update({"selected": True, "nexpose": True, "snmp": True, "sql": True})
+        project = type(
+            "Dummy",
+            (),
+            {"workbook_data": {}, "scoping": scoping, "scoping_weights": {"internal": dict(_INTERNAL_WEIGHTS)}},
+        )()
+        settings = SimpleNamespace(
+            area_score_exponent=Decimal("3"),
+            overall_score_exponent=Decimal("2"),
+            wireless_overall_weight=Decimal("0.9"),
+        )
+
+        with patch("ghostwriter.rolodex.workbook_entry.load_scoring_settings", return_value=settings), patch(
+            "ghostwriter.rolodex.workbook_entry.RiskScoreRangeMapping.get_risk_score_map",
+            return_value=_RISK_MAP,
+        ):
+            payload = build_workbook_entry_payload(
+                project=project,
+                scores={"internal": {"nexpose": 6, "snmp": 1, "sql": 1}},
+            )
+
+        internal = payload["external_internal_grades"]["internal"]
+        self.assertEqual(internal["total"], 5.3)
+        self.assertEqual(internal["grade"], "High")
+        self.assertEqual(payload["report_card"]["internal"], "High")
+        self.assertEqual(payload["report_card"]["overall"], "High")

@@ -17,6 +17,7 @@ from ghostwriter.commandcenter.models import (
     NamecheapConfiguration,
     OpenAIConfiguration,
     ReportConfiguration,
+    ScoringConfiguration,
     SlackConfiguration,
     VirusTotalConfiguration,
     EXTRA_FIELD_TYPES,
@@ -34,6 +35,7 @@ class OpenAIConfigurationAdmin(SingletonModelAdmin):
 
 admin.site.register(OpenAIConfiguration, OpenAIConfigurationAdmin)
 admin.site.register(GeneralConfiguration, SingletonModelAdmin)
+admin.site.register(ScoringConfiguration, SingletonModelAdmin)
 admin.site.register(BannerConfiguration, SingletonModelAdmin)
 
 

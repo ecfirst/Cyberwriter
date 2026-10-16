@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 * Generated CAP XLSX filenames now use "Cybersecurity Assessment Report CAP" instead of "Cybersecurity Report Corrective Action Plan"
+* Area totals and the overall grade now use a weighted power mean instead of a weighted average (defaults: exponent 3 within an area, 2 across areas), so low-scoring minor sub-areas no longer offset serious findings. Blank in-scope scores are excluded rather than counted as 0, and the Wireless discount is redistributed to the other in-scope areas. Exponents and the Wireless weight are editable under Scoring Settings in the admin
 
 ## [6.1.1] - 15 December 2025
 

@@ -1,11 +1,14 @@
 """This contains all the database models for the CommandCenter application."""
 
 import json
+from decimal import Decimal
 from typing import Any, Callable, NamedTuple
 from urllib.parse import urlparse
 
 # Django Imports
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.utils import OperationalError, ProgrammingError
 from django_cryptography.fields import encrypt
 from django import forms
 from django.core.exceptions import ValidationError
@@ -444,6 +447,105 @@ class GeneralConfiguration(SingletonModel):
 
     class Meta:
         verbose_name = "General Settings"
+
+
+class ScoringSettings(NamedTuple):
+    """Resolved scoring parameters used by workbook area and overall grading."""
+
+    area_score_exponent: Decimal
+    overall_score_exponent: Decimal
+    wireless_overall_weight: Decimal
+
+
+class ScoringConfiguration(SingletonModel):
+    """Tunable parameters for rolling sub-area scores up into area totals and the overall grade.
+
+    Totals use a weighted power mean, ``(sum(w_i * s_i ** p)) ** (1 / p)``. With ``p = 1`` this
+    is the plain weighted average; larger exponents let high scores dominate so that clean
+    minor sub-areas do not understate serious findings elsewhere in the area.
+    """
+
+    DEFAULT_AREA_SCORE_EXPONENT = Decimal("3.00")
+    DEFAULT_OVERALL_SCORE_EXPONENT = Decimal("2.00")
+    DEFAULT_WIRELESS_OVERALL_WEIGHT = Decimal("0.90")
+
+    area_score_exponent = models.DecimalField(
+        "Area Score Exponent",
+        max_digits=4,
+        decimal_places=2,
+        default=Decimal("3.00"),
+        validators=[MinValueValidator(Decimal("1.00"))],
+        help_text=(
+            "Power-mean exponent used to roll sub-area scores up into an area total. "
+            "1 = plain weighted average; higher values let high scores dominate and low scores drag less."
+        ),
+    )
+    overall_score_exponent = models.DecimalField(
+        "Overall Score Exponent",
+        max_digits=4,
+        decimal_places=2,
+        default=Decimal("2.00"),
+        validators=[MinValueValidator(Decimal("1.00"))],
+        help_text=(
+            "Power-mean exponent used to roll area totals up into the overall grade. "
+            "1 = plain average; higher values let high-risk areas dominate."
+        ),
+    )
+    wireless_overall_weight = models.DecimalField(
+        "Wireless Overall Weight",
+        max_digits=3,
+        decimal_places=2,
+        default=Decimal("0.90"),
+        validators=[MinValueValidator(Decimal("0.00")), MaxValueValidator(Decimal("1.00"))],
+        help_text=(
+            "Share of an equal area weight that Wireless carries in the overall grade "
+            "(wireless exploitation requires physical proximity). The remainder is spread "
+            "across the other in-scope areas."
+        ),
+    )
+
+    def __str__(self):
+        return "Scoring Settings"
+
+    class Meta:
+        verbose_name = "Scoring Settings"
+
+    @classmethod
+    def get_defaults(cls) -> ScoringSettings:
+        return ScoringSettings(
+            area_score_exponent=cls.DEFAULT_AREA_SCORE_EXPONENT,
+            overall_score_exponent=cls.DEFAULT_OVERALL_SCORE_EXPONENT,
+            wireless_overall_weight=cls.DEFAULT_WIRELESS_OVERALL_WEIGHT,
+        )
+
+    @classmethod
+    def get_values(cls) -> ScoringSettings:
+        """Return the configured scoring parameters, falling back to defaults when unavailable."""
+
+        try:
+            instance = cls.get_solo()
+        except (ProgrammingError, OperationalError):  # pragma: no cover - table not ready
+            return cls.get_defaults()
+        except Exception:  # pragma: no cover - e.g. database access blocked in SimpleTestCase
+            return cls.get_defaults()
+
+        def _decimal(value, fallback):
+            if value in (None, ""):
+                return fallback
+            try:
+                return Decimal(str(value))
+            except Exception:
+                return fallback
+
+        return ScoringSettings(
+            area_score_exponent=_decimal(instance.area_score_exponent, cls.DEFAULT_AREA_SCORE_EXPONENT),
+            overall_score_exponent=_decimal(
+                instance.overall_score_exponent, cls.DEFAULT_OVERALL_SCORE_EXPONENT
+            ),
+            wireless_overall_weight=_decimal(
+                instance.wireless_overall_weight, cls.DEFAULT_WIRELESS_OVERALL_WEIGHT
+            ),
+        )
 
 
 class BannerConfiguration(SingletonModel):
