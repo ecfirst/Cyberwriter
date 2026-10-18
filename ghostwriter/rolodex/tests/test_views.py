@@ -4944,3 +4944,196 @@ class AiReviewPasswordNistGuidanceTests(TestCase):
         }
         prompt = _build_ai_review_prompt("ad_attack_paths_rt", self.project, workbook, {})
         self.assertNotIn("NIST SP 800-63B", prompt)
+
+
+class AiReviewNexposePromptTests(TestCase):
+    """Confirm the Nexpose AI review prompts carry severity-ranked issues and category labels."""
+
+    SECTIONS = (
+        ("external_nexpose_rt", "external_nexpose"),
+        ("internal_nexpose_rt", "internal_nexpose"),
+        ("iot_iomt_nexpose_rt", "iot_iomt_nexpose"),
+    )
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.project = ProjectFactory()
+
+    @staticmethod
+    def _unique_issue(title, severity, count, category="OOD"):
+        return {
+            "issue": title,
+            "impact": f"{title} impact",
+            "severity": severity,
+            "count": count,
+            "category": category,
+            "risk": "High" if severity >= 8 else "Medium",
+        }
+
+    def _artifacts(self, prefix, *, include_unique_issues=True):
+        # Five frequent high issues crowd out the single severity-10 finding
+        # from the count-ranked ``items`` list.
+        unique_issues = [
+            self._unique_issue(f"Frequent High {index}", 8, count=20 + index) for index in range(5)
+        ]
+        unique_issues.append(self._unique_issue("Rare Critical", 10, count=1))
+        unique_issues.append(self._unique_issue("Frequent Medium", 4, count=50))
+        unique_issues.append(self._unique_issue("Top Medium", 7, count=2, category="ISC"))
+
+        metrics = {
+            "summary": {
+                "total": 10,
+                "total_high": 6,
+                "total_med": 2,
+                "total_low": 0,
+                "unique": 8,
+                "unique_high": 6,
+                "unique_med": 2,
+                "unique_low": 0,
+                "unique_high_med": 8,
+                "total_ood": 7,
+                "total_isc": 1,
+                "total_iwc": 0,
+                "majority_count": 7,
+                "minority_count": 1,
+            },
+            "majority_type": "OOD",
+            "minority_type": "ISC",
+        }
+        if include_unique_issues:
+            metrics["unique_issues"] = unique_issues
+
+        frequent_items = [
+            {
+                "title": f"Frequent High {index}",
+                "impact": f"Frequent High {index} impact",
+                "count": 20 + index,
+                "action_required": "",
+                "remediation_impact": "",
+                "vulnerability_threat": "",
+                "category": "",
+            }
+            for index in reversed(range(5))
+        ]
+        vulnerabilities = {
+            "label": prefix.replace("_", " ").title(),
+            "high": {"total_unique": 6, "items": frequent_items},
+            "med": {
+                "total_unique": 2,
+                "items": [
+                    {
+                        "title": "Frequent Medium",
+                        "impact": "Frequent Medium impact",
+                        "count": 50,
+                        "action_required": "",
+                        "remediation_impact": "",
+                        "vulnerability_threat": "",
+                        "category": "",
+                    }
+                ],
+            },
+            "low": {"total_unique": 0, "items": []},
+        }
+        return {
+            f"{prefix}_metrics": metrics,
+            f"{prefix}_vulnerabilities": vulnerabilities,
+        }
+
+    @staticmethod
+    def _extract_json(prompt):
+        start = prompt.index("{")
+        end = prompt.rindex("}") + 1
+        return json.loads(prompt[start:end])
+
+    def test_prompt_includes_highest_rated_and_category_labels(self):
+        matrix = {
+            "rare critical": {
+                "action_required": "Patch immediately",
+                "remediation_impact": "Service restart",
+                "vulnerability_threat": "Remote code execution",
+                "category": "OOD",
+            }
+        }
+        workbook = {
+            "external_internal_grades": {
+                "external": {"nexpose": {"score": 5.0, "risk": "High"}},
+                "internal": {
+                    "nexpose": {"score": 5.0, "risk": "High"},
+                    "iot_iomt": {"score": 5.0, "risk": "High"},
+                },
+            }
+        }
+
+        for section_key, prefix in self.SECTIONS:
+            with self.subTest(section=section_key):
+                with mock.patch(
+                    "ghostwriter.rolodex.views.load_vulnerability_matrix", return_value=matrix
+                ):
+                    prompt = _build_ai_review_prompt(
+                        section_key, self.project, workbook, self._artifacts(prefix)
+                    )
+
+                payload = self._extract_json(prompt)
+
+                summary = payload["summary"]
+                self.assertEqual(summary["majority_type"], "OOD")
+                self.assertEqual(summary["majority_label"], "OOD Software or Missing Patches")
+                self.assertEqual(summary["minority_type"], "ISC")
+                self.assertEqual(summary["minority_label"], "Insecure System Configurations")
+                self.assertEqual(summary["majority_count"], 7)
+
+                high = payload["high"]
+                self.assertEqual(high["total_unique"], 6)
+                self.assertEqual(
+                    [item["title"] for item in high["items"]],
+                    [f"Frequent High {index}" for index in reversed(range(5))],
+                )
+                self.assertEqual(high["highest_rated"][0]["title"], "Rare Critical")
+                self.assertEqual(high["highest_rated"][0]["severity"], 10)
+                self.assertEqual(high["highest_rated"][0]["action_required"], "Patch immediately")
+                self.assertEqual(
+                    high["highest_rated"][0]["vulnerability_threat"], "Remote code execution"
+                )
+                self.assertEqual(len(high["highest_rated"]), 5)
+                self.assertNotIn(
+                    "Rare Critical", [item["title"] for item in high["items"]]
+                )
+
+                medium = payload["medium"]
+                self.assertEqual(
+                    [item["title"] for item in medium["highest_rated"]],
+                    ["Top Medium", "Frequent Medium"],
+                )
+                self.assertEqual(medium["highest_rated"][0]["category"], "ISC")
+                self.assertEqual(medium["highest_rated"][0]["action_required"], "")
+
+                self.assertEqual(payload["risk"], "High")
+                self.assertIn("End the paragraph with this risk statement", prompt)
+
+    def test_prompt_without_unique_issues_sends_empty_highest_rated(self):
+        with mock.patch("ghostwriter.rolodex.views.load_vulnerability_matrix", return_value={}):
+            prompt = _build_ai_review_prompt(
+                "internal_nexpose_rt",
+                self.project,
+                {},
+                self._artifacts("internal_nexpose", include_unique_issues=False),
+            )
+
+        payload = self._extract_json(prompt)
+        self.assertEqual(payload["high"]["highest_rated"], [])
+        self.assertEqual(payload["medium"]["highest_rated"], [])
+        self.assertEqual(len(payload["high"]["items"]), 5)
+        self.assertEqual(payload["summary"]["majority_label"], "OOD Software or Missing Patches")
+
+    def test_prompt_omits_category_labels_when_types_missing(self):
+        artifacts = self._artifacts("external_nexpose")
+        artifacts["external_nexpose_metrics"]["majority_type"] = None
+        artifacts["external_nexpose_metrics"]["minority_type"] = None
+
+        with mock.patch("ghostwriter.rolodex.views.load_vulnerability_matrix", return_value={}):
+            prompt = _build_ai_review_prompt("external_nexpose_rt", self.project, {}, artifacts)
+
+        summary = self._extract_json(prompt)["summary"]
+        for key in ("majority_type", "majority_label", "minority_type", "minority_label"):
+            self.assertNotIn(key, summary)
+        self.assertEqual(summary["majority_count"], 7)

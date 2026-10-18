@@ -116,12 +116,15 @@ from ghostwriter.shepherd.external.bloodhound.client import APIClient as BhAPICl
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
 from ghostwriter.rolodex.ad_attack_paths_scoring import count_laps_not_covered
 from ghostwriter.rolodex.data_parsers import (
+    NEXPOSE_CATEGORY_LABELS,
     NEXPOSE_METRICS_KEY_MAP,
     NEXPOSE_METRICS_LABELS,
     NEXPOSE_UPLOAD_REQUIREMENTS,
     NEXPOSE_UPLOAD_REQUIREMENTS_BY_SLUG,
+    build_nexpose_highest_rated_issues,
     load_password_compliance_matrix,
     load_ad_threshold_map,
+    load_vulnerability_matrix,
     normalize_nexpose_artifacts_map,
     resolve_nexpose_requirement_artifact_key,
     summarize_nexpose_matrix_gaps,
@@ -285,6 +288,64 @@ def _summarize_dns_findings(findings: Mapping[str, Any]) -> Dict[str, Any]:
     return summary
 
 
+def _build_nexpose_prompt_payload(
+    artifacts: Mapping[str, Any],
+    metrics_key: str,
+    vulnerabilities_key: str,
+    vulnerability_matrix: Optional[Mapping[str, Mapping[str, str]]] = None,
+) -> Dict[str, Any]:
+    """Return the JSON-ready Nexpose context sent with an AI review prompt.
+
+    Shared by the External, Internal and IoT/IoMT Nexpose sections. Alongside
+    the metrics ``summary`` and the most-frequent ``items`` per High/Medium
+    bucket, the payload carries the majority/minority category labels and the
+    highest-severity issues per bucket (``highest_rated``), derived from the
+    metrics artifact's ``unique_issues``.
+    """
+
+    nexpose_metrics = artifacts.get(metrics_key, {}) if isinstance(artifacts, Mapping) else {}
+    if not isinstance(nexpose_metrics, Mapping):
+        nexpose_metrics = {}
+    summary_source = nexpose_metrics.get("summary")
+    summary: Dict[str, Any] = dict(summary_source) if isinstance(summary_source, Mapping) else {}
+
+    for type_key, label_key in (
+        ("majority_type", "majority_label"),
+        ("minority_type", "minority_label"),
+    ):
+        raw_type = nexpose_metrics.get(type_key)
+        type_code = str(raw_type).strip() if isinstance(raw_type, str) else ""
+        if not type_code:
+            continue
+        summary[type_key] = type_code
+        summary[label_key] = NEXPOSE_CATEGORY_LABELS.get(type_code.upper(), type_code)
+
+    highest_rated = build_nexpose_highest_rated_issues(
+        nexpose_metrics.get("unique_issues"),
+        vulnerability_matrix=vulnerability_matrix,
+    )
+
+    vulnerabilities = artifacts.get(vulnerabilities_key, {}) if isinstance(artifacts, Mapping) else {}
+    if not isinstance(vulnerabilities, Mapping):
+        vulnerabilities = {}
+
+    def _bucket(severity_key: str) -> Dict[str, Any]:
+        group = vulnerabilities.get(severity_key)
+        group = group if isinstance(group, Mapping) else {}
+        items = group.get("items", [])
+        return {
+            "total_unique": group.get("total_unique", 0),
+            "items": list(items) if isinstance(items, list) else [],
+            "highest_rated": highest_rated.get(severity_key, []),
+        }
+
+    return {
+        "summary": summary,
+        "high": _bucket("high"),
+        "medium": _bucket("med"),
+    }
+
+
 PASSWORD_NIST_PROMPT_GUIDANCE = (
     " Frame all findings and recommendations according to current NIST SP 800-63B"
     " digital identity guidance, which has moved away from the legacy password"
@@ -401,36 +462,14 @@ def _build_ai_review_prompt(
         findings = _summarize_dns_findings(artifacts.get("dns_findings", {}))
         payload = {"findings": findings} if findings else {"note": "No DNS findings provided."}
         details = json.dumps(_attach_risk(payload), indent=2, default=str)
-    elif normalized_key == "external_nexpose":
-        nexpose_metrics = artifacts.get("external_nexpose_metrics", {})
-        summary = nexpose_metrics.get("summary") if isinstance(nexpose_metrics, Mapping) else {}
-        vulnerabilities = artifacts.get("external_nexpose_vulnerabilities", {})
-        relevant = {
-            "summary": summary if isinstance(summary, Mapping) else {},
-            "high": vulnerabilities.get("high") if isinstance(vulnerabilities, Mapping) else {},
-            "medium": vulnerabilities.get("med") if isinstance(vulnerabilities, Mapping) else {},
-        }
-        details = json.dumps(_attach_risk(relevant), indent=2)
-    elif normalized_key == "internal_nexpose":
-        nexpose_metrics = artifacts.get("internal_nexpose_metrics", {})
-        summary = nexpose_metrics.get("summary") if isinstance(nexpose_metrics, Mapping) else {}
-        vulnerabilities = artifacts.get("internal_nexpose_vulnerabilities", {})
-        relevant = {
-            "summary": summary if isinstance(summary, Mapping) else {},
-            "high": vulnerabilities.get("high") if isinstance(vulnerabilities, Mapping) else {},
-            "medium": vulnerabilities.get("med") if isinstance(vulnerabilities, Mapping) else {},
-        }
-        details = json.dumps(_attach_risk(relevant), indent=2)
-    elif normalized_key == "iot_iomt_nexpose":
-        nexpose_metrics = artifacts.get("iot_iomt_nexpose_metrics", {})
-        summary = nexpose_metrics.get("summary") if isinstance(nexpose_metrics, Mapping) else {}
-        vulnerabilities = artifacts.get("iot_iomt_nexpose_vulnerabilities", {})
-        relevant = {
-            "summary": summary if isinstance(summary, Mapping) else {},
-            "high": vulnerabilities.get("high") if isinstance(vulnerabilities, Mapping) else {},
-            "medium": vulnerabilities.get("med") if isinstance(vulnerabilities, Mapping) else {},
-        }
-        details = json.dumps(_attach_risk(relevant), indent=2)
+    elif normalized_key in ("external_nexpose", "internal_nexpose", "iot_iomt_nexpose"):
+        relevant = _build_nexpose_prompt_payload(
+            artifacts,
+            f"{normalized_key}_metrics",
+            f"{normalized_key}_vulnerabilities",
+            load_vulnerability_matrix(),
+        )
+        details = json.dumps(_attach_risk(relevant), indent=2, default=str)
     elif normalized_key == "endpoint":
         endpoint_data = artifacts.get("endpoint", {})
         metrics = endpoint_data.get("metrics") if isinstance(endpoint_data, Mapping) else {}

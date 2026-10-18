@@ -4218,6 +4218,65 @@ def _build_nexpose_vulnerability_summary_from_unique_issues(
     return summaries
 
 
+def build_nexpose_highest_rated_issues(
+    unique_issues: Any,
+    *,
+    vulnerability_matrix: Optional[Dict[str, Dict[str, str]]] = None,
+    limit: int = 5,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Return the highest-severity unique Nexpose issues per severity bucket.
+
+    Complements the ``items`` lists built by
+    ``_build_nexpose_vulnerability_summary_from_unique_issues`` (ranked by
+    instance count) with lists ranked by Nexpose severity level, so a
+    severity-10 issue on a single host is not crowded out by common
+    lower-rated issues. Each entry carries the same fields as ``items``
+    (title, impact, count and the vulnerability matrix fields) plus
+    ``severity``. The Nexpose finding category is kept when the matrix has
+    no row for the title.
+    """
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {"high": [], "med": [], "low": []}
+    severity_map = {"High": "high", "Medium": "med", "Low": "low"}
+
+    if isinstance(unique_issues, list):
+        for entry in unique_issues:
+            if not isinstance(entry, dict):
+                continue
+            severity = _coerce_int(entry.get("severity"))
+            severity_bucket = _categorize_severity(severity)
+            if not severity_bucket:
+                continue
+            title = str(entry.get("issue") or entry.get("title") or "").strip()
+            impact = str(entry.get("impact") or "").strip()
+            if not title and not impact:
+                continue
+            grouped[severity_map[severity_bucket]].append(
+                {
+                    "title": title,
+                    "impact": impact,
+                    "count": _coerce_int(entry.get("count")) or 1,
+                    "severity": severity or 0,
+                    "category": str(entry.get("category") or "").strip(),
+                }
+            )
+
+    results: Dict[str, List[Dict[str, Any]]] = {}
+    for bucket, entries in grouped.items():
+        entries.sort(
+            key=lambda item: (
+                -item["severity"],
+                -item["count"],
+                item["title"].lower(),
+            )
+        )
+        results[bucket] = [
+            _apply_vulnerability_matrix_fields(item, vulnerability_matrix)
+            for item in entries[: max(limit, 0)]
+        ]
+    return results
+
+
 def parse_nexpose_xml_report(
     file_obj: File,
     *,
@@ -4400,6 +4459,13 @@ NEXPOSE_METRICS_KEY_MAP = {
     "external_nexpose_findings": "external_nexpose_metrics",
     "internal_nexpose_findings": "internal_nexpose_metrics",
     "iot_iomt_nexpose_findings": "iot_iomt_nexpose_metrics",
+}
+
+NEXPOSE_CATEGORY_LABELS = {
+    "OOD": "OOD Software or Missing Patches",
+    "ISC": "Insecure System Configurations",
+    "IWC": "Insecure Web Configurations",
+    "EVEN": "Even",
 }
 
 NEXPOSE_METRICS_LABELS = {
