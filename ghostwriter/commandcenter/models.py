@@ -2,7 +2,7 @@
 
 import json
 from decimal import Decimal
-from typing import Any, Callable, NamedTuple
+from typing import Any, Callable, Dict, NamedTuple
 from urllib.parse import urlparse
 
 # Django Imports
@@ -20,6 +20,13 @@ from timezone_field import TimeZoneField
 
 # Ghostwriter Libraries
 from ghostwriter.singleton.models import SingletonModel
+from ghostwriter.rolodex.ai_review_prompts import (
+    AI_REVIEW_PROMPT_DEFAULTS,
+    AI_REVIEW_SECTION_CHOICES,
+    AI_REVIEW_SECTION_LABELS,
+    get_default_prompt_text,
+    normalize_section_key,
+)
 
 def sanitize(sensitive_thing):
     """
@@ -546,6 +553,99 @@ class ScoringConfiguration(SingletonModel):
                 instance.wireless_overall_weight, cls.DEFAULT_WIRELESS_OVERALL_WEIGHT
             ),
         )
+
+
+class AIReviewPromptTemplate(models.Model):
+    """Admin-editable instruction and footer text for one AI review area prompt.
+
+    The prompt sent to OpenAI is ``instruction`` + the area's project data JSON +
+    ``footer``. Rows are seeded from
+    :data:`ghostwriter.rolodex.ai_review_prompts.AI_REVIEW_PROMPT_DEFAULTS`, which
+    is also the fallback whenever a row is missing or the table is unavailable.
+    """
+
+    section_key = models.CharField(
+        "Area",
+        max_length=64,
+        unique=True,
+        choices=AI_REVIEW_SECTION_CHOICES,
+        help_text="AI review area this prompt text applies to",
+    )
+    instruction = models.TextField(
+        "Instruction",
+        help_text=(
+            "Opening instruction sent to OpenAI before the project data JSON. "
+            "{risk} is replaced with the area's risk label (e.g. High)."
+        ),
+    )
+    footer = models.TextField(
+        "Footer",
+        blank=True,
+        default="",
+        help_text=(
+            "Closing instruction sent after the project data JSON, normally the required risk statement. "
+            "{risk} is replaced with the area's risk label. Leave blank to send no footer."
+        ),
+    )
+
+    class Meta:
+        ordering = ["section_key"]
+        verbose_name = "AI Review Prompt"
+        verbose_name_plural = "AI Review Prompts"
+
+    def __str__(self):
+        return self.section_label
+
+    @property
+    def section_label(self) -> str:
+        return AI_REVIEW_SECTION_LABELS.get(self.section_key, self.section_key)
+
+    @classmethod
+    def get_prompt_texts(cls) -> Dict[str, Dict[str, str]]:
+        """Return ``{section_key: {"instruction", "footer"}}`` for every area.
+
+        Starts from the built-in defaults and overlays any stored rows, so a
+        missing row (or a missing table during early migrations and
+        ``SimpleTestCase`` runs) still yields usable prompt text. A stored
+        blank footer is honored as "no footer"; a blank instruction falls back
+        to the default.
+        """
+
+        texts: Dict[str, Dict[str, str]] = {
+            key: {"instruction": entry["instruction"], "footer": entry["footer"]}
+            for key, entry in AI_REVIEW_PROMPT_DEFAULTS.items()
+        }
+        try:
+            rows = list(cls.objects.values("section_key", "instruction", "footer"))
+        except (ProgrammingError, OperationalError):  # pragma: no cover - table not ready
+            return texts
+
+        for row in rows:
+            key = row.get("section_key")
+            if key not in texts:
+                continue
+            instruction = row.get("instruction") or ""
+            texts[key] = {
+                "instruction": instruction if instruction.strip() else texts[key]["instruction"],
+                "footer": row.get("footer") or "",
+            }
+        return texts
+
+    @classmethod
+    def get_prompt_text(cls, section_key: str) -> Dict[str, str]:
+        """Return the ``{"instruction", "footer"}`` pair for ``section_key``."""
+
+        key = normalize_section_key(section_key)
+        return cls.get_prompt_texts().get(key) or dict(get_default_prompt_text(key))
+
+    def reset_to_default(self, *, save: bool = True) -> None:
+        """Restore the built-in instruction and footer text for this area."""
+
+        defaults = get_default_prompt_text(self.section_key)
+        self.instruction = defaults["instruction"]
+        self.footer = defaults["footer"]
+        if save:
+            self.save(update_fields=["instruction", "footer"])
 
 
 class BannerConfiguration(SingletonModel):

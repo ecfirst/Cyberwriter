@@ -54,6 +54,7 @@ from ghostwriter.api.utils import (
     verify_user_is_privileged,
 )
 from ghostwriter.commandcenter.models import (
+    AIReviewPromptTemplate,
     BloodHoundConfiguration,
     ExtraFieldSpec,
     ReportConfiguration,
@@ -115,6 +116,12 @@ from ghostwriter.shepherd.external.bloodhound.client import APIClient as BhAPICl
 
 from ghostwriter.rolodex.ip_artifacts import IP_ARTIFACT_DEFINITIONS, IP_ARTIFACT_ORDER
 from ghostwriter.rolodex.ad_attack_paths_scoring import count_laps_not_covered
+from ghostwriter.rolodex.ai_review_prompts import (  # noqa: F401 - re-exported for callers/tests
+    AI_REVIEW_SECTIONS,
+    PASSWORD_NIST_PROMPT_GUIDANCE,
+    render_prompt_footer,
+    render_prompt_text,
+)
 from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_CATEGORY_LABELS,
     NEXPOSE_METRICS_KEY_MAP,
@@ -172,32 +179,6 @@ from ghostwriter.rolodex.risk import build_project_risk_summary
 
 # Using __name__ resolves to ghostwriter.rolodex.views
 logger = logging.getLogger(__name__)
-
-AI_REVIEW_SECTIONS = (
-    ("osint_rt", "OSINT", "external", "osint"),
-    ("dns_rt", "DNS", "external", "dns"),
-    ("external_nexpose_rt", "External Nexpose", "external", "nexpose"),
-    ("web_rt", "Web", "external", "web"),
-    ("ad_rt", "AD", "iam", "ad"),
-    ("ad_attack_paths_rt", "AD Attack Paths", "iam", "ad_attack_paths"),
-    ("password_rt", "Password", "iam", "password"),
-    ("internal_nexpose_rt", "Internal Nexpose", "internal", "nexpose"),
-    ("iot_iomt_nexpose_rt", "IoT/IoMT Nexpose", "internal", "iot_iomt"),
-    ("endpoint_rt", "Endpoint", "internal", "endpoint"),
-    ("snmp_rt", "SNMP", "internal", "snmp"),
-    ("sql_rt", "SQL", "internal", "sql"),
-    ("wireless_rt", "Wireless", "wireless", "selected"),
-    ("firewall_rt", "Firewall", "firewall", "selected"),
-    ("cloud_management_rt", "Cloud Management", "cloud", "cloud_management"),
-    ("iam_management_rt", "IAM Management", "cloud", "iam_management"),
-    (
-        "system_configuration_rt",
-        "System Configuration",
-        "cloud",
-        "system_configuration",
-    ),
-)
-
 
 def _build_ai_review_sections(scoping_state: Mapping[str, Any], ai_review_payload: Any):
     """Return a list of AI review sections based on ``scoping_state``."""
@@ -346,30 +327,25 @@ def _build_nexpose_prompt_payload(
     }
 
 
-PASSWORD_NIST_PROMPT_GUIDANCE = (
-    " Frame all findings and recommendations according to current NIST SP 800-63B"
-    " digital identity guidance, which has moved away from the legacy password"
-    " controls many organizations still enforce. Specifically:"
-    " (1) Do not recommend periodic or forced password expiration. A 'Maximum Age'"
-    " of 0 (passwords do not expire on a schedule) is the desired end state;"
-    " credential changes should be forced only on evidence of compromise."
-    " (2) Do not recommend enabling character-composition or complexity"
-    " requirements. 'Complexity Required' set to FALSE is the desired end state."
-    " (3) Treat minimum length, screening candidate passwords against blocklists of"
-    " known-breached and commonly used passwords, and multi-factor authentication"
-    " as the primary controls that reduce credential-compromise risk."
-    " Where the assessed policy already disables expiration or complexity, describe"
-    " that as alignment with current guidance rather than as a weakness, and do not"
-    " recommend re-enabling either control."
-)
-
-
 def _build_ai_review_prompt(
-    section_key: str, project: Project, workbook: Mapping[str, Any], artifacts: Mapping[str, Any]
+    section_key: str,
+    project: Project,
+    workbook: Mapping[str, Any],
+    artifacts: Mapping[str, Any],
+    prompt_texts: Optional[Mapping[str, Mapping[str, str]]] = None,
 ) -> str:
-    """Craft a prompt for the requested AI review ``section_key``."""
+    """Craft a prompt for the requested AI review ``section_key``.
+
+    ``prompt_texts`` is the ``AIReviewPromptTemplate.get_prompt_texts()`` mapping;
+    pass it when building several prompts to avoid repeated lookups.
+    """
 
     normalized_key = section_key[:-3] if section_key.endswith("_rt") else section_key
+    template_key = f"{normalized_key}_rt"
+    if prompt_texts is not None and template_key in prompt_texts:
+        prompt_text = prompt_texts[template_key]
+    else:
+        prompt_text = AIReviewPromptTemplate.get_prompt_text(template_key)
 
     project_risks = project.risks if isinstance(getattr(project, "risks", None), Mapping) else {}
     workbook_risks: dict[str, str] = {}
@@ -387,48 +363,7 @@ def _build_ai_review_prompt(
 
     risk_value = risk_lookup.get(normalized_key)
 
-    description = {
-        "osint": "Open Source Intel metrics",
-        "dns": "DNS configuration best practice checks",
-        "external_nexpose": "Vulnerability scanning results for externally accessible systems",
-        "internal_nexpose": "Vulnerability scanning results for internal systems",
-        "iot_iomt_nexpose": "Vulnerability scanning results for IoT systems/devices",
-        "endpoint": "Review of accessible AD registered computers for current Security Software and past connections to insecure WiFi",
-        "snmp": "Review of internal systems using SNMP for default or easy to guess Strings",
-        "sql": "Review of internal systems with database servers listening on default ports with a test for default credentials",
-        "firewall": "Review of firewall OS version, security configuration setting best-practice adherence and rule configuration",
-        "wireless": "Review of the Wireless networks accessible at a location, a comparison to 'approved' SSIDs, a review of the wireless security and wireless-to-internal network segmentation testing (when applicable)",
-        "web": "Web application vulnerability scan results",
-        "ad": "Active Directory metrics covering privileged groups and user account hygiene",
-        "ad_attack_paths": (
-            "Active Directory attack path findings covering Kerberoasting, delegation abuse, "
-            "ADCS misconfiguration, and related identity attack surface"
-        ),
-        "password": "Password policy effectiveness, cracked credentials, and related controls",
-        "iam_management": "Review of the M365 configuration settings as compared to the CIS Benchmark recommendations",
-        "cloud_management": "Review of the applicable cloud provider configuration settings as compared to the CIS Benchmark recommendations",
-        "system_configuration": "Review of system configuration setting as compared to the applicable CIS Benchmark recommendations",
-    }.get(normalized_key, "Project review")
 
-    risk_statements = {
-        "osint": "ecfirst has determined these exposures represent a {risk} risk of sensitive information exposure.",
-        "dns": "ecfirst has determined these issues represent a {risk} risk to the availability of external systems and services.",
-        "external_nexpose": "Based on the vulnerabilities discovered, ecfirst rates the overall risk of the external network and systems as a {risk} risk.",
-        "web": "ecfirst has determined these issues represent a {risk} risk for web sites/applications.",
-        "ad": "ecfirst has determined that the deviations from best practice identified create a {risk} risk to IAM.",
-        "ad_attack_paths": "ecfirst has determined that the identified AD attack paths create a {risk} risk of domain compromise.",
-        "password": "ecfirst has determined that, based on the defined and implemented password policy, along with the number of accounts using weak passwords, the risk of account compromise is {risk}.",
-        "internal_nexpose": "Based on the vulnerabilities discovered, ecfirst rates the overall risk of the internal network and systems as a {risk} risk.",
-        "iot_iomt_nexpose": "Based on the vulnerabilities discovered, ecfirst rates the overall risk of the IoT/IoMT systems as a {risk} risk.",
-        "endpoint": "ecfirst has determined that the number of devices without current, active security software present, along with the number of connections to Open wireless networks, creates a {risk} risk of data loss and/or malware infection.",
-        "snmp": "ecfirst has determined that the number of systems utilizing default SNMP strings creates a {risk} risk to the security of the internal network and systems.",
-        "sql": "ecfirst has determined that the number of database instances allowing open access, coupled with the unsupported systems, creates a {risk} risk for unauthorized data access or data loss.",
-        "wireless": "ecfirst has determined that the risk related to the wireless networks is {risk}.",
-        "firewall": "ecfirst has determined the risk related to the Firewalls is {risk}.",
-        "iam_management": "ecfirst has determined the risk related to IAM management settings is {risk}.",
-        "cloud_management": "ecfirst has determined the risk related to cloud management settings is {risk}.",
-        "system_configuration": "ecfirst has determined the risk related to system configuration is {risk}.",
-    }
 
     def _attach_risk(payload: Any) -> Any:
         if risk_value is None:
@@ -796,25 +731,13 @@ def _build_ai_review_prompt(
     else:
         details = json.dumps(_attach_risk({}), indent=2)
 
-    risk_statement = risk_statements.get(normalized_key)
-    risk_footer = ""
-    if risk_statement:
-        risk_footer = (
-            "\n\nEnd the paragraph with this risk statement: "
-            f"{risk_statement.format(risk=risk_value or 'unknown', risks=risk_value or 'unknown')}"
-        )
+    instruction = render_prompt_text(prompt_text.get("instruction"), risk_value)
+    footer = render_prompt_footer(prompt_text.get("footer"), risk_value)
 
-    return (
-        "Provide an executive summary in a single paragraph for the "
-        f"{description}. Use the following project data as context and keep the response concise."
-        + (
-            " Prioritize cracked password results and administrator credentials when present; address policy and FGPP settings as supporting details."
-            + PASSWORD_NIST_PROMPT_GUIDANCE
-            if normalized_key == "password"
-            else ""
-        )
-        + f"\n\n{details}{risk_footer}"
-    )
+    prompt = f"{instruction}\n\n{details}"
+    if footer:
+        prompt += f"\n\n{footer}"
+    return prompt
 
 AD_CSV_HEADER_MAP: dict[str, dict[str, str]] = {
     "domain_admins": {"account": "Account", "password last set": "Password Last Set"},
@@ -1926,11 +1849,12 @@ class ProjectAiReviewGenerate(RoleBasedAccessControlMixin, SingleObjectMixin, Vi
             ai_outputs: Dict[str, str] = {}
             failed_sections: list[str] = []
             prompts: list[tuple[str, str]] = []
+            prompt_texts = AIReviewPromptTemplate.get_prompt_texts()
 
             for section in sections:
                 try:
                     prompt = _build_ai_review_prompt(
-                        section["key"], project, workbook, artifacts
+                        section["key"], project, workbook, artifacts, prompt_texts=prompt_texts
                     )
                 except Exception as exc:  # pragma: no cover - defensive logging
                     logger.warning(

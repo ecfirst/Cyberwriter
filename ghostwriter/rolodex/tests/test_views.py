@@ -5137,3 +5137,82 @@ class AiReviewNexposePromptTests(TestCase):
         for key in ("majority_type", "majority_label", "minority_type", "minority_label"):
             self.assertNotIn(key, summary)
         self.assertEqual(summary["majority_count"], 7)
+
+
+class AiReviewPromptTemplateOverrideTests(TestCase):
+    """Confirm admin-edited prompt text replaces the built-in instruction and footer."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.project = ProjectFactory()
+
+    def _workbook(self):
+        return {
+            "external_internal_grades": {
+                "internal": {"nexpose": {"score": 5.0, "risk": "High"}},
+            }
+        }
+
+    def _set_prompt(self, section_key, instruction, footer):
+        from ghostwriter.commandcenter.models import AIReviewPromptTemplate
+
+        AIReviewPromptTemplate.objects.update_or_create(
+            section_key=section_key, defaults={"instruction": instruction, "footer": footer}
+        )
+
+    def test_custom_instruction_and_footer_are_used(self):
+        from ghostwriter.rolodex.ai_review_prompts import AI_REVIEW_PROMPT_DEFAULTS
+
+        self._set_prompt(
+            "internal_nexpose_rt",
+            "Write three bullet points about the internal scan ({risk} risk).",
+            "Close with: internal risk is {risk}.",
+        )
+
+        with mock.patch("ghostwriter.rolodex.views.load_vulnerability_matrix", return_value={}):
+            prompt = _build_ai_review_prompt("internal_nexpose_rt", self.project, self._workbook(), {})
+
+        self.assertTrue(prompt.startswith("Write three bullet points about the internal scan (High risk).\n\n{"))
+        self.assertTrue(prompt.endswith("}\n\nClose with: internal risk is High."))
+        self.assertNotIn(AI_REVIEW_PROMPT_DEFAULTS["internal_nexpose_rt"]["instruction"], prompt)
+        self.assertNotIn("End the paragraph with this risk statement", prompt)
+
+    def test_blank_footer_sends_no_footer(self):
+        self._set_prompt("internal_nexpose_rt", "Summarize the internal scan.", "")
+
+        with mock.patch("ghostwriter.rolodex.views.load_vulnerability_matrix", return_value={}):
+            prompt = _build_ai_review_prompt("internal_nexpose_rt", self.project, self._workbook(), {})
+
+        self.assertTrue(prompt.startswith("Summarize the internal scan.\n\n{"))
+        self.assertTrue(prompt.endswith("}"))
+
+    def test_missing_risk_renders_unknown(self):
+        self._set_prompt("snmp_rt", "SNMP summary.", "Risk: {risk}.")
+
+        prompt = _build_ai_review_prompt("snmp_rt", self.project, {}, {})
+
+        self.assertTrue(prompt.endswith("Risk: unknown."))
+
+    def test_prompt_texts_mapping_is_preferred_over_lookup(self):
+        from ghostwriter.commandcenter.models import AIReviewPromptTemplate
+
+        self._set_prompt("sql_rt", "Stored SQL instruction.", "Stored SQL footer.")
+        provided = {"sql_rt": {"instruction": "Provided SQL instruction.", "footer": ""}}
+
+        with mock.patch.object(AIReviewPromptTemplate, "get_prompt_text") as lookup:
+            prompt = _build_ai_review_prompt("sql_rt", self.project, {}, {}, prompt_texts=provided)
+
+        lookup.assert_not_called()
+        self.assertTrue(prompt.startswith("Provided SQL instruction.\n\n"))
+        self.assertNotIn("Stored SQL", prompt)
+
+    def test_default_text_unchanged_without_edits(self):
+        from ghostwriter.rolodex.ai_review_prompts import AI_REVIEW_PROMPT_DEFAULTS
+
+        prompt = _build_ai_review_prompt("snmp_rt", self.project, {}, {})
+
+        self.assertTrue(prompt.startswith(AI_REVIEW_PROMPT_DEFAULTS["snmp_rt"]["instruction"] + "\n\n"))
+        self.assertTrue(
+            prompt.endswith(AI_REVIEW_PROMPT_DEFAULTS["snmp_rt"]["footer"].replace("{risk}", "unknown"))
+        )
+

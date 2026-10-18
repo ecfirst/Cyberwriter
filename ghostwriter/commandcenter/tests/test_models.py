@@ -401,3 +401,90 @@ class ScoringConfigurationTests(TestCase):
         self.assertEqual(values.area_score_exponent, Decimal("1.00"))
         self.assertEqual(values.overall_score_exponent, Decimal("2.00"))
         self.assertEqual(values.wireless_overall_weight, Decimal("0.75"))
+
+
+class AIReviewPromptTemplateTests(TestCase):
+    """Collection of tests for :model:`commandcenter.AIReviewPromptTemplate`."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from importlib import import_module
+
+        from django.apps import apps
+
+        # Re-run the data migration seed so the test DB has one row per area
+        # even when migrations are skipped.
+        migration = import_module("ghostwriter.commandcenter.migrations.0048_aireviewprompttemplate")
+        migration.seed_default_prompts(apps, None)
+
+    def test_seed_creates_one_row_per_area_with_default_text(self):
+        from ghostwriter.commandcenter.models import AIReviewPromptTemplate
+        from ghostwriter.rolodex.ai_review_prompts import AI_REVIEW_PROMPT_DEFAULTS
+
+        rows = {row.section_key: row for row in AIReviewPromptTemplate.objects.all()}
+        self.assertEqual(set(rows), set(AI_REVIEW_PROMPT_DEFAULTS))
+        self.assertEqual(len(rows), 17)
+        for key, entry in AI_REVIEW_PROMPT_DEFAULTS.items():
+            self.assertEqual(rows[key].instruction, entry["instruction"])
+            self.assertEqual(rows[key].footer, entry["footer"])
+            self.assertEqual(str(rows[key]), entry["label"])
+
+    def test_get_prompt_texts_matches_defaults_without_edits(self):
+        from ghostwriter.commandcenter.models import AIReviewPromptTemplate
+        from ghostwriter.rolodex.ai_review_prompts import AI_REVIEW_PROMPT_DEFAULTS
+
+        texts = AIReviewPromptTemplate.get_prompt_texts()
+        for key, entry in AI_REVIEW_PROMPT_DEFAULTS.items():
+            self.assertEqual(texts[key]["instruction"], entry["instruction"])
+            self.assertEqual(texts[key]["footer"], entry["footer"])
+
+        internal = AIReviewPromptTemplate.get_prompt_text("internal_nexpose")
+        self.assertIn("Vulnerability scanning results for internal systems", internal["instruction"])
+        self.assertTrue(internal["footer"].startswith("End the paragraph with this risk statement:"))
+        self.assertIn("{risk}", internal["footer"])
+
+    def test_get_prompt_texts_reflects_edits_and_blank_footer(self):
+        from ghostwriter.commandcenter.models import AIReviewPromptTemplate
+        from ghostwriter.rolodex.ai_review_prompts import AI_REVIEW_PROMPT_DEFAULTS
+
+        row = AIReviewPromptTemplate.objects.get(section_key="snmp_rt")
+        row.instruction = "Summarize the SNMP review in two sentences."
+        row.footer = ""
+        row.save()
+
+        texts = AIReviewPromptTemplate.get_prompt_texts()
+        self.assertEqual(texts["snmp_rt"]["instruction"], "Summarize the SNMP review in two sentences.")
+        self.assertEqual(texts["snmp_rt"]["footer"], "")
+        # Other areas are untouched.
+        self.assertEqual(texts["sql_rt"], {
+            "instruction": AI_REVIEW_PROMPT_DEFAULTS["sql_rt"]["instruction"],
+            "footer": AI_REVIEW_PROMPT_DEFAULTS["sql_rt"]["footer"],
+        })
+
+    def test_missing_row_and_unknown_key_fall_back_to_defaults(self):
+        from ghostwriter.commandcenter.models import AIReviewPromptTemplate
+        from ghostwriter.rolodex.ai_review_prompts import AI_REVIEW_PROMPT_DEFAULTS, GENERIC_INSTRUCTION
+
+        AIReviewPromptTemplate.objects.filter(section_key="dns_rt").delete()
+        texts = AIReviewPromptTemplate.get_prompt_texts()
+        self.assertEqual(texts["dns_rt"]["instruction"], AI_REVIEW_PROMPT_DEFAULTS["dns_rt"]["instruction"])
+
+        self.assertEqual(
+            AIReviewPromptTemplate.get_prompt_text("not_a_section"),
+            {"instruction": GENERIC_INSTRUCTION, "footer": ""},
+        )
+
+    def test_reset_to_default_restores_both_fields(self):
+        from ghostwriter.commandcenter.models import AIReviewPromptTemplate
+        from ghostwriter.rolodex.ai_review_prompts import AI_REVIEW_PROMPT_DEFAULTS
+
+        row = AIReviewPromptTemplate.objects.get(section_key="wireless_rt")
+        row.instruction = "custom"
+        row.footer = "custom footer"
+        row.save()
+
+        row.reset_to_default()
+        row.refresh_from_db()
+        self.assertEqual(row.instruction, AI_REVIEW_PROMPT_DEFAULTS["wireless_rt"]["instruction"])
+        self.assertEqual(row.footer, AI_REVIEW_PROMPT_DEFAULTS["wireless_rt"]["footer"])
+

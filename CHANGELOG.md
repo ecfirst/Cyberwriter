@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+* The opening instruction and closing risk-statement footer of every AI review prompt are now editable per area under CommandCenter → AI Review Prompts (`{risk}` is replaced with the area's risk label; a "Restore default prompt text" action resets a row)
+
 ### Fixed
 
 * The `default` / `d` report template filter now treats `None` as a missing value, fixing `unsupported operand type(s) for +: 'NoneType' and 'NoneType'` errors when workbook sections are out of scope
