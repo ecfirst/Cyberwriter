@@ -1,4 +1,5 @@
 # Standard Libraries
+import base64
 import json
 import io
 import logging
@@ -64,7 +65,7 @@ from ghostwriter.modules.reportwriter.jinja_funcs import (
 )
 from ghostwriter.reporting.templatetags import report_tags
 from ghostwriter.reporting.supplemental_export import SupplementalDocumentBuilder
-from ghostwriter.rolodex.models import ProjectDataFile
+from ghostwriter.rolodex.models import ProjectArtifactFile, ProjectDataFile
 
 logging.disable(logging.CRITICAL)
 
@@ -2459,6 +2460,68 @@ class GenerateReportTests(TestCase):
         self.assertIn(f"{project.client.name} AAP - Kerberoastable Accounts.xlsx", filenames)
         self.assertIn(f"{project.client.name} AAP - GPP Passwords.xlsx", filenames)
         self.assertNotIn(f"{project.client.name} AAP - RBCD.xlsx", filenames)
+
+    def _firewall_supplemental_filename(self):
+        return f"{self.report.project.client.name} Detailed Firewall Vulnerability Findings.xlsx"
+
+    def _create_firewall_artifact_file(self, content=b"PK\x03\x04"):
+        project = self.report.project
+        artifact_file = ProjectArtifactFile.objects.create(
+            project=project,
+            artifact_key="firewall_metrics",
+            file=SimpleUploadedFile(
+                "firewall_data.xlsx",
+                content,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            filename="firewall_data.xlsx",
+            byte_size=len(content),
+        )
+
+        def _cleanup():
+            if artifact_file.file:
+                artifact_file.file.delete(save=False)
+            artifact_file.delete()
+
+        self.addCleanup(_cleanup)
+        return artifact_file
+
+    def _set_firewall_metrics(self, **extra):
+        project = self.report.project
+        payload = {"summary": {}, "devices": [], "xlsx_filename": "firewall_data.xlsx"}
+        payload.update(extra)
+        project.data_artifacts = {"firewall_metrics": payload}
+        project.save(update_fields=["data_artifacts"])
+        self.addCleanup(self._reset_project_artifacts)
+
+    def test_firewall_artifact_file_included_in_supplemental_zip(self):
+        artifact_file = self._create_firewall_artifact_file(b"PK\x03\x04firewall")
+        self._set_firewall_metrics(
+            xlsx={"artifact_file_id": artifact_file.pk, "filename": "firewall_data.xlsx"}
+        )
+
+        files = SupplementalDocumentBuilder(self.report.project).build()
+        contents = dict(files)
+
+        self.assertIn(self._firewall_supplemental_filename(), contents)
+        self.assertEqual(contents[self._firewall_supplemental_filename()], b"PK\x03\x04firewall")
+
+    def test_firewall_legacy_base64_still_included_in_supplemental_zip(self):
+        self._set_firewall_metrics(xlsx_base64=base64.b64encode(b"PK\x03\x04legacy").decode("ascii"))
+
+        files = SupplementalDocumentBuilder(self.report.project).build()
+        contents = dict(files)
+
+        self.assertIn(self._firewall_supplemental_filename(), contents)
+        self.assertEqual(contents[self._firewall_supplemental_filename()], b"PK\x03\x04legacy")
+
+    def test_firewall_missing_artifact_file_is_skipped(self):
+        self._set_firewall_metrics(xlsx={"artifact_file_id": 999999, "filename": "firewall_data.xlsx"})
+
+        files = SupplementalDocumentBuilder(self.report.project).build()
+        filenames = [name for name, _ in files]
+
+        self.assertNotIn(self._firewall_supplemental_filename(), filenames)
 
     def test_password_file_included_in_supplemental_zip_without_state(self):
         project = self.report.project

@@ -1,11 +1,14 @@
 """This contains all the database models for the CommandCenter application."""
 
 import json
-from typing import Any, Callable, NamedTuple
+from decimal import Decimal
+from typing import Any, Callable, Dict, NamedTuple
 from urllib.parse import urlparse
 
 # Django Imports
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.utils import OperationalError, ProgrammingError
 from django_cryptography.fields import encrypt
 from django import forms
 from django.core.exceptions import ValidationError
@@ -17,6 +20,13 @@ from timezone_field import TimeZoneField
 
 # Ghostwriter Libraries
 from ghostwriter.singleton.models import SingletonModel
+from ghostwriter.rolodex.ai_review_prompts import (
+    AI_REVIEW_PROMPT_DEFAULTS,
+    AI_REVIEW_SECTION_CHOICES,
+    AI_REVIEW_SECTION_LABELS,
+    get_default_prompt_text,
+    normalize_section_key,
+)
 
 def sanitize(sensitive_thing):
     """
@@ -444,6 +454,198 @@ class GeneralConfiguration(SingletonModel):
 
     class Meta:
         verbose_name = "General Settings"
+
+
+class ScoringSettings(NamedTuple):
+    """Resolved scoring parameters used by workbook area and overall grading."""
+
+    area_score_exponent: Decimal
+    overall_score_exponent: Decimal
+    wireless_overall_weight: Decimal
+
+
+class ScoringConfiguration(SingletonModel):
+    """Tunable parameters for rolling sub-area scores up into area totals and the overall grade.
+
+    Totals use a weighted power mean, ``(sum(w_i * s_i ** p)) ** (1 / p)``. With ``p = 1`` this
+    is the plain weighted average; larger exponents let high scores dominate so that clean
+    minor sub-areas do not understate serious findings elsewhere in the area.
+    """
+
+    DEFAULT_AREA_SCORE_EXPONENT = Decimal("3.00")
+    DEFAULT_OVERALL_SCORE_EXPONENT = Decimal("2.00")
+    DEFAULT_WIRELESS_OVERALL_WEIGHT = Decimal("0.90")
+
+    area_score_exponent = models.DecimalField(
+        "Area Score Exponent",
+        max_digits=4,
+        decimal_places=2,
+        default=Decimal("3.00"),
+        validators=[MinValueValidator(Decimal("1.00"))],
+        help_text=(
+            "Power-mean exponent used to roll sub-area scores up into an area total. "
+            "1 = plain weighted average; higher values let high scores dominate and low scores drag less."
+        ),
+    )
+    overall_score_exponent = models.DecimalField(
+        "Overall Score Exponent",
+        max_digits=4,
+        decimal_places=2,
+        default=Decimal("2.00"),
+        validators=[MinValueValidator(Decimal("1.00"))],
+        help_text=(
+            "Power-mean exponent used to roll area totals up into the overall grade. "
+            "1 = plain average; higher values let high-risk areas dominate."
+        ),
+    )
+    wireless_overall_weight = models.DecimalField(
+        "Wireless Overall Weight",
+        max_digits=3,
+        decimal_places=2,
+        default=Decimal("0.90"),
+        validators=[MinValueValidator(Decimal("0.00")), MaxValueValidator(Decimal("1.00"))],
+        help_text=(
+            "Share of an equal area weight that Wireless carries in the overall grade "
+            "(wireless exploitation requires physical proximity). The remainder is spread "
+            "across the other in-scope areas."
+        ),
+    )
+
+    def __str__(self):
+        return "Scoring Settings"
+
+    class Meta:
+        verbose_name = "Scoring Settings"
+
+    @classmethod
+    def get_defaults(cls) -> ScoringSettings:
+        return ScoringSettings(
+            area_score_exponent=cls.DEFAULT_AREA_SCORE_EXPONENT,
+            overall_score_exponent=cls.DEFAULT_OVERALL_SCORE_EXPONENT,
+            wireless_overall_weight=cls.DEFAULT_WIRELESS_OVERALL_WEIGHT,
+        )
+
+    @classmethod
+    def get_values(cls) -> ScoringSettings:
+        """Return the configured scoring parameters, falling back to defaults when unavailable."""
+
+        try:
+            instance = cls.get_solo()
+        except (ProgrammingError, OperationalError):  # pragma: no cover - table not ready
+            return cls.get_defaults()
+        except Exception:  # pragma: no cover - e.g. database access blocked in SimpleTestCase
+            return cls.get_defaults()
+
+        def _decimal(value, fallback):
+            if value in (None, ""):
+                return fallback
+            try:
+                return Decimal(str(value))
+            except Exception:
+                return fallback
+
+        return ScoringSettings(
+            area_score_exponent=_decimal(instance.area_score_exponent, cls.DEFAULT_AREA_SCORE_EXPONENT),
+            overall_score_exponent=_decimal(
+                instance.overall_score_exponent, cls.DEFAULT_OVERALL_SCORE_EXPONENT
+            ),
+            wireless_overall_weight=_decimal(
+                instance.wireless_overall_weight, cls.DEFAULT_WIRELESS_OVERALL_WEIGHT
+            ),
+        )
+
+
+class AIReviewPromptTemplate(models.Model):
+    """Admin-editable instruction and footer text for one AI review area prompt.
+
+    The prompt sent to OpenAI is ``instruction`` + the area's project data JSON +
+    ``footer``. Rows are seeded from
+    :data:`ghostwriter.rolodex.ai_review_prompts.AI_REVIEW_PROMPT_DEFAULTS`, which
+    is also the fallback whenever a row is missing or the table is unavailable.
+    """
+
+    section_key = models.CharField(
+        "Area",
+        max_length=64,
+        unique=True,
+        choices=AI_REVIEW_SECTION_CHOICES,
+        help_text="AI review area this prompt text applies to",
+    )
+    instruction = models.TextField(
+        "Instruction",
+        help_text=(
+            "Opening instruction sent to OpenAI before the project data JSON. "
+            "{risk} is replaced with the area's risk label (e.g. High)."
+        ),
+    )
+    footer = models.TextField(
+        "Footer",
+        blank=True,
+        default="",
+        help_text=(
+            "Closing instruction sent after the project data JSON, normally the required risk statement. "
+            "{risk} is replaced with the area's risk label. Leave blank to send no footer."
+        ),
+    )
+
+    class Meta:
+        ordering = ["section_key"]
+        verbose_name = "AI Review Prompt"
+        verbose_name_plural = "AI Review Prompts"
+
+    def __str__(self):
+        return self.section_label
+
+    @property
+    def section_label(self) -> str:
+        return AI_REVIEW_SECTION_LABELS.get(self.section_key, self.section_key)
+
+    @classmethod
+    def get_prompt_texts(cls) -> Dict[str, Dict[str, str]]:
+        """Return ``{section_key: {"instruction", "footer"}}`` for every area.
+
+        Starts from the built-in defaults and overlays any stored rows, so a
+        missing row (or a missing table during early migrations and
+        ``SimpleTestCase`` runs) still yields usable prompt text. A stored
+        blank footer is honored as "no footer"; a blank instruction falls back
+        to the default.
+        """
+
+        texts: Dict[str, Dict[str, str]] = {
+            key: {"instruction": entry["instruction"], "footer": entry["footer"]}
+            for key, entry in AI_REVIEW_PROMPT_DEFAULTS.items()
+        }
+        try:
+            rows = list(cls.objects.values("section_key", "instruction", "footer"))
+        except (ProgrammingError, OperationalError):  # pragma: no cover - table not ready
+            return texts
+
+        for row in rows:
+            key = row.get("section_key")
+            if key not in texts:
+                continue
+            instruction = row.get("instruction") or ""
+            texts[key] = {
+                "instruction": instruction if instruction.strip() else texts[key]["instruction"],
+                "footer": row.get("footer") or "",
+            }
+        return texts
+
+    @classmethod
+    def get_prompt_text(cls, section_key: str) -> Dict[str, str]:
+        """Return the ``{"instruction", "footer"}`` pair for ``section_key``."""
+
+        key = normalize_section_key(section_key)
+        return cls.get_prompt_texts().get(key) or dict(get_default_prompt_text(key))
+
+    def reset_to_default(self, *, save: bool = True) -> None:
+        """Restore the built-in instruction and footer text for this area."""
+
+        defaults = get_default_prompt_text(self.section_key)
+        self.instruction = defaults["instruction"]
+        self.footer = defaults["footer"]
+        if save:
+            self.save(update_fields=["instruction", "footer"])
 
 
 class BannerConfiguration(SingletonModel):

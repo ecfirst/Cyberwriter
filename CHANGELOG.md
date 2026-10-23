@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+* The opening instruction and closing risk-statement footer of every AI review prompt are now editable per area under CommandCenter → AI Review Prompts (`{risk}` is replaced with the area's risk label; a "Restore default prompt text" action resets a row)
+
+### Fixed
+
+* The `default` / `d` report template filter now treats `None` as a missing value, fixing `unsupported operand type(s) for +: 'NoneType' and 'NoneType'` errors when workbook sections are out of scope
+* The supplemental documents ZIP now includes the generated firewall workbook, which was dropped after firewall metrics moved to on-disk storage
+
+### Changed
+
+* Generated CAP XLSX filenames now use "Cybersecurity Assessment Report CAP" instead of "Cybersecurity Report Corrective Action Plan"
+* Area totals and the overall grade now use a weighted power mean instead of a weighted average (defaults: exponent 3 within an area, 2 across areas), so low-scoring minor sub-areas no longer offset serious findings. Blank in-scope scores are excluded rather than counted as 0, and the Wireless discount is redistributed to the other in-scope areas. Exponents and the Wireless weight are editable under Scoring Settings in the admin
+* The External, Internal and IoT/IoMT Nexpose AI review prompts now also send the five highest-severity vulnerabilities per High/Medium bucket (`highest_rated`, same fields as the most-frequent `items` plus `severity`) and the majority/minority category codes and labels
+
 ## [6.1.1] - 15 December 2025
 
 ### Added

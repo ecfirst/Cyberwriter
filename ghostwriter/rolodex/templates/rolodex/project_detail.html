@@ -498,6 +498,7 @@
         {{ project_scoping_weights_json|json_script:"project-scoping-weights" }}
         {{ project_scoping_config_json|json_script:"project-scoping-config" }}
         {{ risk_score_map_json|json_script:"project-risk-score-map" }}
+        {{ scoring_config_json|json_script:"project-scoring-config" }}
         {{ ad_threshold_map_json|json_script:"project-ad-thresholds" }}
         {{ password_compliance_matrix_json|json_script:"project-password-compliance-matrix" }}
       </div>
@@ -1587,6 +1588,14 @@
         const scopingWeights = parseJsonScript('project-scoping-weights') || {};
         const scopingConfig = parseJsonScript('project-scoping-config') || {};
         const riskScoreMap = parseJsonScript('project-risk-score-map') || {};
+        const scoringConfig = parseJsonScript('project-scoring-config') || {};
+        const toPositiveNumber = function(value, fallback) {
+          const parsed = parseFloat(value);
+          return Number.isNaN(parsed) ? fallback : parsed;
+        };
+        const areaScoreExponent = Math.max(toPositiveNumber(scoringConfig.area_exponent, 3), 1);
+        const overallScoreExponent = Math.max(toPositiveNumber(scoringConfig.overall_exponent, 2), 1);
+        const wirelessOverallWeight = Math.min(Math.max(toPositiveNumber(scoringConfig.wireless_overall_weight, 0.9), 0), 1);
         const adThresholdDefaults = {
           min_enabled_ratio: {value: 0.9, threshold_type: 'min_ratio'},
           generic_accounts_pct: {value: 0.05, threshold_type: 'percent_of_enabled'},
@@ -4496,6 +4505,63 @@
           return null;
         };
 
+        // Weighted power mean: (sum(w_i * v_i^p))^(1/p). Mirrors weighted_power_mean in
+        // rolodex/workbook_entry.py. Entries with a null value are skipped and the remaining
+        // weights renormalized; zero total weight falls back to equal shares.
+        const weightedPowerMean = function(entries, exponent) {
+          const kept = (entries || []).filter(function(entry) {
+            return entry && typeof entry.value === 'number' && !Number.isNaN(entry.value);
+          });
+          if (!kept.length) {
+            return null;
+          }
+          let weightSum = kept.reduce(function(sum, entry) {
+            const weight = typeof entry.weight === 'number' && entry.weight > 0 ? entry.weight : 0;
+            return sum + weight;
+          }, 0);
+          const useEqualShares = !(weightSum > 0);
+          if (useEqualShares) {
+            weightSum = kept.length;
+          }
+          const power = Math.max(toPositiveNumber(exponent, 1), 1);
+          let accumulated = 0;
+          kept.forEach(function(entry) {
+            const weight = useEqualShares ? 1 : entry.weight;
+            const value = Math.min(Math.max(entry.value, 0), 6);
+            accumulated += (weight / weightSum) * Math.pow(value, power);
+          });
+          const mean = Math.pow(accumulated, 1 / power);
+          const rounded = Math.round(mean * 10) / 10;
+          return Math.min(Math.max(rounded, 0), 6);
+        };
+
+        // Per-area weights for the overall grade. Wireless carries wirelessOverallWeight of an
+        // equal share; the remainder is spread across the other in-scope areas. Mirrors
+        // build_overall_area_weights in rolodex/workbook_entry.py.
+        const buildOverallAreaWeights = function(categories) {
+          const ordered = [];
+          (categories || []).forEach(function(category) {
+            if (category && ordered.indexOf(category) === -1) {
+              ordered.push(category);
+            }
+          });
+          const weights = {};
+          const count = ordered.length;
+          if (!count) {
+            return weights;
+          }
+          const equalShare = 1 / count;
+          if (ordered.indexOf('wireless') === -1 || count === 1) {
+            ordered.forEach(function(category) { weights[category] = equalShare; });
+            return weights;
+          }
+          const redistributed = (1 - wirelessOverallWeight) / (count - 1);
+          ordered.forEach(function(category) {
+            weights[category] = equalShare * (category === 'wireless' ? wirelessOverallWeight : 1 + redistributed);
+          });
+          return weights;
+        };
+
         const getScoresFromInputs = function() {
           const scoreInputs = document.querySelectorAll('.workbook-score-input');
           const scores = {};
@@ -4525,34 +4591,27 @@
             const inputs = group.querySelectorAll('.workbook-score-input');
             const weightLookup = scopingWeights[category] || {};
             const hasWeights = Object.keys(weightLookup).length > 0;
-            let total = 0;
-            let weightTotal = 0;
-            let populated = false;
+            const entries = [];
             inputs.forEach(function(input) {
               const option = input.getAttribute('data-option');
               const raw = parseFloat(input.value);
-              const value = Number.isNaN(raw) ? 0 : Math.min(Math.max(raw, 0), 6);
-              const weight = weightLookup[option];
-              if (hasWeights && typeof weight === 'number') {
-                total += value * weight;
-                weightTotal += weight;
-              } else if (!hasWeights) {
-                total += value;
-                weightTotal += 1;
+              if (Number.isNaN(raw)) {
+                // Blank score: excluded from the mean rather than counted as 0.
+                return;
               }
-              if (!Number.isNaN(raw)) {
-                populated = true;
-              }
+              const weight = hasWeights ? weightLookup[option] : 1;
+              entries.push({
+                value: Math.min(Math.max(raw, 0), 6),
+                weight: typeof weight === 'number' ? weight : 0,
+              });
             });
-            if (!populated) {
+            const roundedTotal = weightedPowerMean(entries, areaScoreExponent);
+            if (roundedTotal === null) {
               if (totalDisplay) { totalDisplay.textContent = '—'; }
               if (gradeDisplay) { gradeDisplay.textContent = '—'; }
               computedGrades[category] = null;
               return;
             }
-            const divisor = weightTotal || inputs.length || 1;
-            const normalizedTotal = total / divisor;
-            const roundedTotal = Math.round(normalizedTotal * 10) / 10;
             const riskLabel = scoreToRisk(roundedTotal);
             if (totalDisplay) {
               totalDisplay.textContent = roundedTotal.toFixed(1);
@@ -8372,29 +8431,52 @@
           updateWorkbookCardProgress('scoring');
         };
 
+        // gradeValues: {category: riskLabel} or {category: {total, grade}}. When an area total is
+        // available and agrees with the (possibly manually chosen) grade, the total is used;
+        // otherwise the midpoint of the grade's score range stands in for it.
         const computeOverallFromGrades = function(gradeValues) {
-          const totals = [];
-          Object.keys(gradeValues).forEach(function(key) {
+          const entries = [];
+          const categories = [];
+          Object.keys(gradeValues || {}).forEach(function(key) {
             if (!scopeSelected(key)) {
               return;
             }
-            const risk = gradeValues[key];
-            const bounds = riskScoreMap[risk];
-            if (!bounds) {
+            const raw = gradeValues[key];
+            let total = null;
+            let grade = null;
+            if (raw && typeof raw === 'object') {
+              total = typeof raw.total === 'number' && !Number.isNaN(raw.total) ? raw.total : null;
+              grade = raw.grade || null;
+            } else {
+              grade = raw || null;
+            }
+            let value = null;
+            if (total !== null && (!grade || scoreToRisk(total) === grade)) {
+              value = total;
+            } else if (grade) {
+              const bounds = riskScoreMap[grade];
+              if (bounds) {
+                const midpoint = (parseFloat(bounds.min) + parseFloat(bounds.max)) / 2;
+                if (!Number.isNaN(midpoint)) {
+                  value = midpoint;
+                }
+              }
+            }
+            if (value === null) {
               return;
             }
-            const midpoint = (parseFloat(bounds.min) + parseFloat(bounds.max)) / 2;
-            if (Number.isNaN(midpoint)) {
-              return;
-            }
-            const adjusted = key === 'wireless' ? midpoint * 0.9 : midpoint;
-            totals.push(adjusted);
+            categories.push(key);
+            entries.push({category: key, value: value});
           });
-          if (!totals.length) {
+          if (!entries.length) {
             return null;
           }
-          const average = totals.reduce(function(sum, value) { return sum + value; }, 0) / totals.length;
-          return scoreToRisk(Math.round(average * 10) / 10);
+          const weights = buildOverallAreaWeights(categories);
+          const average = weightedPowerMean(
+            entries.map(function(entry) { return {value: entry.value, weight: weights[entry.category] || 0}; }),
+            overallScoreExponent
+          );
+          return average === null ? null : scoreToRisk(average);
         };
 
         const renderGradeFields = function() {
@@ -8442,7 +8524,12 @@
             select.addEventListener('change', function() {
               updateWorkbookCardProgress('grades');
             });
-            calculatedGrades[categoryKey] = currentGrade;
+            calculatedGrades[categoryKey] = {
+              grade: currentGrade || null,
+              total: computedTotals && computedTotals[categoryKey] && typeof computedTotals[categoryKey].total === 'number'
+                ? computedTotals[categoryKey].total
+                : null,
+            };
             card.appendChild(label);
             card.appendChild(select);
             fragment.appendChild(card);

@@ -944,6 +944,7 @@ class Project(models.Model):
         from ghostwriter.rolodex.data_parsers import (
             ATTACK_PATHS_CAP_ISSUES,
             NEXPOSE_ARTIFACT_KEYS,
+            NEXPOSE_CATEGORY_LABELS,
             NEXPOSE_METRICS_KEY_MAP,
             build_ad_risk_contrib,
             build_project_artifacts,
@@ -1169,12 +1170,7 @@ class Project(models.Model):
 
             majority_type_raw = (metrics_payload.get("majority_type") or "").strip().upper()
             minority_type_raw = (metrics_payload.get("minority_type") or "").strip().upper()
-            majority_label_map = {
-                "OOD": "OOD Software or Missing Patches",
-                "ISC": "Insecure System Configurations",
-                "IWC": "Insecure Web Configurations",
-                "EVEN": "Even",
-            }
+            majority_label_map = NEXPOSE_CATEGORY_LABELS
             majority_label = majority_label_map.get(majority_type_raw)
             minority_label = majority_label_map.get(minority_type_raw)
             majority_summary_map = {

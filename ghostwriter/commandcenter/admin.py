@@ -3,10 +3,12 @@
 # Django Imports
 from django.contrib import admin
 from django import forms
+from django.db import models
 
 # Ghostwriter Libraries
 from ghostwriter.commandcenter.forms import ReportConfigurationForm, OpenAIConfigurationForm
 from ghostwriter.commandcenter.models import (
+    AIReviewPromptTemplate,
     BannerConfiguration,
     CloudServicesConfiguration,
     CompanyInformation,
@@ -17,6 +19,7 @@ from ghostwriter.commandcenter.models import (
     NamecheapConfiguration,
     OpenAIConfiguration,
     ReportConfiguration,
+    ScoringConfiguration,
     SlackConfiguration,
     VirusTotalConfiguration,
     EXTRA_FIELD_TYPES,
@@ -34,6 +37,45 @@ class OpenAIConfigurationAdmin(SingletonModelAdmin):
 
 admin.site.register(OpenAIConfiguration, OpenAIConfigurationAdmin)
 admin.site.register(GeneralConfiguration, SingletonModelAdmin)
+admin.site.register(ScoringConfiguration, SingletonModelAdmin)
+
+
+class AIReviewPromptTemplateAdmin(admin.ModelAdmin):
+    list_display = ("section_label", "instruction_preview", "has_footer")
+    search_fields = ("section_key", "instruction", "footer")
+    actions = ("restore_default_prompt_text",)
+    formfield_overrides = {
+        models.TextField: {"widget": forms.Textarea(attrs={"rows": 8, "cols": 120})},
+    }
+
+    def get_readonly_fields(self, request, obj=None):
+        # The area is fixed once a row exists; it stays editable on "add" so a
+        # deleted row can be recreated.
+        return ("section_key",) if obj else ()
+
+    @admin.display(description="Area", ordering="section_key")
+    def section_label(self, obj):
+        return obj.section_label
+
+    @admin.display(description="Instruction")
+    def instruction_preview(self, obj):
+        text = (obj.instruction or "").strip()
+        return text if len(text) <= 120 else text[:117] + "..."
+
+    @admin.display(description="Footer", boolean=True)
+    def has_footer(self, obj):
+        return bool((obj.footer or "").strip())
+
+    @admin.action(description="Restore default prompt text")
+    def restore_default_prompt_text(self, request, queryset):
+        count = 0
+        for template in queryset:
+            template.reset_to_default()
+            count += 1
+        self.message_user(request, f"Restored the default prompt text for {count} area(s).")
+
+
+admin.site.register(AIReviewPromptTemplate, AIReviewPromptTemplateAdmin)
 admin.site.register(BannerConfiguration, SingletonModelAdmin)
 
 

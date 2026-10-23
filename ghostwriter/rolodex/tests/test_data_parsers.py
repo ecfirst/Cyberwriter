@@ -19,6 +19,7 @@ from ghostwriter.rolodex import data_parsers
 from ghostwriter.rolodex.data_parsers import (
     NEXPOSE_ARTIFACT_DEFINITIONS,
     _build_nexpose_metrics_payload,
+    build_nexpose_highest_rated_issues,
     normalize_nexpose_artifact_payload,
     normalize_nexpose_artifacts_map,
     DEFAULT_DNS_IMPACT_MAP,
@@ -4896,4 +4897,103 @@ class DNSDataParserTests(TestCase):
         self.assertEqual(
             fgpp_entry.get("complexity_enabled_rt"),
             '<p><span class="bold" style="color: #ed7d31;">TRUE</span></p>',
+        )
+
+
+class NexposeHighestRatedIssuesTests(TestCase):
+    """Cover the severity-ranked issue lists sent with Nexpose AI review prompts."""
+
+    @staticmethod
+    def _issue(title, severity, count=1, impact="", category="OOD"):
+        return {
+            "issue": title,
+            "impact": impact or f"{title} impact",
+            "severity": severity,
+            "count": count,
+            "category": category,
+            "risk": "High" if severity >= 8 else ("Medium" if severity >= 4 else "Low"),
+        }
+
+    def test_orders_by_severity_then_count_and_buckets_by_threshold(self):
+        unique_issues = [
+            self._issue("Common Medium", 5, count=40),
+            self._issue("Top Medium", 7, count=1),
+            self._issue("Common High", 8, count=30),
+            self._issue("Critical One", 10, count=1),
+            self._issue("Critical Two", 10, count=3),
+            self._issue("Low Issue", 3, count=50),
+            self._issue("Boundary High", 8, count=31),
+        ]
+
+        results = build_nexpose_highest_rated_issues(unique_issues)
+
+        self.assertEqual(
+            [item["title"] for item in results["high"]],
+            ["Critical Two", "Critical One", "Boundary High", "Common High"],
+        )
+        self.assertEqual([item["title"] for item in results["med"]], ["Top Medium", "Common Medium"])
+        self.assertEqual([item["title"] for item in results["low"]], ["Low Issue"])
+        self.assertEqual(results["high"][0]["severity"], 10)
+        self.assertEqual(results["high"][0]["count"], 3)
+
+    def test_limit_caps_each_bucket(self):
+        unique_issues = [self._issue(f"High {index}", 9, count=index) for index in range(8)]
+
+        results = build_nexpose_highest_rated_issues(unique_issues)
+
+        self.assertEqual(len(results["high"]), 5)
+        self.assertEqual(results["high"][0]["title"], "High 7")
+        self.assertEqual(
+            len(build_nexpose_highest_rated_issues(unique_issues, limit=2)["high"]), 2
+        )
+
+    def test_matrix_fields_applied_or_defaulted(self):
+        matrix = {
+            "patched vuln": {
+                "action_required": "Patch it",
+                "remediation_impact": "Reboot",
+                "vulnerability_threat": "RCE",
+                "category": "ISC",
+            }
+        }
+        unique_issues = [
+            self._issue("Patched Vuln", 9, category="OOD"),
+            self._issue("Unknown Vuln", 9, category="IWC"),
+        ]
+
+        results = build_nexpose_highest_rated_issues(
+            unique_issues, vulnerability_matrix=matrix
+        )
+
+        matched, unmatched = results["high"]
+        self.assertEqual(matched["action_required"], "Patch it")
+        self.assertEqual(matched["remediation_impact"], "Reboot")
+        self.assertEqual(matched["vulnerability_threat"], "RCE")
+        self.assertEqual(matched["category"], "ISC")
+        self.assertEqual(unmatched["action_required"], "")
+        self.assertEqual(unmatched["remediation_impact"], "")
+        self.assertEqual(unmatched["vulnerability_threat"], "")
+        self.assertEqual(unmatched["category"], "IWC")
+        for item in (matched, unmatched):
+            self.assertEqual(
+                set(item),
+                {
+                    "title",
+                    "impact",
+                    "count",
+                    "severity",
+                    "category",
+                    "action_required",
+                    "remediation_impact",
+                    "vulnerability_threat",
+                },
+            )
+
+    def test_empty_or_invalid_input_returns_empty_buckets(self):
+        empty = {"high": [], "med": [], "low": []}
+        self.assertEqual(build_nexpose_highest_rated_issues(None), empty)
+        self.assertEqual(build_nexpose_highest_rated_issues([]), empty)
+        self.assertEqual(
+            build_nexpose_highest_rated_issues(["bad", {"severity": None}, {"issue": "", "severity": 9}]),
+            empty,
         )

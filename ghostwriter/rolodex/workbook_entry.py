@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from copy import deepcopy
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 import math
-from typing import Any, Dict, Mapping, MutableMapping, Optional
+from typing import Any, Dict, Iterable, Mapping, MutableMapping, Optional
+
+from django.apps import apps
 
 from ghostwriter.reporting.models import RiskScoreRangeMapping
 from ghostwriter.rolodex.ad_attack_paths_scoring import ATTACK_PATHS_SCORE_OVERRIDE_FIELDS
@@ -789,39 +791,143 @@ def _normalize_area_updates(
     return normalized
 
 
+def load_scoring_settings():
+    """Return the admin-configured scoring parameters (power-mean exponents, wireless weight).
+
+    Resolved lazily through the app registry so this module does not import
+    ``commandcenter.models`` at import time.
+    """
+
+    ScoringConfiguration = apps.get_model("commandcenter", "ScoringConfiguration")
+    return ScoringConfiguration.get_values()
+
+
+def weighted_power_mean(
+    scores: Mapping[str, Optional[Decimal]],
+    weights: Mapping[str, Any],
+    exponent: Any = 1,
+) -> Optional[Decimal]:
+    """Return ``(sum(w_i * s_i ** p)) ** (1 / p)`` over the provided scores, rounded to 0.1.
+
+    * Options whose score is ``None`` (not yet entered) are excluded and the remaining
+      weights are renormalized, so a blank never counts as a 0.
+    * When ``weights`` is empty, or the kept weights sum to 0 (e.g. only an unweighted
+      option is in scope), every kept score gets an equal share.
+    * ``p = 1`` is the plain weighted average. Larger ``p`` lets high scores dominate while
+      keeping the result between the lowest and highest input score.
+    """
+
+    provided = OrderedDict((key, value) for key, value in scores.items() if value is not None)
+    if not provided:
+        return None
+
+    entries: list[tuple[Decimal, Decimal]] = []
+    if weights:
+        for option, weight in weights.items():
+            if option not in provided:
+                continue
+            try:
+                weight_value = Decimal(str(weight))
+            except Exception:
+                weight_value = Decimal("0")
+            entries.append((provided[option], max(weight_value, Decimal("0"))))
+    else:
+        entries = [(value, Decimal("1")) for value in provided.values()]
+
+    if not entries:
+        return None
+
+    weight_sum = sum((weight for _, weight in entries), Decimal("0"))
+    if weight_sum <= 0:
+        entries = [(score, Decimal("1")) for score, _ in entries]
+        weight_sum = Decimal(len(entries))
+
+    try:
+        power = float(exponent)
+    except (TypeError, ValueError):
+        power = 1.0
+    if not math.isfinite(power) or power < 1.0:
+        power = 1.0
+
+    total_weight = float(weight_sum)
+    accumulated = 0.0
+    for score, weight in entries:
+        normalized_weight = float(weight) / total_weight
+        clamped_score = min(max(float(score), float(_SCORE_MIN)), float(_SCORE_MAX))
+        accumulated += normalized_weight * (clamped_score ** power)
+
+    mean_value = accumulated ** (1.0 / power)
+    result = Decimal(repr(round(mean_value, 6))).quantize(_SCORE_PRECISION, rounding=ROUND_HALF_UP)
+    if result < _SCORE_MIN:
+        return _SCORE_MIN
+    if result > _SCORE_MAX:
+        return _SCORE_MAX
+    return result
+
+
 def compute_category_score_summary(
     *,
     scores: Mapping[str, Optional[Decimal]],
     weights: Mapping[str, Decimal],
     risk_score_map: Mapping[str, Any],
+    exponent: Any = None,
 ) -> Dict[str, Any]:
     """Return a scoring category's weighted total (Decimal) and derived risk/grade label.
 
     Shared by ``build_workbook_entry_payload`` (analyst-typed scores) and
     ``Project.rebuild_data_artifacts`` (auto-computed scores, e.g. AD Attack Paths),
-    so both paths recompute a category's total/grade identically.
+    so both paths recompute a category's total/grade identically. ``exponent`` defaults
+    to the admin-configured area score exponent (see ``ScoringConfiguration``).
     """
 
-    total = _calculate_category_total(scores=scores, weights=weights)
+    if exponent is None:
+        exponent = load_scoring_settings().area_score_exponent
+    total = _calculate_category_total(scores=scores, weights=weights, exponent=exponent)
     return {"total": total, "grade": _score_to_risk(total, risk_score_map)}
 
 
 def _calculate_category_total(
-    *, scores: Mapping[str, Optional[Decimal]], weights: Mapping[str, Decimal]
+    *, scores: Mapping[str, Optional[Decimal]], weights: Mapping[str, Decimal], exponent: Any = 1
 ) -> Optional[Decimal]:
     if not scores:
         return None
-    if not weights:
-        provided = [score for score in scores.values() if score is not None]
-        if not provided:
-            return None
-        return sum(provided) / Decimal(len(provided))
+    return weighted_power_mean(scores, weights, exponent)
 
-    total = Decimal("0")
-    for option, weight in weights.items():
-        score = scores.get(option) or Decimal("0")
-        total += score * weight
-    return total.quantize(_SCORE_PRECISION)
+
+def build_overall_area_weights(
+    categories: Iterable[str], wireless_weight: Any = Decimal("0.9")
+) -> "OrderedDict[str, Decimal]":
+    """Return normalized per-area weights for the overall grade.
+
+    Every in-scope area gets an equal share, except Wireless, which carries
+    ``wireless_weight`` of its share (wireless exploitation requires physical proximity).
+    The withheld remainder is spread evenly across the other in-scope areas so the
+    weights still sum to 1.
+    """
+
+    ordered = list(OrderedDict.fromkeys(categories))
+    count = len(ordered)
+    if count == 0:
+        return OrderedDict()
+
+    try:
+        wireless_share = Decimal(str(wireless_weight))
+    except Exception:
+        wireless_share = Decimal("0.9")
+    wireless_share = min(max(wireless_share, Decimal("0")), Decimal("1"))
+
+    equal_share = Decimal("1") / Decimal(count)
+    if "wireless" not in ordered or count == 1:
+        return OrderedDict((category, equal_share) for category in ordered)
+
+    redistributed = (Decimal("1") - wireless_share) / Decimal(count - 1)
+    return OrderedDict(
+        (
+            category,
+            equal_share * (wireless_share if category == "wireless" else Decimal("1") + redistributed),
+        )
+        for category in ordered
+    )
 
 
 def _normalize_score_map(score_map: Mapping[str, Mapping[str, Any]]) -> OrderedDict[str, tuple[Decimal, Decimal]]:
@@ -843,21 +949,37 @@ def _compute_overall_grade(
     category_scores: Mapping[str, Optional[Decimal]],
     risk_score_map: Mapping[str, Any],
     scoping: Mapping[str, Mapping[str, Any]],
+    exponent: Any = None,
+    wireless_weight: Any = None,
 ) -> Optional[str]:
-    totals: list[Decimal] = []
+    """Roll in-scope area totals up into the overall risk label.
+
+    Uses the same weighted power mean as the area totals (default exponent from
+    ``ScoringConfiguration.overall_score_exponent``) with per-area weights from
+    ``build_overall_area_weights`` so Wireless is discounted and the remainder is
+    redistributed rather than simply lowering the average.
+    """
+
+    totals: "OrderedDict[str, Decimal]" = OrderedDict()
     for category, score in category_scores.items():
         if score is None:
             continue
         scope_state = scoping.get(category, {})
         if not scope_state.get("selected"):
             continue
-        adjusted = score
-        if category == "wireless":
-            adjusted = score * Decimal("0.9")
-        totals.append(adjusted)
+        totals[category] = score
     if not totals:
         return None
-    average = (sum(totals) / Decimal(len(totals))).quantize(_SCORE_PRECISION)
+
+    if exponent is None or wireless_weight is None:
+        settings = load_scoring_settings()
+        if exponent is None:
+            exponent = settings.overall_score_exponent
+        if wireless_weight is None:
+            wireless_weight = settings.wireless_overall_weight
+
+    weights = build_overall_area_weights(totals.keys(), wireless_weight)
+    average = weighted_power_mean(totals, weights, exponent)
     return _score_to_risk(average, risk_score_map)
 
 

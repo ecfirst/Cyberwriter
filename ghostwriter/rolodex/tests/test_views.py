@@ -4944,3 +4944,275 @@ class AiReviewPasswordNistGuidanceTests(TestCase):
         }
         prompt = _build_ai_review_prompt("ad_attack_paths_rt", self.project, workbook, {})
         self.assertNotIn("NIST SP 800-63B", prompt)
+
+
+class AiReviewNexposePromptTests(TestCase):
+    """Confirm the Nexpose AI review prompts carry severity-ranked issues and category labels."""
+
+    SECTIONS = (
+        ("external_nexpose_rt", "external_nexpose"),
+        ("internal_nexpose_rt", "internal_nexpose"),
+        ("iot_iomt_nexpose_rt", "iot_iomt_nexpose"),
+    )
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.project = ProjectFactory()
+
+    @staticmethod
+    def _unique_issue(title, severity, count, category="OOD"):
+        return {
+            "issue": title,
+            "impact": f"{title} impact",
+            "severity": severity,
+            "count": count,
+            "category": category,
+            "risk": "High" if severity >= 8 else "Medium",
+        }
+
+    def _artifacts(self, prefix, *, include_unique_issues=True):
+        # Five frequent high issues crowd out the single severity-10 finding
+        # from the count-ranked ``items`` list.
+        unique_issues = [
+            self._unique_issue(f"Frequent High {index}", 8, count=20 + index) for index in range(5)
+        ]
+        unique_issues.append(self._unique_issue("Rare Critical", 10, count=1))
+        unique_issues.append(self._unique_issue("Frequent Medium", 4, count=50))
+        unique_issues.append(self._unique_issue("Top Medium", 7, count=2, category="ISC"))
+
+        metrics = {
+            "summary": {
+                "total": 10,
+                "total_high": 6,
+                "total_med": 2,
+                "total_low": 0,
+                "unique": 8,
+                "unique_high": 6,
+                "unique_med": 2,
+                "unique_low": 0,
+                "unique_high_med": 8,
+                "total_ood": 7,
+                "total_isc": 1,
+                "total_iwc": 0,
+                "majority_count": 7,
+                "minority_count": 1,
+            },
+            "majority_type": "OOD",
+            "minority_type": "ISC",
+        }
+        if include_unique_issues:
+            metrics["unique_issues"] = unique_issues
+
+        frequent_items = [
+            {
+                "title": f"Frequent High {index}",
+                "impact": f"Frequent High {index} impact",
+                "count": 20 + index,
+                "action_required": "",
+                "remediation_impact": "",
+                "vulnerability_threat": "",
+                "category": "",
+            }
+            for index in reversed(range(5))
+        ]
+        vulnerabilities = {
+            "label": prefix.replace("_", " ").title(),
+            "high": {"total_unique": 6, "items": frequent_items},
+            "med": {
+                "total_unique": 2,
+                "items": [
+                    {
+                        "title": "Frequent Medium",
+                        "impact": "Frequent Medium impact",
+                        "count": 50,
+                        "action_required": "",
+                        "remediation_impact": "",
+                        "vulnerability_threat": "",
+                        "category": "",
+                    }
+                ],
+            },
+            "low": {"total_unique": 0, "items": []},
+        }
+        return {
+            f"{prefix}_metrics": metrics,
+            f"{prefix}_vulnerabilities": vulnerabilities,
+        }
+
+    @staticmethod
+    def _extract_json(prompt):
+        start = prompt.index("{")
+        end = prompt.rindex("}") + 1
+        return json.loads(prompt[start:end])
+
+    def test_prompt_includes_highest_rated_and_category_labels(self):
+        matrix = {
+            "rare critical": {
+                "action_required": "Patch immediately",
+                "remediation_impact": "Service restart",
+                "vulnerability_threat": "Remote code execution",
+                "category": "OOD",
+            }
+        }
+        workbook = {
+            "external_internal_grades": {
+                "external": {"nexpose": {"score": 5.0, "risk": "High"}},
+                "internal": {
+                    "nexpose": {"score": 5.0, "risk": "High"},
+                    "iot_iomt": {"score": 5.0, "risk": "High"},
+                },
+            }
+        }
+
+        for section_key, prefix in self.SECTIONS:
+            with self.subTest(section=section_key):
+                with mock.patch(
+                    "ghostwriter.rolodex.views.load_vulnerability_matrix", return_value=matrix
+                ):
+                    prompt = _build_ai_review_prompt(
+                        section_key, self.project, workbook, self._artifacts(prefix)
+                    )
+
+                payload = self._extract_json(prompt)
+
+                summary = payload["summary"]
+                self.assertEqual(summary["majority_type"], "OOD")
+                self.assertEqual(summary["majority_label"], "OOD Software or Missing Patches")
+                self.assertEqual(summary["minority_type"], "ISC")
+                self.assertEqual(summary["minority_label"], "Insecure System Configurations")
+                self.assertEqual(summary["majority_count"], 7)
+
+                high = payload["high"]
+                self.assertEqual(high["total_unique"], 6)
+                self.assertEqual(
+                    [item["title"] for item in high["items"]],
+                    [f"Frequent High {index}" for index in reversed(range(5))],
+                )
+                self.assertEqual(high["highest_rated"][0]["title"], "Rare Critical")
+                self.assertEqual(high["highest_rated"][0]["severity"], 10)
+                self.assertEqual(high["highest_rated"][0]["action_required"], "Patch immediately")
+                self.assertEqual(
+                    high["highest_rated"][0]["vulnerability_threat"], "Remote code execution"
+                )
+                self.assertEqual(len(high["highest_rated"]), 5)
+                self.assertNotIn(
+                    "Rare Critical", [item["title"] for item in high["items"]]
+                )
+
+                medium = payload["medium"]
+                self.assertEqual(
+                    [item["title"] for item in medium["highest_rated"]],
+                    ["Top Medium", "Frequent Medium"],
+                )
+                self.assertEqual(medium["highest_rated"][0]["category"], "ISC")
+                self.assertEqual(medium["highest_rated"][0]["action_required"], "")
+
+                self.assertEqual(payload["risk"], "High")
+                self.assertIn("End the paragraph with this risk statement", prompt)
+
+    def test_prompt_without_unique_issues_sends_empty_highest_rated(self):
+        with mock.patch("ghostwriter.rolodex.views.load_vulnerability_matrix", return_value={}):
+            prompt = _build_ai_review_prompt(
+                "internal_nexpose_rt",
+                self.project,
+                {},
+                self._artifacts("internal_nexpose", include_unique_issues=False),
+            )
+
+        payload = self._extract_json(prompt)
+        self.assertEqual(payload["high"]["highest_rated"], [])
+        self.assertEqual(payload["medium"]["highest_rated"], [])
+        self.assertEqual(len(payload["high"]["items"]), 5)
+        self.assertEqual(payload["summary"]["majority_label"], "OOD Software or Missing Patches")
+
+    def test_prompt_omits_category_labels_when_types_missing(self):
+        artifacts = self._artifacts("external_nexpose")
+        artifacts["external_nexpose_metrics"]["majority_type"] = None
+        artifacts["external_nexpose_metrics"]["minority_type"] = None
+
+        with mock.patch("ghostwriter.rolodex.views.load_vulnerability_matrix", return_value={}):
+            prompt = _build_ai_review_prompt("external_nexpose_rt", self.project, {}, artifacts)
+
+        summary = self._extract_json(prompt)["summary"]
+        for key in ("majority_type", "majority_label", "minority_type", "minority_label"):
+            self.assertNotIn(key, summary)
+        self.assertEqual(summary["majority_count"], 7)
+
+
+class AiReviewPromptTemplateOverrideTests(TestCase):
+    """Confirm admin-edited prompt text replaces the built-in instruction and footer."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.project = ProjectFactory()
+
+    def _workbook(self):
+        return {
+            "external_internal_grades": {
+                "internal": {"nexpose": {"score": 5.0, "risk": "High"}},
+            }
+        }
+
+    def _set_prompt(self, section_key, instruction, footer):
+        from ghostwriter.commandcenter.models import AIReviewPromptTemplate
+
+        AIReviewPromptTemplate.objects.update_or_create(
+            section_key=section_key, defaults={"instruction": instruction, "footer": footer}
+        )
+
+    def test_custom_instruction_and_footer_are_used(self):
+        from ghostwriter.rolodex.ai_review_prompts import AI_REVIEW_PROMPT_DEFAULTS
+
+        self._set_prompt(
+            "internal_nexpose_rt",
+            "Write three bullet points about the internal scan ({risk} risk).",
+            "Close with: internal risk is {risk}.",
+        )
+
+        with mock.patch("ghostwriter.rolodex.views.load_vulnerability_matrix", return_value={}):
+            prompt = _build_ai_review_prompt("internal_nexpose_rt", self.project, self._workbook(), {})
+
+        self.assertTrue(prompt.startswith("Write three bullet points about the internal scan (High risk).\n\n{"))
+        self.assertTrue(prompt.endswith("}\n\nClose with: internal risk is High."))
+        self.assertNotIn(AI_REVIEW_PROMPT_DEFAULTS["internal_nexpose_rt"]["instruction"], prompt)
+        self.assertNotIn("End the paragraph with this risk statement", prompt)
+
+    def test_blank_footer_sends_no_footer(self):
+        self._set_prompt("internal_nexpose_rt", "Summarize the internal scan.", "")
+
+        with mock.patch("ghostwriter.rolodex.views.load_vulnerability_matrix", return_value={}):
+            prompt = _build_ai_review_prompt("internal_nexpose_rt", self.project, self._workbook(), {})
+
+        self.assertTrue(prompt.startswith("Summarize the internal scan.\n\n{"))
+        self.assertTrue(prompt.endswith("}"))
+
+    def test_missing_risk_renders_unknown(self):
+        self._set_prompt("snmp_rt", "SNMP summary.", "Risk: {risk}.")
+
+        prompt = _build_ai_review_prompt("snmp_rt", self.project, {}, {})
+
+        self.assertTrue(prompt.endswith("Risk: unknown."))
+
+    def test_prompt_texts_mapping_is_preferred_over_lookup(self):
+        from ghostwriter.commandcenter.models import AIReviewPromptTemplate
+
+        self._set_prompt("sql_rt", "Stored SQL instruction.", "Stored SQL footer.")
+        provided = {"sql_rt": {"instruction": "Provided SQL instruction.", "footer": ""}}
+
+        with mock.patch.object(AIReviewPromptTemplate, "get_prompt_text") as lookup:
+            prompt = _build_ai_review_prompt("sql_rt", self.project, {}, {}, prompt_texts=provided)
+
+        lookup.assert_not_called()
+        self.assertTrue(prompt.startswith("Provided SQL instruction.\n\n"))
+        self.assertNotIn("Stored SQL", prompt)
+
+    def test_default_text_unchanged_without_edits(self):
+        from ghostwriter.rolodex.ai_review_prompts import AI_REVIEW_PROMPT_DEFAULTS
+
+        prompt = _build_ai_review_prompt("snmp_rt", self.project, {}, {})
+
+        self.assertTrue(prompt.startswith(AI_REVIEW_PROMPT_DEFAULTS["snmp_rt"]["instruction"] + "\n\n"))
+        self.assertTrue(
+            prompt.endswith(AI_REVIEW_PROMPT_DEFAULTS["snmp_rt"]["footer"].replace("{risk}", "unknown"))
+        )
+
