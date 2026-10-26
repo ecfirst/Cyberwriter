@@ -5139,6 +5139,84 @@ class AiReviewNexposePromptTests(TestCase):
         self.assertEqual(summary["majority_count"], 7)
 
 
+class AiReviewEndpointPromptTests(TestCase):
+    """Confirm the Endpoint AI review prompt sends metrics without the generated workbook bytes."""
+
+    FAKE_XLSX = "UEsDBBQABgAIAAAAIQBi7p1oXgEAAJAEAAATAAgCW0NvbnRlbnRfVHlwZXNdLnhtbCCiBAIooAAC"
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.project = ProjectFactory()
+
+    def _entry(self, domain, total, online, ood, wifi):
+        return {
+            "domain": domain,
+            "summary": {
+                "total_computers": total,
+                "online_count": online,
+                "systems_ood": ood,
+                "wifi_count": wifi,
+                "file_name": f"{domain}-endpoint.csv",
+            },
+            "xlsx_filename": f"endpoint_data_{domain.replace('.', '-')}.xlsx",
+            "xlsx_base64": self.FAKE_XLSX,
+        }
+
+    @staticmethod
+    def _extract_json(prompt):
+        return json.loads(prompt[prompt.index("{") : prompt.rindex("}") + 1])
+
+    def test_workbook_keys_are_dropped_from_each_domain_entry(self):
+        artifacts = {
+            "endpoint": {
+                "metrics": {
+                    "corp.example.com": self._entry("corp.example.com", 412, 388, 23, 61),
+                    "lab.example.com": self._entry("lab.example.com", 40, 35, 2, 0),
+                },
+                "domains": [],
+            }
+        }
+        workbook = {"external_internal_grades": {"internal": {"endpoint": {"score": 3.0, "risk": "Medium"}}}}
+
+        prompt = _build_ai_review_prompt("endpoint_rt", self.project, workbook, artifacts)
+        payload = self._extract_json(prompt)
+
+        self.assertNotIn(self.FAKE_XLSX, prompt)
+        self.assertNotIn("xlsx", prompt)
+        self.assertEqual(set(payload), {"corp.example.com", "lab.example.com", "risk"})
+        self.assertEqual(payload["risk"], "Medium")
+        for domain in ("corp.example.com", "lab.example.com"):
+            self.assertEqual(set(payload[domain]), {"domain", "summary"})
+        self.assertEqual(payload["corp.example.com"]["summary"]["systems_ood"], 23)
+        self.assertEqual(payload["corp.example.com"]["summary"]["wifi_count"], 61)
+        self.assertEqual(payload["lab.example.com"]["summary"]["total_computers"], 40)
+        # The stored artifact is left untouched.
+        self.assertEqual(artifacts["endpoint"]["metrics"]["corp.example.com"]["xlsx_base64"], self.FAKE_XLSX)
+
+    def test_legacy_flat_metrics_still_drop_workbook_keys(self):
+        artifacts = {
+            "endpoint": {
+                "metrics": {
+                    "domain": "corp.example.com",
+                    "summary": {"total_computers": 5},
+                    "xlsx_filename": "endpoint_data.xlsx",
+                    "xlsx_base64": self.FAKE_XLSX,
+                }
+            }
+        }
+
+        prompt = _build_ai_review_prompt("endpoint_rt", self.project, {}, artifacts)
+        payload = self._extract_json(prompt)
+
+        self.assertNotIn(self.FAKE_XLSX, prompt)
+        self.assertEqual(set(payload), {"domain", "summary"})
+
+    def test_empty_metrics_sends_note(self):
+        prompt = _build_ai_review_prompt("endpoint_rt", self.project, {}, {"endpoint": {"metrics": {}}})
+
+        self.assertIn("No endpoint metrics provided.", prompt)
+
+
 class AiReviewPromptTemplateOverrideTests(TestCase):
     """Confirm admin-edited prompt text replaces the built-in instruction and footer."""
 

@@ -269,6 +269,11 @@ def _summarize_dns_findings(findings: Mapping[str, Any]) -> Dict[str, Any]:
     return summary
 
 
+# Generated-workbook keys stored on each Endpoint metrics entry that are
+# never sent with AI review prompts.
+ENDPOINT_PROMPT_EXCLUDED_KEYS = frozenset({"xlsx_base64", "xlsx_filename", "xlsx"})
+
+
 def _build_nexpose_prompt_payload(
     artifacts: Mapping[str, Any],
     metrics_key: str,
@@ -409,7 +414,19 @@ def _build_ai_review_prompt(
         endpoint_data = artifacts.get("endpoint", {})
         metrics = endpoint_data.get("metrics") if isinstance(endpoint_data, Mapping) else {}
         if isinstance(metrics, Mapping):
-            metrics = {k: v for k, v in metrics.items() if k != "xlsx_base64"}
+            # ``metrics`` is keyed by domain; each entry carries the generated
+            # workbook (``xlsx_base64``/``xlsx_filename``), which must never be
+            # sent to OpenAI. The top-level keys are stripped as well for any
+            # legacy flat payload.
+            metrics = {
+                domain_key: (
+                    {k: v for k, v in entry.items() if k not in ENDPOINT_PROMPT_EXCLUDED_KEYS}
+                    if isinstance(entry, Mapping)
+                    else entry
+                )
+                for domain_key, entry in metrics.items()
+                if domain_key not in ENDPOINT_PROMPT_EXCLUDED_KEYS
+            }
         payload: Any = metrics if isinstance(metrics, Mapping) and metrics else {"note": "No endpoint metrics provided."}
         details = json.dumps(_attach_risk(payload), indent=2, default=str)
     elif normalized_key == "snmp":
