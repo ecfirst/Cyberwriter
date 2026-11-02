@@ -161,12 +161,11 @@ class ExportReportBase(ExportBase):
 
         # Observations
         for observation in base_context["observations"]:
-            if observation["description"]:
-                observation["description_rt"] = self.create_lazy_template(
-                    f"the description of observation {observation['title']}",
-                    observation["description"],
-                    rich_text_context,
-                )
+            observation["description_rt"] = self.create_lazy_template(
+                f"the description of observation {observation['title']}",
+                observation["description"] or "",
+                rich_text_context,
+            )
             self.process_extra_fields(
                 f"observation {observation['title']}", observation["extra_fields"], Observation, rich_text_context
             )

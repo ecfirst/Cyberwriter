@@ -1,4 +1,5 @@
 # Standard Libraries
+import itertools
 import logging
 import os
 import random
@@ -41,10 +42,15 @@ class HtmlToDocx(BaseHtmlToOOXML):
     doc: DocumentObject
     p_style: str
 
-    def __init__(self, doc: DocumentObject, p_style: str):
+    def __init__(self, doc: DocumentObject, p_style: str, bookmark_ids=None):
+        """
+        `bookmark_ids` is an iterator of unique integers for `w:bookmarkStart`/`w:bookmarkEnd` IDs. Pass the same
+        iterator to every converter that writes into one document so the IDs stay unique across subdocuments.
+        """
         super().__init__()
         self.doc = doc
         self.p_style = p_style
+        self.bookmark_ids = bookmark_ids if bookmark_ids is not None else itertools.count(1000)
 
     def text(self, el, *, par=None, style={}, **kwargs):
         # Process hyperlinks on top of the usual text rules
@@ -121,18 +127,18 @@ class HtmlToDocx(BaseHtmlToOOXML):
 
         bookmark_name = el.attrs.get("data-bookmark", el.attrs.get("id"))
         if bookmark_name and heading_paragraph.runs:
+            bookmark_id = str(next(self.bookmark_ids))
             tag = heading_paragraph.runs[0]._r
             start = docx.oxml.shared.OxmlElement("w:bookmarkStart")
-            start.set(docx.oxml.ns.qn("w:id"), str(self.current_bookmark_id))
+            start.set(docx.oxml.ns.qn("w:id"), bookmark_id)
             start.set(docx.oxml.ns.qn("w:name"), "_Ref" + bookmark_name)
             tag.insert(0, start)
 
             tag = heading_paragraph.runs[-1]._r
             end = docx.oxml.shared.OxmlElement("w:bookmarkEnd")
-            end.set(docx.oxml.ns.qn("w:id"), str(self.current_bookmark_id))
+            end.set(docx.oxml.ns.qn("w:id"), bookmark_id)
             end.set(docx.oxml.ns.qn("w:name"), "_Ref" + bookmark_name)
             tag.append(end)
-            self.current_bookmark_id += 1
 
     tag_h1 = _tag_h
     tag_h2 = _tag_h
@@ -295,14 +301,14 @@ class HtmlToDocxWithEvidence(HtmlToDocx):
         report_template: ReportTemplate,
         global_report_config: ReportConfiguration,
         images: dict[str, str],
+        bookmark_ids=None,
     ):
-        super().__init__(doc, report_template.p_style)
+        super().__init__(doc, report_template.p_style, bookmark_ids)
         self.evidences = evidences
         self.images = images
         self.report_template = report_template
         self.global_report_config = global_report_config
         self.plural_acronym_pattern = re.compile(r"^[^a-z]+(:?s|'s)$")
-        self.current_bookmark_id = 1000 # Hopefully won't conflict with templates
         self.title_case_exceptions = self.global_report_config.title_case_exceptions.split(",")
 
     def text(self, el, *, par=None, **kwargs):
@@ -410,10 +416,11 @@ class HtmlToDocxWithEvidence(HtmlToDocx):
             ref = f"_Ref{random.randint(10000000, 99999999)}"
 
         # Start a bookmark run with the figure label
+        bookmark_id = str(next(self.bookmark_ids))
         p = par._p
         bookmark_start = OxmlElement("w:bookmarkStart")
         bookmark_start.set(qn("w:name"), ref.replace(" ", "_"))
-        bookmark_start.set(qn("w:id"), str(self.current_bookmark_id))
+        bookmark_start.set(qn("w:id"), bookmark_id)
         p.append(bookmark_start)
 
         # Add the figure label
@@ -452,10 +459,8 @@ class HtmlToDocxWithEvidence(HtmlToDocx):
         # End the bookmark after the number
         p = par._p
         bookmark_end = OxmlElement("w:bookmarkEnd")
-        bookmark_end.set(qn("w:id"), str(self.current_bookmark_id))
+        bookmark_end.set(qn("w:id"), bookmark_id)
         p.append(bookmark_end)
-
-        self.current_bookmark_id += 1
 
     def make_evidence(self, par, evidence):
         file_path = settings.MEDIA_ROOT + "/" + evidence["path"]

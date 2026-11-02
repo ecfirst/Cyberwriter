@@ -111,18 +111,17 @@ class ExportProjectBase(ExportBase):
         # Objectives
         for objective in base_context["objectives"]:
             if isinstance(objective, dict):
-                if objective["description"]:
-                    objective["description_rt"] = ex.create_lazy_template(
-                        f"the description of objective {objective['objective']}",
-                        objective["description"],
-                        rich_text_context,
-                    )
-                if objective["result"]:
-                    objective["result_rt"] = ex.create_lazy_template(
-                        f"the result of objective {objective['objective']}",
-                        objective["result"],
-                        rich_text_context,
-                    )
+                # Always defined (even when empty) so `{{p o.result_rt }}` never renders an undefined value
+                objective["description_rt"] = ex.create_lazy_template(
+                    f"the description of objective {objective['objective']}",
+                    objective["description"] or "",
+                    rich_text_context,
+                )
+                objective["result_rt"] = ex.create_lazy_template(
+                    f"the result of objective {objective['objective']}",
+                    objective["result"] or "",
+                    rich_text_context,
+                )
 
         # Scope Lists
         for scope_list in base_context["scope"]:

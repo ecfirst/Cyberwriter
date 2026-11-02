@@ -181,6 +181,15 @@ figure caption exactly as it would for evidence embedded in a rich text field:
 
 The same works inside a rich text field with `{{ finding.evidence[0] }}`.
 
+<Warning>
+Rich text values – every `_rt` attribute and every evidence object – must be inserted with the `p` tag
+(`{{p e }}`, `{{p finding.description_rt }}`). A bare `{{ e }}` would put whole paragraphs inside a text run and
+corrupt the document, so Ghostwriter rejects the export (and fails linting) with an error that names the misplaced
+content.
+
+If a `{{p ... }}` value in a table cell renders as empty, Ghostwriter adds an empty paragraph so the cell stays valid.
+</Warning>
+
 Each evidence entry also has a `description_rt` attribute: the rich text version of the evidence's description,
 for use with the `p` tag like the finding's `_rt` attributes:
 

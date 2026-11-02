@@ -1,4 +1,5 @@
 # Standard Libraries
+import itertools
 from io import BytesIO
 from zipfile import ZipFile
 
@@ -673,3 +674,25 @@ class RichTextToDocxTests(TestCase):
         "<p>Hello&#20; World!</p><p>This is a test!</p>",
         """<w:p><w:pPr/><w:r><w:t>Hello World!</w:t></w:r></w:p><w:p><w:pPr/><w:r><w:t>This is a test!</w:t></w:r></w:p>""",
     )
+
+
+class BookmarkIdTests(TestCase):
+    def test_bookmark_ids_unique_across_converters_sharing_a_counter(self):
+        """
+        Each rich text field is converted into its own subdocument. When the converters share a counter, the
+        bookmark IDs stay unique in the assembled document.
+        """
+        counter = itertools.count(1000)
+        doc = docx.Document()
+        HtmlToDocx.run('<h1 id="first">First</h1>', doc, None, counter)
+        HtmlToDocx.run('<h1 id="second">Second</h1><h2 id="third">Third</h2>', doc, None, counter)
+
+        ids = doc.element.xpath(".//w:bookmarkStart/@w:id")
+        self.assertEqual(ids, ["1000", "1001", "1002"])
+        self.assertEqual(doc.element.xpath(".//w:bookmarkEnd/@w:id"), ids)
+
+    def test_bookmark_ids_default_counter(self):
+        doc = docx.Document()
+        HtmlToDocx.run('<h1 id="first">First</h1>', doc, None)
+        self.assertEqual(doc.element.xpath(".//w:bookmarkStart/@w:id"), ["1000"])
+

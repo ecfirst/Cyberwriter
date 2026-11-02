@@ -1,5 +1,6 @@
 from typing import Tuple, List
 import io
+import itertools
 import logging
 import os
 import re
@@ -14,6 +15,7 @@ from docx.image.exceptions import UnrecognizedImageError
 from ghostwriter.commandcenter.models import CompanyInformation, ReportConfiguration
 from ghostwriter.modules.reportwriter.base import ReportExportTemplateError
 from ghostwriter.modules.reportwriter.base.base import ExportBase
+from ghostwriter.modules.reportwriter.base.docx_fixups import check_and_fix_docx_element
 from ghostwriter.modules.reportwriter.base.html_rich_text import (
     EvidenceRichText,
     HtmlAndObject,
@@ -97,6 +99,8 @@ class ExportDocxBase(ExportBase):
 
         self.global_report_config = ReportConfiguration.get_solo()
         self.company_config = CompanyInformation.get_solo()
+        # Shared across every rich text subdocument so bookmark IDs are unique in the final document
+        self.bookmark_ids = itertools.count(1000)
 
     def run(self) -> io.BytesIO:
         try:
@@ -112,6 +116,7 @@ class ExportDocxBase(ExportBase):
             ReportExportTemplateError.map_errors(
                 lambda: self.word_doc.render(docx_context, self.jinja_env, autoescape=True), "the DOCX template"
             )
+            self.check_and_fix_rendered_document()
             ReportExportTemplateError.map_errors(
                 lambda: self.render_properties(docx_context), "the DOCX properties"
             )
@@ -226,8 +231,13 @@ class ExportDocxBase(ExportBase):
         if isinstance(rich_text, HtmlAndObject):
             return rich_text.obj
         if self.linting and isinstance(rich_text, EvidenceRichText):
-            # The linter's sample evidence has no file on disk, so stand in for the figure
-            return DocxRichText(f"[Evidence: {rich_text.get('friendly_name', '')}]")
+            # The linter's sample evidence has no file on disk, so stand in for the figure. This is still a
+            # subdocument so that linting catches evidence inserted with `{{ }}` instead of `{{p }}`.
+            def render_placeholder():
+                doc = self.word_doc.new_subdoc()
+                doc.add_paragraph(f"[Evidence: {rich_text.get('friendly_name', '')}]")
+                return doc
+            return LazySubdocRender(render_placeholder)
 
         def render():
             doc = self.word_doc.new_subdoc()
@@ -239,20 +249,17 @@ class ExportDocxBase(ExportBase):
                     report_template=self.report_template,
                     global_report_config=self.global_report_config,
                     images=self.image_replacements,
+                    bookmark_ids=self.bookmark_ids,
                 ),
                 getattr(rich_text, "location", None),
             )
             return doc
         return LazySubdocRender(render)
 
-    def replace_images(self):
+    def toplevel_parts(self):
         """
-        Replaces images whose alt text contains an item from `self.image_replacements`.
+        Returns `(part, element)` pairs for the main document body and every defined header and footer.
         """
-        if not self.image_replacements:
-            return
-
-        # Collect elements to search in, including the main body and any defined headers/footers
         toplevels = [(self.word_doc.docx.part, self.word_doc.docx._element)]
         for section in self.word_doc.docx.sections:
             headers_and_footers = [
@@ -271,10 +278,28 @@ class ExportDocxBase(ExportBase):
                     hp.part,
                     hp.part._element,
                 ))
+        return toplevels
+
+    def check_and_fix_rendered_document(self):
+        """
+        Validates the rendered document, raising a user-facing error for structures Word cannot open, and repairs
+        the ones it can (see `check_and_fix_docx_element`).
+        """
+        for (_, element) in self.toplevel_parts():
+            fixed = check_and_fix_docx_element(element, "the DOCX template")
+            if fixed:
+                logger.info("Added an empty paragraph to %d table cell(s) that rendered with no content", fixed)
+
+    def replace_images(self):
+        """
+        Replaces images whose alt text contains an item from `self.image_replacements`.
+        """
+        if not self.image_replacements:
+            return
 
         # Go through each part and replace matcing drawings
         image_rids_and_objs = {}
-        for (part, element) in toplevels:
+        for (part, element) in self.toplevel_parts():
             for drawing in element.xpath(".//w:drawing"):
                 docpr = next(iter(drawing.xpath(".//wp:docPr")), None)
                 if docpr is None:
