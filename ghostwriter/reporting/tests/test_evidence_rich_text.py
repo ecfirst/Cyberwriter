@@ -5,6 +5,7 @@ from django.test import SimpleTestCase
 from ghostwriter.modules.reportwriter import prepare_jinja2_env
 from ghostwriter.modules.reportwriter.base.html_rich_text import (
     EvidenceRichText,
+    LazilyRenderedTemplate,
     RenderedRichTextDict,
     RichTextBase,
     rich_text_template,
@@ -62,3 +63,19 @@ class EvidenceRichTextTests(SimpleTestCase):
         self.assertEqual(e["caption"], EVIDENCE["caption"])
         self.assertEqual(str(e), "RENDERED")
         self.assertEqual(e.__html__(), "<w:p>RENDERED</w:p>")
+
+    def test_deep_copy_process_html_maps_nested_description_rt(self):
+        env, _ = prepare_jinja2_env(debug=True)
+        evi = EvidenceRichText(EVIDENCE)
+        evi["description_rt"] = LazilyRenderedTemplate(
+            rich_text_template(env, "<p>Hello {{ name }}</p>"), "the description", {"name": "world"}
+        )
+
+        def process(rt):
+            return "RENDERED:" + str(rt.__html__())
+
+        out = RichTextBase.deep_copy_process_html({"evidence": [evi]}, process)
+        e = out["evidence"][0]
+        self.assertEqual(e["description_rt"], "RENDERED:<p>Hello world</p>")
+        self.assertEqual(e["caption"], EVIDENCE["caption"])
+        self.assertEqual(str(e), 'RENDERED:<p><span data-gw-evidence="7"></span></p>')

@@ -59,17 +59,25 @@ class ExportReportBase(ExportBase):
         exporter_rich = self.severity_rich_text(text, severity_color)
         return HtmlAndObject(rich_html, exporter_rich)
 
-    @staticmethod
-    def _wrap_evidences(evidence_list):
+    def _wrap_evidences(self, evidence_list, context):
         """
         Wraps serialized evidence dicts so templates can insert them directly (`{{p evidence }}`) and get the
         figure and caption, while still reading fields like `evidence.caption`.
+
+        Also adds a `description_rt` rich text version of the evidence description, rendered in `context`.
         """
-        return [EvidenceRichText(evi, f"evidence {evi.get('friendly_name', '')}") for evi in evidence_list]
+        out = []
+        for evi in evidence_list:
+            location = f"evidence {evi.get('friendly_name', '')}"
+            evi = EvidenceRichText(evi, location)
+            evi["description_rt"] = self.create_lazy_template(
+                f"the description of {location}", str(evi.get("description") or ""), context
+            )
+            out.append(evi)
+        return out
 
     def map_rich_texts(self):
         base_context = copy.deepcopy(self.data)
-        base_context["evidence"] = self._wrap_evidences(base_context["evidence"])
         rich_text_overlay = ExportProjectBase.rich_text_jinja_overlay(self.data)
         rich_text_overlay["mk_evidence"] = jinja_funcs.mk_evidence
         rich_text_overlay["_evidences"] = self.create_evidences_lookup(self.data["evidence"])
@@ -81,6 +89,9 @@ class ExportReportBase(ExportBase):
             base_context,
         )
 
+        # Report-level evidence
+        base_context["evidence"] = self._wrap_evidences(base_context["evidence"], rich_text_context)
+
         # Fields on Project
         ExportProjectBase.process_projects_richtext(
             self,
@@ -91,7 +102,6 @@ class ExportReportBase(ExportBase):
 
         # Findings
         for finding in base_context["findings"]:
-            finding["evidence"] = self._wrap_evidences(finding["evidence"])
             finding_overlay = {
                 "finding": finding,
                 "_old_dot_vars": rich_text_overlay["_old_dot_vars"].copy(),
@@ -111,6 +121,8 @@ class ExportReportBase(ExportBase):
                 return self.create_lazy_template(
                     f"{name} of finding {finding['title']}", text, finding_rich_text_context
                 )
+
+            finding["evidence"] = self._wrap_evidences(finding["evidence"], finding_rich_text_context)
 
             finding["severity_rt"] = self._severity_rich_text(finding["severity"], finding["severity_color"])
             finding["cvss_score_rt"] = self._severity_rich_text(finding["cvss_score"], finding["severity_color"])
