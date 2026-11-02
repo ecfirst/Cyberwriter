@@ -388,6 +388,7 @@ LINTER_CONTEXT = {
                 {
                     "id": 1,
                     "file_path": "evidence/2/ghost.png",
+                    "path": "evidence/2/ghost.png",
                     "url": "/media/evidence/2/ghost.png",
                     "document": "/media/evidence/2/ghost.png",
                     "friendly_name": "Ghostwriter",
@@ -545,6 +546,7 @@ LINTER_CONTEXT = {
         {
             "id": 1,
             "file_path": "evidence/2/ghost.png",
+            "path": "evidence/2/ghost.png",
             "url": "/media/evidence/2/ghost.png",
             "document": "/media/evidence/2/ghost.png",
             "friendly_name": "Ghostwriter",

@@ -9,7 +9,7 @@ from ghostwriter.modules.custom_serializers import ReportDataSerializer
 from ghostwriter.modules.linting_utils import LINTER_CONTEXT
 from ghostwriter.modules.reportwriter import jinja_funcs
 from ghostwriter.modules.reportwriter.base.base import ExportBase
-from ghostwriter.modules.reportwriter.base.html_rich_text import HtmlAndObject
+from ghostwriter.modules.reportwriter.base.html_rich_text import EvidenceRichText, HtmlAndObject
 from ghostwriter.modules.reportwriter.project.base import ExportProjectBase
 from ghostwriter.oplog.models import OplogEntry
 from ghostwriter.reporting.models import Finding, Observation, Report
@@ -59,8 +59,17 @@ class ExportReportBase(ExportBase):
         exporter_rich = self.severity_rich_text(text, severity_color)
         return HtmlAndObject(rich_html, exporter_rich)
 
+    @staticmethod
+    def _wrap_evidences(evidence_list):
+        """
+        Wraps serialized evidence dicts so templates can insert them directly (`{{p evidence }}`) and get the
+        figure and caption, while still reading fields like `evidence.caption`.
+        """
+        return [EvidenceRichText(evi, f"evidence {evi.get('friendly_name', '')}") for evi in evidence_list]
+
     def map_rich_texts(self):
         base_context = copy.deepcopy(self.data)
+        base_context["evidence"] = self._wrap_evidences(base_context["evidence"])
         rich_text_overlay = ExportProjectBase.rich_text_jinja_overlay(self.data)
         rich_text_overlay["mk_evidence"] = jinja_funcs.mk_evidence
         rich_text_overlay["_evidences"] = self.create_evidences_lookup(self.data["evidence"])
@@ -82,6 +91,7 @@ class ExportReportBase(ExportBase):
 
         # Findings
         for finding in base_context["findings"]:
+            finding["evidence"] = self._wrap_evidences(finding["evidence"])
             finding_overlay = {
                 "finding": finding,
                 "_old_dot_vars": rich_text_overlay["_old_dot_vars"].copy(),

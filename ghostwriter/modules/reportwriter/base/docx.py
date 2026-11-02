@@ -15,6 +15,7 @@ from ghostwriter.commandcenter.models import CompanyInformation, ReportConfigura
 from ghostwriter.modules.reportwriter.base import ReportExportTemplateError
 from ghostwriter.modules.reportwriter.base.base import ExportBase
 from ghostwriter.modules.reportwriter.base.html_rich_text import (
+    EvidenceRichText,
     HtmlAndObject,
     RichTextBase,
     LazySubdocRender,
@@ -224,6 +225,9 @@ class ExportDocxBase(ExportBase):
         """
         if isinstance(rich_text, HtmlAndObject):
             return rich_text.obj
+        if self.linting and isinstance(rich_text, EvidenceRichText):
+            # The linter's sample evidence has no file on disk, so stand in for the figure
+            return DocxRichText(f"[Evidence: {rich_text.get('friendly_name', '')}]")
 
         def render():
             doc = self.word_doc.new_subdoc()

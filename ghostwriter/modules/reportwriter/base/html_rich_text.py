@@ -97,6 +97,12 @@ class RichTextBase(ABC):
         """
         Deep copies a value, mapping any `RichTextBase` subclasses through `process_html`.
         """
+        if isinstance(value, EvidenceRichText):
+            # Keep the evidence's fields readable while also letting the whole object render as its figure
+            return RenderedRichTextDict(
+                {k: RichTextBase.deep_copy_process_html(v, process_html) for k, v in value.items()},
+                process_html(value),
+            )
         if isinstance(value, RichTextBase):
             return process_html(value)
         if isinstance(value, dict):
@@ -174,6 +180,42 @@ class HtmlAndObject(RichTextBase):
 
     def __html__(self):
         return self.html
+
+class EvidenceRichText(dict, RichTextBase):
+    """
+    A serialized evidence entry (a dict) that also renders as rich text: the evidence's figure and caption,
+    exactly as if it had been inserted into a rich text field.
+
+    Templates can read its fields (`evidence.caption`) and also insert the evidence directly:
+    `{{p evidence }}` in a Word template, or `{{ evidence }}` in a rich text field.
+
+    `RichTextBase.deep_copy_process_html` maps instances to a `RenderedRichTextDict`.
+    """
+
+    def __init__(self, evidence: dict, location: str | None = None):
+        super().__init__(evidence)
+        self.location = location
+
+    def __html__(self):
+        return Markup("<p>") + jinja_funcs.raw_mk_evidence(self["id"]) + Markup("</p>")
+
+
+class RenderedRichTextDict(dict):
+    """
+    A dict whose fields stay accessible, but which inserts an exporter-specific rendered object
+    (ex. a Word subdocument) when used as a value itself.
+    """
+
+    def __init__(self, data: dict, rendered):
+        super().__init__(data)
+        self._rendered = rendered
+
+    def __str__(self):
+        return str(self._rendered)
+
+    def __html__(self):
+        return self._rendered.__html__()
+
 
 class LazySubdocRender:
     """

@@ -163,6 +163,24 @@ To get what you see in the WYSIWYG editor in your Word document, add `_rt` (for 
 
 This will drop in your WYSIWYG HTML converted to Open XML for Word. Your image and text evidence will be present (with style and border options applied), and your text will be styled.
 
+#### Findings Attributes – Evidence
+
+Each finding's `evidence` list (and the report-level `evidence` list) holds the finding's evidence files. Each entry has
+the evidence's `friendly_name`, `caption`, `description`, `path`, and other fields, which you can reference like any other
+value (e.g., `{{ e.caption }}`).
+
+If you do not want to embed evidence in your rich text fields – for example, because you render those fields inside a
+table – you can insert an evidence entry directly with the `p` tag. Ghostwriter inserts the image (or text file) and its
+figure caption exactly as it would for evidence embedded in a rich text field:
+
+```
+{% for e in finding.evidence %}
+{{p e }}
+{% endfor %}
+```
+
+The same works inside a rich text field with `{{ finding.evidence[0] }}`.
+
 Each finding also has a unique `severity_rt` attribute. You don't style this text in the WYSIWYG editor. Ghostwriter creates a rich text version of your severity category that is colored using your configured color code.
 
 The `severity_rt` attribute only styles the color of the text run so that you can apply a paragraph style to it directly in your Word template. Use it with the `r` tag (for a run) like so:
