@@ -281,3 +281,11 @@ cypress/*
 
 # Ignore renamed CLI binary
 ghostwriter-cli
+
+# Claude Code
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.claude.json
+.mcp.json
+ONBOARDING.md

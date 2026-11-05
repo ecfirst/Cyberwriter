@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+* OpenAI requests no longer reference a saved dashboard prompt object, which OpenAI retires on 30 November 2026. The model, reasoning effort, verbosity and system instructions now live under CommandCenter → OpenAI Configuration (seeded with the former "Cyberwriter" prompt's text; a "Restore default system instructions" action resets the text). After upgrading, re-enter any customizations that were made to the dashboard prompt
 * Generated CAP XLSX filenames now use "Cybersecurity Assessment Report CAP" instead of "Cybersecurity Report Corrective Action Plan"
 * Area totals and the overall grade now use a weighted power mean instead of a weighted average (defaults: exponent 3 within an area, 2 across areas), so low-scoring minor sub-areas no longer offset serious findings. Blank in-scope scores are excluded rather than counted as 0, and the Wireless discount is redistributed to the other in-scope areas. Exponents and the Wireless weight are editable under Scoring Settings in the admin
 * The External, Internal and IoT/IoMT Nexpose AI review prompts now also send the five highest-severity vulnerabilities per High/Medium bucket (`highest_rated`, same fields as the most-frequent `items` plus `severity`) and the majority/minority category codes and labels

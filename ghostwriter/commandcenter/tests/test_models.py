@@ -17,6 +17,7 @@ from ghostwriter.factories import (
     SlackConfigurationFactory,
     VirusTotalConfigurationFactory,
 )
+from ghostwriter.rolodex.ai_review_prompts import DEFAULT_OPENAI_INSTRUCTIONS
 
 logging.disable(logging.CRITICAL)
 
@@ -280,13 +281,19 @@ class OpenAIConfigurationTests(TestCase):
         self.assertEqual(entry.pk, 1)
 
         entry.enable = True
-        entry.prompt_id = "prompt_test"
+        entry.model = "gpt-test"
+        entry.reasoning_effort = "high"
+        entry.verbosity = "low"
+        entry.instructions = "Be brief."
         entry.api_key = "sk-test"
         entry.save()
         entry.refresh_from_db()
 
         self.assertEqual(entry.enable, True)
-        self.assertEqual(entry.prompt_id, "prompt_test")
+        self.assertEqual(entry.model, "gpt-test")
+        self.assertEqual(entry.reasoning_effort, "high")
+        self.assertEqual(entry.verbosity, "low")
+        self.assertEqual(entry.instructions, "Be brief.")
         self.assertEqual(entry.api_key, "sk-test")
 
         entry.delete()
@@ -306,6 +313,25 @@ class OpenAIConfigurationTests(TestCase):
         sanitized = entry.sanitized_api_key
         self.assertNotEqual(entry.api_key, sanitized)
         self.assertIn("\u2717", sanitized)
+
+    def test_effective_instructions_falls_back_to_default(self):
+        entry = self.OpenAIConfiguration.get_solo()
+        entry.instructions = "   "
+        entry.save(update_fields=["instructions"])
+        self.assertEqual(entry.effective_instructions, DEFAULT_OPENAI_INSTRUCTIONS)
+
+        entry.instructions = "Custom instructions"
+        entry.save(update_fields=["instructions"])
+        self.assertEqual(entry.effective_instructions, "Custom instructions")
+
+    def test_reset_instructions_to_default(self):
+        entry = self.OpenAIConfiguration.get_solo()
+        entry.instructions = "Custom instructions"
+        entry.save(update_fields=["instructions"])
+
+        entry.reset_instructions_to_default()
+        entry.refresh_from_db()
+        self.assertEqual(entry.instructions, DEFAULT_OPENAI_INSTRUCTIONS)
 
 
 class GeneralConfigurationTests(TestCase):
