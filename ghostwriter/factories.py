@@ -894,8 +894,11 @@ class OpenAIConfigurationFactory(factory.django.DjangoModelFactory):
         model = "commandcenter.OpenAIConfiguration"
 
     enable = Faker("boolean")
-    prompt_id = Faker("bothify", text="prompt_########")
     api_key = Faker("password", length=32)
+    model = "gpt-6-sol"
+    reasoning_effort = "medium"
+    verbosity = "medium"
+    instructions = ""
 
 
 class GeneralConfigurationFactory(factory.django.DjangoModelFactory):

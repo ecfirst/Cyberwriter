@@ -80,7 +80,8 @@ class OpenAIConfigurationForm(forms.ModelForm):
 
     class Meta:
         model = OpenAIConfiguration
-        fields = "__all__"
+        fields = ("enable", "api_key", "model", "reasoning_effort", "verbosity", "instructions")
+        widgets = {"instructions": forms.Textarea(attrs={"rows": 16, "cols": 120})}
 
 
 # Marker object to signal ExtraFieldsWidget to use the admin-configured defaults in the DB rather than loading from a value.

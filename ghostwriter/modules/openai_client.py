@@ -49,7 +49,13 @@ def _extract_response_text(response: object) -> Optional[str]:
 
 
 def submit_prompt_to_assistant(prompt: str, config: Optional[OpenAIConfiguration] = None) -> Optional[str]:
-    """Submit ``prompt`` to the configured OpenAI prompt and return the response text."""
+    """Submit ``prompt`` to the OpenAI Responses API and return the response text.
+
+    The model, system instructions and reasoning settings come from
+    :class:`~ghostwriter.commandcenter.models.OpenAIConfiguration`; ``prompt`` is the
+    per-call user content. Static instructions go first so the cached prefix is shared
+    across calls.
+    """
 
     if not prompt or not prompt.strip():
         return None
@@ -63,17 +69,24 @@ def submit_prompt_to_assistant(prompt: str, config: Optional[OpenAIConfiguration
     if not active_config.enable:
         return None
 
-    prompt_id = (active_config.prompt_id or "").strip()
+    model = (active_config.model or "").strip()
     api_key = (active_config.api_key or "").strip()
-    if not prompt_id or not api_key:
+    if not model or not api_key:
         return None
+
+    request_kwargs = {
+        "model": model,
+        "input": prompt,
+        "reasoning": {"effort": active_config.reasoning_effort},
+        "text": {"verbosity": active_config.verbosity},
+    }
+    instructions = active_config.effective_instructions
+    if instructions:
+        request_kwargs["instructions"] = instructions
 
     try:
         client = OpenAI(api_key=api_key)
-        response = client.responses.create(
-            prompt={"id": prompt_id},
-            input=prompt,
-        )
+        response = client.responses.create(**request_kwargs)
     except Exception as exc:  # pragma: no cover - network safety
         logger.warning("Failed to submit OpenAI prompt: %s", exc)
         return None

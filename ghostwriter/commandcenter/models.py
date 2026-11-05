@@ -24,6 +24,11 @@ from ghostwriter.rolodex.ai_review_prompts import (
     AI_REVIEW_PROMPT_DEFAULTS,
     AI_REVIEW_SECTION_CHOICES,
     AI_REVIEW_SECTION_LABELS,
+    DEFAULT_OPENAI_INSTRUCTIONS,
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_OPENAI_REASONING_EFFORT,
+    DEFAULT_OPENAI_VERBOSITY,
+    OPENAI_EFFORT_CHOICES,
     get_default_prompt_text,
     normalize_section_key,
 )
@@ -406,15 +411,17 @@ class VirusTotalConfiguration(SingletonModel):
 
 
 class OpenAIConfiguration(SingletonModel):
+    """Settings for the OpenAI Responses API requests behind AI review and web issue summaries.
+
+    The model, system instructions and reasoning settings used to live in a saved
+    OpenAI prompt object referenced by ID; OpenAI retires those on 30 November 2026,
+    so they are stored here instead, seeded from the defaults in
+    :mod:`ghostwriter.rolodex.ai_review_prompts`.
+    """
+
     enable = models.BooleanField(
         default=False,
         help_text="Enable to allow CyberWriter to query the OpenAI Responses API",
-    )
-    prompt_id = models.CharField(
-        max_length=255,
-        default="",
-        blank=True,
-        help_text="OpenAI Prompt identifier to process remediation prompts",
     )
     api_key = encrypt(
         models.CharField(
@@ -423,6 +430,31 @@ class OpenAIConfiguration(SingletonModel):
             blank=True,
             help_text="API key used to authenticate with OpenAI",
         )
+    )
+    model = models.CharField(
+        max_length=100,
+        default=DEFAULT_OPENAI_MODEL,
+        help_text="OpenAI model name sent with every request (e.g. gpt-6-sol)",
+    )
+    reasoning_effort = models.CharField(
+        max_length=16,
+        choices=OPENAI_EFFORT_CHOICES,
+        default=DEFAULT_OPENAI_REASONING_EFFORT,
+        help_text="Reasoning effort requested from the model",
+    )
+    verbosity = models.CharField(
+        max_length=16,
+        choices=OPENAI_EFFORT_CHOICES,
+        default=DEFAULT_OPENAI_VERBOSITY,
+        help_text="Output verbosity requested from the model",
+    )
+    instructions = models.TextField(
+        default="",
+        blank=True,
+        help_text=(
+            "System instructions sent with every request, ahead of the area prompt. "
+            "Leave blank to use the built-in default text."
+        ),
     )
 
     def __str__(self):
@@ -434,6 +466,20 @@ class OpenAIConfiguration(SingletonModel):
     @property
     def sanitized_api_key(self):
         return sanitize(self.api_key or "")
+
+    @property
+    def effective_instructions(self) -> str:
+        """Return the stored instructions, or the built-in default when blank."""
+
+        text = (self.instructions or "").strip()
+        return text if text else DEFAULT_OPENAI_INSTRUCTIONS
+
+    def reset_instructions_to_default(self, *, save: bool = True) -> None:
+        """Restore the built-in system instructions."""
+
+        self.instructions = DEFAULT_OPENAI_INSTRUCTIONS
+        if save:
+            self.save(update_fields=["instructions"])
 
 
 class GeneralConfiguration(SingletonModel):

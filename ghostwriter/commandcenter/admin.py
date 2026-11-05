@@ -33,6 +33,13 @@ admin.site.register(SlackConfiguration, SingletonModelAdmin)
 admin.site.register(VirusTotalConfiguration, SingletonModelAdmin)
 class OpenAIConfigurationAdmin(SingletonModelAdmin):
     form = OpenAIConfigurationForm
+    actions = ("restore_default_instructions",)
+
+    @admin.action(description="Restore default system instructions")
+    def restore_default_instructions(self, request, queryset):
+        for config in queryset:
+            config.reset_instructions_to_default()
+        self.message_user(request, "Restored the default OpenAI system instructions.")
 
 
 admin.site.register(OpenAIConfiguration, OpenAIConfigurationAdmin)
