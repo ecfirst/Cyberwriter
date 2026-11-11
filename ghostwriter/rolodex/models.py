@@ -944,7 +944,6 @@ class Project(models.Model):
         from ghostwriter.rolodex.data_parsers import (
             ATTACK_PATHS_CAP_ISSUES,
             NEXPOSE_ARTIFACT_KEYS,
-            NEXPOSE_CATEGORY_LABELS,
             NEXPOSE_METRICS_KEY_MAP,
             build_ad_risk_contrib,
             build_project_artifacts,
@@ -967,6 +966,10 @@ class Project(models.Model):
             _normalize_score_map,
             _score_to_risk,
             compute_category_score_summary,
+        )
+        from ghostwriter.rolodex.workbook_metrics import (
+            derive_nexpose_workbook_section,
+            derive_web_workbook_section,
         )
 
         existing_artifacts = dict(self.data_artifacts or {})
@@ -1165,73 +1168,10 @@ class Project(models.Model):
             if not isinstance(metrics_payload, dict):
                 return
 
-            summary = metrics_payload.get("summary")
-            summary = summary if isinstance(summary, dict) else {}
-
-            majority_type_raw = (metrics_payload.get("majority_type") or "").strip().upper()
-            minority_type_raw = (metrics_payload.get("minority_type") or "").strip().upper()
-            majority_label_map = NEXPOSE_CATEGORY_LABELS
-            majority_label = majority_label_map.get(majority_type_raw)
-            minority_label = majority_label_map.get(minority_type_raw)
-            majority_summary_map = {
-                "OOD": "total_ood",
-                "ISC": "total_isc",
-                "IWC": "total_iwc",
-            }
-
-            area_payload = workbook_payload.get(workbook_key)
-            if not isinstance(area_payload, dict):
-                area_payload = {}
-
-            area_payload.update(
-                {
-                    "total": _safe_int(summary.get("total")),
-                    "total_high": _safe_int(summary.get("total_high")),
-                    "total_med": _safe_int(summary.get("total_med")),
-                    "total_low": _safe_int(summary.get("total_low")),
-                    "unique": _safe_int(summary.get("unique")),
-                    "unique_high_med": _safe_int(summary.get("unique_high_med")),
-                }
+            # Derivation shared with the Scan Processing page (workbook_metrics.py).
+            workbook_payload[workbook_key] = derive_nexpose_workbook_section(
+                metrics_payload, workbook_payload.get(workbook_key)
             )
-
-            host_counts = metrics_payload.get("host_counts")
-            if isinstance(host_counts, list):
-                area_payload["host_counts"] = list(host_counts)
-
-            top_hosts = metrics_payload.get("top_hosts")
-            if isinstance(top_hosts, list):
-                area_payload["top_hosts"] = list(top_hosts)
-
-            for key in (
-                "top_hosts_high",
-                "top_hosts_med",
-                "top_hosts_low",
-                "top_hosts_total",
-            ):
-                if key in metrics_payload:
-                    area_payload[key] = _safe_int(metrics_payload.get(key))
-
-            if majority_label:
-                area_payload["majority_type"] = majority_label
-                summary_key = majority_summary_map.get(majority_type_raw)
-                if summary_key:
-                    area_payload["unique_majority"] = _safe_int(summary.get(summary_key))
-                elif majority_type_raw == "EVEN":
-                    area_payload["unique_majority"] = _safe_int(summary.get("majority_count"))
-
-            if minority_label:
-                area_payload["minority_type"] = minority_label
-                minority_summary_key = majority_summary_map.get(minority_type_raw)
-                if minority_summary_key:
-                    area_payload["unique_minority"] = _safe_int(
-                        summary.get(minority_summary_key)
-                    )
-                elif minority_type_raw == "EVEN":
-                    area_payload["unique_minority"] = _safe_int(
-                        summary.get("minority_count")
-                    )
-
-            workbook_payload[workbook_key] = area_payload
 
         def _apply_web_metrics() -> None:
             metrics_payload = artifacts.get("web_metrics")
@@ -1242,39 +1182,10 @@ class Project(models.Model):
             if not isinstance(summary, dict):
                 return
 
-            web_payload = workbook_payload.get("web")
-            if not isinstance(web_payload, dict):
-                web_payload = {}
-
-            web_payload.update(
-                {
-                    "combined_unique": _safe_int(summary.get("unique")),
-                    "combined_unique_high": _safe_int(summary.get("unique_high")),
-                    "combined_unique_med": _safe_int(summary.get("unique_med")),
-                    "combined_unique_low": _safe_int(summary.get("unique_low")),
-                }
+            # Derivation shared with the Scan Processing page (workbook_metrics.py).
+            workbook_payload["web"] = derive_web_workbook_section(
+                metrics_payload, workbook_payload.get("web")
             )
-
-            host_counts = summary.get("host_risk_counts")
-            sites: list[dict[str, Any]] = []
-            if isinstance(host_counts, list):
-                for entry in host_counts:
-                    if not isinstance(entry, dict):
-                        continue
-                    url_value = (entry.get("host") or "").strip()
-                    if not url_value:
-                        continue
-                    sites.append(
-                        {
-                            "url": url_value,
-                            "unique_high": _safe_int(entry.get("high")),
-                            "unique_med": _safe_int(entry.get("medium")),
-                            "unique_low": _safe_int(entry.get("low")),
-                        }
-                    )
-
-            web_payload["sites"] = sites
-            workbook_payload["web"] = web_payload
 
         def _apply_firewall_metrics() -> None:
             metrics_payload = artifacts.get("firewall_metrics")

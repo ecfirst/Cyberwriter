@@ -27,10 +27,16 @@ MFA_WEBAUTHN_ALLOW_INSECURE_ORIGIN = True
 # CACHES
 # ------------------------------------------------------------------------------
 # https://docs.djangoproject.com/en/dev/ref/settings/#caches
+# Redis (not LocMemCache) so the django and queue containers share one cache; the
+# Scan Processing page stores its results here and the Django-Q worker writes them.
+# IGNORE_EXCEPTIONS is deliberately left off in development so a broken Redis fails loudly.
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "",
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": env("REDIS_URL", default="redis://redis:6379/0"),
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        },
     }
 }
 

@@ -405,3 +405,24 @@ class ProjectDataResponsesForm(forms.Form):
         """Expose the ordered question definitions for template rendering."""
 
         return self.question_definitions
+
+
+class ScanProcessingUploadForm(forms.Form):
+    """Validate a Nexpose or Burp XML upload for the project-less Scan Processing page."""
+
+    UPLOAD_FIELD_CHOICES = (
+        ("nexpose_xml", "Nexpose XML"),
+        ("burp_xml", "Burp XML"),
+    )
+
+    upload_field = forms.ChoiceField(choices=UPLOAD_FIELD_CHOICES)
+    file = forms.FileField()
+
+    def clean_file(self):  # type: ignore[override]
+        upload = self.cleaned_data["file"]
+        name = (getattr(upload, "name", "") or "").lower()
+        if not name.endswith(".xml"):
+            raise forms.ValidationError(_("Upload an XML export (.xml)."))
+        if not getattr(upload, "size", 0):
+            raise forms.ValidationError(_("The uploaded file is empty."))
+        return upload
