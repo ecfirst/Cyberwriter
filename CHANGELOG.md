@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+* New Scan Processing page (Execution → Scan Processing) lets any signed-in user upload a Nexpose XML and/or Burp XML without a project and get the same processed metrics, derived workbook values, generated XLSX workbooks and missing-matrix CSVs as the project workbook. Results are held in Redis for 24 hours and are not saved to the database; the Nexpose upload is processed in the background and the page updates when it completes. The Burp upload on this page does not call OpenAI
+  * The local development settings now use Redis for the Django cache (as production already does) so the web and queue containers share it
 * The opening instruction and closing risk-statement footer of every AI review prompt are now editable per area under CommandCenter → AI Review Prompts (`{risk}` is replaced with the area's risk label; a "Restore default prompt text" action resets a row)
 
 ### Fixed

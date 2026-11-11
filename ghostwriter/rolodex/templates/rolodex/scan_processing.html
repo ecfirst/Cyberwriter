@@ -1,0 +1,275 @@
+{% extends "base_generic.html" %}
+
+{% load static custom_tags %}
+
+{% block pagetitle %}Scan Processing{% endblock %}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb">
+  <ul class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'home:dashboard' %}">Dashboard</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Scan Processing</li>
+  </ul>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-body">
+    <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-md-between">
+      <div>
+        <h4 class="card-title mb-1">Scan Processing</h4>
+        <p class="card-text mb-0">
+          Process Nexpose and Burp exports without a project. Results are kept for a limited time and are not saved to a project.
+        </p>
+      </div>
+      <button
+        type="button"
+        class="btn btn-outline-secondary btn-sm mt-3 mt-md-0 js-scan-clear"
+        data-default-text="Clear Session"
+        data-scan-disable-while-processing
+        {% if scan_processing.any_processing %}disabled{% endif %}
+      >
+        Clear Session
+      </button>
+    </div>
+    <hr/>
+
+    <div
+      id="scan-processing-root"
+      data-token="{{ scan_processing.token }}"
+      data-page-url="{{ scan_processing_urls.page }}"
+      data-upload-url="{{ scan_processing_urls.upload }}"
+      data-state-url="{{ scan_processing_urls.state }}"
+      data-clear-url="{{ scan_processing_urls.clear }}"
+      data-csrf-token="{{ csrf_token }}"
+      data-processing="{% if scan_processing.any_processing %}1{% else %}0{% endif %}"
+    >
+      <div class="row">
+        {# ---------------------------------------------------------------- Nexpose #}
+        {% with column=scan_processing.nexpose %}
+        <div class="col-lg-6" id="scan-nexpose-column" {% if column.processing %}aria-busy="true"{% endif %}>
+
+          <div class="card mb-3" id="scan-nexpose-area">
+            <div class="card-body">
+              <h5 class="card-title">Nexpose</h5>
+              <div class="alert alert-danger small py-2 px-3" role="alert" id="scan-nexpose-error" {% if not column.error %}hidden{% endif %}>
+                {{ column.error }}
+              </div>
+              {% if column.has_result %}
+                <dl class="row mb-0">
+                  {% for field in column.fields %}
+                    <dt class="col-7 font-weight-bold">{{ field.label }}</dt>
+                    <dd class="col-5 text-right">{% if field.value is not None and field.value != '' %}{{ field.value }}{% else %}&mdash;{% endif %}</dd>
+                  {% endfor %}
+                </dl>
+              {% elif not column.processing %}
+                <p class="text-muted">No Nexpose XML has been processed.</p>
+              {% endif %}
+              <div
+                class="alert alert-info small py-2 px-3 mt-2"
+                role="status"
+                aria-live="polite"
+                data-scan-processing="{{ column.upload_field }}"
+                {% if not column.processing %}hidden{% endif %}
+              >
+                <span class="spinner-border spinner-border-sm mr-2" aria-hidden="true"></span>Processing upload — this can take several minutes for a large file. This card will update automatically when it finishes.
+              </div>
+              {% if column.missing_entries and not column.processing %}
+                <div class="alert alert-warning small py-2 px-3 mt-2">Missing Nexpose issues identified! Update the matrix and re-upload.</div>
+              {% endif %}
+              <div class="mt-3">
+                <input type="file" id="scan-nexpose-file" class="d-none" accept=".xml,application/xml,text/xml" data-upload-field="{{ column.upload_field }}" data-scan-column="nexpose">
+                <button
+                  type="button"
+                  class="btn btn-outline-primary btn-sm js-scan-pick"
+                  data-target="#scan-nexpose-file"
+                  data-default-text="Upload Nexpose XML"
+                  data-scan-disable-while-processing
+                  {% if column.processing %}disabled{% endif %}
+                >
+                  Upload Nexpose XML
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-outline-danger btn-sm ml-2 js-scan-remove"
+                  data-remove-url="{{ scan_processing_urls.remove_nexpose }}"
+                  data-default-text="Remove Nexpose Data"
+                  data-scan-column="nexpose"
+                  data-scan-disable-while-processing
+                  {% if column.processing or not column.has_result %}disabled{% endif %}
+                >
+                  Remove Nexpose Data
+                </button>
+                <div class="small text-muted mt-2">
+                  {% if column.processing %}
+                    Uploaded file: {{ column.processing_filename }}
+                  {% elif column.file_name %}
+                    Uploaded file: {{ column.file_name }}
+                  {% else %}
+                    No Nexpose XML uploaded.
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card mb-3" id="scan-nexpose-processed">
+            <div class="card-body">
+              <h5 class="card-title">Nexpose Findings</h5>
+              {% if column.summary %}
+                <dl class="row small mb-3">
+                  <dt class="col-6">Total Count</dt>
+                  <dd class="col-6 text-right">{{ column.summary.total|default:0 }}</dd>
+                  <dt class="col-6">Total Highs</dt>
+                  <dd class="col-6 text-right">{{ column.summary.total_high|default:0 }}</dd>
+                  <dt class="col-6">Total Mediums</dt>
+                  <dd class="col-6 text-right">{{ column.summary.total_med|default:0 }}</dd>
+                  <dt class="col-6">Total Lows</dt>
+                  <dd class="col-6 text-right">{{ column.summary.total_low|default:0 }}</dd>
+                  <dt class="col-6">Unique High/Medium</dt>
+                  <dd class="col-6 text-right">{{ column.summary.unique_high_med|default:0 }}</dd>
+                  <dt class="col-6">OOD Count</dt>
+                  <dd class="col-6 text-right">{{ column.summary.total_ood|default:0 }}</dd>
+                  <dt class="col-6">ISC Count</dt>
+                  <dd class="col-6 text-right">{{ column.summary.total_isc|default:0 }}</dd>
+                  <dt class="col-6">IWC Count</dt>
+                  <dd class="col-6 text-right">{{ column.summary.total_iwc|default:0 }}</dd>
+                </dl>
+                {% if column.has_file %}
+                  <a class="btn btn-outline-primary btn-sm" href="{{ scan_processing_urls.nexpose_download }}">Download Nexpose Data file</a>
+                {% else %}
+                  <p class="text-muted small mb-0">The data file will be available after processing completes.</p>
+                {% endif %}
+              {% elif column.processing %}
+                <p class="text-muted small mb-0">The data file will be available after processing completes.</p>
+              {% else %}
+                <p class="text-muted mb-0">No Nexpose XML uploads have been processed yet.</p>
+              {% endif %}
+            </div>
+          </div>
+
+          {% include "rolodex/includes/scan_processing_additional_card.html" with label="Nexpose XML" column=column input_id="scan-nexpose-additional-file" missing_text="Missing Nexpose issues identified! Update the matrix and re-upload." missing_url=scan_processing_urls.nexpose_missing_download %}
+        </div>
+        {% endwith %}
+
+        {# -------------------------------------------------------------------- Web #}
+        {% with column=scan_processing.web %}
+        <div class="col-lg-6" id="scan-web-column">
+
+          <div class="card mb-3" id="scan-web-area">
+            <div class="card-body">
+              <h5 class="card-title">Web</h5>
+              <div class="alert alert-danger small py-2 px-3" role="alert" id="scan-web-error" {% if not column.error %}hidden{% endif %}>
+                {{ column.error }}
+              </div>
+              {% if column.sites %}
+                {% for site in column.sites %}
+                  <div class="border rounded p-3 mb-3">
+                    <h6 class="font-weight-bold mb-2">Site/App {{ forloop.counter }}</h6>
+                    <dl class="row mb-0">
+                      <dt class="col-7">Website URL</dt>
+                      <dd class="col-5 text-right text-break">{{ site.url }}</dd>
+                      <dt class="col-7">Unique Total High</dt>
+                      <dd class="col-5 text-right">{{ site.unique_high|default:0 }}</dd>
+                      <dt class="col-7">Unique Total Medium</dt>
+                      <dd class="col-5 text-right">{{ site.unique_med|default:0 }}</dd>
+                      <dt class="col-7">Unique Total Low</dt>
+                      <dd class="col-5 text-right">{{ site.unique_low|default:0 }}</dd>
+                    </dl>
+                  </div>
+                {% endfor %}
+                <h6 class="font-weight-bold mt-3">Combined Metrics</h6>
+                <dl class="row mb-0">
+                  {% for field in column.combined %}
+                    <dt class="col-7">{{ field.label }}</dt>
+                    <dd class="col-5 text-right">{% if field.value is not None and field.value != '' %}{{ field.value }}{% else %}&mdash;{% endif %}</dd>
+                  {% endfor %}
+                </dl>
+              {% elif column.has_result %}
+                <p class="text-muted">No sites were found in the uploaded Burp XML.</p>
+              {% else %}
+                <p class="text-muted">No sites have been added yet.</p>
+              {% endif %}
+              {% if column.missing_entries %}
+                <div class="alert alert-warning small py-2 px-3 mt-2">Missing Web issues identified! Update the matrix and re-upload.</div>
+              {% endif %}
+              <div class="mt-3">
+                <input type="file" id="scan-web-file" class="d-none" accept=".xml,application/xml,text/xml" data-upload-field="{{ column.upload_field }}" data-scan-column="web">
+                <button
+                  type="button"
+                  class="btn btn-outline-primary btn-sm js-scan-pick"
+                  data-target="#scan-web-file"
+                  data-default-text="Upload Burp XML"
+                >
+                  Upload Burp XML
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-outline-danger btn-sm ml-2 js-scan-remove"
+                  data-remove-url="{{ scan_processing_urls.remove_web }}"
+                  data-default-text="Remove Web Data"
+                  data-scan-column="web"
+                  {% if not column.has_result %}disabled{% endif %}
+                >
+                  Remove Web Data
+                </button>
+                <div class="small text-muted mt-2">
+                  {% if column.file_name %}Uploaded file: {{ column.file_name }}{% else %}No Burp XML uploaded.{% endif %}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card mb-3" id="scan-web-processed">
+            <div class="card-body">
+              <h5 class="card-title">Web Findings</h5>
+              {% if column.summary %}
+                <dl class="row small mb-3">
+                  <dt class="col-6">Total Count</dt>
+                  <dd class="col-6 text-right">{{ column.summary.total|default:0 }}</dd>
+                  <dt class="col-6">Unique Highs</dt>
+                  <dd class="col-6 text-right">{{ column.summary.unique_high|default:0 }}</dd>
+                  <dt class="col-6">Unique Mediums</dt>
+                  <dd class="col-6 text-right">{{ column.summary.unique_med|default:0 }}</dd>
+                  <dt class="col-6">Unique Lows</dt>
+                  <dd class="col-6 text-right">{{ column.summary.unique_low|default:0 }}</dd>
+                  {% if column.summary.host_risk_counts %}
+                    <dt class="col-12 mt-2">Host Risk Counts</dt>
+                    <dd class="col-12">
+                      <ul class="list-unstyled small mb-0">
+                        {% for host in column.summary.host_risk_counts %}
+                          <li class="mb-1">
+                            <span class="font-weight-bold">{{ host.host }}</span>:
+                            High {{ host.high|default:0 }},
+                            Med {{ host.medium|default:0 }},
+                            Low {{ host.low|default:0 }}
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    </dd>
+                  {% endif %}
+                </dl>
+                {% if column.has_file %}
+                  <a class="btn btn-outline-primary btn-sm" href="{{ scan_processing_urls.web_download }}">Download Web Data file</a>
+                {% else %}
+                  <p class="text-muted small mb-0">The data file will be available after processing completes.</p>
+                {% endif %}
+              {% else %}
+                <p class="text-muted mb-0">No Burp XML uploads have been processed yet.</p>
+              {% endif %}
+            </div>
+          </div>
+
+          {% include "rolodex/includes/scan_processing_additional_card.html" with label="Burp XML" column=column input_id="scan-web-additional-file" missing_text="Missing Web issues identified! Update the matrix and re-upload." missing_url=scan_processing_urls.web_missing_download %}
+        </div>
+        {% endwith %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block morescripts %}
+  <script src="{% static 'js/scan_processing.js' %}"></script>
+{% endblock %}

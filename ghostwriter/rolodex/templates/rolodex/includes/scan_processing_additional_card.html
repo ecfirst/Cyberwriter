@@ -1,0 +1,67 @@
+{% comment %}
+Additional Data card for one Scan Processing column. Mirrors the project page's
+"Required Artifacts" card (project_detail.html, #supplementals) without the
+project-bound form posts: uploads and removes go through scan_processing.js.
+
+Expected context: label, column (nexpose|web), input_id, missing_text, missing_url
+{% endcomment %}
+<div class="card mb-3" id="scan-{{ column.slot }}-additional">
+  <div class="card-body">
+    <h5 class="card-title">Additional Data</h5>
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center">
+      <div class="mb-3 mb-md-0">
+        <h6 class="mb-1">{{ label }}</h6>
+        {% if column.missing_entries and not column.processing %}
+          <div class="alert alert-warning small py-2 px-3 mt-2">{{ missing_text }}</div>
+        {% endif %}
+        {% if column.processing %}
+          <p class="mb-1 text-muted">
+            <span class="spinner-border spinner-border-sm mr-1" role="status" aria-hidden="true"></span>
+            Processing {{ column.processing_filename|default:"upload" }}…
+          </p>
+        {% elif column.file_name %}
+          <p class="mb-1"><strong>Current file:</strong> {{ column.file_name }}</p>
+          <button
+            type="button"
+            class="btn btn-outline-danger btn-sm js-scan-remove"
+            data-remove-url="{% if column.slot == 'nexpose' %}{{ scan_processing_urls.remove_nexpose }}{% else %}{{ scan_processing_urls.remove_web }}{% endif %}"
+            data-default-text="Remove"
+            data-scan-column="{{ column.slot }}"
+          >
+            Remove
+          </button>
+        {% else %}
+          <p class="mb-1 text-muted">No file uploaded yet.</p>
+        {% endif %}
+      </div>
+      <form class="w-100 w-md-auto js-scan-upload-form" data-upload-field="{{ column.upload_field }}" data-scan-column="{{ column.slot }}">
+        <div class="form-group mb-2">
+          <label class="sr-only" for="{{ input_id }}">{{ label }}</label>
+          <input
+            type="file"
+            name="file"
+            class="form-control-file"
+            id="{{ input_id }}"
+            accept=".xml,application/xml,text/xml"
+            required
+            {% if column.processing %}disabled{% endif %}
+          >
+        </div>
+        <div class="d-flex flex-column flex-md-row align-items-md-center">
+          <button
+            type="submit"
+            class="btn btn-primary btn-sm"
+            data-default-text="Upload"
+            {% if column.slot == 'nexpose' %}data-scan-disable-while-processing{% endif %}
+            {% if column.processing %}disabled{% endif %}
+          >
+            Upload
+          </button>
+          {% if column.missing_entries and not column.processing %}
+            <a href="{{ missing_url }}" class="btn btn-outline-warning btn-sm mt-2 mt-md-0 ml-md-2">Download Missing</a>
+          {% endif %}
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

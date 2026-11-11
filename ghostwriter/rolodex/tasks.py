@@ -6,12 +6,17 @@ import logging
 from datetime import date
 from typing import Any, Dict
 
+# Django Imports
+from django.core.files.storage import default_storage
+from django.utils import timezone
+
 # 3rd Party Libraries
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 # Ghostwriter Libraries
 from ghostwriter.modules.notifications_slack import SlackNotification
+from ghostwriter.rolodex import scan_processing
 from ghostwriter.rolodex.models import Project, ProjectDataFile
 
 # Using __name__ resolves to ghostwriter.rolodex.tasks
@@ -247,3 +252,89 @@ def process_project_data_upload(
         )
 
     return {"status": "success", "total_findings": total_findings}
+
+
+_SCAN_PROCESSING_FIELD_METADATA: Dict[str, Dict[str, str]] = {
+    scan_processing.UPLOAD_FIELD_NEXPOSE: {"label": "Nexpose", "file_type": "Nexpose XML"},
+    scan_processing.UPLOAD_FIELD_BURP: {"label": "Web", "file_type": "Burp XML"},
+}
+
+
+def process_scan_processing_upload(
+    token: str,
+    username: str,
+    upload_field: str,
+    storage_path: str,
+    original_filename: str,
+) -> Dict[str, Any]:
+    """Parse a Scan Processing upload parked on the shared media volume.
+
+    The ephemeral counterpart of ``process_project_data_upload``: there is no
+    project row, so the result goes into the cache under ``token`` (see
+    ``rolodex/scan_processing.py``) and the parked upload is deleted here no
+    matter what happens. Always ends by notifying ``username`` over WebSockets
+    with ``event="scan_processing_complete"`` so the page can refresh.
+    """
+
+    metadata = _SCAN_PROCESSING_FIELD_METADATA.get(upload_field, {})
+    label = metadata.get("label") or upload_field.replace("_", " ").title()
+    file_type = metadata.get("file_type", "file")
+    slot = scan_processing.UPLOAD_FIELD_SLOTS.get(upload_field, scan_processing.SLOT_NEXPOSE)
+
+    status = "error"
+    total_findings = 0
+    error_message = ""
+    try:
+        with default_storage.open(storage_path, "rb") as handle:
+            payload, xlsx_bytes = scan_processing.process_nexpose_upload(handle)
+        payload["file_name"] = original_filename
+        payload["processed_at"] = timezone.now().isoformat()
+        if not scan_processing.write_result(token, slot, payload, xlsx_bytes):
+            raise RuntimeError("Scan Processing results could not be stored in the cache")
+        total_findings = payload.get("total_findings") or 0
+        status = "success" if total_findings else "warning"
+    except Exception:
+        logger.exception(
+            "Failed to process Scan Processing upload %s (token=%s, field=%s)",
+            original_filename,
+            token,
+            upload_field,
+        )
+        error_message = (
+            f"Something went wrong while processing {original_filename}. "
+            "Check the server logs for details."
+        )
+        scan_processing.set_last_error(token, slot, error_message)
+    finally:
+        scan_processing.delete_temp_upload(storage_path)
+        scan_processing.clear_processing(token, slot)
+
+    if status == "success":
+        title = f"{label} Processed"
+        message = f"{original_filename} processed successfully ({total_findings} findings)."
+        level = "success"
+    elif status == "warning":
+        # The parsers swallow malformed XML and return no findings; this is the
+        # only place that can surface that to the user.
+        title = f"{label} Upload Complete"
+        message = (
+            f"No findings could be read from {original_filename}. "
+            f"It may not be a valid {file_type} export."
+        )
+        level = "warning"
+    else:
+        title = f"{label} Upload Failed"
+        message = error_message
+        level = "error"
+
+    _notify_user(
+        username,
+        title=title,
+        message=message,
+        level=level,
+        event="scan_processing_complete",
+        token=token,
+        upload_field=upload_field,
+        status=status,
+    )
+    return {"status": status, "total_findings": total_findings}

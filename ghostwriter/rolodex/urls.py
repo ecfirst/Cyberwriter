@@ -5,7 +5,7 @@ from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 
 # Ghostwriter Libraries
-from ghostwriter.rolodex import views, views_matrices
+from ghostwriter.rolodex import views, views_matrices, views_scan_processing
 
 app_name = "rolodex"
 
@@ -356,5 +356,54 @@ urlpatterns += [
         "projects/update/components/<int:pk>",
         views.ProjectComponentsUpdate.as_view(),
         name="project_component_update",
+    ),
+]
+
+# URLs for the project-less Scan Processing page
+urlpatterns += [
+    path(
+        "scan-processing/",
+        views_scan_processing.ScanProcessingPage.as_view(),
+        name="scan_processing",
+    ),
+    path(
+        "ajax/scan-processing/upload",
+        views_scan_processing.ScanProcessingUpload.as_view(),
+        name="ajax_upload_scan_processing_file",
+    ),
+    path(
+        "ajax/scan-processing/state",
+        views_scan_processing.ScanProcessingState.as_view(),
+        name="ajax_scan_processing_state",
+    ),
+    path(
+        "ajax/scan-processing/remove/<slug:slot>",
+        views_scan_processing.ScanProcessingRemove.as_view(),
+        name="ajax_remove_scan_processing_result",
+    ),
+    path(
+        "ajax/scan-processing/clear",
+        views_scan_processing.ScanProcessingClear.as_view(),
+        name="ajax_clear_scan_processing",
+    ),
+    path(
+        "scan-processing/nexpose-data/",
+        views_scan_processing.ScanProcessingNexposeDataDownload.as_view(),
+        name="scan_processing_nexpose_data_download",
+    ),
+    path(
+        "scan-processing/web-data/",
+        views_scan_processing.ScanProcessingWebDataDownload.as_view(),
+        name="scan_processing_web_data_download",
+    ),
+    path(
+        "scan-processing/nexpose-missing/",
+        views_scan_processing.ScanProcessingNexposeMissingDownload.as_view(),
+        name="scan_processing_nexpose_missing_download",
+    ),
+    path(
+        "scan-processing/web-issue-missing/",
+        views_scan_processing.ScanProcessingWebIssueMissingDownload.as_view(),
+        name="scan_processing_web_issue_missing_download",
     ),
 ]

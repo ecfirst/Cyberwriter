@@ -15,7 +15,7 @@ import math
 import re
 import resource
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 from xml.etree import ElementTree
 from urllib.parse import urlparse
 
@@ -7206,6 +7206,41 @@ class ProjectDataFileUpload(RoleBasedAccessControlMixin, SingleObjectMixin, View
         return redirect(redirect_url)
 
 
+NEXPOSE_MISSING_CSV_COLUMNS = [
+    "Vulnerability",
+    "Action Required",
+    "Remediation Impact",
+    "Vulnerability Threat",
+    "Category",
+    "CVE",
+]
+WEB_ISSUE_MISSING_CSV_COLUMNS = ["issue", "impact", "fix"]
+
+
+def render_nexpose_missing_csv(entries: Iterable[Any]) -> str:
+    """Render missing Nexpose matrix entries as CSV text (shared with Scan Processing)."""
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=NEXPOSE_MISSING_CSV_COLUMNS)
+    writer.writeheader()
+    for row in entries:
+        if not isinstance(row, dict):
+            continue
+        writer.writerow({column: row.get(column, "") for column in NEXPOSE_MISSING_CSV_COLUMNS})
+    return buffer.getvalue()
+
+
+def render_web_issue_missing_csv(entries: Iterable[Any]) -> str:
+    """Render missing web issue matrix entries as CSV text (shared with Scan Processing)."""
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=WEB_ISSUE_MISSING_CSV_COLUMNS)
+    writer.writeheader()
+    for row in entries:
+        if not isinstance(row, dict):
+            continue
+        writer.writerow({column: row.get(column, "") for column in WEB_ISSUE_MISSING_CSV_COLUMNS})
+    return buffer.getvalue()
+
+
 class ProjectNexposeMissingMatrixDownload(RoleBasedAccessControlMixin, SingleObjectMixin, View):
     """Provide a CSV export of missing Nexpose matrix entries for a project."""
 
@@ -7233,30 +7268,7 @@ class ProjectNexposeMissingMatrixDownload(RoleBasedAccessControlMixin, SingleObj
             )
             return HttpResponseRedirect(self.get_success_url(project))
 
-        buffer = io.StringIO()
-        fieldnames = [
-            "Vulnerability",
-            "Action Required",
-            "Remediation Impact",
-            "Vulnerability Threat",
-            "Category",
-            "CVE",
-        ]
-        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in entries:
-            if not isinstance(row, dict):
-                continue
-            writer.writerow({
-                "Vulnerability": row.get("Vulnerability", ""),
-                "Action Required": row.get("Action Required", ""),
-                "Remediation Impact": row.get("Remediation Impact", ""),
-                "Vulnerability Threat": row.get("Vulnerability Threat", ""),
-                "Category": row.get("Category", ""),
-                "CVE": row.get("CVE", ""),
-            })
-
-        response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+        response = HttpResponse(render_nexpose_missing_csv(entries), content_type="text/csv")
         add_content_disposition_header(response, "nexpose-missing.csv")
         return response
 
@@ -7283,22 +7295,7 @@ class ProjectWebIssueMissingDownload(RoleBasedAccessControlMixin, SingleObjectMi
             messages.error(request, "No missing Web issues are available for download.")
             return HttpResponseRedirect(self.get_success_url(project))
 
-        buffer = io.StringIO()
-        fieldnames = ["issue", "impact", "fix"]
-        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in entries:
-            if not isinstance(row, dict):
-                continue
-            writer.writerow(
-                {
-                    "issue": row.get("issue", ""),
-                    "impact": row.get("impact", ""),
-                    "fix": row.get("fix", ""),
-                }
-            )
-
-        response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+        response = HttpResponse(render_web_issue_missing_csv(entries), content_type="text/csv")
         add_content_disposition_header(response, "burp-missing.csv")
         return response
 
