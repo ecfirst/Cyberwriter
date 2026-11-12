@@ -469,3 +469,27 @@ class AIReviewPromptTemplateTests(TestCase):
         row.refresh_from_db()
         self.assertEqual(row.instruction, AI_REVIEW_PROMPT_DEFAULTS["a07_rt"]["instruction"])
         self.assertEqual(row.footer, AI_REVIEW_PROMPT_DEFAULTS["a07_rt"]["footer"])
+
+
+class AIReviewPromptRefreshMigrationTests(TestCase):
+    """Migration 0047 rewrites only the prompt rows still carrying the first-release default text."""
+
+    def test_refresh_rewrites_untouched_rows_only(self):
+        from importlib import import_module
+
+        from django.apps import apps
+
+        from ghostwriter.commandcenter.models import AIReviewPromptTemplate
+        from ghostwriter.reporting.ai_review_prompts import AI_REVIEW_PROMPT_DEFAULTS, previous_default_instruction
+
+        AIReviewPromptTemplate.objects.create(section_key="a01_rt", instruction=previous_default_instruction("a01_rt"))
+        AIReviewPromptTemplate.objects.create(section_key="a02_rt", instruction="Admin wrote this.")
+        AIReviewPromptTemplate.objects.create(section_key="a03_rt", instruction=AI_REVIEW_PROMPT_DEFAULTS["a03_rt"]["instruction"])
+
+        migration = import_module("ghostwriter.commandcenter.migrations.0047_refresh_ai_review_prompt_defaults")
+        migration.refresh_untouched_prompts(apps, None)
+
+        rows = {row.section_key: row.instruction for row in AIReviewPromptTemplate.objects.all()}
+        self.assertEqual(rows["a01_rt"], AI_REVIEW_PROMPT_DEFAULTS["a01_rt"]["instruction"])
+        self.assertEqual(rows["a02_rt"], "Admin wrote this.")
+        self.assertEqual(rows["a03_rt"], AI_REVIEW_PROMPT_DEFAULTS["a03_rt"]["instruction"])

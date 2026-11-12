@@ -480,3 +480,46 @@ class GenerateReportCAPTests(SupplementalViewTestsBase):
         response = self.client_mgr.get(self.detail_uri)
         self.assertContains(response, "cap-btn-icon")
         self.assertNotContains(response, "No supplemental files uploaded.")
+
+
+@override_settings(MEDIA_ROOT=MEDIA_ROOT)
+class ReportSupplementalFileRefreshTests(TestCase):
+    """Tests for ``ReportSupplementalFile.needs_reparse`` and ``refresh_cap_entries``."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.report = ReportFactory()
+
+    def test_needs_reparse_detects_entries_without_detail_keys(self):
+        stale = create_supplemental(self.report, kind="web")
+        self.assertTrue(stale.needs_reparse)
+        stale.cap_entries = [{"source": "web", "issue": "A", "impact": "", "evidence": []}]
+        self.assertFalse(stale.needs_reparse)
+        stale.cap_entries = []
+        self.assertFalse(stale.needs_reparse)
+        stale.cap_entries = "junk"
+        self.assertFalse(stale.needs_reparse)
+
+    def test_refresh_reparses_the_stored_workbook(self):
+        stale = create_supplemental(self.report, kind="nexpose", parse_warnings=["old warning"])
+        result = stale.refresh_cap_entries()
+        self.assertIsNotNone(result)
+        stale.refresh_from_db()
+        self.assertEqual(stale.row_count, 3)
+        self.assertEqual([e["issue"] for e in stale.cap_entries], ["Outdated OpenSSL", "SMB Signing Disabled", "ICMP Timestamp"])
+        self.assertFalse(stale.needs_reparse)
+        self.assertNotIn("old warning", stale.parse_warnings)
+        self.assertEqual(stale.parse_warnings, result.warnings)
+
+    def test_refresh_leaves_row_alone_when_file_is_unparseable_or_missing(self):
+        broken = create_supplemental(self.report, kind="web", filename="broken.xlsx", data=b"not an xlsx")
+        self.assertIsNone(broken.refresh_cap_entries())
+        broken.refresh_from_db()
+        self.assertEqual(broken.row_count, 1)
+        self.assertEqual(broken.cap_entries[0]["issue"], "A")
+
+        missing = create_supplemental(self.report, kind="nexpose", filename="missing.xlsx")
+        os.remove(missing.document.path)
+        self.assertIsNone(missing.refresh_cap_entries())
+        missing.refresh_from_db()
+        self.assertEqual(missing.row_count, 1)

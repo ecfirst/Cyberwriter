@@ -298,6 +298,7 @@ class ReportObservationLinkAdmin(CollabAdminBase):
 class ReportSupplementalFileAdmin(admin.ModelAdmin):
     list_display = ("report", "kind", "original_filename", "row_count", "uploaded_at", "uploaded_by")
     list_filter = ("kind",)
+    actions = ("reparse_workbooks",)
     list_display_links = ("report", "original_filename")
     readonly_fields = ("cap_entries", "parse_warnings", "row_count", "uploaded_at")
     fieldsets = (
@@ -310,3 +311,17 @@ class ReportSupplementalFileAdmin(admin.ModelAdmin):
             {"fields": ("row_count", "parse_warnings", "cap_entries")},
         ),
     )
+
+    @admin.action(description="Re-parse workbook with the current parser")
+    def reparse_workbooks(self, request, queryset):
+        refreshed = 0
+        failed = 0
+        for supplemental in queryset:
+            if supplemental.refresh_cap_entries() is None:
+                failed += 1
+            else:
+                refreshed += 1
+        message = f"Re-parsed {refreshed} supplemental file(s)."
+        if failed:
+            message += f" {failed} could not be re-parsed (details are in the application log)."
+        self.message_user(request, message)

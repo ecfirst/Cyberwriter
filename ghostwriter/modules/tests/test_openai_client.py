@@ -7,7 +7,7 @@ from django.test import TestCase
 
 # Ghostwriter Libraries
 from ghostwriter.factories import OpenAIConfigurationFactory
-from ghostwriter.modules.openai_client import _extract_response_text, submit_prompt_to_assistant
+from ghostwriter.modules.openai_client import _clean_metadata, _extract_response_text, submit_prompt_to_assistant
 from ghostwriter.reporting.ai_review_prompts import DEFAULT_OPENAI_INSTRUCTIONS
 
 logging.disable(logging.CRITICAL)
@@ -56,8 +56,36 @@ class OpenAIClientTests(TestCase):
             input="Prompt",
             reasoning={"effort": "high"},
             text={"verbosity": "low"},
+            store=True,
             instructions="Custom instructions",
         )
+
+    @mock.patch("ghostwriter.modules.openai_client.OpenAI")
+    def test_metadata_is_attached_for_logging(self, mock_openai):
+        config = OpenAIConfigurationFactory(enable=True, api_key="sk-test", model="gpt-test")
+        client = mock.Mock()
+        client.responses.create.return_value = mock.Mock(output_text="Done")
+        mock_openai.return_value = client
+
+        submit_prompt_to_assistant(
+            "Prompt", config=config, metadata={"feature": "report_ai_review", "report_id": 7, "section": "a01_rt"}
+        )
+        kwargs = client.responses.create.call_args.kwargs
+        self.assertTrue(kwargs["store"], "Every request must be stored so it shows in the OpenAI logs")
+        self.assertEqual(kwargs["metadata"], {"feature": "report_ai_review", "report_id": "7", "section": "a01_rt"})
+
+        client.responses.create.reset_mock()
+        submit_prompt_to_assistant("Prompt", config=config)
+        self.assertNotIn("metadata", client.responses.create.call_args.kwargs)
+        self.assertTrue(client.responses.create.call_args.kwargs["store"])
+
+    def test_clean_metadata_limits(self):
+        self.assertEqual(_clean_metadata(None), {})
+        self.assertEqual(_clean_metadata({"a": None, "": "x"}), {})
+        cleaned = _clean_metadata({"k" * 100: "v" * 600})
+        self.assertEqual(list(cleaned), ["k" * 64])
+        self.assertEqual(len(cleaned["k" * 64]), 512)
+        self.assertEqual(len(_clean_metadata({f"key{i}": i for i in range(20)})), 16)
 
     @mock.patch("ghostwriter.modules.openai_client.OpenAI")
     def test_blank_instructions_use_default(self, mock_openai):

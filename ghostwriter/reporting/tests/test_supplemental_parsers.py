@@ -495,6 +495,38 @@ class IssueDetailTests(SimpleTestCase):
         self.assertEqual(len(evidence[0]), MAX_EVIDENCE_CHARS)
         self.assertTrue(evidence[0].endswith("…"))
 
+    def test_placeholder_evidence_is_ignored(self):
+        h = WEB_ALL_HEADERS
+        rows = [
+            row(h, issue="Cross-site scripting (reflected)", host="https://a.example", path="/x",
+                evidence="See response(s)"),
+            row(h, issue="Cross-site scripting (reflected)", host="https://b.example", path="/y",
+                evidence=" see  Response(S) "),
+            row(h, issue="Cross-site scripting (reflected)", host="https://c.example", path="/z",
+                evidence="Real evidence"),
+            row(h, issue="Cookie without HttpOnly flag set", host="https://a.example", path="/",
+                evidence="N/A"),
+        ]
+        result = parse_supplemental("web", web_workbook(all_rows=rows))
+        by_issue = {entry["issue"]: entry for entry in result.entries}
+        self.assertEqual(by_issue["Cross-site scripting (reflected)"]["evidence"], ["Real evidence"])
+        self.assertEqual(by_issue["Cookie without HttpOnly flag set"]["evidence"], [])
+
+    def test_nexpose_issue_details_fill_in_blank_impact(self):
+        h = NEXPOSE_ALL_HEADERS
+        rows = [
+            row(h, ipaddress="10.0.0.1", issue="Outdated OpenSSL", impact="", issuedetails="Detail one"),
+            row(h, ipaddress="10.0.0.2", issue="Outdated OpenSSL", impact="Impact A", issuedetails="Detail two"),
+            row(h, hostnames="host-c", issue="SMB Signing Disabled", issuedetails="SMB detail"),
+        ]
+        result = parse_supplemental("nexpose", nexpose_workbook(all_rows=rows))
+        by_issue = {entry["issue"]: entry for entry in result.entries}
+        self.assertEqual(by_issue["Outdated OpenSSL"]["impact"], "Impact A", "A real Impact beats the fallback")
+        self.assertEqual(by_issue["SMB Signing Disabled"]["impact"], "SMB detail")
+        self.assertEqual(by_issue["ICMP Timestamp"]["impact"], "")
+        for entry in result.entries:
+            self.assertNotIn("_fallback", entry)
+
     def test_missing_detail_columns_are_tolerated(self):
         headers = ["IP Address", "Hostname(s)", "Issue"]
         rows = [row(headers, ipaddress="10.0.0.1", issue="Outdated OpenSSL")]

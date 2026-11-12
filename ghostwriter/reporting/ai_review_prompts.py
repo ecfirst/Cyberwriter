@@ -16,6 +16,8 @@ LABEL_PLACEHOLDER = "{label}"
 
 # Defaults for the OpenAI Responses API request. The admin-editable
 # ``OpenAIConfiguration`` singleton falls back to them when its fields are blank.
+# The instructions start with the cyberwriter developer prompt and add the
+# report review rules (attribution, category scope, plain prose).
 DEFAULT_OPENAI_MODEL = "gpt-6-sol"
 DEFAULT_OPENAI_REASONING_EFFORT = "medium"
 DEFAULT_OPENAI_VERBOSITY = "medium"
@@ -33,7 +35,16 @@ DEFAULT_OPENAI_INSTRUCTIONS = (
     'Accurately describe how a vulnerability works, how it can be exploited, and the realistic impact.\n\n'
     'Avoid emotional, promotional, or sensational wording.\n\n'
     'Provide context only when it clarifies risk or relevance.\n\n'
-    'Your responses must only contain the requested output — nothing more.'
+    'Your responses must only contain the requested output — nothing more.\n\n'
+    'Report review rules:\n\n'
+    'Attribute every result to the assessment itself. Write "Testing identified ..." or "Testing also identified ...". '
+    'Never refer to a scanner, a scan, a tool, or a vendor, and never use phrasing such as "the scanner flagged".\n\n'
+    'Write only about the findings and issues that fall under the requested category. Do not mention, name, '
+    'summarize, or explain anything that falls outside it, and never state that something belongs to another '
+    'category. If nothing applies, reply with a single sentence stating that testing identified no issues in '
+    'this category.\n\n'
+    'Write plain prose only. Do not use Markdown or any formatting markers: no asterisks, underscores, backticks, '
+    'headings, bullet points, or numbered lists, and no bold or italic text. Separate paragraphs with a blank line.'
 )
 
 # (section key, label, short description of what the category covers)
@@ -110,6 +121,16 @@ AI_REVIEW_SECTION_KEYS = [key for key, _label, _description in AI_REVIEW_SECTION
 
 DEFAULT_INSTRUCTION_TEMPLATE = (
     "Provide a summary in one or two paragraphs for OWASP Top 10:2025 category {label}. This category "
+    "covers {description} Use the report findings and supplemental issues in the following JSON as "
+    "context. Using only the findings and issues that fall under this category, explain in plain "
+    "language how they could be exploited and the realistic impact, and keep the response concise. "
+    "If none apply, state only that testing identified no issues in this category."
+)
+
+# The wording shipped with the first release, kept so the data migration that refreshed seeded
+# prompt rows can tell untouched rows from admin-edited ones.
+PREVIOUS_INSTRUCTION_TEMPLATE = (
+    "Provide a summary in one or two paragraphs for OWASP Top 10:2025 category {label}. This category "
     "covers {description} Use the report findings and scanner issues in the following JSON as context. "
     "Identify which findings or issues, if any, fall under this category, explain in plain language how "
     "they could be exploited and the realistic impact, and keep the response concise. If nothing in the "
@@ -134,9 +155,20 @@ AI_REVIEW_PROMPT_DEFAULTS: "OrderedDict[str, Dict[str, str]]" = OrderedDict(
 )
 
 GENERIC_INSTRUCTION = (
-    "Provide a summary in one or two paragraphs for the OWASP Top 10:2025 category {label}. Use the "
-    "report findings and scanner issues in the following JSON as context and keep the response concise."
+    "Provide a summary in one or two paragraphs for the OWASP Top 10:2025 category {label}. Use only the "
+    "findings and supplemental issues in the following JSON that fall under this category and keep the "
+    "response concise."
 )
+
+
+def previous_default_instruction(section_key: str) -> Optional[str]:
+    """The first-release default instruction for ``section_key``, or ``None`` for unknown keys."""
+
+    key = normalize_section_key(section_key)
+    for candidate, _label, description in AI_REVIEW_SECTIONS:
+        if candidate == key:
+            return PREVIOUS_INSTRUCTION_TEMPLATE.format(label=LABEL_PLACEHOLDER, description=description)
+    return None
 
 
 def normalize_section_key(section_key: str) -> str:

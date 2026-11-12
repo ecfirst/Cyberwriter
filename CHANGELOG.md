@@ -14,7 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * The data sent includes the report's findings (title, tags, type, severity, CVSS score and vector, description, impact) and the Issue, Impact, and Evidence of each unique issue from the "All Issues" tab of uploaded Web and Nexpose supplemental workbooks
   * The text is available to report templates as `{{p ai_review.a01_rt }}` through `{{p ai_review.a10_rt }}`
 * Added an **OpenAI Configuration** entry to the admin panel (API key, model, reasoning effort, verbosity, system instructions) and admin-editable **AI Review Prompts** per category with a "restore defaults" action
-* Supplemental workbook parsing now keeps each unique issue's Impact and up to three Evidence samples from the "All Issues" tab; re-upload existing supplemental files so the AI review can use them
+* Supplemental workbook parsing now keeps each unique issue's Impact and up to three Evidence samples from the "All Issues" tab (Burp's "See response(s)" placeholder is ignored; Nexpose falls back to Issue Details when Impact is blank)
+  * Files uploaded before this change are re-parsed automatically the next time an AI review is generated; admins can also run "Re-parse workbook" on Report supplemental files
+* Every OpenAI request is stored (`store=true`) with `feature`, `report_id`, and `section` metadata so it appears in the OpenAI dashboard logs
+* The default OpenAI system instructions add report review rules: attribute results to testing ("Testing identified ..."), never mention findings outside the requested category, and write plain prose without Markdown; Markdown markers are also stripped from responses
 
 ### Changed
 

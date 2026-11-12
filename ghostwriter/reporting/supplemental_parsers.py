@@ -13,8 +13,8 @@ A normalized CAP entry is a plain dictionary with these keys::
         "action": "...",     # Recommended remediation
         "risk": "High" | "Medium" | "Low" | None,
         "score": float | None,
-        "impact": "...",     # First non-empty Impact for the issue in All Issues ("" if none)
-        "evidence": [...],   # Up to MAX_EVIDENCE_SAMPLES distinct Evidence cells from All Issues
+        "impact": "...",     # First non-empty Impact in All Issues (Nexpose: Issue Details if blank)
+        "evidence": [...],   # Up to MAX_EVIDENCE_SAMPLES distinct, non-placeholder Evidence cells
     }
 
 ``impact`` and ``evidence`` are not written to the CAP workbook; they feed the report AI review.
@@ -56,6 +56,10 @@ KIND_ORDER = [KIND_WEB, KIND_NEXPOSE]
 # Per-issue caps on the Evidence samples kept from the All Issues sheet
 MAX_EVIDENCE_SAMPLES = 3
 MAX_EVIDENCE_CHARS = 1500
+
+# Evidence cell values that carry no information (the Burp workbook writes this placeholder
+# whenever it has no issue detail to show)
+EVIDENCE_PLACEHOLDERS = {"see response(s)", "see response", "see responses", "n/a", "none"}
 
 
 class SupplementalParseError(Exception):
@@ -289,20 +293,35 @@ def _collect_unique_issues(
     return issues
 
 
+def _is_evidence_placeholder(value: str) -> bool:
+    return " ".join(value.split()).lower() in EVIDENCE_PLACEHOLDERS
+
+
 def _record_issue_details(
-    details: Dict[str, Dict[str, Any]], key: str, reader: _SheetReader, row: Sequence[Any]
+    details: Dict[str, Dict[str, Any]],
+    key: str,
+    reader: _SheetReader,
+    row: Sequence[Any],
+    impact_fallback: Optional[str] = None,
 ) -> None:
     """
     Remember the first non-empty ``Impact`` and up to ``MAX_EVIDENCE_SAMPLES`` distinct
-    ``Evidence`` values seen for an issue in ``All Issues``. Both columns are optional.
+    ``Evidence`` values seen for an issue in ``All Issues``. All columns are optional; when
+    ``Impact`` is blank and ``impact_fallback`` names another column (Nexpose ``Issue Details``),
+    that column's first non-empty value is used instead. Placeholder evidence such as
+    ``See response(s)`` is ignored.
     """
-    record = details.setdefault(key, {"impact": "", "evidence": []})
+    record = details.setdefault(key, {"impact": "", "evidence": [], "_fallback": ""})
     if not record["impact"] and reader.has("Impact"):
         record["impact"] = reader.get(row, "Impact")
+    if impact_fallback and not record["_fallback"] and reader.has(impact_fallback):
+        record["_fallback"] = reader.get(row, impact_fallback)
     if reader.has("Evidence") and len(record["evidence"]) < MAX_EVIDENCE_SAMPLES:
-        evidence = truncate_excel_text(reader.get(row, "Evidence"), MAX_EVIDENCE_CHARS)
-        if evidence and evidence not in record["evidence"]:
-            record["evidence"].append(evidence)
+        raw_evidence = reader.get(row, "Evidence")
+        if raw_evidence and not _is_evidence_placeholder(raw_evidence):
+            evidence = truncate_excel_text(raw_evidence, MAX_EVIDENCE_CHARS)
+            if evidence not in record["evidence"]:
+                record["evidence"].append(evidence)
 
 
 def _make_entry(
@@ -322,7 +341,7 @@ def _make_entry(
         "action": truncate_excel_text(action),
         "risk": risk,
         "score": score,
-        "impact": truncate_excel_text(details.get("impact") or ""),
+        "impact": truncate_excel_text(details.get("impact") or details.get("_fallback") or ""),
         "evidence": list(details.get("evidence") or []),
     }
 
@@ -338,7 +357,7 @@ def _parse_nexpose(workbook) -> ParseResult:
     all_reader = _SheetReader(
         _find_sheet(workbook, "All Issues"),
         required=["IP Address", "Hostname(s)", "Issue"],
-        optional=["Impact", "Evidence"],
+        optional=["Impact", "Issue Details", "Evidence"],
     )
     # Dict used as an insertion-ordered set of system labels per issue
     systems_by_key: Dict[str, Dict[str, None]] = {}
@@ -347,7 +366,9 @@ def _parse_nexpose(workbook) -> ParseResult:
         issue = all_reader.get(row, "Issue")
         if not issue:
             continue
-        _record_issue_details(details_by_key, _issue_key(issue), all_reader, row)
+        _record_issue_details(
+            details_by_key, _issue_key(issue), all_reader, row, impact_fallback="Issue Details"
+        )
         ip_address = all_reader.get(row, "IP Address")
         hostnames = all_reader.get(row, "Hostname(s)")
         if ip_address and hostnames:

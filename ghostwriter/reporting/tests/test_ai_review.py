@@ -24,12 +24,14 @@ from ghostwriter.modules.linting_utils import LINTER_CONTEXT
 from ghostwriter.modules.reportwriter.report.json import ExportReportJson
 from ghostwriter.reporting.ai_review_prompts import (
     AI_REVIEW_PROMPT_DEFAULTS,
+    DEFAULT_OPENAI_INSTRUCTIONS,
     AI_REVIEW_SECTION_KEYS,
     AI_REVIEW_SECTION_LABELS,
     AI_REVIEW_SECTIONS,
     GENERIC_INSTRUCTION,
     get_default_prompt_text,
     normalize_section_key,
+    previous_default_instruction,
     render_prompt_text,
 )
 from ghostwriter.reporting.models import ReportSupplementalFile
@@ -80,7 +82,23 @@ class PromptModuleTests(SimpleTestCase):
             self.assertEqual(entry["label"], label)
             self.assertIn("{label}", entry["instruction"])
             self.assertIn(description, entry["instruction"])
+            self.assertIn("Using only the findings and issues that fall under this category", entry["instruction"])
+            self.assertIn("testing identified no issues in this category", entry["instruction"])
+            self.assertNotIn("Identify which", entry["instruction"])
+            self.assertNotIn("scanner", entry["instruction"])
             self.assertEqual(entry["footer"], "")
+            previous = previous_default_instruction(key)
+            self.assertIn("Identify which findings or issues", previous)
+            self.assertNotEqual(previous, entry["instruction"])
+        self.assertIsNone(previous_default_instruction("nope"))
+
+    def test_system_instructions_carry_review_rules(self):
+        self.assertTrue(DEFAULT_OPENAI_INSTRUCTIONS.startswith("You are a cybersecurity professional AI assistant."))
+        self.assertIn("Report review rules:", DEFAULT_OPENAI_INSTRUCTIONS)
+        self.assertIn('"Testing identified ..."', DEFAULT_OPENAI_INSTRUCTIONS)
+        self.assertIn("Never refer to a scanner", DEFAULT_OPENAI_INSTRUCTIONS)
+        self.assertIn("never state that something belongs to another category", DEFAULT_OPENAI_INSTRUCTIONS)
+        self.assertIn("Do not use Markdown", DEFAULT_OPENAI_INSTRUCTIONS)
 
     def test_helpers(self):
         self.assertEqual(normalize_section_key("a01"), "a01_rt")
@@ -112,6 +130,28 @@ class HelperTests(SimpleTestCase):
             ai_review.normalize_ai_response("One <b>two</b>\n\nThree\nFour"),
             "<p>One &lt;b&gt;two&lt;/b&gt;</p><p>Three<br />Four</p>",
         )
+        self.assertEqual(
+            ai_review.normalize_ai_response("Testing flagged **stored cross-site scripting**, see `Host`.\n\n- item"),
+            "<p>Testing flagged stored cross-site scripting, see Host.</p><p>item</p>",
+        )
+
+    def test_strip_markdown(self):
+        cases = {
+            "**bold** and __also bold__": "bold and also bold",
+            "flagged **stored cross-site scripting**,": "flagged stored cross-site scripting,",
+            "*italic* and _italic_ words": "italic and italic words",
+            "the cvss_score and snake_case_name stay": "the cvss_score and snake_case_name stay",
+            "2 * 3 * 4 is math": "2 * 3 * 4 is math",
+            "use `code` here": "use code here",
+            "# Heading\n## Sub heading\ntext": "Heading\nSub heading\ntext",
+            "- one\n* two\n+ three\n• four\n1. five\n2) six": "one\ntwo\nthree\nfour\nfive\nsix",
+            "***": "***",
+            "": "",
+            None: "",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(ai_review.strip_markdown(raw), expected)
 
     def test_build_ai_review_sections(self):
         sections = ai_review.build_ai_review_sections({"a03_rt": "<p>Supply chain</p>", "junk": "x"})
@@ -185,8 +225,8 @@ class PayloadTests(TestCase):
                     "impact": "<p>Remote code execution</p>",
                     "evidence": ["OpenSSL/1.0.1", ""],
                 },
-                {"source": "nexpose", "issue": "Legacy entry without details", "risk": None},
-                {"source": "nexpose", "issue": "", "impact": "skipped"},
+                {"source": "nexpose", "issue": "Entry with null details", "risk": None, "impact": None, "evidence": None},
+                {"source": "nexpose", "issue": "", "impact": "skipped", "evidence": []},
                 "junk",
             ],
         )
@@ -220,7 +260,7 @@ class PayloadTests(TestCase):
         self.assertEqual(set(sqli), {"title", "tags", "finding_type", "severity", "cvss_score", "cvss_vector", "description", "impact"})
 
         issues = payload["supplemental_issues"]
-        self.assertEqual([i["issue"] for i in issues], ["Reflected XSS", "Outdated OpenSSL", "Legacy entry without details"])
+        self.assertEqual([i["issue"] for i in issues], ["Reflected XSS", "Outdated OpenSSL", "Entry with null details"])
         self.assertEqual(issues[0]["source"], "Web (Burp)")
         self.assertEqual(issues[0]["evidence"], [], "Non-list evidence is ignored")
         self.assertEqual(issues[1]["source"], "Nexpose")
@@ -239,6 +279,26 @@ class PayloadTests(TestCase):
         payload = ai_review.build_ai_review_payload(report)
         self.assertEqual(payload["findings"], [])
         self.assertEqual(payload["supplemental_issues"], [])
+
+    def test_payload_reparses_entries_cached_by_an_older_parser(self):
+        report = ReportFactory()
+        stale = supplemental(
+            report,
+            "web",
+            [{"source": "web", "issue": "Stale issue", "systems": "", "action": "", "risk": "Low", "score": None}],
+        )
+        self.assertTrue(stale.needs_reparse)
+
+        payload = ai_review.build_ai_review_payload(report)
+
+        # The fixture workbook on disk has two unique issues with Impact; the stale cache is replaced
+        issues = {i["issue"]: i for i in payload["supplemental_issues"]}
+        self.assertEqual(set(issues), {"Cross-site scripting (reflected)", "Cookie without HttpOnly flag set"})
+        self.assertEqual(issues["Cross-site scripting (reflected)"]["impact"], "")
+        stale.refresh_from_db()
+        self.assertFalse(stale.needs_reparse)
+        self.assertEqual(stale.row_count, 2)
+        self.assertTrue(all("impact" in e and "evidence" in e for e in stale.cap_entries))
 
 
 class AiReviewViewTestsBase(TestCase):
@@ -304,10 +364,12 @@ class ReportAiReviewGenerateTests(AiReviewViewTestsBase):
         self.report.ai_review = {"a01_rt": "<p>old</p>", "custom": "<p>kept</p>"}
         self.report.save()
 
-        def fake_submit(prompt):
+        def fake_submit(prompt, metadata=None):
+            self.assertEqual(metadata["report_id"], str(self.report.pk))
             for key, label, _description in AI_REVIEW_SECTIONS:
                 if label in prompt:
-                    return f"Summary for {label}\n\nSecond paragraph"
+                    self.assertEqual(metadata["section"], key)
+                    return f"Summary for **{label}**\n\nSecond paragraph"
             raise AssertionError("prompt did not name a category")
 
         with mock.patch(GENERATE_TARGET, side_effect=fake_submit) as submit:
@@ -349,6 +411,10 @@ class ReportAiReviewGenerateTests(AiReviewViewTestsBase):
         self.assertEqual(data["data"], {"a03_rt": "<p>Supply chain text</p>"})
         self.assertEqual(submit.call_count, 1)
         self.assertIn("A03:2025 Software Supply Chain Failures", submit.call_args.args[0])
+        self.assertEqual(
+            submit.call_args.kwargs["metadata"],
+            {"feature": "report_ai_review", "report_id": str(self.report.pk), "section": "a03_rt"},
+        )
 
         self.report.refresh_from_db()
         self.assertEqual(self.report.ai_review, {"a01_rt": "<p>old</p>", "a03_rt": "<p>Supply chain text</p>"})
@@ -364,7 +430,7 @@ class ReportAiReviewGenerateTests(AiReviewViewTestsBase):
     def test_partial_failure_reports_failed_categories(self):
         self.enable_openai()
 
-        def fake_submit(prompt):
+        def fake_submit(prompt, metadata=None):
             if "A05:2025 Injection" in prompt or "A09:2025" in prompt:
                 return None
             return "ok"

@@ -6,6 +6,7 @@ built from the report's findings and the issues parsed from its supplemental wor
 # Standard Libraries
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -101,7 +102,12 @@ def build_ai_review_payload(report: Report) -> Dict[str, Any]:
         )
 
     supplemental_issues: List[Dict[str, Any]] = []
-    for supplemental, entry in iter_supplemental_entries(report.supplemental_files.all()):
+    supplemental_files = list(report.supplemental_files.all())
+    for supplemental in supplemental_files:
+        # Entries cached by an older parser lack impact/evidence; re-read the workbook once
+        if supplemental.needs_reparse:
+            supplemental.refresh_cap_entries()
+    for supplemental, entry in iter_supplemental_entries(supplemental_files):
         issue = plain_text(entry.get("issue"), 500)
         if not issue:
             continue
@@ -148,11 +154,39 @@ def build_ai_review_prompt(
     return prompt
 
 
+_MD_BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", re.S)
+_MD_BOLD_US = re.compile(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)", re.S)
+_MD_ITALIC = re.compile(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])")
+_MD_ITALIC_US = re.compile(r"(?<!\w)_(?=[^\s_])(.+?)(?<=[^\s_])_(?!\w)")
+_MD_CODE = re.compile(r"`([^`\n]*)`")
+_MD_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.M)
+_MD_LIST = re.compile(r"^[ \t]*(?:[-*+•]|\d{1,3}[.)])[ \t]+", re.M)
+
+
+def strip_markdown(text: Optional[str]) -> str:
+    """
+    Remove the Markdown markers a model may still emit (bold, italic, inline code, headings, list
+    bullets) while keeping the words. Underscores inside identifiers such as ``cvss_score`` survive
+    because emphasis markers must wrap text at a word boundary.
+    """
+    if not text:
+        return ""
+    cleaned = str(text)
+    for pattern in (_MD_BOLD, _MD_BOLD_US, _MD_CODE):
+        cleaned = pattern.sub(r"\1", cleaned)
+    cleaned = _MD_ITALIC.sub(r"\1", cleaned)
+    cleaned = _MD_ITALIC_US.sub(r"\1", cleaned)
+    cleaned = _MD_HEADING.sub("", cleaned)
+    cleaned = _MD_LIST.sub("", cleaned)
+    return cleaned
+
+
 def normalize_ai_response(response_text: Optional[str]) -> str:
     """Convert AI response text into HTML suitable for rich text editors."""
     if not response_text:
         return ""
-    safe_text = escape(response_text.strip()).replace("\n\n", "</p><p>").replace("\n", "<br />")
+    cleaned = strip_markdown(response_text).strip()
+    safe_text = escape(cleaned).replace("\n\n", "</p><p>").replace("\n", "<br />")
     if not safe_text.strip():
         return ""
     return f"<p>{safe_text}</p>"
@@ -233,7 +267,14 @@ class ReportAiReviewGenerate(RoleBasedAccessControlMixin, SingleObjectMixin, Vie
 
             if prompts:
                 with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(prompts))) as executor:
-                    future_map = {executor.submit(submit_prompt_to_assistant, prompt): key for key, prompt in prompts}
+                    future_map = {
+                        executor.submit(
+                            submit_prompt_to_assistant,
+                            prompt,
+                            metadata={"feature": "report_ai_review", "report_id": str(report.pk), "section": key},
+                        ): key
+                        for key, prompt in prompts
+                    }
                     for future in as_completed(future_map):
                         section_key = future_map[future]
                         try:
