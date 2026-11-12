@@ -12,7 +12,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Field, ButtonHolder, Submit, HTML
 
 # Ghostwriter Libraries
-from ghostwriter.commandcenter.models import ReportConfiguration, ExtraFieldSpec
+from ghostwriter.commandcenter.models import ExtraFieldSpec, OpenAIConfiguration, ReportConfiguration
 from ghostwriter.modules.reportwriter.project.base import ExportProjectBase
 from ghostwriter.modules.reportwriter.report.base import ExportReportBase
 
@@ -253,3 +253,18 @@ class SingleExtraFieldForm(forms.Form):
                 ),
             ),
         )
+
+
+class OpenAIConfigurationForm(forms.ModelForm):
+    """Save settings in :model:`commandcenter.OpenAIConfiguration`."""
+
+    api_key = forms.CharField(
+        required=False,
+        widget=forms.PasswordInput(render_value=True),
+        help_text="API key used to authenticate with OpenAI",
+    )
+
+    class Meta:
+        model = OpenAIConfiguration
+        fields = ("enable", "api_key", "model", "reasoning_effort", "verbosity", "instructions")
+        widgets = {"instructions": forms.Textarea(attrs={"rows": 16, "cols": 120})}

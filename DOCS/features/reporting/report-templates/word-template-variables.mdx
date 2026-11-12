@@ -118,6 +118,7 @@ To see what is available for your report, generate the JSON report. Everything i
 | `logs` | [`Dict`] All activity logs and related entries from the project |
 | `findings` | [`Dict`] All information about a project's findings |
 | `observations` | [`Dict`] All information about a project's observations |
+| `ai_review` | [`Dict`] AI Review text for each OWASP Top 10:2025 category, keyed `a01_rt` through `a10_rt` (rich text) |
 | `docx_template` | [`Dict`] All information about the selected DOCX template |
 | `pptx_template` | [`Dict`] All information about the selected PPTX template |
 | `company` | [`Dict`] All information about your company (configured in the admin panel) |
@@ -213,6 +214,29 @@ That template renders as:
 <Frame>
   <img src="/images/features/image-53.png" alt=""/>
 </Frame>
+
+#### AI Review Text
+
+The AI Review tab on a report stores one rich text block per OWASP Top 10:2025 category. Insert them with the `p` tag:
+
+```
+{{p ai_review.a01_rt }}
+```
+
+| **Key** | **Category** |
+|---------|--------------|
+| `a01_rt` | A01:2025 Broken Access Control |
+| `a02_rt` | A02:2025 Security Misconfiguration |
+| `a03_rt` | A03:2025 Software Supply Chain Failures |
+| `a04_rt` | A04:2025 Cryptographic Failures |
+| `a05_rt` | A05:2025 Injection |
+| `a06_rt` | A06:2025 Insecure Design |
+| `a07_rt` | A07:2025 Authentication Failures |
+| `a08_rt` | A08:2025 Software or Data Integrity Failures |
+| `a09_rt` | A09:2025 Security Logging and Alerting Failures |
+| `a10_rt` | A10:2025 Mishandling of Exceptional Conditions |
+
+A category that has not been generated renders as empty text.
 
 ### Ghostwriter Tags
 

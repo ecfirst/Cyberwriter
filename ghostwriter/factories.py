@@ -889,6 +889,18 @@ class VirusTotalConfigurationFactory(factory.django.DjangoModelFactory):
     sleep_time = 20
 
 
+class OpenAIConfigurationFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = "commandcenter.OpenAIConfiguration"
+
+    enable = Faker("boolean")
+    api_key = Faker("password", length=32)
+    model = "gpt-6-sol"
+    reasoning_effort = "medium"
+    verbosity = "medium"
+    instructions = ""
+
+
 class GeneralConfigurationFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = "commandcenter.GeneralConfiguration"

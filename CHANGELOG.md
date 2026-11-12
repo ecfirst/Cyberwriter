@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+* Added an **AI Review** tab to the report page that writes an OWASP Top 10:2025 summary per category with OpenAI
+  * Each category has its own editor and "Generate AI Review" button, plus "Generate All AI Reviews" and "Save AI Updates"
+  * The data sent includes the report's findings (title, tags, type, severity, CVSS score and vector, description, impact) and the Issue, Impact, and Evidence of each unique issue from the "All Issues" tab of uploaded Web and Nexpose supplemental workbooks
+  * The text is available to report templates as `{{p ai_review.a01_rt }}` through `{{p ai_review.a10_rt }}`
+* Added an **OpenAI Configuration** entry to the admin panel (API key, model, reasoning effort, verbosity, system instructions) and admin-editable **AI Review Prompts** per category with a "restore defaults" action
+* Supplemental workbook parsing now keeps each unique issue's Impact and up to three Evidence samples from the "All Issues" tab; re-upload existing supplemental files so the AI review can use them
+
+### Changed
+
+* New dependencies: `openai` and `django-cryptography` (rebuild containers after pulling)
+
 ## [6.1.1] - 15 December 2025
 
 ### Added

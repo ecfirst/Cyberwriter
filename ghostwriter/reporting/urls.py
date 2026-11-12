@@ -11,6 +11,7 @@ import ghostwriter.reporting.views2.finding
 import ghostwriter.reporting.views2.report_finding_link
 import ghostwriter.reporting.views2.report
 import ghostwriter.reporting.views2.supplementals
+import ghostwriter.reporting.views2.ai_review
 
 app_name = "reporting"
 
@@ -284,6 +285,20 @@ urlpatterns += [
         "reports/supplementals/<int:pk>/delete/",
         ghostwriter.reporting.views2.supplementals.ReportSupplementalDelete.as_view(),
         name="report_supplemental_delete",
+    ),
+]
+
+# URLs for the AI review (OWASP Top 10) text on reports
+urlpatterns += [
+    path(
+        "ajax/report/ai-review/generate/<int:pk>",
+        ghostwriter.reporting.views2.ai_review.ReportAiReviewGenerate.as_view(),
+        name="ajax_generate_report_ai_review",
+    ),
+    path(
+        "reports/<int:pk>/ai-review/",
+        ghostwriter.reporting.views2.ai_review.ReportAiReviewSave.as_view(),
+        name="report_ai_review_update",
     ),
 ]
 

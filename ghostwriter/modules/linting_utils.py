@@ -588,6 +588,18 @@ LINTER_CONTEXT = {
         "primary": True,
     },
     "extra_fields": {},
+    "ai_review": {
+        "a01_rt": "<p>A01:2025 Broken Access Control summary</p>",
+        "a02_rt": "<p>A02:2025 Security Misconfiguration summary</p>",
+        "a03_rt": "<p>A03:2025 Software Supply Chain Failures summary</p>",
+        "a04_rt": "<p>A04:2025 Cryptographic Failures summary</p>",
+        "a05_rt": "<p>A05:2025 Injection summary</p>",
+        "a06_rt": "<p>A06:2025 Insecure Design summary</p>",
+        "a07_rt": "<p>A07:2025 Authentication Failures summary</p>",
+        "a08_rt": "<p>A08:2025 Software or Data Integrity Failures summary</p>",
+        "a09_rt": "<p>A09:2025 Security Logging and Alerting Failures summary</p>",
+        "a10_rt": "<p>A10:2025 Mishandling of Exceptional Conditions summary</p>",
+    },
     "bloodhound": {
         "domains": [],
         "findings": [],

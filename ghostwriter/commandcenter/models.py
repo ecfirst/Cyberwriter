@@ -1,21 +1,35 @@
 """This contains all the database models for the CommandCenter application."""
 
 import json
-from typing import Any, Callable, NamedTuple
+from typing import Any, Callable, Dict, NamedTuple
 from urllib.parse import urlparse
 
 # Django Imports
 from django.db import models
+from django.db.utils import OperationalError, ProgrammingError
 from django import forms
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 
 # 3rd Party Libraries
+from django_cryptography.fields import encrypt
 from ghostwriter.modules.reportwriter.forms import JinjaRichTextField
 from timezone_field import TimeZoneField
 
 # Ghostwriter Libraries
 from ghostwriter.singleton.models import SingletonModel
+from ghostwriter.reporting.ai_review_prompts import (
+    AI_REVIEW_PROMPT_DEFAULTS,
+    AI_REVIEW_SECTION_CHOICES,
+    AI_REVIEW_SECTION_LABELS,
+    DEFAULT_OPENAI_INSTRUCTIONS,
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_OPENAI_REASONING_EFFORT,
+    DEFAULT_OPENAI_VERBOSITY,
+    OPENAI_EFFORT_CHOICES,
+    get_default_prompt_text,
+    normalize_section_key,
+)
 
 def sanitize(sensitive_thing):
     """
@@ -592,3 +606,158 @@ class ExtraFieldSpec(models.Model):
         verbose_name = "Extra Field"
         order_with_respect_to = "target_model"
         unique_together = [("target_model", "internal_name")]
+
+
+class OpenAIConfiguration(SingletonModel):
+    """Settings for the OpenAI Responses API requests behind the report AI review.
+
+    The system instructions, model and reasoning settings are stored here and fall back to the
+    defaults in :mod:`ghostwriter.reporting.ai_review_prompts` when blank.
+    """
+
+    enable = models.BooleanField(
+        default=False,
+        help_text="Enable to allow Cyberwriter to query the OpenAI Responses API",
+    )
+    api_key = encrypt(
+        models.CharField(
+            max_length=255,
+            default="",
+            blank=True,
+            help_text="API key used to authenticate with OpenAI",
+        )
+    )
+    model = models.CharField(
+        max_length=100,
+        default=DEFAULT_OPENAI_MODEL,
+        help_text="OpenAI model name sent with every request (e.g. gpt-6-sol)",
+    )
+    reasoning_effort = models.CharField(
+        max_length=16,
+        choices=OPENAI_EFFORT_CHOICES,
+        default=DEFAULT_OPENAI_REASONING_EFFORT,
+        help_text="Reasoning effort requested from the model",
+    )
+    verbosity = models.CharField(
+        max_length=16,
+        choices=OPENAI_EFFORT_CHOICES,
+        default=DEFAULT_OPENAI_VERBOSITY,
+        help_text="Output verbosity requested from the model",
+    )
+    instructions = models.TextField(
+        default="",
+        blank=True,
+        help_text=(
+            "System instructions sent with every request, ahead of the category prompt. "
+            "Leave blank to use the built-in default text."
+        ),
+    )
+
+    def __str__(self):
+        return "OpenAI Configuration"
+
+    class Meta:
+        verbose_name = "OpenAI Configuration"
+
+    @property
+    def sanitized_api_key(self):
+        return sanitize(self.api_key or "")
+
+    @property
+    def effective_instructions(self) -> str:
+        """Return the stored instructions, or the built-in default when blank."""
+        text = (self.instructions or "").strip()
+        return text if text else DEFAULT_OPENAI_INSTRUCTIONS
+
+    def reset_instructions_to_default(self, *, save: bool = True) -> None:
+        """Restore the built-in system instructions."""
+        self.instructions = DEFAULT_OPENAI_INSTRUCTIONS
+        if save:
+            self.save(update_fields=["instructions"])
+
+
+class AIReviewPromptTemplate(models.Model):
+    """Admin-editable instruction and footer text for one OWASP Top 10 AI review category.
+
+    The prompt sent to OpenAI is ``instruction`` + the report data JSON + ``footer``. Rows are
+    seeded from :data:`ghostwriter.reporting.ai_review_prompts.AI_REVIEW_PROMPT_DEFAULTS`, which
+    is also the fallback whenever a row is missing or the table is unavailable.
+    """
+
+    section_key = models.CharField(
+        "Category",
+        max_length=64,
+        unique=True,
+        choices=AI_REVIEW_SECTION_CHOICES,
+        help_text="OWASP Top 10 category this prompt text applies to",
+    )
+    instruction = models.TextField(
+        "Instruction",
+        help_text=(
+            "Opening instruction sent to OpenAI before the report data JSON. "
+            "{label} is replaced with the category label (e.g. A01:2025 Broken Access Control)."
+        ),
+    )
+    footer = models.TextField(
+        "Footer",
+        blank=True,
+        default="",
+        help_text=(
+            "Closing instruction sent after the report data JSON. {label} is replaced with the "
+            "category label. Leave blank to send no footer."
+        ),
+    )
+
+    class Meta:
+        ordering = ["section_key"]
+        verbose_name = "AI Review Prompt"
+        verbose_name_plural = "AI Review Prompts"
+
+    def __str__(self):
+        return self.section_label
+
+    @property
+    def section_label(self) -> str:
+        return AI_REVIEW_SECTION_LABELS.get(self.section_key, self.section_key)
+
+    @classmethod
+    def get_prompt_texts(cls) -> Dict[str, Dict[str, str]]:
+        """Return ``{section_key: {"instruction", "footer"}}`` for every category.
+
+        Starts from the built-in defaults and overlays any stored rows, so a missing row (or a
+        missing table during early migrations) still yields usable prompt text. A stored blank
+        footer is honored as "no footer"; a blank instruction falls back to the default.
+        """
+        texts: Dict[str, Dict[str, str]] = {
+            key: {"instruction": entry["instruction"], "footer": entry["footer"]}
+            for key, entry in AI_REVIEW_PROMPT_DEFAULTS.items()
+        }
+        try:
+            rows = list(cls.objects.values("section_key", "instruction", "footer"))
+        except (ProgrammingError, OperationalError):  # pragma: no cover - table not ready
+            return texts
+
+        for row in rows:
+            key = row.get("section_key")
+            if key not in texts:
+                continue
+            instruction = row.get("instruction") or ""
+            texts[key] = {
+                "instruction": instruction if instruction.strip() else texts[key]["instruction"],
+                "footer": row.get("footer") or "",
+            }
+        return texts
+
+    @classmethod
+    def get_prompt_text(cls, section_key: str) -> Dict[str, str]:
+        """Return the ``{"instruction", "footer"}`` pair for ``section_key``."""
+        key = normalize_section_key(section_key)
+        return cls.get_prompt_texts().get(key) or dict(get_default_prompt_text(key))
+
+    def reset_to_default(self, *, save: bool = True) -> None:
+        """Restore the built-in instruction and footer text for this category."""
+        defaults = get_default_prompt_text(self.section_key)
+        self.instruction = defaults["instruction"]
+        self.footer = defaults["footer"]
+        if save:
+            self.save(update_fields=["instruction", "footer"])

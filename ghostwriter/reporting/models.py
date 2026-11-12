@@ -538,6 +538,11 @@ class Report(models.Model):
     archived = models.BooleanField("Archived", default=False, help_text="Mark the report as archived")
     tags = TaggableManager(blank=True)
     extra_fields = models.JSONField(default=dict)
+    ai_review = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="AI-generated OWASP Top 10 review text keyed by category",
+    )
     # Foreign Keys
     project = models.ForeignKey(
         "rolodex.Project",

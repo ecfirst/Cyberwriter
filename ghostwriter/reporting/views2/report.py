@@ -40,6 +40,7 @@ from ghostwriter.modules.shared import add_content_disposition_header
 from ghostwriter.reporting.archive import archive_report
 from ghostwriter.reporting.filters import ReportFilter, ReportTemplateFilter
 from ghostwriter.reporting.forms import ReportForm, ReportTemplateForm, SelectReportTemplateForm
+from ghostwriter.reporting.views2.ai_review import ai_review_enabled, build_ai_review_sections
 from ghostwriter.reporting.models import (
     Archive,
     Finding,
@@ -231,6 +232,10 @@ class ReportDetailView(RoleBasedAccessControlMixin, DetailView):
             for kind in ReportSupplementalFile.Kind
         ]
         ctx["has_supplementals"] = bool(files_by_kind)
+
+        # AI review (OWASP Top 10) categories and whether generation is configured
+        ctx["ai_review_sections"] = build_ai_review_sections(self.object.ai_review)
+        ctx["ai_review_enabled"] = ai_review_enabled()
 
         return ctx
 
