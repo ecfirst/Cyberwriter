@@ -429,6 +429,67 @@
         </table>
       </div>
 
+      {% comment %} AI Review Tab {% endcomment %}
+      <div id="ai-review" class="tab-pane">
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center">
+          <div class="text-left">
+            <h4 class="mb-1">AI Review</h4>
+            <p class="text-muted mb-0">Generate, review &amp; update OWASP Top 10:2025 summaries written from this
+              report's findings and the issues in its supplemental workbooks.</p>
+          </div>
+          {% if can_edit %}
+            <div class="mt-2 mt-md-0">
+              <button
+                type="button"
+                id="generateAiReviewButton"
+                class="btn btn-outline-primary mr-2"
+                data-generate-url="{% url 'reporting:ajax_generate_report_ai_review' report.id %}"
+                data-csrf-token="{{ csrf_token }}"
+                data-section-key=""
+                data-loading-text="Generating..."
+              >
+                Generate All AI Reviews
+              </button>
+              <button type="submit" class="btn btn-primary" form="ai-review-form">Save AI Updates</button>
+            </div>
+          {% endif %}
+        </div>
+        <hr/>
+
+        {% if not ai_review_enabled %}
+          <div class="alert alert-secondary" role="alert">
+            AI review generation is not enabled. An administrator can enable it under <em>OpenAI Configuration</em>
+            in the admin panel. Existing text can still be edited and saved.
+          </div>
+        {% endif %}
+
+        <form id="ai-review-form" method="post" action="{% url 'reporting:report_ai_review_update' report.id %}">
+          {% csrf_token %}
+          {% for section in ai_review_sections %}
+            <div class="card mb-4 ai-review-section" data-section-key="{{ section.key }}">
+              <div class="card-header d-flex flex-column flex-md-row justify-content-between align-items-md-center">
+                <span class="text-uppercase text-muted">{{ section.label }}</span>
+                {% if can_edit %}
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-outline-primary mt-2 mt-md-0 js-generate-ai-section"
+                    data-section-key="{{ section.key }}"
+                    data-generate-url="{% url 'reporting:ajax_generate_report_ai_review' report.id %}"
+                    data-csrf-token="{{ csrf_token }}"
+                    data-loading-text="Generating..."
+                  >
+                    Generate AI Review
+                  </button>
+                {% endif %}
+              </div>
+              <div class="card-body">
+                <textarea name="ai_review_{{ section.key }}" id="id_ai_review_{{ section.key }}" rows="10">{{ section.content|default_if_none:''|safe }}</textarea>
+              </div>
+            </div>
+          {% endfor %}
+        </form>
+      </div>
+
       {% if report_extra_fields_spec %}
         {% comment %} Extra Fields Tab {% endcomment %}
         <div id="extra-fields" class="tab-pane">
@@ -576,6 +637,126 @@
     supplementalsTable.on('submit', '.js-supplemental-upload-form', function () {
       $(this).find('.js-supplemental-pick').prop('disabled', true).text('Uploading…');
     });
+
+    {% comment %} AI Review tab: generate one or all OWASP categories and drop the text into the editors {% endcomment %}
+    const setButtonLoading = function (button, text) {
+      if (!button) {
+        return;
+      }
+      const defaultText = button.getAttribute('data-default-text') || button.textContent.trim();
+      button.setAttribute('data-default-text', defaultText);
+      button.innerHTML = '<span class="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>' + text;
+      button.disabled = true;
+    };
+
+    const clearButtonLoading = function (button) {
+      if (!button) {
+        return;
+      }
+      const defaultText = button.getAttribute('data-default-text');
+      if (defaultText) {
+        button.innerHTML = defaultText;
+      }
+      button.disabled = false;
+    };
+
+    const runWithButtonLoading = function (button, text, action) {
+      if (!button || typeof action !== 'function') {
+        return action && action();
+      }
+      setButtonLoading(button, text);
+      const result = action();
+      const finalize = function () {
+        clearButtonLoading(button);
+      };
+      if (result && typeof result.finally === 'function') {
+        result.finally(finalize);
+      } else {
+        finalize();
+      }
+      return result;
+    };
+
+    const refreshAiReviewEditors = function (payload) {
+      if (!payload) {
+        return;
+      }
+      Object.keys(payload).forEach(function (sectionKey) {
+        const content = payload[sectionKey] || '';
+        const textareaId = 'id_ai_review_' + sectionKey;
+        const textarea = document.getElementById(textareaId);
+        if (textarea) {
+          textarea.value = content;
+        }
+        if (window.tinymce) {
+          const editor = window.tinymce.get(textareaId);
+          if (editor) {
+            editor.setContent(content);
+          }
+        }
+      });
+    };
+
+    const setupAiReviewActions = function () {
+      const attachHandler = function (button) {
+        if (!button) {
+          return;
+        }
+        const generateUrl = button.getAttribute('data-generate-url');
+        if (!generateUrl) {
+          return;
+        }
+        const csrfToken = button.getAttribute('data-csrf-token');
+        const sectionKey = button.getAttribute('data-section-key') || '';
+        const loadingText = button.getAttribute('data-loading-text') || 'Generating...';
+
+        button.addEventListener('click', function () {
+          const params = new URLSearchParams();
+          if (sectionKey) {
+            params.append('section', sectionKey);
+          }
+          return runWithButtonLoading(button, loadingText, function () {
+            return fetch(generateUrl, {
+              method: 'POST',
+              headers: {
+                'X-CSRFToken': csrfToken || '',
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              },
+              body: params.toString(),
+            })
+              .then(function (response) {
+                return response.json();
+              })
+              .then(function (data) {
+                if (data && data.data) {
+                  refreshAiReviewEditors(data.data);
+                }
+                if (typeof displayToastTop === 'function') {
+                  const message = data && data.message ? data.message : 'AI review generation complete.';
+                  let type = 'success';
+                  if (data && data.result === 'warning') {
+                    type = 'warning';
+                  } else if (data && data.result === 'error') {
+                    type = 'error';
+                  }
+                  displayToastTop({type: type, string: message, title: 'AI Review'});
+                }
+              })
+              .catch(function () {
+                if (typeof displayToastTop === 'function') {
+                  displayToastTop({type: 'error', string: 'Unable to generate AI review at this time.', title: 'AI Review'});
+                }
+              });
+          });
+        });
+      };
+
+      attachHandler(document.getElementById('generateAiReviewButton'));
+      document.querySelectorAll('.js-generate-ai-section').forEach(function (button) {
+        attachHandler(button);
+      });
+    };
+    setupAiReviewActions();
 
     $('.js-generate-report').click(function () {
       $spinnerModal.modal('show');

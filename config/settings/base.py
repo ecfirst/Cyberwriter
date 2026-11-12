@@ -112,6 +112,7 @@ THIRD_PARTY_APPS = [
     "health_check.contrib.psutil",
     "health_check.contrib.redis",
     "taggit",
+    "django_cryptography",
 ]
 
 LOCAL_APPS = [

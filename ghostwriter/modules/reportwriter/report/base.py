@@ -12,6 +12,7 @@ from ghostwriter.modules.reportwriter.base.base import ExportBase
 from ghostwriter.modules.reportwriter.base.html_rich_text import EvidenceRichText, HtmlAndObject
 from ghostwriter.modules.reportwriter.project.base import ExportProjectBase
 from ghostwriter.oplog.models import OplogEntry
+from ghostwriter.reporting.ai_review_prompts import AI_REVIEW_SECTIONS
 from ghostwriter.reporting.models import Finding, Observation, Report
 from ghostwriter.rolodex.models import Client, Project
 from ghostwriter.shepherd.models import Domain, StaticServer
@@ -172,6 +173,17 @@ class ExportReportBase(ExportBase):
 
         # Report extra fields
         self.process_extra_fields("the report", base_context["extra_fields"], Report, rich_text_context)
+
+        # AI review (OWASP Top 10) rich text, one entry per category
+        stored_ai_review = base_context.get("ai_review")
+        if not isinstance(stored_ai_review, dict):
+            stored_ai_review = {}
+        base_context["ai_review"] = {
+            key: self.create_lazy_template(
+                f"the AI review for {label}", stored_ai_review.get(key) or "", rich_text_context
+            )
+            for key, label, _description in AI_REVIEW_SECTIONS
+        }
 
         # Report Evidence
         # for evidence in base_context["evidence"]:

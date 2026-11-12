@@ -13,7 +13,11 @@ A normalized CAP entry is a plain dictionary with these keys::
         "action": "...",     # Recommended remediation
         "risk": "High" | "Medium" | "Low" | None,
         "score": float | None,
+        "impact": "...",     # First non-empty Impact in All Issues (Nexpose: Issue Details if blank)
+        "evidence": [...],   # Up to MAX_EVIDENCE_SAMPLES distinct, non-placeholder Evidence cells
     }
+
+``impact`` and ``evidence`` are not written to the CAP workbook; they feed the report AI review.
 
 Hard failures (not an XLSX, missing sheet, missing column, zero usable rows) raise
 ``SupplementalParseError``. Soft issues are collected as warnings and the file is still accepted.
@@ -26,7 +30,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from io import BytesIO
-from typing import Any, Dict, Iterator, List, Optional, Sequence
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 # 3rd Party Libraries
 import openpyxl
@@ -45,6 +49,17 @@ RISK_RANK = {"High": 3, "Medium": 2, "Low": 1}
 
 KIND_WEB = "web"
 KIND_NEXPOSE = "nexpose"
+
+# Order in which supplemental files of different kinds are combined (Web first)
+KIND_ORDER = [KIND_WEB, KIND_NEXPOSE]
+
+# Per-issue caps on the Evidence samples kept from the All Issues sheet
+MAX_EVIDENCE_SAMPLES = 3
+MAX_EVIDENCE_CHARS = 1500
+
+# Evidence cell values that carry no information (the Burp workbook writes this placeholder
+# whenever it has no issue detail to show)
+EVIDENCE_PLACEHOLDERS = {"see response(s)", "see response", "see responses", "n/a", "none"}
 
 
 class SupplementalParseError(Exception):
@@ -278,6 +293,37 @@ def _collect_unique_issues(
     return issues
 
 
+def _is_evidence_placeholder(value: str) -> bool:
+    return " ".join(value.split()).lower() in EVIDENCE_PLACEHOLDERS
+
+
+def _record_issue_details(
+    details: Dict[str, Dict[str, Any]],
+    key: str,
+    reader: _SheetReader,
+    row: Sequence[Any],
+    impact_fallback: Optional[str] = None,
+) -> None:
+    """
+    Remember the first non-empty ``Impact`` and up to ``MAX_EVIDENCE_SAMPLES`` distinct
+    ``Evidence`` values seen for an issue in ``All Issues``. All columns are optional; when
+    ``Impact`` is blank and ``impact_fallback`` names another column (Nexpose ``Issue Details``),
+    that column's first non-empty value is used instead. Placeholder evidence such as
+    ``See response(s)`` is ignored.
+    """
+    record = details.setdefault(key, {"impact": "", "evidence": [], "_fallback": ""})
+    if not record["impact"] and reader.has("Impact"):
+        record["impact"] = reader.get(row, "Impact")
+    if impact_fallback and not record["_fallback"] and reader.has(impact_fallback):
+        record["_fallback"] = reader.get(row, impact_fallback)
+    if reader.has("Evidence") and len(record["evidence"]) < MAX_EVIDENCE_SAMPLES:
+        raw_evidence = reader.get(row, "Evidence")
+        if raw_evidence and not _is_evidence_placeholder(raw_evidence):
+            evidence = truncate_excel_text(raw_evidence, MAX_EVIDENCE_CHARS)
+            if evidence not in record["evidence"]:
+                record["evidence"].append(evidence)
+
+
 def _make_entry(
     source: str,
     issue: str,
@@ -285,7 +331,9 @@ def _make_entry(
     action: str,
     risk: Optional[str],
     score: Optional[float],
+    details: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    details = details or {}
     return {
         "source": source,
         "issue": truncate_excel_text(issue),
@@ -293,6 +341,8 @@ def _make_entry(
         "action": truncate_excel_text(action),
         "risk": risk,
         "score": score,
+        "impact": truncate_excel_text(details.get("impact") or details.get("_fallback") or ""),
+        "evidence": list(details.get("evidence") or []),
     }
 
 
@@ -307,13 +357,18 @@ def _parse_nexpose(workbook) -> ParseResult:
     all_reader = _SheetReader(
         _find_sheet(workbook, "All Issues"),
         required=["IP Address", "Hostname(s)", "Issue"],
+        optional=["Impact", "Issue Details", "Evidence"],
     )
     # Dict used as an insertion-ordered set of system labels per issue
     systems_by_key: Dict[str, Dict[str, None]] = {}
+    details_by_key: Dict[str, Dict[str, Any]] = {}
     for row in all_reader.rows():
         issue = all_reader.get(row, "Issue")
         if not issue:
             continue
+        _record_issue_details(
+            details_by_key, _issue_key(issue), all_reader, row, impact_fallback="Issue Details"
+        )
         ip_address = all_reader.get(row, "IP Address")
         hostnames = all_reader.get(row, "Hostname(s)")
         if ip_address and hostnames:
@@ -344,6 +399,7 @@ def _parse_nexpose(workbook) -> ParseResult:
                 record["action"],
                 record["risk"],
                 record["score"],
+                details_by_key.get(key),
             )
         )
 
@@ -365,13 +421,17 @@ def _parse_web(workbook) -> ParseResult:
     warnings: List[str] = []
 
     all_reader = _SheetReader(
-        _find_sheet(workbook, "All Issues"), required=["Issue", "Host", "Path"]
+        _find_sheet(workbook, "All Issues"),
+        required=["Issue", "Host", "Path"],
+        optional=["Impact", "Evidence"],
     )
     hosts_by_key: Dict[str, set] = {}
+    details_by_key: Dict[str, Dict[str, Any]] = {}
     for row in all_reader.rows():
         issue = all_reader.get(row, "Issue")
         if not issue:
             continue
+        _record_issue_details(details_by_key, _issue_key(issue), all_reader, row)
         host_path = f"{all_reader.get(row, 'Host')}{all_reader.get(row, 'Path')}".strip()
         if not host_path:
             continue
@@ -397,6 +457,7 @@ def _parse_web(workbook) -> ParseResult:
                 record["action"],
                 record["risk"],
                 record["score"],
+                details_by_key.get(key),
             )
         )
 
@@ -436,3 +497,21 @@ def parse_supplemental(kind: str, data: bytes) -> ParseResult:
         return parser(workbook)
     finally:
         workbook.close()
+
+
+def iter_supplemental_entries(files: Iterable[Any]) -> List[Tuple[Any, Dict[str, Any]]]:
+    """
+    Every well-formed CAP entry across the given supplemental file objects as ``(file, entry)``
+    pairs, Web files first and then Nexpose. ``files`` are objects with ``kind`` and
+    ``cap_entries`` attributes (normally :model:`reporting.ReportSupplementalFile` rows); the CAP
+    exporter and the report AI review share this ordering.
+    """
+    ordered = sorted(
+        files,
+        key=lambda f: KIND_ORDER.index(f.kind) if f.kind in KIND_ORDER else len(KIND_ORDER),
+    )
+    pairs: List[Tuple[Any, Dict[str, Any]]] = []
+    for supplemental in ordered:
+        entries = supplemental.cap_entries if isinstance(supplemental.cap_entries, list) else []
+        pairs.extend((supplemental, entry) for entry in entries if isinstance(entry, dict))
+    return pairs

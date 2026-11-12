@@ -28,7 +28,11 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from ghostwriter.modules.reportwriter.base.xlsx import ExportXlsxBase
 from ghostwriter.modules.reportwriter.report.base import ExportReportBase
 from ghostwriter.reporting.models import ReportSupplementalFile
-from ghostwriter.reporting.supplemental_parsers import RISK_RANK, truncate_excel_text
+from ghostwriter.reporting.supplemental_parsers import (
+    RISK_RANK,
+    iter_supplemental_entries,
+    truncate_excel_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -185,23 +189,7 @@ class ExportReportCapXlsx(ExportXlsxBase, ExportReportBase):
         self,
     ) -> List[Tuple[ReportSupplementalFile, Dict[str, Any]]]:
         """Every well-formed CAP entry across the report's supplemental files, Web first."""
-        files = sorted(
-            self.report.supplemental_files.all(),
-            key=lambda f: self.KIND_ORDER.index(f.kind)
-            if f.kind in self.KIND_ORDER
-            else len(self.KIND_ORDER),
-        )
-        pairs: List[Tuple[ReportSupplementalFile, Dict[str, Any]]] = []
-        for supplemental in files:
-            entries = (
-                supplemental.cap_entries
-                if isinstance(supplemental.cap_entries, list)
-                else []
-            )
-            pairs.extend(
-                (supplemental, entry) for entry in entries if isinstance(entry, dict)
-            )
-        return pairs
+        return iter_supplemental_entries(self.report.supplemental_files.all())
 
     def _append_supplemental_rows(
         self,

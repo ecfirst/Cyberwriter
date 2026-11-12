@@ -9,6 +9,9 @@ from django.test import SimpleTestCase
 from ghostwriter.reporting import supplemental_parsers
 from ghostwriter.reporting.supplemental_parsers import (
     EXCEL_CELL_CHARACTER_LIMIT,
+    MAX_EVIDENCE_CHARS,
+    MAX_EVIDENCE_SAMPLES,
+    iter_supplemental_entries,
     SupplementalParseError,
     normalize_risk,
     parse_supplemental,
@@ -431,3 +434,126 @@ class ParseSupplementalTests(SimpleTestCase):
             with self.assertRaises(SupplementalParseError) as ctx:
                 parse_supplemental("nexpose", nexpose_workbook())
         self.assertIn("larger than", str(ctx.exception))
+
+
+class IssueDetailTests(SimpleTestCase):
+    """Impact and Evidence from ``All Issues`` are kept per unique issue for the AI review."""
+
+    def test_nexpose_collects_first_impact_and_distinct_evidence(self):
+        h = NEXPOSE_ALL_HEADERS
+        rows = [
+            row(h, ipaddress="10.0.0.1", issue="Outdated OpenSSL", impact="", evidence="banner one"),
+            row(h, ipaddress="10.0.0.2", issue="Outdated OpenSSL", impact="Impact A", evidence="banner one"),
+            row(h, ipaddress="10.0.0.3", issue="Outdated OpenSSL", impact="Impact ignored", evidence="banner two"),
+            row(h, ipaddress="10.0.0.4", issue="Outdated OpenSSL", evidence="banner three"),
+            row(h, ipaddress="10.0.0.5", issue="Outdated OpenSSL", evidence="banner four"),
+            row(h, hostnames="host-c", issue="SMB Signing Disabled"),
+        ]
+        result = parse_supplemental("nexpose", nexpose_workbook(all_rows=rows))
+        by_issue = {entry["issue"]: entry for entry in result.entries}
+
+        openssl = by_issue["Outdated OpenSSL"]
+        self.assertEqual(openssl["impact"], "Impact A", "First non-empty Impact wins")
+        self.assertEqual(openssl["evidence"], ["banner one", "banner two", "banner three"])
+        self.assertEqual(len(openssl["evidence"]), MAX_EVIDENCE_SAMPLES)
+
+        smb = by_issue["SMB Signing Disabled"]
+        self.assertEqual(smb["impact"], "")
+        self.assertEqual(smb["evidence"], [])
+
+        # Issues with no All Issues rows still carry the keys
+        self.assertEqual(by_issue["ICMP Timestamp"]["impact"], "")
+        self.assertEqual(by_issue["ICMP Timestamp"]["evidence"], [])
+
+    def test_web_collects_impact_and_evidence(self):
+        h = WEB_ALL_HEADERS
+        rows = [
+            row(h, issue="Cross-site scripting (reflected)", host="https://a.example", path="/x",
+                impact="Script runs in victim browser", evidence="<script>alert(1)</script>"),
+            row(h, issue="Cross-site scripting (reflected)", host="https://b.example", path="/y",
+                evidence="<script>alert(1)</script>"),
+            row(h, issue="Cookie without HttpOnly flag set", host="https://a.example", path="/"),
+        ]
+        result = parse_supplemental("web", web_workbook(all_rows=rows))
+        by_issue = {entry["issue"]: entry for entry in result.entries}
+
+        xss = by_issue["Cross-site scripting (reflected)"]
+        self.assertEqual(xss["impact"], "Script runs in victim browser")
+        self.assertEqual(xss["evidence"], ["<script>alert(1)</script>"], "Duplicate evidence is kept once")
+        self.assertEqual(by_issue["Cookie without HttpOnly flag set"]["evidence"], [])
+
+    def test_evidence_is_truncated(self):
+        h = WEB_ALL_HEADERS
+        rows = [
+            row(h, issue="Cross-site scripting (reflected)", host="https://a.example", path="/x",
+                evidence="e" * (MAX_EVIDENCE_CHARS + 500)),
+            row(h, issue="Cookie without HttpOnly flag set", host="https://a.example", path="/"),
+        ]
+        result = parse_supplemental("web", web_workbook(all_rows=rows))
+        evidence = result.entries[0]["evidence"]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(len(evidence[0]), MAX_EVIDENCE_CHARS)
+        self.assertTrue(evidence[0].endswith("…"))
+
+    def test_placeholder_evidence_is_ignored(self):
+        h = WEB_ALL_HEADERS
+        rows = [
+            row(h, issue="Cross-site scripting (reflected)", host="https://a.example", path="/x",
+                evidence="See response(s)"),
+            row(h, issue="Cross-site scripting (reflected)", host="https://b.example", path="/y",
+                evidence=" see  Response(S) "),
+            row(h, issue="Cross-site scripting (reflected)", host="https://c.example", path="/z",
+                evidence="Real evidence"),
+            row(h, issue="Cookie without HttpOnly flag set", host="https://a.example", path="/",
+                evidence="N/A"),
+        ]
+        result = parse_supplemental("web", web_workbook(all_rows=rows))
+        by_issue = {entry["issue"]: entry for entry in result.entries}
+        self.assertEqual(by_issue["Cross-site scripting (reflected)"]["evidence"], ["Real evidence"])
+        self.assertEqual(by_issue["Cookie without HttpOnly flag set"]["evidence"], [])
+
+    def test_nexpose_issue_details_fill_in_blank_impact(self):
+        h = NEXPOSE_ALL_HEADERS
+        rows = [
+            row(h, ipaddress="10.0.0.1", issue="Outdated OpenSSL", impact="", issuedetails="Detail one"),
+            row(h, ipaddress="10.0.0.2", issue="Outdated OpenSSL", impact="Impact A", issuedetails="Detail two"),
+            row(h, hostnames="host-c", issue="SMB Signing Disabled", issuedetails="SMB detail"),
+        ]
+        result = parse_supplemental("nexpose", nexpose_workbook(all_rows=rows))
+        by_issue = {entry["issue"]: entry for entry in result.entries}
+        self.assertEqual(by_issue["Outdated OpenSSL"]["impact"], "Impact A", "A real Impact beats the fallback")
+        self.assertEqual(by_issue["SMB Signing Disabled"]["impact"], "SMB detail")
+        self.assertEqual(by_issue["ICMP Timestamp"]["impact"], "")
+        for entry in result.entries:
+            self.assertNotIn("_fallback", entry)
+
+    def test_missing_detail_columns_are_tolerated(self):
+        headers = ["IP Address", "Hostname(s)", "Issue"]
+        rows = [row(headers, ipaddress="10.0.0.1", issue="Outdated OpenSSL")]
+        result = parse_supplemental(
+            "nexpose", nexpose_workbook(all_rows=rows, all_headers=headers)
+        )
+        self.assertEqual(result.entries[0]["impact"], "")
+        self.assertEqual(result.entries[0]["evidence"], [])
+
+        headers = ["Issue", "Host", "Path"]
+        rows = [row(headers, issue="Cross-site scripting (reflected)", host="https://a.example", path="/")]
+        result = parse_supplemental("web", web_workbook(all_rows=rows, all_headers=headers))
+        self.assertEqual(result.entries[0]["impact"], "")
+        self.assertEqual(result.entries[0]["evidence"], [])
+
+
+class IterSupplementalEntriesTests(SimpleTestCase):
+    """Tests for :func:`reporting.supplemental_parsers.iter_supplemental_entries`."""
+
+    def test_orders_web_first_and_skips_malformed_entries(self):
+        from types import SimpleNamespace
+
+        nexpose = SimpleNamespace(kind="nexpose", cap_entries=[{"issue": "N1"}, "junk", {"issue": "N2"}])
+        web = SimpleNamespace(kind="web", cap_entries=[{"issue": "W1"}])
+        broken = SimpleNamespace(kind="web", cap_entries=None)
+        unknown = SimpleNamespace(kind="other", cap_entries=[{"issue": "O1"}])
+
+        pairs = iter_supplemental_entries([nexpose, unknown, broken, web])
+        self.assertEqual([entry["issue"] for _, entry in pairs], ["W1", "N1", "N2", "O1"])
+        self.assertIs(pairs[0][0], web)

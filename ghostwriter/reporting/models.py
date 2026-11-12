@@ -18,6 +18,7 @@ from cvss import CVSS3, CVSS4
 from taggit.managers import TaggableManager
 
 # Ghostwriter Libraries
+from ghostwriter.reporting.supplemental_parsers import SupplementalParseError, parse_supplemental
 from ghostwriter.reporting.validators import (
     validate_evidence_extension,
     validate_xlsx_extension,
@@ -538,6 +539,11 @@ class Report(models.Model):
     archived = models.BooleanField("Archived", default=False, help_text="Mark the report as archived")
     tags = TaggableManager(blank=True)
     extra_fields = models.JSONField(default=dict)
+    ai_review = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="AI-generated OWASP Top 10 review text keyed by category",
+    )
     # Foreign Keys
     project = models.ForeignKey(
         "rolodex.Project",
@@ -974,6 +980,41 @@ class ReportSupplementalFile(models.Model):
     @property
     def has_warnings(self):
         return bool(self.parse_warnings)
+
+    # Keys every entry produced by the current parser carries; older uploads lack them
+    CURRENT_ENTRY_KEYS = ("impact", "evidence")
+
+    @property
+    def needs_reparse(self) -> bool:
+        """``True`` when the cached entries were produced by an older parser (missing impact/evidence)."""
+        entries = self.cap_entries if isinstance(self.cap_entries, list) else []
+        return any(
+            isinstance(entry, dict) and any(key not in entry for key in self.CURRENT_ENTRY_KEYS)
+            for entry in entries
+        )
+
+    def refresh_cap_entries(self):
+        """
+        Re-parse the stored workbook with the current parser and update ``cap_entries``,
+        ``row_count`` and ``parse_warnings``. Returns the ``ParseResult``, or ``None`` (leaving the
+        row untouched) when the file is missing or no longer parses.
+        """
+        try:
+            with self.document.open("rb") as handle:
+                data = handle.read()
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            logger.warning("Could not read supplemental file %s for re-parsing: %s", self.pk, exc)
+            return None
+        try:
+            result = parse_supplemental(self.kind, data)
+        except SupplementalParseError as exc:
+            logger.warning("Could not re-parse supplemental file %s: %s", self.pk, exc)
+            return None
+        self.cap_entries = result.entries
+        self.row_count = len(result.entries)
+        self.parse_warnings = result.warnings
+        self.save(update_fields=["cap_entries", "row_count", "parse_warnings"])
+        return result
 
 
 class Archive(models.Model):
