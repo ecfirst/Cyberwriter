@@ -155,6 +155,8 @@ LINTER_CONTEXT = {
                 "external_end": "2025-01-14",
                 "internal_start": "2025-01-20",
                 "internal_end": "2025-01-25",
+                "cloud_start": "2025-01-27",
+                "cloud_end": "2025-01-29",
                 "cloud_provider": "AWS",
                 "internal_subnets": "10.0.0.0/16, 192.168.5.0/24",
             },
@@ -429,6 +431,18 @@ LINTER_CONTEXT = {
                 "unique_minority": 9,
                 "unique_majority_sub": 14,
                 "unique_majority_sub_info": "Version 2.4.x instances with outdated modules",
+                "host_counts": [
+                    {"host": "edge.example.com", "high": 2, "med": 1, "low": 0},
+                    {"host": "vpn.example.com", "high": 1, "med": 2, "low": 1},
+                ],
+                "top_hosts": [
+                    {"host": "edge.example.com", "high": 2, "med": 1, "low": 0, "total": 3, "score": 8},
+                    {"host": "vpn.example.com", "high": 1, "med": 2, "low": 1, "total": 4, "score": 7},
+                ],
+                "top_hosts_high": 3,
+                "top_hosts_med": 3,
+                "top_hosts_low": 1,
+                "top_hosts_total": 7,
             },
             "internal_nexpose": {
                 "total": 230,
@@ -443,6 +457,18 @@ LINTER_CONTEXT = {
                 "unique_minority": 9,
                 "unique_majority_sub": 14,
                 "unique_majority_sub_info": "Version 2.4.x instances with outdated modules",
+                "host_counts": [
+                    {"host": "dc01.corp.example.com", "high": 2, "med": 1, "low": 0},
+                    {"host": "fileserver.corp.example.com", "high": 1, "med": 2, "low": 1},
+                ],
+                "top_hosts": [
+                    {"host": "dc01.corp.example.com", "high": 2, "med": 1, "low": 0, "total": 3, "score": 8},
+                    {"host": "fileserver.corp.example.com", "high": 1, "med": 2, "low": 1, "total": 4, "score": 7},
+                ],
+                "top_hosts_high": 3,
+                "top_hosts_med": 3,
+                "top_hosts_low": 1,
+                "top_hosts_total": 7,
             },
             "iot_iomt_nexpose": {
                 "total": 230,
@@ -457,6 +483,18 @@ LINTER_CONTEXT = {
                 "unique_minority": 9,
                 "unique_majority_sub": 14,
                 "unique_majority_sub_info": "Version 2.4.x instances with outdated modules",
+                "host_counts": [
+                    {"host": "infusion-pump-01.med.example.com", "high": 2, "med": 1, "low": 0},
+                    {"host": "hvac-ctrl.example.com", "high": 1, "med": 2, "low": 1},
+                ],
+                "top_hosts": [
+                    {"host": "infusion-pump-01.med.example.com", "high": 2, "med": 1, "low": 0, "total": 3, "score": 8},
+                    {"host": "hvac-ctrl.example.com", "high": 1, "med": 2, "low": 1, "total": 4, "score": 7},
+                ],
+                "top_hosts_high": 3,
+                "top_hosts_med": 3,
+                "top_hosts_low": 1,
+                "top_hosts_total": 7,
             },
             "external_internal_grades": {
                 "external": {
